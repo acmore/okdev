@@ -35,6 +35,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newConnectCmd(opts))
 	cmd.AddCommand(newPortsCmd(opts))
 	cmd.AddCommand(newSyncCmd(opts))
+	cmd.AddCommand(newPruneCmd(opts))
 
 	return cmd
 }

@@ -10,6 +10,8 @@ spec:
   namespace: default
   session:
     defaultNameTemplate: "{{ .Repo }}-{{ .Branch }}-{{ .User }}"
+    ttlHours: 72
+    idleTimeoutMinutes: 120
   workspace:
     mountPath: /workspace
     pvc:
@@ -35,6 +37,8 @@ spec:
   namespace: ai-dev
   session:
     defaultNameTemplate: "{{ .Repo }}-{{ .Branch }}-{{ .User }}"
+    ttlHours: 72
+    idleTimeoutMinutes: 120
   workspace:
     mountPath: /workspace
     pvc:
