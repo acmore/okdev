@@ -51,6 +51,10 @@ func newUpCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			if err := k.WaitReady(ctx, ns, pod, waitTimeout); err != nil {
+				diag, derr := k.DescribePod(ctx, ns, pod)
+				if derr == nil {
+					return fmt.Errorf("%w\n\npod diagnostics:\n%s", err, diag)
+				}
 				return err
 			}
 

@@ -55,6 +55,39 @@ func (c *Client) PortForward(ctx context.Context, namespace, pod string, forward
 	return nil
 }
 
+func (c *Client) CopyToPod(ctx context.Context, namespace, localPath, podName, remotePath string) error {
+	args := make([]string, 0, 8)
+	if c.Context != "" {
+		args = append(args, "--context", c.Context)
+	}
+	args = append(args, "-n", namespace, "cp", localPath, podName+":"+remotePath)
+	_, err := c.Kubectl(ctx, nil, args...)
+	return err
+}
+
+func (c *Client) CopyFromPod(ctx context.Context, namespace, podName, remotePath, localPath string) error {
+	args := make([]string, 0, 8)
+	if c.Context != "" {
+		args = append(args, "--context", c.Context)
+	}
+	args = append(args, "-n", namespace, "cp", podName+":"+remotePath, localPath)
+	_, err := c.Kubectl(ctx, nil, args...)
+	return err
+}
+
+func (c *Client) DescribePod(ctx context.Context, namespace, pod string) (string, error) {
+	out, err := c.Kubectl(ctx, nil, "-n", namespace, "describe", "pod", pod)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+func (c *Client) ExecSh(ctx context.Context, namespace, pod string, script string) ([]byte, error) {
+	args := []string{"-n", namespace, "exec", "-i", pod, "--", "sh", "-lc", script}
+	return c.Kubectl(ctx, nil, args...)
+}
+
 type PodSummary struct {
 	Namespace string
 	Name      string

@@ -21,6 +21,7 @@ type DevEnvSpec struct {
 	Namespace   string         `yaml:"namespace"`
 	Session     SessionSpec    `yaml:"session"`
 	Workspace   Workspace      `yaml:"workspace"`
+	Sync        SyncSpec       `yaml:"sync"`
 	Ports       []PortMapping  `yaml:"ports"`
 	PodTemplate PodTemplateRef `yaml:"podTemplate"`
 }
@@ -47,6 +48,11 @@ type PodTemplateRef struct {
 
 type MetadataMap struct {
 	Labels map[string]string `yaml:"labels"`
+}
+
+type SyncSpec struct {
+	Paths   []string `yaml:"paths"`
+	Exclude []string `yaml:"exclude"`
 }
 
 type PortMapping struct {

@@ -11,6 +11,7 @@ import (
 
 func newInitCmd(opts *Options) *cobra.Command {
 	var force bool
+	var templateName string
 
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -33,7 +34,11 @@ func newInitCmd(opts *Options) *cobra.Command {
 			if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 				return fmt.Errorf("create parent directory: %w", err)
 			}
-			if err := os.WriteFile(abs, []byte(config.DefaultTemplate), 0o644); err != nil {
+			tpl, err := config.TemplateByName(templateName)
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(abs, []byte(tpl), 0o644); err != nil {
 				return fmt.Errorf("write config %q: %w", abs, err)
 			}
 
@@ -43,5 +48,6 @@ func newInitCmd(opts *Options) *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing config file")
+	cmd.Flags().StringVar(&templateName, "template", "basic", "Template to use (basic|gpu)")
 	return cmd
 }
