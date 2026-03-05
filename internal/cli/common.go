@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -55,6 +56,16 @@ func newKubeClient(opts *Options) *kube.Client {
 
 func defaultContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 5*time.Minute)
+}
+
+func interactiveContext() (context.Context, context.CancelFunc) {
+	return context.WithCancel(context.Background())
+}
+
+func runConnect(opts *Options, namespace, sessionName string, command []string, tty bool) error {
+	ctx, cancel := interactiveContext()
+	defer cancel()
+	return newKubeClient(opts).ExecInteractive(ctx, namespace, podName(sessionName), tty, command, os.Stdin, os.Stdout, os.Stderr)
 }
 
 func age(ts time.Time) string {

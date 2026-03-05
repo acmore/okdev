@@ -60,7 +60,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Session ready: %s (namespace: %s)\n", sn, ns)
 			if attach {
-				fmt.Fprintf(cmd.OutOrStdout(), "Run: okdev connect --session %s\n", sn)
+				return runConnect(opts, ns, sn, []string{"/bin/bash"}, true)
 			}
 			return nil
 		},

@@ -12,4 +12,8 @@ spec:
     mountPath: /workspace
     pvc:
       size: 50Gi
+  ports:
+    - name: app
+      local: 8080
+      remote: 8080
 `

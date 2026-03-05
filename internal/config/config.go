@@ -21,6 +21,7 @@ type DevEnvSpec struct {
 	Namespace   string         `yaml:"namespace"`
 	Session     SessionSpec    `yaml:"session"`
 	Workspace   Workspace      `yaml:"workspace"`
+	Ports       []PortMapping  `yaml:"ports"`
 	PodTemplate PodTemplateRef `yaml:"podTemplate"`
 }
 
@@ -46,6 +47,12 @@ type PodTemplateRef struct {
 
 type MetadataMap struct {
 	Labels map[string]string `yaml:"labels"`
+}
+
+type PortMapping struct {
+	Name   string `yaml:"name"`
+	Local  int    `yaml:"local"`
+	Remote int    `yaml:"remote"`
 }
 
 func (d *DevEnvironment) Validate() error {

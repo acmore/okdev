@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"time"
@@ -12,6 +13,46 @@ import (
 
 type Client struct {
 	Context string
+}
+
+func (c *Client) ExecInteractive(ctx context.Context, namespace, pod string, tty bool, command []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) error {
+	args := make([]string, 0, 16+len(command))
+	if c.Context != "" {
+		args = append(args, "--context", c.Context)
+	}
+	args = append(args, "-n", namespace, "exec")
+	if tty {
+		args = append(args, "-it")
+	} else {
+		args = append(args, "-i")
+	}
+	args = append(args, pod, "--")
+	args = append(args, command...)
+
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("kubectl %s: %w", strings.Join(args, " "), err)
+	}
+	return nil
+}
+
+func (c *Client) PortForward(ctx context.Context, namespace, pod string, forwards []string, stdout io.Writer, stderr io.Writer) error {
+	args := make([]string, 0, 8+len(forwards))
+	if c.Context != "" {
+		args = append(args, "--context", c.Context)
+	}
+	args = append(args, "-n", namespace, "port-forward", "pod/"+pod)
+	args = append(args, forwards...)
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("kubectl %s: %w", strings.Join(args, " "), err)
+	}
+	return nil
 }
 
 type PodSummary struct {
