@@ -10,4 +10,6 @@ spec:
     defaultNameTemplate: "{{ .Repo }}-{{ .Branch }}-{{ .User }}"
   workspace:
     mountPath: /workspace
+    pvc:
+      size: 50Gi
 `

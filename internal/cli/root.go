@@ -6,6 +6,9 @@ import (
 
 type Options struct {
 	ConfigPath string
+	Session    string
+	Namespace  string
+	Context    string
 }
 
 func NewRootCmd() *cobra.Command {
@@ -17,10 +20,18 @@ func NewRootCmd() *cobra.Command {
 	}
 
 	cmd.PersistentFlags().StringVarP(&opts.ConfigPath, "config", "c", "", "Path to config file")
+	cmd.PersistentFlags().StringVar(&opts.Session, "session", "", "Session name")
+	cmd.PersistentFlags().StringVarP(&opts.Namespace, "namespace", "n", "", "Kubernetes namespace override")
+	cmd.PersistentFlags().StringVar(&opts.Context, "context", "", "Kubernetes context override")
 
 	cmd.AddCommand(newVersionCmd())
 	cmd.AddCommand(newInitCmd(opts))
 	cmd.AddCommand(newValidateCmd(opts))
+	cmd.AddCommand(newUpCmd(opts))
+	cmd.AddCommand(newDownCmd(opts))
+	cmd.AddCommand(newStatusCmd(opts))
+	cmd.AddCommand(newListCmd(opts))
+	cmd.AddCommand(newUseCmd(opts))
 
 	return cmd
 }

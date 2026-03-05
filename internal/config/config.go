@@ -18,9 +18,10 @@ type Metadata struct {
 }
 
 type DevEnvSpec struct {
-	Namespace string      `yaml:"namespace"`
-	Session   SessionSpec `yaml:"session"`
-	Workspace Workspace   `yaml:"workspace"`
+	Namespace   string         `yaml:"namespace"`
+	Session     SessionSpec    `yaml:"session"`
+	Workspace   Workspace      `yaml:"workspace"`
+	PodTemplate PodTemplateRef `yaml:"podTemplate"`
 }
 
 type SessionSpec struct {
@@ -28,7 +29,23 @@ type SessionSpec struct {
 }
 
 type Workspace struct {
-	MountPath string `yaml:"mountPath"`
+	MountPath string      `yaml:"mountPath"`
+	PVC       PVCSettings `yaml:"pvc"`
+}
+
+type PVCSettings struct {
+	ClaimName        string `yaml:"claimName"`
+	Size             string `yaml:"size"`
+	StorageClassName string `yaml:"storageClassName"`
+}
+
+type PodTemplateRef struct {
+	Metadata MetadataMap    `yaml:"metadata"`
+	Spec     map[string]any `yaml:"spec"`
+}
+
+type MetadataMap struct {
+	Labels map[string]string `yaml:"labels"`
 }
 
 func (d *DevEnvironment) Validate() error {
@@ -49,6 +66,9 @@ func (d *DevEnvironment) Validate() error {
 	}
 	if d.Spec.Workspace.MountPath == "" {
 		return errors.New("spec.workspace.mountPath is required")
+	}
+	if d.Spec.Namespace == "" {
+		d.Spec.Namespace = "default"
 	}
 	return nil
 }
