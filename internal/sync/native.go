@@ -50,6 +50,8 @@ var uploadFingerprintCache = struct {
 	m: map[string]uploadFingerprintEntry{},
 }
 
+var uploadPathLocks sync.Map
+
 func ParsePairs(configured []string, defaultRemote string) ([]Pair, error) {
 	if len(configured) == 0 {
 		return []Pair{{Local: ".", Remote: defaultRemote}}, nil
@@ -200,43 +202,47 @@ func syncUpPath(ctx context.Context, k Client, namespace, pod, podInstance strin
 
 	cacheKey := uploadFingerprintCacheKey(namespace, pod, p, excludes)
 	if !st.IsDir() {
-		fingerprint := fmt.Sprintf("file:%d:%d", st.Size(), st.ModTime().UnixNano())
-		if !force && uploadFingerprintMatches(cacheKey, podInstance, fingerprint) {
-			return pathStats{Skipped: true}, nil
-		}
-		if err := k.CopyToPod(ctx, namespace, absLocal, pod, p.Remote); err != nil {
-			return pathStats{}, err
-		}
-		setUploadFingerprint(cacheKey, podInstance, fingerprint)
-		return pathStats{UploadBytes: st.Size()}, nil
+		return withUploadKeyLock(cacheKey, func() (pathStats, error) {
+			fingerprint := fmt.Sprintf("file:%d:%d", st.Size(), st.ModTime().UnixNano())
+			if !force && uploadFingerprintMatches(cacheKey, podInstance, fingerprint) {
+				return pathStats{Skipped: true}, nil
+			}
+			if err := k.CopyToPod(ctx, namespace, absLocal, pod, p.Remote); err != nil {
+				return pathStats{}, err
+			}
+			setUploadFingerprint(cacheKey, podInstance, fingerprint)
+			return pathStats{UploadBytes: st.Size()}, nil
+		})
 	}
 
 	fingerprint, err := localDirFingerprint(absLocal, excludes)
 	if err != nil {
 		return pathStats{}, err
 	}
-	if !force && uploadFingerprintMatches(cacheKey, podInstance, fingerprint) {
-		return pathStats{Skipped: true}, nil
-	}
-
-	stream, waitTar, err := startLocalTarStream(ctx, absLocal, excludes)
-	if err != nil {
-		return pathStats{}, err
-	}
-	defer stream.Close()
-
-	countingStream := &countingReader{Reader: stream}
-	if err := k.ExtractTarToPod(ctx, namespace, pod, p.Remote, countingStream); err != nil {
-		if tarErr := waitTar(); tarErr != nil {
-			return pathStats{}, tarErr
+	return withUploadKeyLock(cacheKey, func() (pathStats, error) {
+		if !force && uploadFingerprintMatches(cacheKey, podInstance, fingerprint) {
+			return pathStats{Skipped: true}, nil
 		}
-		return pathStats{}, err
-	}
-	if err := waitTar(); err != nil {
-		return pathStats{}, err
-	}
-	setUploadFingerprint(cacheKey, podInstance, fingerprint)
-	return pathStats{UploadBytes: countingStream.BytesRead()}, nil
+
+		stream, waitTar, err := startLocalTarStream(ctx, absLocal, excludes)
+		if err != nil {
+			return pathStats{}, err
+		}
+		defer stream.Close()
+
+		countingStream := &countingReader{Reader: stream}
+		if err := k.ExtractTarToPod(ctx, namespace, pod, p.Remote, countingStream); err != nil {
+			if tarErr := waitTar(); tarErr != nil {
+				return pathStats{}, tarErr
+			}
+			return pathStats{}, err
+		}
+		if err := waitTar(); err != nil {
+			return pathStats{}, err
+		}
+		setUploadFingerprint(cacheKey, podInstance, fingerprint)
+		return pathStats{UploadBytes: countingStream.BytesRead()}, nil
+	})
 }
 
 func syncDownPath(ctx context.Context, k Client, namespace, pod string, p Pair, excludes []string) (pathStats, error) {
@@ -434,6 +440,14 @@ func uploadFingerprintCacheLen() int {
 	uploadFingerprintCache.mu.Lock()
 	defer uploadFingerprintCache.mu.Unlock()
 	return len(uploadFingerprintCache.m)
+}
+
+func withUploadKeyLock(key string, fn func() (pathStats, error)) (pathStats, error) {
+	v, _ := uploadPathLocks.LoadOrStore(key, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+	return fn()
 }
 
 func localDirFingerprint(root string, excludes []string) (string, error) {

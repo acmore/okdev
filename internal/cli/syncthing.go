@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -127,6 +129,9 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	fmt.Fprintf(cmd.OutOrStdout(), "Remote folder: %s\n", pair.Remote)
 	fmt.Fprintf(cmd.OutOrStdout(), "Local binary: %s\n", localBinary)
 	fmt.Fprintln(cmd.OutOrStdout(), "Press Ctrl+C to stop sync tunnel and local syncthing.")
+	progressCtx, stopProgress := context.WithCancel(context.Background())
+	defer stopProgress()
+	go runSyncthingProgressReporter(progressCtx, cmd.OutOrStdout(), localBase, localKey, remoteBase, remoteKey, folderID, localID, remoteID)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -289,6 +294,49 @@ func syncthingDeviceID(ctx context.Context, base, key string) (string, error) {
 	return payload.MyID, nil
 }
 
+func runSyncthingProgressReporter(ctx context.Context, out io.Writer, localBase, localKey, remoteBase, remoteKey, folderID, localID, remoteID string) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	emit := func() {
+		upPct, upNeed, err := syncthingCompletion(ctx, localBase, localKey, folderID, remoteID)
+		if err != nil {
+			slog.Debug("syncthing progress read failed", "side", "local", "error", err)
+			return
+		}
+		downPct, downNeed, err := syncthingCompletion(ctx, remoteBase, remoteKey, folderID, localID)
+		if err != nil {
+			slog.Debug("syncthing progress read failed", "side", "remote", "error", err)
+			return
+		}
+		fmt.Fprintf(out, "Syncthing progress: up %.1f%% (need=%dB), down %.1f%% (need=%dB)\n", upPct, upNeed, downPct, downNeed)
+	}
+	emit()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			emit()
+		}
+	}
+}
+
+func syncthingCompletion(ctx context.Context, base, key, folderID, deviceID string) (float64, int64, error) {
+	path := fmt.Sprintf("/rest/db/completion?folder=%s&device=%s", url.QueryEscape(folderID), url.QueryEscape(deviceID))
+	body, err := syncthingAPIRequestWithContext(ctx, http.MethodGet, base, key, path, nil, "")
+	if err != nil {
+		return 0, 0, err
+	}
+	var payload struct {
+		Completion float64 `json:"completion"`
+		NeedBytes  int64   `json:"needBytes"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return 0, 0, err
+	}
+	return payload.Completion, payload.NeedBytes, nil
+}
+
 func folderTypesForMode(mode string) (local, remote string) {
 	switch mode {
 	case "up":
@@ -407,7 +455,11 @@ func syncthingPost(base, key, path string, body []byte) error {
 }
 
 func syncthingAPIRequest(method, base, key, path string, body []byte, contentType string) ([]byte, error) {
-	req, err := http.NewRequest(method, base+path, bytes.NewReader(body))
+	return syncthingAPIRequestWithContext(context.Background(), method, base, key, path, body, contentType)
+}
+
+func syncthingAPIRequestWithContext(ctx context.Context, method, base, key, path string, body []byte, contentType string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, method, base+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}

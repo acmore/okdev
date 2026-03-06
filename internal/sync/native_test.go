@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -155,5 +156,66 @@ func TestRunOnceWithOptionsForceBypassesFingerprint(t *testing.T) {
 	}
 	if stats.SkippedPaths != 0 {
 		t.Fatalf("expected force sync to bypass cache, skipped=%d", stats.SkippedPaths)
+	}
+}
+
+type countingCopyClient struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *countingCopyClient) CopyToPod(context.Context, string, string, string, string) error {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+	time.Sleep(50 * time.Millisecond)
+	return nil
+}
+func (c *countingCopyClient) CopyFromPod(context.Context, string, string, string, string) error {
+	return nil
+}
+func (c *countingCopyClient) ExtractTarToPod(context.Context, string, string, string, io.Reader) error {
+	return nil
+}
+func (c *countingCopyClient) StreamFromPod(context.Context, string, string, string, io.Writer) error {
+	return nil
+}
+func (c *countingCopyClient) ExecSh(context.Context, string, string, string) ([]byte, error) {
+	return []byte("pod-instance"), nil
+}
+
+func TestRunOnceWithReportConcurrentUploadsShareFingerprintLock(t *testing.T) {
+	ResetUploadFingerprintCache()
+	tmp := t.TempDir()
+	local := filepath.Join(tmp, "file.txt")
+	if err := os.WriteFile(local, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &countingCopyClient{}
+	pairs := []Pair{{Local: local, Remote: "/workspace/file.txt"}}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+	run := func() {
+		defer wg.Done()
+		_, err := RunOnceWithReport(context.Background(), "up", client, "ns", "pod", pairs, nil)
+		errCh <- err
+	}
+	wg.Add(2)
+	go run()
+	go run()
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("unexpected sync error: %v", err)
+		}
+	}
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.calls != 1 {
+		t.Fatalf("expected one upload call with lock-protected fingerprint cache, got %d", client.calls)
 	}
 }
