@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/acmore/okdev/internal/kube"
 	"github.com/spf13/cobra"
 )
 
@@ -19,6 +20,9 @@ type syncPair struct {
 
 func newSyncCmd(opts *Options) *cobra.Command {
 	var mode string
+	var engine string
+	var watch bool
+	var interval time.Duration
 
 	cmd := &cobra.Command{
 		Use:   "sync",
@@ -32,54 +36,96 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if engine == "" {
+				engine = cfg.Spec.Sync.Engine
+			}
+			if engine == "" {
+				engine = "native"
+			}
 			pairs, err := syncPairs(cfg.Spec.Sync.Paths, cfg.Spec.Workspace.MountPath)
 			if err != nil {
 				return err
 			}
 
 			k := newKubeClient(opts)
-			ctx, cancel := defaultContext()
-			defer cancel()
 			pod := podName(sn)
 
-			switch mode {
-			case "up":
-				for _, p := range pairs {
-					if err := syncUpPath(ctx, k, ns, pod, p, cfg.Spec.Sync.Exclude); err != nil {
-						return err
+			switch engine {
+			case "native":
+				if watch {
+					fmt.Fprintf(cmd.OutOrStdout(), "Starting native watch sync (%s) for session %s every %s\n", mode, sn, interval)
+					for {
+						if err := syncOnce(mode, k, ns, pod, pairs, cfg.Spec.Sync.Exclude); err != nil {
+							return err
+						}
+						fmt.Fprintf(cmd.OutOrStdout(), "Sync tick completed at %s\n", time.Now().Format(time.RFC3339))
+						time.Sleep(interval)
 					}
 				}
-			case "down":
-				for _, p := range pairs {
-					if err := syncDownPath(ctx, k, ns, pod, p, cfg.Spec.Sync.Exclude); err != nil {
-						return err
-					}
+				if err := syncOnce(mode, k, ns, pod, pairs, cfg.Spec.Sync.Exclude); err != nil {
+					return err
 				}
-			case "bi":
-				for _, p := range pairs {
-					if err := syncUpPath(ctx, k, ns, pod, p, cfg.Spec.Sync.Exclude); err != nil {
-						return err
-					}
+				fmt.Fprintf(cmd.OutOrStdout(), "Sync complete (%s/%s) for session %s\n", engine, mode, sn)
+				if mode == "bi" {
+					fmt.Fprintln(cmd.OutOrStdout(), "Note: bi mode currently performs upload then download in sequence")
 				}
-				for _, p := range pairs {
-					if err := syncDownPath(ctx, k, ns, pod, p, cfg.Spec.Sync.Exclude); err != nil {
-						return err
-					}
-				}
+				return nil
+			case "syncthing":
+				return runSyncthingSync(cmd, opts, cfg, ns, sn, mode, pairs)
 			default:
-				return fmt.Errorf("unsupported mode %q (supported: up|down|bi)", mode)
+				return fmt.Errorf("unsupported sync engine %q (supported: native|syncthing)", engine)
 			}
-
-			fmt.Fprintf(cmd.OutOrStdout(), "Sync complete (%s) for session %s\n", mode, sn)
-			if mode == "bi" {
-				fmt.Fprintln(cmd.OutOrStdout(), "Note: bi mode currently performs upload then download in sequence")
-			}
-			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&mode, "mode", "bi", "Sync mode: up|down|bi")
+	cmd.Flags().StringVar(&engine, "engine", "", "Sync engine override: native|syncthing")
+	cmd.Flags().BoolVar(&watch, "watch", false, "Continuously sync in a loop (native engine)")
+	cmd.Flags().DurationVar(&interval, "interval", 2*time.Second, "Watch loop interval (native engine)")
 	return cmd
+}
+
+func syncOnce(mode string, k *kube.Client, namespace, pod string, pairs []syncPair, excludes []string) error {
+	switch mode {
+	case "up":
+		for _, p := range pairs {
+			ctx, cancel := defaultContext()
+			err := syncUpPath(ctx, k, namespace, pod, p, excludes)
+			cancel()
+			if err != nil {
+				return err
+			}
+		}
+	case "down":
+		for _, p := range pairs {
+			ctx, cancel := defaultContext()
+			err := syncDownPath(ctx, k, namespace, pod, p, excludes)
+			cancel()
+			if err != nil {
+				return err
+			}
+		}
+	case "bi":
+		for _, p := range pairs {
+			ctx, cancel := defaultContext()
+			err := syncUpPath(ctx, k, namespace, pod, p, excludes)
+			cancel()
+			if err != nil {
+				return err
+			}
+		}
+		for _, p := range pairs {
+			ctx, cancel := defaultContext()
+			err := syncDownPath(ctx, k, namespace, pod, p, excludes)
+			cancel()
+			if err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("unsupported mode %q (supported: up|down|bi)", mode)
+	}
+	return nil
 }
 
 func syncPairs(configured []string, defaultRemote string) ([]syncPair, error) {

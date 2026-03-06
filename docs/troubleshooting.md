@@ -15,8 +15,16 @@
 - Ensure `tar` is available locally and inside container image.
 - Verify mount path exists and is writable in the container.
 - Start with one-way sync (`--mode up` or `--mode down`) to isolate direction issues.
+- For `--engine syncthing`, ensure `syncthing` is installed both locally and in the pod.
+- Current syncthing mode supports one `local:remote` mapping.
 
 ## Port-forward disconnects
 
 - Re-run `okdev ports`; transient network drops can interrupt tunnels.
 - Confirm container process is listening on target remote port.
+
+## SSH connect issues
+
+- Ensure an SSH server is running in the dev container.
+- Use `okdev ssh --setup-key` once to install your public key in the pod.
+- If port `2222` is busy locally, pass `okdev ssh --local-port <port>`.

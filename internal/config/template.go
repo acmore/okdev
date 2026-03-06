@@ -17,6 +17,7 @@ spec:
     pvc:
       size: 50Gi
   sync:
+    engine: native
     paths:
       - .:/workspace
     exclude:
@@ -27,6 +28,10 @@ spec:
     - name: app
       local: 8080
       remote: 8080
+  ssh:
+    user: root
+    remotePort: 22
+    localPort: 2222
 `
 
 const gpuTemplate = `apiVersion: okdev.io/v1alpha1
@@ -45,6 +50,7 @@ spec:
       size: 200Gi
       storageClassName: fast-ssd
   sync:
+    engine: native
     paths:
       - .:/workspace
     exclude:
@@ -60,6 +66,10 @@ spec:
     - name: tensorboard
       local: 6006
       remote: 6006
+  ssh:
+    user: root
+    remotePort: 22
+    localPort: 2222
   podTemplate:
     spec:
       containers:

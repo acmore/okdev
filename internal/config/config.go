@@ -23,6 +23,7 @@ type DevEnvSpec struct {
 	Workspace   Workspace      `yaml:"workspace"`
 	Sync        SyncSpec       `yaml:"sync"`
 	Ports       []PortMapping  `yaml:"ports"`
+	SSH         SSHSpec        `yaml:"ssh"`
 	PodTemplate PodTemplateRef `yaml:"podTemplate"`
 }
 
@@ -55,12 +56,20 @@ type MetadataMap struct {
 type SyncSpec struct {
 	Paths   []string `yaml:"paths"`
 	Exclude []string `yaml:"exclude"`
+	Engine  string   `yaml:"engine"`
 }
 
 type PortMapping struct {
 	Name   string `yaml:"name"`
 	Local  int    `yaml:"local"`
 	Remote int    `yaml:"remote"`
+}
+
+type SSHSpec struct {
+	User           string `yaml:"user"`
+	RemotePort     int    `yaml:"remotePort"`
+	LocalPort      int    `yaml:"localPort"`
+	PrivateKeyPath string `yaml:"privateKeyPath"`
 }
 
 func (d *DevEnvironment) Validate() error {
@@ -84,6 +93,18 @@ func (d *DevEnvironment) Validate() error {
 	}
 	if d.Spec.Namespace == "" {
 		d.Spec.Namespace = "default"
+	}
+	if d.Spec.Sync.Engine == "" {
+		d.Spec.Sync.Engine = "native"
+	}
+	if d.Spec.SSH.User == "" {
+		d.Spec.SSH.User = "root"
+	}
+	if d.Spec.SSH.RemotePort == 0 {
+		d.Spec.SSH.RemotePort = 22
+	}
+	if d.Spec.SSH.LocalPort == 0 {
+		d.Spec.SSH.LocalPort = 2222
 	}
 	return nil
 }

@@ -41,8 +41,12 @@ For a named session:
 
 ```bash
 ./bin/okdev connect
+./bin/okdev ssh --setup-key
 ./bin/okdev sync --mode up
 ./bin/okdev ports
+
+# continuous sync option
+./bin/okdev sync --engine syncthing
 ```
 
 ## Multi-session

@@ -106,6 +106,7 @@ spec:
     idleTimeoutMinutes: 120
     shareable: true
   sync:
+    engine: native # native | syncthing
     paths:
       - .:/workspace
     exclude:
@@ -119,6 +120,10 @@ spec:
     - name: tensorboard
       local: 6006
       remote: 6006
+  ssh:
+    user: root
+    remotePort: 22
+    localPort: 2222
   podTemplate:
     metadata:
       labels:
@@ -227,9 +232,14 @@ Ownership model:
   - attach shell/command in main container
   - supports reconnect across machines
 
-- `okdev sync [--mode=bi|up|down]`
-  - bi-directional or one-way sync
-  - resume-capable, exclude support
+- `okdev ssh [--setup-key] [--cmd]`
+  - SSH over auto-managed `kubectl port-forward`
+  - optional in-pod public key bootstrap
+
+- `okdev sync [--mode=bi|up|down] [--engine=native|syncthing] [--watch]`
+  - native engine: tar/cp sync (single-shot or watch loop)
+  - syncthing engine: continuous sync for single path mapping
+  - exclude support, `.stignore` generation for syncthing
 
 - `okdev ports`
   - establish all declared forwards
@@ -326,6 +336,10 @@ This guarantees isolation between projects while keeping shared cluster usage si
 5. **Long-running experiments**
 - `okdev detach` (implicit with ctrl-p/q style behavior) and reconnect
 - Session survives client disconnect
+
+6. **Okteto-like sync option**
+- Optional Syncthing-based engine for continuous synchronization
+- Enabled per environment (`spec.sync.engine`) or per command (`okdev sync --engine syncthing`)
 
 ---
 
