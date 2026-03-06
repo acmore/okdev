@@ -7,6 +7,7 @@
 - `-n, --namespace`: namespace override
 - `--context`: kube context override
 - `--output text|json`: output format for list/status
+- `--verbose`: enable debug logging
 
 ## Commands
 

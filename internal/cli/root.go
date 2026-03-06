@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"github.com/acmore/okdev/internal/logx"
 	"github.com/spf13/cobra"
 )
 
@@ -10,6 +11,7 @@ type Options struct {
 	Namespace  string
 	Context    string
 	Output     string
+	Verbose    bool
 }
 
 func NewRootCmd() *cobra.Command {
@@ -18,6 +20,9 @@ func NewRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "okdev",
 		Short: "Kubernetes-native developer environments",
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			logx.Configure(opts.Verbose)
+		},
 	}
 
 	cmd.PersistentFlags().StringVarP(&opts.ConfigPath, "config", "c", "", "Path to config file")
@@ -25,6 +30,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVarP(&opts.Namespace, "namespace", "n", "", "Kubernetes namespace override")
 	cmd.PersistentFlags().StringVar(&opts.Context, "context", "", "Kubernetes context override")
 	cmd.PersistentFlags().StringVar(&opts.Output, "output", "text", "Output format: text|json")
+	cmd.PersistentFlags().BoolVar(&opts.Verbose, "verbose", false, "Enable verbose logging")
 
 	cmd.AddCommand(newVersionCmd())
 	cmd.AddCommand(newInitCmd(opts))

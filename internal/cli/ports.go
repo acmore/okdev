@@ -2,10 +2,12 @@ package cli
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"time"
 
+	portsrunner "github.com/acmore/okdev/internal/ports"
 	"github.com/spf13/cobra"
 )
 
@@ -44,21 +46,8 @@ func newPortsCmd(opts *Options) *cobra.Command {
 			defer cancel()
 			fmt.Fprintf(cmd.OutOrStdout(), "Forwarding %v from session %s\n", forwards, sn)
 			k := newKubeClient(opts)
-			backoff := 1 * time.Second
-			for {
-				err := k.PortForward(ctx, ns, podName(sn), forwards, os.Stdout, os.Stderr)
-				if err == nil {
-					return nil
-				}
-				fmt.Fprintf(cmd.ErrOrStderr(), "port-forward error: %v (retrying in %s)\n", err, backoff)
-				time.Sleep(backoff)
-				if backoff < 30*time.Second {
-					backoff *= 2
-					if backoff > 30*time.Second {
-						backoff = 30 * time.Second
-					}
-				}
-			}
+			slog.Debug("ports start", "namespace", ns, "session", sn, "forwards", forwards)
+			return portsrunner.ForwardWithRetry(ctx, k, ns, podName(sn), forwards, os.Stdout, cmd.ErrOrStderr(), 30*time.Second)
 		},
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
+	"github.com/acmore/okdev/internal/connect"
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
 )
@@ -92,7 +94,8 @@ func interactiveContext() (context.Context, context.CancelFunc) {
 func runConnect(opts *Options, namespace, sessionName string, command []string, tty bool) error {
 	ctx, cancel := interactiveContext()
 	defer cancel()
-	return newKubeClient(opts).ExecInteractive(ctx, namespace, podName(sessionName), tty, command, os.Stdin, os.Stdout, os.Stderr)
+	slog.Debug("connect start", "namespace", namespace, "session", sessionName, "tty", tty)
+	return connect.Run(ctx, newKubeClient(opts), namespace, podName(sessionName), command, tty, os.Stdin, os.Stdout, os.Stderr)
 }
 
 func ensureSessionLock(opts *Options, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer) error {
