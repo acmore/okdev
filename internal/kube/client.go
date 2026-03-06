@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/acmore/okdev/internal/shellutil"
 	"gopkg.in/yaml.v3"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -145,6 +146,9 @@ func (c *Client) Apply(ctx context.Context, namespace string, manifest []byte) e
 
 		mutableSpecChanged, immutableSpecChanged := pvcSpecDiff(existing.Spec, pvc.Spec)
 		if immutableSpecChanged {
+			if mutableSpecChanged {
+				return fmt.Errorf("pvc/%s has immutable spec changes (and mutable resource updates); delete and recreate the PVC (or use --delete-pvc with `okdev down`) to apply", pvc.Name)
+			}
 			return fmt.Errorf("pvc/%s has immutable spec changes; delete and recreate the PVC (or use --delete-pvc with `okdev down`) to apply", pvc.Name)
 		}
 
@@ -171,15 +175,17 @@ func pvcSpecDiff(existing, desired corev1.PersistentVolumeClaimSpec) (mutableCha
 	if reflect.DeepEqual(existing, desired) {
 		return false, false
 	}
+	mutableChanged = !reflect.DeepEqual(existing.Resources, desired.Resources) ||
+		!reflect.DeepEqual(existing.VolumeAttributesClassName, desired.VolumeAttributesClassName)
 
 	existingComparable := existing.DeepCopy()
 	desiredComparable := desired.DeepCopy()
 	existingComparable.Resources = desiredComparable.Resources
 	existingComparable.VolumeAttributesClassName = desiredComparable.VolumeAttributesClassName
 	if reflect.DeepEqual(existingComparable, desiredComparable) {
-		return true, false
+		return mutableChanged, false
 	}
-	return false, true
+	return mutableChanged, true
 }
 
 func cloneStringMap(in map[string]string) map[string]string {
@@ -512,7 +518,7 @@ func (c *Client) portForwardURL(cs *kubernetes.Clientset, namespace, pod string)
 }
 
 func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+	return shellutil.Quote(s)
 }
 
 // wrappers for testability.

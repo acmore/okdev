@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/acmore/okdev/internal/shellutil"
 )
 
 type Pair struct {
@@ -36,11 +38,14 @@ func ParsePairs(configured []string, defaultRemote string) ([]Pair, error) {
 	return out, nil
 }
 
-func RunOnce(mode string, k Client, namespace, pod string, pairs []Pair, excludes []string) error {
+func RunOnce(parent context.Context, mode string, k Client, namespace, pod string, pairs []Pair, excludes []string) error {
+	if parent == nil {
+		parent = context.Background()
+	}
 	switch mode {
 	case "up":
 		for _, p := range pairs {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
 			err := syncUpPath(ctx, k, namespace, pod, p, excludes)
 			cancel()
 			if err != nil {
@@ -49,7 +54,7 @@ func RunOnce(mode string, k Client, namespace, pod string, pairs []Pair, exclude
 		}
 	case "down":
 		for _, p := range pairs {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
 			err := syncDownPath(ctx, k, namespace, pod, p, excludes)
 			cancel()
 			if err != nil {
@@ -57,10 +62,10 @@ func RunOnce(mode string, k Client, namespace, pod string, pairs []Pair, exclude
 			}
 		}
 	case "bi":
-		if err := RunOnce("up", k, namespace, pod, pairs, excludes); err != nil {
+		if err := RunOnce(parent, "up", k, namespace, pod, pairs, excludes); err != nil {
 			return err
 		}
-		if err := RunOnce("down", k, namespace, pod, pairs, excludes); err != nil {
+		if err := RunOnce(parent, "down", k, namespace, pod, pairs, excludes); err != nil {
 			return err
 		}
 	default:
@@ -166,5 +171,5 @@ func extractTar(tarFile, destDir string) error {
 }
 
 func ShellEscape(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+	return shellutil.Quote(s)
 }

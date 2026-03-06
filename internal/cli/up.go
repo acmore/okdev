@@ -25,11 +25,12 @@ func newUpCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			k := newKubeClient(opts)
 			sn, err := resolveSessionName(opts, cfg)
 			if err != nil {
 				return err
 			}
-			stopRenew, err := acquireSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout(), attach)
+			stopRenew, err := acquireSessionLockWithClient(k, cfg, ns, sn, cmd.OutOrStdout(), attach)
 			if err != nil {
 				return err
 			}
@@ -41,7 +42,6 @@ func newUpCmd(opts *Options) *cobra.Command {
 
 			ctx, cancel := defaultContext()
 			defer cancel()
-			k := newKubeClient(opts)
 
 			if cfg.Spec.Workspace.PVC.ClaimName == "" {
 				pvcManifest, err := kube.BuildPVCManifest(ns, pvc, cfg.Spec.Workspace.PVC.Size, cfg.Spec.Workspace.PVC.StorageClassName, labels, annotations)
@@ -85,7 +85,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Session ready: %s (namespace: %s)\n", sn, ns)
 			if attach {
-				stopHeartbeat := startSessionHeartbeat(opts, ns, sn, cmd.OutOrStdout(), time.Minute)
+				stopHeartbeat := startSessionHeartbeatWithClient(k, ns, sn, cmd.OutOrStdout(), time.Minute)
 				defer stopHeartbeat()
 
 				stopBackgrounds := make([]func(), 0, 2)
@@ -104,7 +104,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 						forwards = append(forwards, strconv.Itoa(p.Local)+":"+strconv.Itoa(p.Remote))
 					}
 					if len(forwards) > 0 {
-						cancelPF, err := startManagedPortForward(opts, ns, pod, forwards)
+						cancelPF, err := startManagedPortForwardWithClient(k, ns, pod, forwards)
 						if err != nil {
 							return fmt.Errorf("start background port-forward: %w", err)
 						}
@@ -131,7 +131,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 					fmt.Fprintln(cmd.OutOrStdout(), "Sync engine is syncthing; run `okdev sync --engine syncthing` in another terminal to start it.")
 				}
 
-				return runConnect(opts, ns, sn, []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}, true)
+				return runConnectWithClient(k, ns, sn, []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}, true)
 			}
 			return nil
 		},
@@ -150,7 +150,7 @@ func runAttachNativeSyncLoop(ctx context.Context, out io.Writer, errOut io.Write
 			return
 		default:
 		}
-		if err := syncengine.RunOnce("bi", k, namespace, pod, pairs, excludes); err != nil {
+		if err := syncengine.RunOnce(ctx, "bi", k, namespace, pod, pairs, excludes); err != nil {
 			fmt.Fprintf(errOut, "background sync tick failed: %v (retry in %s)\n", err, backoff)
 			select {
 			case <-ctx.Done():

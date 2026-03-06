@@ -33,6 +33,15 @@ func TestPVCSpecDiffImmutableChange(t *testing.T) {
 	}
 }
 
+func TestPVCSpecDiffMutableAndImmutableChange(t *testing.T) {
+	existing := pvcSpec("10Gi", []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, strPtr("fast"))
+	desired := pvcSpec("20Gi", []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany}, strPtr("fast"))
+	mutableChanged, immutableChanged := pvcSpecDiff(existing, desired)
+	if !mutableChanged || !immutableChanged {
+		t.Fatalf("expected both mutable and immutable changes, got mutable=%v immutable=%v", mutableChanged, immutableChanged)
+	}
+}
+
 func pvcSpec(size string, accessModes []corev1.PersistentVolumeAccessMode, storageClass *string) corev1.PersistentVolumeClaimSpec {
 	qty := resource.MustParse(size)
 	return corev1.PersistentVolumeClaimSpec{

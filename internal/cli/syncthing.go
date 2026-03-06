@@ -112,11 +112,15 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	fmt.Fprintf(cmd.OutOrStdout(), "Local folder: %s\n", absLocal)
 	fmt.Fprintf(cmd.OutOrStdout(), "Remote folder: %s\n", pair.Remote)
 	fmt.Fprintf(cmd.OutOrStdout(), "Local binary: %s\n", localBinary)
-	fmt.Fprintln(cmd.OutOrStdout(), "Press Ctrl+C to stop tunnel (syncthing daemons keep running).")
+	fmt.Fprintln(cmd.OutOrStdout(), "Press Ctrl+C to stop sync tunnel and local syncthing.")
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 	<-sigCh
+	if err := stopLocalSyncthing(localBinary, localHome); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to stop local syncthing: %v\n", err)
+	}
 	return nil
 }
 
@@ -159,9 +163,21 @@ func startLocalSyncthing(binary, home string) error {
 		return fmt.Errorf("generate local syncthing config: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 
-	cmd := exec.Command("sh", "-lc", fmt.Sprintf("pkill -f '%s -home %s' >/dev/null 2>&1 || true; nohup %s -home %s -no-browser -gui-address=127.0.0.1:8385 -no-restart -skip-port-probing -listen=tcp://127.0.0.1:22001 >/tmp/okdev-syncthing-local.log 2>&1 &", binary, home, binary, home))
+	pattern := syncengine.ShellEscape(binary + " -home " + home)
+	binaryQ := syncengine.ShellEscape(binary)
+	homeQ := syncengine.ShellEscape(home)
+	cmd := exec.Command("sh", "-lc", fmt.Sprintf("pkill -f %s >/dev/null 2>&1 || true; nohup %s -home %s -no-browser -gui-address=127.0.0.1:8385 -no-restart -skip-port-probing -listen=tcp://127.0.0.1:22001 >/tmp/okdev-syncthing-local.log 2>&1 &", pattern, binaryQ, homeQ))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("start local syncthing: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func stopLocalSyncthing(binary, home string) error {
+	pattern := syncengine.ShellEscape(binary + " -home " + home)
+	cmd := exec.Command("sh", "-lc", fmt.Sprintf("pkill -f %s >/dev/null 2>&1 || true", pattern))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("stop local syncthing: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

@@ -94,14 +94,18 @@ func interactiveContext() (context.Context, context.CancelFunc) {
 }
 
 func runConnect(opts *Options, namespace, sessionName string, command []string, tty bool) error {
+	return runConnectWithClient(newKubeClient(opts), namespace, sessionName, command, tty)
+}
+
+func runConnectWithClient(k *kube.Client, namespace, sessionName string, command []string, tty bool) error {
 	ctx, cancel := interactiveContext()
 	defer cancel()
 	slog.Debug("connect start", "namespace", namespace, "session", sessionName, "tty", tty)
-	return connect.Run(ctx, newKubeClient(opts), namespace, podName(sessionName), command, tty, os.Stdin, os.Stdout, os.Stderr)
+	return connect.Run(ctx, k, namespace, podName(sessionName), command, tty, os.Stdin, os.Stdout, os.Stderr)
 }
 
 func ensureSessionLock(opts *Options, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer) error {
-	stopRenew, err := acquireSessionLock(opts, cfg, namespace, sessionName, out, false)
+	stopRenew, err := acquireSessionLockWithClient(newKubeClient(opts), cfg, namespace, sessionName, out, false)
 	if err != nil {
 		return err
 	}
@@ -110,12 +114,15 @@ func ensureSessionLock(opts *Options, cfg *config.DevEnvironment, namespace, ses
 }
 
 func acquireSessionLock(opts *Options, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer, renew bool) (func(), error) {
+	return acquireSessionLockWithClient(newKubeClient(opts), cfg, namespace, sessionName, out, renew)
+}
+
+func acquireSessionLockWithClient(k *kube.Client, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer, renew bool) (func(), error) {
 	if cfg.Spec.Session.LockMode == "none" {
 		return func() {}, nil
 	}
 	holder := sessionHolderIdentity()
 	leaseName := "okdev-" + sessionName
-	k := newKubeClient(opts)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	res, err := k.AcquireLease(ctx, namespace, leaseName, holder, cfg.Spec.Session.LockMode, sessionLeaseDuration)
@@ -156,10 +163,13 @@ func acquireSessionLock(opts *Options, cfg *config.DevEnvironment, namespace, se
 }
 
 func startSessionHeartbeat(opts *Options, namespace, sessionName string, out io.Writer, interval time.Duration) func() {
+	return startSessionHeartbeatWithClient(newKubeClient(opts), namespace, sessionName, out, interval)
+}
+
+func startSessionHeartbeatWithClient(k *kube.Client, namespace, sessionName string, out io.Writer, interval time.Duration) func() {
 	if interval <= 0 {
 		interval = time.Minute
 	}
-	k := newKubeClient(opts)
 	pod := podName(sessionName)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {

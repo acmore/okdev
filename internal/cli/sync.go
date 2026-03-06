@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -67,15 +68,18 @@ func newSyncCmd(opts *Options) *cobra.Command {
 					sigCh := make(chan os.Signal, 1)
 					signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 					defer signal.Stop(sigCh)
+					watchCtx, stopWatch := context.WithCancel(context.Background())
+					defer stopWatch()
 					backoff := 1 * time.Second
 					for {
 						select {
 						case <-sigCh:
+							stopWatch()
 							fmt.Fprintln(cmd.OutOrStdout(), "Stopping watch sync")
 							return nil
 						default:
 						}
-						if err := syncengine.RunOnce(mode, k, ns, pod, pairs, cfg.Spec.Sync.Exclude); err != nil {
+						if err := syncengine.RunOnce(watchCtx, mode, k, ns, pod, pairs, cfg.Spec.Sync.Exclude); err != nil {
 							fmt.Fprintf(cmd.ErrOrStderr(), "sync tick failed: %v (retrying in %s)\n", err, backoff)
 							select {
 							case <-sigCh:
@@ -101,7 +105,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 						}
 					}
 				}
-				if err := syncengine.RunOnce(mode, k, ns, pod, pairs, cfg.Spec.Sync.Exclude); err != nil {
+				if err := syncengine.RunOnce(context.Background(), mode, k, ns, pod, pairs, cfg.Spec.Sync.Exclude); err != nil {
 					return err
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Sync complete (%s/%s) for session %s\n", engine, mode, sn)

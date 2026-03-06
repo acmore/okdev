@@ -11,10 +11,16 @@ import (
 )
 
 func startManagedPortForward(opts *Options, namespace, pod string, forwards []string) (context.CancelFunc, error) {
+	return startManagedPortForwardWithClient(newKubeClient(opts), namespace, pod, forwards)
+}
+
+func startManagedPortForwardWithClient(k interface {
+	PortForward(context.Context, string, string, []string, io.Writer, io.Writer) error
+}, namespace, pod string, forwards []string) (context.CancelFunc, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- newKubeClient(opts).PortForward(ctx, namespace, pod, forwards, io.Discard, io.Discard)
+		errCh <- k.PortForward(ctx, namespace, pod, forwards, io.Discard, io.Discard)
 	}()
 
 	ports := localPortsFromForwards(forwards)
