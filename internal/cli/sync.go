@@ -38,6 +38,9 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := ensureSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout()); err != nil {
+				return err
+			}
 			if engine == "" {
 				engine = cfg.Spec.Sync.Engine
 			}

@@ -37,6 +37,24 @@ func newStatusCmd(opts *Options) *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "No matching sessions found")
 				return nil
 			}
+			if opts.Output == "json" {
+				type statusRow struct {
+					Session string `json:"session"`
+					Pod     string `json:"pod"`
+					Phase   string `json:"phase"`
+					Age     string `json:"age"`
+				}
+				rows := make([]statusRow, 0, len(pods))
+				for _, p := range pods {
+					rows = append(rows, statusRow{
+						Session: p.Labels["okdev.io/session"],
+						Pod:     p.Name,
+						Phase:   p.Phase,
+						Age:     age(p.CreatedAt),
+					})
+				}
+				return outputJSON(cmd.OutOrStdout(), rows)
+			}
 
 			rows := make([][]string, 0, len(pods))
 			for _, p := range pods {

@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,11 +95,46 @@ func runConnect(opts *Options, namespace, sessionName string, command []string, 
 	return newKubeClient(opts).ExecInteractive(ctx, namespace, podName(sessionName), tty, command, os.Stdin, os.Stdout, os.Stderr)
 }
 
+func ensureSessionLock(opts *Options, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer) error {
+	if cfg.Spec.Session.LockMode == "none" {
+		return nil
+	}
+	holder := sessionHolderIdentity()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	res, err := newKubeClient(opts).AcquireLease(ctx, namespace, "okdev-"+sessionName, holder, cfg.Spec.Session.LockMode, 2*time.Minute)
+	if err != nil {
+		return err
+	}
+	if !res.Acquired && cfg.Spec.Session.LockMode == "advisory" {
+		fmt.Fprintf(out, "warning: session lock currently held by %s\n", res.CurrentHolder)
+	}
+	return nil
+}
+
+func sessionHolderIdentity() string {
+	user := os.Getenv("USER")
+	if user == "" {
+		user = "dev"
+	}
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "unknown-host"
+	}
+	return user + "@" + host
+}
+
 func ensureCommand(name string) error {
 	if _, err := exec.LookPath(name); err != nil {
 		return fmt.Errorf("required command %q not found in PATH", name)
 	}
 	return nil
+}
+
+func outputJSON(w io.Writer, v any) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
 }
 
 func age(ts time.Time) string {

@@ -12,6 +12,8 @@ spec:
     defaultNameTemplate: "{{ .Repo }}-{{ .Branch }}-{{ .User }}"
     ttlHours: 72
     idleTimeoutMinutes: 120
+    shareable: true
+    lockMode: none
   workspace:
     mountPath: /workspace
     pvc:
@@ -48,6 +50,8 @@ spec:
     defaultNameTemplate: "{{ .Repo }}-{{ .Branch }}-{{ .User }}"
     ttlHours: 72
     idleTimeoutMinutes: 120
+    shareable: true
+    lockMode: none
   workspace:
     mountPath: /workspace
     pvc:

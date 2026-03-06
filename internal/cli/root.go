@@ -9,6 +9,7 @@ type Options struct {
 	Session    string
 	Namespace  string
 	Context    string
+	Output     string
 }
 
 func NewRootCmd() *cobra.Command {
@@ -23,6 +24,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&opts.Session, "session", "", "Session name")
 	cmd.PersistentFlags().StringVarP(&opts.Namespace, "namespace", "n", "", "Kubernetes namespace override")
 	cmd.PersistentFlags().StringVar(&opts.Context, "context", "", "Kubernetes context override")
+	cmd.PersistentFlags().StringVar(&opts.Output, "output", "text", "Output format: text|json")
 
 	cmd.AddCommand(newVersionCmd())
 	cmd.AddCommand(newInitCmd(opts))

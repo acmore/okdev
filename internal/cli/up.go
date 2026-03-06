@@ -25,6 +25,9 @@ func newUpCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := ensureSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout()); err != nil {
+				return err
+			}
 			labels := labelsForSession(cfg, sn)
 			annotations := annotationsForSession(cfg)
 			pvc := pvcName(cfg, sn)

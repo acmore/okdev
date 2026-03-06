@@ -33,6 +33,24 @@ func newListCmd(opts *Options) *cobra.Command {
 			sort.Slice(pods, func(i, j int) bool {
 				return pods[i].CreatedAt.After(pods[j].CreatedAt)
 			})
+			if opts.Output == "json" {
+				type listRow struct {
+					Namespace string `json:"namespace"`
+					Session   string `json:"session"`
+					Phase     string `json:"phase"`
+					Age       string `json:"age"`
+				}
+				rows := make([]listRow, 0, len(pods))
+				for _, p := range pods {
+					rows = append(rows, listRow{
+						Namespace: p.Namespace,
+						Session:   p.Labels["okdev.io/session"],
+						Phase:     p.Phase,
+						Age:       age(p.CreatedAt),
+					})
+				}
+				return outputJSON(cmd.OutOrStdout(), rows)
+			}
 			rows := make([][]string, 0, len(pods))
 			for _, p := range pods {
 				rows = append(rows, []string{

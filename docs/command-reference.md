@@ -6,6 +6,7 @@
 - `--session`: session name override
 - `-n, --namespace`: namespace override
 - `--context`: kube context override
+- `--output text|json`: output format for list/status
 
 ## Commands
 

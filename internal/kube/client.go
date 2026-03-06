@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,6 +38,11 @@ type PodSummary struct {
 	Phase     string
 	CreatedAt time.Time
 	Labels    map[string]string
+}
+
+type LeaseResult struct {
+	Acquired      bool
+	CurrentHolder string
 }
 
 func (c *Client) restConfig() (*rest.Config, error) {
@@ -127,6 +133,8 @@ func (c *Client) Delete(ctx context.Context, namespace string, kind string, name
 		delErr = cs.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	case "pvc", "persistentvolumeclaim", "persistentvolumeclaims":
 		delErr = cs.CoreV1().PersistentVolumeClaims(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	case "lease", "leases":
+		delErr = cs.CoordinationV1().Leases(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	default:
 		return fmt.Errorf("unsupported delete kind %q", kind)
 	}
@@ -134,6 +142,70 @@ func (c *Client) Delete(ctx context.Context, namespace string, kind string, name
 		return nil
 	}
 	return delErr
+}
+
+func (c *Client) AcquireLease(ctx context.Context, namespace, name, holder, mode string, duration time.Duration) (LeaseResult, error) {
+	cs, _, err := c.clientset()
+	if err != nil {
+		return LeaseResult{}, err
+	}
+	now := metav1.NewMicroTime(time.Now().UTC())
+	durationSec := int32(duration.Seconds())
+	if durationSec <= 0 {
+		durationSec = 120
+	}
+
+	leaseClient := cs.CoordinationV1().Leases(namespace)
+	existing, err := leaseClient.Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		lease := &coordinationv1.Lease{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+			Spec: coordinationv1.LeaseSpec{
+				HolderIdentity:       &holder,
+				AcquireTime:          &now,
+				RenewTime:            &now,
+				LeaseDurationSeconds: &durationSec,
+			},
+		}
+		if _, err := leaseClient.Create(ctx, lease, metav1.CreateOptions{}); err != nil {
+			return LeaseResult{}, err
+		}
+		return LeaseResult{Acquired: true, CurrentHolder: holder}, nil
+	}
+	if err != nil {
+		return LeaseResult{}, err
+	}
+
+	currentHolder := ""
+	if existing.Spec.HolderIdentity != nil {
+		currentHolder = *existing.Spec.HolderIdentity
+	}
+
+	expired := true
+	if existing.Spec.RenewTime != nil && existing.Spec.LeaseDurationSeconds != nil {
+		expiresAt := existing.Spec.RenewTime.Time.Add(time.Duration(*existing.Spec.LeaseDurationSeconds) * time.Second)
+		expired = time.Now().After(expiresAt)
+	}
+
+	if currentHolder != "" && currentHolder != holder && !expired {
+		if mode == "advisory" {
+			return LeaseResult{Acquired: false, CurrentHolder: currentHolder}, nil
+		}
+		if mode == "exclusive" {
+			return LeaseResult{}, fmt.Errorf("session lease held by %s", currentHolder)
+		}
+	}
+
+	existing.Spec.HolderIdentity = &holder
+	existing.Spec.RenewTime = &now
+	existing.Spec.LeaseDurationSeconds = &durationSec
+	if existing.Spec.AcquireTime == nil {
+		existing.Spec.AcquireTime = &now
+	}
+	if _, err := leaseClient.Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
+		return LeaseResult{}, err
+	}
+	return LeaseResult{Acquired: true, CurrentHolder: holder}, nil
 }
 
 func (c *Client) WaitReady(ctx context.Context, namespace, pod string, timeout time.Duration) error {
