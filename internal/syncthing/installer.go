@@ -19,6 +19,13 @@ import (
 )
 
 const releaseBaseURL = "https://github.com/syncthing/syncthing/releases/download"
+const installerHTTPTimeout = 60 * time.Second
+
+type httpDoer interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
+var installerHTTPClient httpDoer = &http.Client{Timeout: installerHTTPTimeout}
 
 func EnsureBinary(ctx context.Context, version string, autoInstall bool) (string, error) {
 	if p, err := lookupInPath("syncthing"); err == nil {
@@ -102,8 +109,7 @@ func httpGet(ctx context.Context, url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := installerHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

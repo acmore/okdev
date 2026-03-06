@@ -3,8 +3,14 @@ package config
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+)
+
+const (
+	defaultSyncthingVersion = "v1.29.7"
+	defaultSyncthingImage   = "ghcr.io/acmore/okdev-syncthing:" + defaultSyncthingVersion
 )
 
 // DevEnvironment is the top-level config structure for .okdev.yaml.
@@ -94,14 +100,14 @@ func (d *DevEnvironment) SetDefaults() {
 		d.Spec.Sync.Engine = "native"
 	}
 	if d.Spec.Sync.Syncthing.Version == "" {
-		d.Spec.Sync.Syncthing.Version = "v1.29.7"
+		d.Spec.Sync.Syncthing.Version = defaultSyncthingVersion
 	}
 	if d.Spec.Sync.Syncthing.AutoInstall == nil {
 		v := true
 		d.Spec.Sync.Syncthing.AutoInstall = &v
 	}
 	if d.Spec.Sync.Syncthing.Image == "" {
-		d.Spec.Sync.Syncthing.Image = "ghcr.io/acmore/okdev-syncthing:v1.29.7"
+		d.Spec.Sync.Syncthing.Image = defaultSyncthingImage
 	}
 	if d.Spec.SSH.User == "" {
 		d.Spec.SSH.User = "root"
@@ -145,6 +151,27 @@ func (d *DevEnvironment) Validate() error {
 	if d.Spec.Session.LockMode != "none" && d.Spec.Session.LockMode != "advisory" && d.Spec.Session.LockMode != "exclusive" {
 		return fmt.Errorf("spec.session.lockMode must be none|advisory|exclusive, got %q", d.Spec.Session.LockMode)
 	}
+	if d.Spec.Session.TTLHours < 0 {
+		return errors.New("spec.session.ttlHours must be >= 0")
+	}
+	if d.Spec.Session.IdleTimeoutMinutes < 0 {
+		return errors.New("spec.session.idleTimeoutMinutes must be >= 0")
+	}
+	if err := validateSyncPaths(d.Spec.Sync.Paths); err != nil {
+		return err
+	}
+	if d.Spec.Sync.Engine == "syncthing" && len(d.Spec.Sync.Paths) > 1 {
+		return errors.New("spec.sync.paths must contain at most one mapping when engine is syncthing")
+	}
+	if err := validatePortMappings(d.Spec.Ports); err != nil {
+		return err
+	}
+	if err := validatePortRange("spec.ssh.remotePort", d.Spec.SSH.RemotePort); err != nil {
+		return err
+	}
+	if err := validatePortRange("spec.ssh.localPort", d.Spec.SSH.LocalPort); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -153,4 +180,46 @@ func (s SyncthingSpec) AutoInstallEnabled() bool {
 		return true
 	}
 	return *s.AutoInstall
+}
+
+func validateSyncPaths(paths []string) error {
+	for _, p := range paths {
+		parts := strings.Split(p, ":")
+		if len(parts) != 2 {
+			return fmt.Errorf("spec.sync.paths entry %q must be local:remote", p)
+		}
+		local := strings.TrimSpace(parts[0])
+		remote := strings.TrimSpace(parts[1])
+		if local == "" || remote == "" {
+			return fmt.Errorf("spec.sync.paths entry %q must have non-empty local and remote", p)
+		}
+	}
+	return nil
+}
+
+func validatePortMappings(ports []PortMapping) error {
+	usedLocal := map[int]struct{}{}
+	for i, p := range ports {
+		if p.Local == 0 && p.Remote == 0 {
+			continue
+		}
+		if err := validatePortRange(fmt.Sprintf("spec.ports[%d].local", i), p.Local); err != nil {
+			return err
+		}
+		if err := validatePortRange(fmt.Sprintf("spec.ports[%d].remote", i), p.Remote); err != nil {
+			return err
+		}
+		if _, exists := usedLocal[p.Local]; exists {
+			return fmt.Errorf("spec.ports has duplicate local port %d", p.Local)
+		}
+		usedLocal[p.Local] = struct{}{}
+	}
+	return nil
+}
+
+func validatePortRange(field string, port int) error {
+	if port <= 0 || port > 65535 {
+		return fmt.Errorf("%s must be 1-65535, got %d", field, port)
+	}
+	return nil
 }

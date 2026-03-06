@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -23,6 +24,19 @@ import (
 )
 
 const syncthingContainerName = "syncthing"
+const (
+	syncthingLocalGUIAddr      = "127.0.0.1:8385"
+	syncthingLocalAPIBase      = "http://127.0.0.1:8385"
+	syncthingRemoteAPIBase     = "http://127.0.0.1:18384"
+	syncthingPeerAddrTunnel    = "tcp://127.0.0.1:22000"
+	syncthingPeerAddrDynamic   = "dynamic"
+	syncthingAPIReadyTimeout   = 30 * time.Second
+	syncthingLocalListenAddr   = "tcp://127.0.0.1:22001"
+	syncthingLocalLogPath      = "/tmp/okdev-syncthing-local.log"
+	syncthingHTTPClientTimeout = 15 * time.Second
+)
+
+var syncthingHTTPClient = &http.Client{Timeout: syncthingHTTPClientTimeout}
 
 func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironment, namespace, sessionName, mode string, pairs []syncengine.Pair) error {
 	if len(pairs) != 1 {
@@ -80,12 +94,12 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		return err
 	}
 
-	localBase := "http://127.0.0.1:8385"
-	remoteBase := "http://127.0.0.1:18384"
-	if err := waitSyncthingAPI(localBase, localKey, 30*time.Second); err != nil {
+	localBase := syncthingLocalAPIBase
+	remoteBase := syncthingRemoteAPIBase
+	if err := waitSyncthingAPI(localBase, localKey, syncthingAPIReadyTimeout); err != nil {
 		return fmt.Errorf("local syncthing not ready: %w", err)
 	}
-	if err := waitSyncthingAPI(remoteBase, remoteKey, 30*time.Second); err != nil {
+	if err := waitSyncthingAPI(remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
 		return fmt.Errorf("remote syncthing not ready: %w", err)
 	}
 
@@ -101,10 +115,10 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	folderTypeLocal, folderTypeRemote := folderTypesForMode(mode)
 	folderID := "okdev-" + sessionName
 
-	if err := configureSyncthingPeer(localBase, localKey, localID, remoteID, "tcp://127.0.0.1:22000", folderID, absLocal, folderTypeLocal); err != nil {
+	if err := configureSyncthingPeer(localBase, localKey, localID, remoteID, syncthingPeerAddrTunnel, folderID, absLocal, folderTypeLocal); err != nil {
 		return fmt.Errorf("configure local syncthing: %w", err)
 	}
-	if err := configureSyncthingPeer(remoteBase, remoteKey, remoteID, localID, "dynamic", folderID, pair.Remote, folderTypeRemote); err != nil {
+	if err := configureSyncthingPeer(remoteBase, remoteKey, remoteID, localID, syncthingPeerAddrDynamic, folderID, pair.Remote, folderTypeRemote); err != nil {
 		return fmt.Errorf("configure remote syncthing: %w", err)
 	}
 
@@ -166,7 +180,7 @@ func startLocalSyncthing(binary, home string) error {
 	pattern := syncengine.ShellEscape(binary + " -home " + home)
 	binaryQ := syncengine.ShellEscape(binary)
 	homeQ := syncengine.ShellEscape(home)
-	cmd := exec.Command("sh", "-lc", fmt.Sprintf("pkill -f %s >/dev/null 2>&1 || true; nohup %s -home %s -no-browser -gui-address=127.0.0.1:8385 -no-restart -skip-port-probing -listen=tcp://127.0.0.1:22001 >/tmp/okdev-syncthing-local.log 2>&1 &", pattern, binaryQ, homeQ))
+	cmd := exec.Command("sh", "-lc", fmt.Sprintf("pkill -f %s >/dev/null 2>&1 || true; nohup %s -home %s -no-browser -gui-address=%s -no-restart -skip-port-probing -listen=%s >%s 2>&1 &", pattern, binaryQ, homeQ, syncengine.ShellEscape(syncthingLocalGUIAddr), syncengine.ShellEscape(syncthingLocalListenAddr), syncengine.ShellEscape(syncthingLocalLogPath)))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("start local syncthing: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
@@ -283,12 +297,15 @@ func configureSyncthingPeer(base, key, selfID, peerID, peerAddr, folderID, folde
 		return err
 	}
 
-	devices, _ := cfg["devices"].([]any)
+	devices, err := syncthingObjectArray(cfg, "devices")
+	if err != nil {
+		return err
+	}
 	foundDevice := false
 	for i, d := range devices {
-		m, ok := d.(map[string]any)
-		if !ok {
-			continue
+		m, err := syncthingObjectMap(d, "devices")
+		if err != nil {
+			return err
 		}
 		if asString(m["deviceID"]) == peerID {
 			m["addresses"] = []any{peerAddr}
@@ -306,12 +323,15 @@ func configureSyncthingPeer(base, key, selfID, peerID, peerAddr, folderID, folde
 	}
 	cfg["devices"] = devices
 
-	folders, _ := cfg["folders"].([]any)
+	folders, err := syncthingObjectArray(cfg, "folders")
+	if err != nil {
+		return err
+	}
 	foundFolder := false
 	for i, f := range folders {
-		fm, ok := f.(map[string]any)
-		if !ok {
-			continue
+		fm, err := syncthingObjectMap(f, "folders")
+		if err != nil {
+			return err
 		}
 		if asString(fm["id"]) == folderID {
 			fm["path"] = folderPath
@@ -346,21 +366,12 @@ func configureSyncthingPeer(base, key, selfID, peerID, peerAddr, folderID, folde
 }
 
 func syncthingGetConfig(base, key string) (map[string]any, error) {
-	req, err := http.NewRequest(http.MethodGet, base+"/rest/config", nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("X-API-Key", key)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("status %s", resp.Status)
-	}
 	cfg := map[string]any{}
-	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
+	body, err := syncthingAPIRequest(http.MethodGet, base, key, "/rest/config", nil, "")
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(body, &cfg); err != nil {
 		return nil, err
 	}
 	return cfg, nil
@@ -371,38 +382,63 @@ func syncthingSetConfig(base, key string, cfg map[string]any) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest(http.MethodPost, base+"/rest/config", bytes.NewReader(b))
+	_, err = syncthingAPIRequest(http.MethodPost, base, key, "/rest/config", b, "application/json")
 	if err != nil {
 		return err
-	}
-	req.Header.Set("X-API-Key", key)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("status %s", resp.Status)
 	}
 	return nil
 }
 
 func syncthingPost(base, key, path string, body []byte) error {
-	req, err := http.NewRequest(http.MethodPost, base+path, bytes.NewReader(body))
+	_, err := syncthingAPIRequest(http.MethodPost, base, key, path, body, "")
 	if err != nil {
 		return err
-	}
-	req.Header.Set("X-API-Key", key)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("status %s", resp.Status)
 	}
 	return nil
+}
+
+func syncthingAPIRequest(method, base, key, path string, body []byte, contentType string) ([]byte, error) {
+	req, err := http.NewRequest(method, base+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-API-Key", key)
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	resp, err := syncthingHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, readErr
+	}
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("status %s", resp.Status)
+	}
+	return respBody, nil
+}
+
+func syncthingObjectArray(cfg map[string]any, key string) ([]any, error) {
+	raw, ok := cfg[key]
+	if !ok || raw == nil {
+		return []any{}, nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("syncthing config %q must be an array", key)
+	}
+	return arr, nil
+}
+
+func syncthingObjectMap(v any, field string) (map[string]any, error) {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("syncthing config %q entries must be objects", field)
+	}
+	return m, nil
 }
 
 func asString(v any) string {

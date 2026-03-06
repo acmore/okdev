@@ -2,6 +2,19 @@ package config
 
 import "testing"
 
+func validConfig() *DevEnvironment {
+	return &DevEnvironment{
+		APIVersion: "okdev.io/v1alpha1",
+		Kind:       "DevEnvironment",
+		Metadata:   Metadata{Name: "x"},
+		Spec: DevEnvSpec{
+			Workspace: Workspace{MountPath: "/workspace"},
+			Sync:      SyncSpec{Engine: "native"},
+			Session:   SessionSpec{LockMode: "none"},
+		},
+	}
+}
+
 func TestSetDefaults(t *testing.T) {
 	cfg := &DevEnvironment{
 		APIVersion: "okdev.io/v1alpha1",
@@ -31,31 +44,60 @@ func TestSetDefaults(t *testing.T) {
 }
 
 func TestValidateRejectsInvalidEngine(t *testing.T) {
-	cfg := &DevEnvironment{
-		APIVersion: "okdev.io/v1alpha1",
-		Kind:       "DevEnvironment",
-		Metadata:   Metadata{Name: "x"},
-		Spec: DevEnvSpec{
-			Workspace: Workspace{MountPath: "/workspace"},
-			Sync:      SyncSpec{Engine: "bad"},
-		},
-	}
+	cfg := validConfig()
+	cfg.Spec.Sync.Engine = "bad"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error")
 	}
 }
 
 func TestValidateRejectsInvalidLockMode(t *testing.T) {
-	cfg := &DevEnvironment{
-		APIVersion: "okdev.io/v1alpha1",
-		Kind:       "DevEnvironment",
-		Metadata:   Metadata{Name: "x"},
-		Spec: DevEnvSpec{
-			Workspace: Workspace{MountPath: "/workspace"},
-			Sync:      SyncSpec{Engine: "native"},
-			Session:   SessionSpec{LockMode: "bad"},
-		},
+	cfg := validConfig()
+	cfg.Spec.Session.LockMode = "bad"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error")
 	}
+}
+
+func TestValidateRejectsNegativeTTL(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Session.TTLHours = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+
+func TestValidateRejectsInvalidSyncPath(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Sync.Paths = []string{"./local-only"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+
+func TestValidateRejectsSyncthingMultiplePaths(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Sync.Engine = "syncthing"
+	cfg.Spec.Sync.Paths = []string{"./a:/workspace/a", "./b:/workspace/b"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+
+func TestValidateRejectsDuplicateLocalPorts(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Ports = []PortMapping{
+		{Name: "a", Local: 8080, Remote: 8080},
+		{Name: "b", Local: 8080, Remote: 18080},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+
+func TestValidateRejectsInvalidSSHPort(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.SSH.LocalPort = 70000
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error")
 	}

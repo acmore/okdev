@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const portForwardShutdownWait = 2 * time.Second
+
 func startManagedPortForward(opts *Options, namespace, pod string, forwards []string) (context.CancelFunc, error) {
 	return startManagedPortForwardWithClient(newKubeClient(opts), namespace, pod, forwards)
 }
@@ -19,16 +21,25 @@ func startManagedPortForwardWithClient(k interface {
 }, namespace, pod string, forwards []string) (context.CancelFunc, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
+	doneCh := make(chan struct{})
 	go func() {
+		defer close(doneCh)
 		errCh <- k.PortForward(ctx, namespace, pod, forwards, io.Discard, io.Discard)
 	}()
+	cancelAndWait := func() {
+		cancel()
+		select {
+		case <-doneCh:
+		case <-time.After(portForwardShutdownWait):
+		}
+	}
 
 	ports := localPortsFromForwards(forwards)
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		select {
 		case err := <-errCh:
-			cancel()
+			cancelAndWait()
 			if err != nil {
 				return nil, err
 			}
@@ -37,10 +48,10 @@ func startManagedPortForwardWithClient(k interface {
 		}
 
 		if allPortsReachable(ports) {
-			return cancel, nil
+			return cancelAndWait, nil
 		}
 		if time.Now().After(deadline) {
-			cancel()
+			cancelAndWait()
 			return nil, fmt.Errorf("timeout waiting for port-forward readiness")
 		}
 		time.Sleep(200 * time.Millisecond)
