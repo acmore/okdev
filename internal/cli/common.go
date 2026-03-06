@@ -125,37 +125,6 @@ func runConnectWithClient(k *kube.Client, namespace, sessionName string, command
 	return connect.Run(ctx, k, namespace, podName(sessionName), command, tty, os.Stdin, os.Stdout, os.Stderr)
 }
 
-func startSessionHeartbeat(opts *Options, namespace, sessionName string, out io.Writer, interval time.Duration) func() {
-	return startSessionHeartbeatWithClient(newKubeClient(opts), namespace, sessionName, out, interval)
-}
-
-func startSessionHeartbeatWithClient(k *kube.Client, namespace, sessionName string, out io.Writer, interval time.Duration) func() {
-	if interval <= 0 {
-		interval = time.Minute
-	}
-	pod := podName(sessionName)
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				beatCtx, beatCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				err := k.TouchPodActivity(beatCtx, namespace, pod)
-				beatCancel()
-				if err != nil {
-					slog.Warn("session activity heartbeat failed", "namespace", namespace, "session", sessionName, "pod", pod, "error", err)
-					fmt.Fprintf(out, "warning: failed to update session activity heartbeat: %v\n", err)
-				}
-			}
-		}
-	}()
-	return cancel
-}
-
 func startSessionMaintenance(opts *Options, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer, renewLock bool, emitHeartbeat bool) func() {
 	return startSessionMaintenanceWithClient(newKubeClient(opts), cfg, namespace, sessionName, out, renewLock, emitHeartbeat)
 }

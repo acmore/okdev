@@ -75,13 +75,8 @@ func EnsureBinary(ctx context.Context, version string, autoInstall bool) (string
 		return "", fmt.Errorf("checksum mismatch for %s: want %s got %s", archiveName, want, got)
 	}
 
-	binary, err := extractSyncthingBinaryFromFile(archiveFile)
-	if err != nil {
-		return "", err
-	}
-
 	tmp := binPath + ".tmp"
-	if err := os.WriteFile(tmp, binary, 0o755); err != nil {
+	if err := extractSyncthingBinaryFromFileToPath(archiveFile, tmp); err != nil {
 		return "", err
 	}
 	if err := os.Rename(tmp, binPath); err != nil {
@@ -134,15 +129,15 @@ func checksumForArchive(checksums string, archiveName string) (string, error) {
 	return "", fmt.Errorf("checksum for %s not found", archiveName)
 }
 
-func extractSyncthingBinaryFromFile(archivePath string) ([]byte, error) {
+func extractSyncthingBinaryFromFileToPath(archivePath, outPath string) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer f.Close()
 	gz, err := gzip.NewReader(f)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer gz.Close()
 
@@ -153,16 +148,29 @@ func extractSyncthingBinaryFromFile(archivePath string) ([]byte, error) {
 			break
 		}
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
 		if strings.HasSuffix(hdr.Name, "/syncthing") || hdr.Name == "syncthing" {
-			return io.ReadAll(tr)
+			out, err := os.OpenFile(outPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(out, tr); err != nil {
+				_ = out.Close()
+				_ = os.Remove(outPath)
+				return err
+			}
+			if err := out.Close(); err != nil {
+				_ = os.Remove(outPath)
+				return err
+			}
+			return nil
 		}
 	}
-	return nil, errors.New("syncthing binary not found in archive")
+	return errors.New("syncthing binary not found in archive")
 }
 
 func downloadArchiveToTemp(ctx context.Context, archiveURL, archiveName string) (string, string, error) {

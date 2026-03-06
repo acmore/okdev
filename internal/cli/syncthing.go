@@ -326,26 +326,34 @@ func syncthingDeviceID(ctx context.Context, base, key string) (string, error) {
 func runSyncthingProgressReporter(ctx context.Context, out io.Writer, localBase, localKey, remoteBase, remoteKey, folderID, localID, remoteID string) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-	emit := func() {
+	emit := func() bool {
 		upPct, upNeed, err := syncthingCompletion(ctx, localBase, localKey, folderID, remoteID)
 		if err != nil {
 			slog.Debug("syncthing progress read failed", "side", "local", "error", err)
-			return
+			return false
 		}
 		downPct, downNeed, err := syncthingCompletion(ctx, remoteBase, remoteKey, folderID, localID)
 		if err != nil {
 			slog.Debug("syncthing progress read failed", "side", "remote", "error", err)
-			return
+			return false
 		}
 		fmt.Fprintf(out, "Syncthing progress: up %.1f%% (need=%dB), down %.1f%% (need=%dB)\n", upPct, upNeed, downPct, downNeed)
+		if upNeed == 0 && downNeed == 0 && upPct >= 99.9 && downPct >= 99.9 {
+			return true
+		}
+		return false
 	}
-	emit()
+	if emit() {
+		return
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			emit()
+			if emit() {
+				return
+			}
 		}
 	}
 }
@@ -481,10 +489,6 @@ func syncthingPost(ctx context.Context, base, key, path string, body []byte) err
 		return err
 	}
 	return nil
-}
-
-func syncthingAPIRequest(method, base, key, path string, body []byte, contentType string) ([]byte, error) {
-	return syncthingAPIRequestWithContext(context.Background(), method, base, key, path, body, contentType)
 }
 
 func syncthingAPIRequestWithContext(ctx context.Context, method, base, key, path string, body []byte, contentType string) ([]byte, error) {

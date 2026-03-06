@@ -161,11 +161,15 @@ func newUpCmd(opts *Options) *cobra.Command {
 				}
 
 				if cfg.Spec.Sync.Engine == "" || cfg.Spec.Sync.Engine == "syncthing" {
-					logPath, err := startDetachedSyncthingSync(opts, "bi", sn)
+					logPath, started, err := startDetachedSyncthingSync(opts, "bi", sn)
 					if err != nil {
 						fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to start syncthing background sync: %v\n", err)
 					} else {
-						fmt.Fprintf(cmd.OutOrStdout(), "Background syncthing sync active (mode=bi). Logs: %s\n", logPath)
+						if started {
+							fmt.Fprintf(cmd.OutOrStdout(), "Background syncthing sync active (mode=bi). Logs: %s\n", logPath)
+						} else {
+							fmt.Fprintf(cmd.OutOrStdout(), "Background syncthing sync already running (mode=bi). Logs: %s\n", logPath)
+						}
 					}
 				}
 

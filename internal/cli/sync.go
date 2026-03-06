@@ -5,6 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 
 	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
@@ -54,11 +57,15 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			defer stopMaintenance()
 
 			if background && os.Getenv("OKDEV_SYNCTHING_BACKGROUND_CHILD") != "1" {
-				logPath, err := startDetachedSyncthingSync(opts, mode, sn)
+				logPath, started, err := startDetachedSyncthingSync(opts, mode, sn)
 				if err != nil {
 					return err
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Started syncthing sync in background for session %s\n", sn)
+				if started {
+					fmt.Fprintf(cmd.OutOrStdout(), "Started syncthing sync in background for session %s\n", sn)
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync already running in background for session %s\n", sn)
+				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Logs: %s\n", logPath)
 				return nil
 			}
@@ -72,23 +79,33 @@ func newSyncCmd(opts *Options) *cobra.Command {
 	return cmd
 }
 
-func startDetachedSyncthingSync(opts *Options, mode, sessionName string) (string, error) {
+func startDetachedSyncthingSync(opts *Options, mode, sessionName string) (string, bool, error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	logDir := filepath.Join(home, ".okdev", "logs")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
-		return "", err
+		return "", false, err
 	}
 	logPath := filepath.Join(logDir, "syncthing-"+sessionName+".log")
+	pidPath, err := syncthingPIDPath(sessionName)
+	if err != nil {
+		return "", false, err
+	}
+	if pid, ok := readSyncthingPID(pidPath); ok {
+		if processAlive(pid) {
+			return logPath, false, nil
+		}
+		_ = os.Remove(pidPath)
+	}
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 
 	args := make([]string, 0, 16)
@@ -116,9 +133,50 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName string) (string
 	cmd.Stdin = nil
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
-		return "", err
+		return "", false, err
+	}
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)+"\n"), 0o644); err != nil {
+		_ = logFile.Close()
+		return "", false, err
 	}
 	_ = cmd.Process.Release()
 	_ = logFile.Close()
-	return logPath, nil
+	return logPath, true, nil
+}
+
+func syncthingPIDPath(sessionName string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".okdev", "syncthing", sessionName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "sync.pid"), nil
+}
+
+func readSyncthingPID(path string) (int, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	s := strings.TrimSpace(string(b))
+	if s == "" {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(s)
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	return pid, true
+}
+
+func processAlive(pid int) bool {
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	err = p.Signal(syscall.Signal(0))
+	return err == nil
 }

@@ -440,13 +440,21 @@ func (c *Client) CopyFromPod(ctx context.Context, namespace, podName, remotePath
 	if err != nil {
 		return err
 	}
-	var out bytes.Buffer
-	var errBuf bytes.Buffer
-	cmd := []string{"sh", "-lc", fmt.Sprintf("cat %s", shellQuote(remotePath))}
-	if err := c.execStream(ctx, cs, cfg, namespace, podName, "", cmd, nil, &out, &errBuf, false); err != nil {
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 		return err
 	}
-	if err := osWriteFile(localPath, out.Bytes(), 0o644); err != nil {
+	f, err := os.Create(localPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	var errBuf bytes.Buffer
+	cmd := []string{"sh", "-lc", fmt.Sprintf("cat %s", shellQuote(remotePath))}
+	if err := c.execStream(ctx, cs, cfg, namespace, podName, "", cmd, nil, f, &errBuf, false); err != nil {
+		_ = os.Remove(localPath)
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	return nil
