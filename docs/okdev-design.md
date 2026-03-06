@@ -257,6 +257,7 @@ Ownership model:
 
 - `okdev down [--delete-pvc]`
   - stop session; default preserves PVC for continuity
+  - always releases the session Lease immediately for fast handoff/restart
 
 - `okdev prune`
   - cleanup expired/idle sessions by TTL rules
@@ -276,6 +277,10 @@ Optional lock modes:
 - `none` (default shared)
 - `advisory` (warn if another active client)
 - `exclusive` (single active client lease with timeout)
+
+Lease behavior:
+- Lease duration is short-lived (default 2 minutes) and renewed in background for long-running commands (`connect`, `ssh`, `ports`, `sync --watch`, `sync --engine syncthing`, and `up --attach`).
+- `okdev down` deletes the Lease object so exclusive sessions can be reacquired immediately.
 
 ## 10.1 Multi-Session Model (Multi-Project and Multi-Branch)
 

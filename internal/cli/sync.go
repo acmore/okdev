@@ -29,9 +29,18 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := ensureSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout()); err != nil {
+			renewLock := watch
+			if engine == "" {
+				engine = cfg.Spec.Sync.Engine
+			}
+			if engine == "syncthing" {
+				renewLock = true
+			}
+			stopRenew, err := acquireSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout(), renewLock)
+			if err != nil {
 				return err
 			}
+			defer stopRenew()
 			if engine == "" {
 				engine = cfg.Spec.Sync.Engine
 			}
@@ -63,7 +72,12 @@ func newSyncCmd(opts *Options) *cobra.Command {
 						}
 						if err := syncengine.RunOnce(mode, k, ns, pod, pairs, cfg.Spec.Sync.Exclude); err != nil {
 							fmt.Fprintf(cmd.ErrOrStderr(), "sync tick failed: %v (retrying in %s)\n", err, backoff)
-							time.Sleep(backoff)
+							select {
+							case <-sigCh:
+								fmt.Fprintln(cmd.OutOrStdout(), "Stopping watch sync")
+								return nil
+							case <-time.After(backoff):
+							}
 							if backoff < 30*time.Second {
 								backoff *= 2
 								if backoff > 30*time.Second {
@@ -74,7 +88,12 @@ func newSyncCmd(opts *Options) *cobra.Command {
 						}
 						backoff = 1 * time.Second
 						fmt.Fprintf(cmd.OutOrStdout(), "Sync tick completed at %s\n", time.Now().Format(time.RFC3339))
-						time.Sleep(interval)
+						select {
+						case <-sigCh:
+							fmt.Fprintln(cmd.OutOrStdout(), "Stopping watch sync")
+							return nil
+						case <-time.After(interval):
+						}
 					}
 				}
 				if err := syncengine.RunOnce(mode, k, ns, pod, pairs, cfg.Spec.Sync.Exclude); err != nil {

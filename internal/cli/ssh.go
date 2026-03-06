@@ -34,9 +34,11 @@ func newSSHCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := ensureSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout()); err != nil {
+			stopRenew, err := acquireSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout(), true)
+			if err != nil {
 				return err
 			}
+			defer stopRenew()
 
 			if user == "" {
 				user = cfg.Spec.SSH.User

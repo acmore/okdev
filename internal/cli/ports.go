@@ -24,9 +24,11 @@ func newPortsCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := ensureSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout()); err != nil {
+			stopRenew, err := acquireSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout(), true)
+			if err != nil {
 				return err
 			}
+			defer stopRenew()
 			if len(cfg.Spec.Ports) == 0 {
 				return fmt.Errorf("no ports configured in config")
 			}

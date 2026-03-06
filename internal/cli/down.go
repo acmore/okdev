@@ -33,6 +33,9 @@ func newDownCmd(opts *Options) *cobra.Command {
 					return err
 				}
 			}
+			if err := k.Delete(ctx, ns, "lease", "okdev-"+sn, true); err != nil {
+				return err
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Session stopped: %s\n", sn)
 			return nil
 		},

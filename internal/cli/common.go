@@ -18,6 +18,8 @@ import (
 	"github.com/acmore/okdev/internal/session"
 )
 
+const sessionLeaseDuration = 2 * time.Minute
+
 func loadConfigAndNamespace(opts *Options) (*config.DevEnvironment, string, error) {
 	cfg, _, err := config.Load(opts.ConfigPath)
 	if err != nil {
@@ -99,20 +101,58 @@ func runConnect(opts *Options, namespace, sessionName string, command []string, 
 }
 
 func ensureSessionLock(opts *Options, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer) error {
-	if cfg.Spec.Session.LockMode == "none" {
-		return nil
-	}
-	holder := sessionHolderIdentity()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	res, err := newKubeClient(opts).AcquireLease(ctx, namespace, "okdev-"+sessionName, holder, cfg.Spec.Session.LockMode, 2*time.Minute)
+	stopRenew, err := acquireSessionLock(opts, cfg, namespace, sessionName, out, false)
 	if err != nil {
 		return err
+	}
+	stopRenew()
+	return nil
+}
+
+func acquireSessionLock(opts *Options, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer, renew bool) (func(), error) {
+	if cfg.Spec.Session.LockMode == "none" {
+		return func() {}, nil
+	}
+	holder := sessionHolderIdentity()
+	leaseName := "okdev-" + sessionName
+	k := newKubeClient(opts)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	res, err := k.AcquireLease(ctx, namespace, leaseName, holder, cfg.Spec.Session.LockMode, sessionLeaseDuration)
+	if err != nil {
+		return nil, err
 	}
 	if !res.Acquired && cfg.Spec.Session.LockMode == "advisory" {
 		fmt.Fprintf(out, "warning: session lock currently held by %s\n", res.CurrentHolder)
 	}
-	return nil
+	if !renew {
+		return func() {}, nil
+	}
+
+	renewCtx, renewCancel := context.WithCancel(context.Background())
+	go func() {
+		ticker := time.NewTicker(sessionLeaseDuration / 2)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-renewCtx.Done():
+				return
+			case <-ticker.C:
+				renewCallCtx, renewCallCancel := context.WithTimeout(context.Background(), 15*time.Second)
+				renewRes, renewErr := k.AcquireLease(renewCallCtx, namespace, leaseName, holder, cfg.Spec.Session.LockMode, sessionLeaseDuration)
+				renewCallCancel()
+				if renewErr != nil {
+					fmt.Fprintf(out, "warning: failed to renew session lock: %v\n", renewErr)
+					continue
+				}
+				if !renewRes.Acquired && cfg.Spec.Session.LockMode == "advisory" {
+					fmt.Fprintf(out, "warning: session lock now held by %s\n", renewRes.CurrentHolder)
+				}
+			}
+		}
+	}()
+
+	return renewCancel, nil
 }
 
 func sessionHolderIdentity() string {

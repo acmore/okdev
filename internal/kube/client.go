@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -31,6 +32,10 @@ import (
 
 type Client struct {
 	Context string
+
+	mu           sync.Mutex
+	cachedSet    *kubernetes.Clientset
+	cachedConfig *rest.Config
 }
 
 type PodSummary struct {
@@ -61,6 +66,15 @@ func (c *Client) restConfig() (*rest.Config, error) {
 }
 
 func (c *Client) clientset() (*kubernetes.Clientset, *rest.Config, error) {
+	c.mu.Lock()
+	if c.cachedSet != nil && c.cachedConfig != nil {
+		cs := c.cachedSet
+		cfg := c.cachedConfig
+		c.mu.Unlock()
+		return cs, cfg, nil
+	}
+	c.mu.Unlock()
+
 	restCfg, err := c.restConfig()
 	if err != nil {
 		return nil, nil, err
@@ -69,6 +83,12 @@ func (c *Client) clientset() (*kubernetes.Clientset, *rest.Config, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("create kubernetes client: %w", err)
 	}
+
+	c.mu.Lock()
+	c.cachedSet = cs
+	c.cachedConfig = restCfg
+	c.mu.Unlock()
+
 	return cs, restCfg, nil
 }
 
@@ -121,12 +141,55 @@ func (c *Client) Apply(ctx context.Context, namespace string, manifest []byte) e
 		if err != nil {
 			return err
 		}
-		pvc.ResourceVersion = existing.ResourceVersion
-		_, err = cs.CoreV1().PersistentVolumeClaims(namespace).Update(ctx, &pvc, metav1.UpdateOptions{})
+
+		mutableSpecChanged, immutableSpecChanged := pvcSpecDiff(existing.Spec, pvc.Spec)
+		if immutableSpecChanged {
+			return fmt.Errorf("pvc/%s has immutable spec changes; delete and recreate the PVC (or use --delete-pvc with `okdev down`) to apply", pvc.Name)
+		}
+
+		needsMetaUpdate := !reflect.DeepEqual(existing.Labels, pvc.Labels) || !reflect.DeepEqual(existing.Annotations, pvc.Annotations)
+		if !needsMetaUpdate && !mutableSpecChanged {
+			return nil
+		}
+
+		updated := existing.DeepCopy()
+		updated.Labels = cloneStringMap(pvc.Labels)
+		updated.Annotations = cloneStringMap(pvc.Annotations)
+		if mutableSpecChanged {
+			updated.Spec.Resources = pvc.Spec.Resources
+			updated.Spec.VolumeAttributesClassName = pvc.Spec.VolumeAttributesClassName
+		}
+		_, err = cs.CoreV1().PersistentVolumeClaims(namespace).Update(ctx, updated, metav1.UpdateOptions{})
 		return err
 	default:
 		return fmt.Errorf("unsupported manifest kind %q", tm.Kind)
 	}
+}
+
+func pvcSpecDiff(existing, desired corev1.PersistentVolumeClaimSpec) (mutableChanged bool, immutableChanged bool) {
+	if reflect.DeepEqual(existing, desired) {
+		return false, false
+	}
+
+	existingComparable := existing.DeepCopy()
+	desiredComparable := desired.DeepCopy()
+	existingComparable.Resources = desiredComparable.Resources
+	existingComparable.VolumeAttributesClassName = desiredComparable.VolumeAttributesClassName
+	if reflect.DeepEqual(existingComparable, desiredComparable) {
+		return true, false
+	}
+	return false, true
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func (c *Client) Delete(ctx context.Context, namespace string, kind string, name string, ignoreNotFound bool) error {

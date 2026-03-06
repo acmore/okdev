@@ -23,9 +23,11 @@ func newConnectCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := ensureSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout()); err != nil {
+			stopRenew, err := acquireSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout(), true)
+			if err != nil {
 				return err
 			}
+			defer stopRenew()
 
 			execCmd := []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}
 			if shell != "" {

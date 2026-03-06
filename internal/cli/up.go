@@ -25,9 +25,11 @@ func newUpCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := ensureSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout()); err != nil {
+			stopRenew, err := acquireSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout(), attach)
+			if err != nil {
 				return err
 			}
+			defer stopRenew()
 			labels := labelsForSession(cfg, sn)
 			annotations := annotationsForSession(cfg)
 			pvc := pvcName(cfg, sn)
@@ -85,7 +87,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().BoolVar(&attach, "attach", false, "Print attach hint after startup")
+	cmd.Flags().BoolVar(&attach, "attach", false, "Attach shell after session is ready")
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 3*time.Minute, "Wait timeout for pod readiness")
 	return cmd
 }
