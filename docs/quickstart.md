@@ -49,6 +49,7 @@ For a named session:
 ./bin/okdev sync --engine syncthing
 
 `okdev` auto-installs local Syncthing and auto-injects a pod sidecar when `sync.engine=syncthing`.
+Default sidecar image is `ghcr.io/<repo-owner>/okdev-syncthing:<version>`; update `spec.sync.syncthing.image` if you publish under a different registry.
 ```
 
 ## Multi-session
