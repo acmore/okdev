@@ -43,7 +43,18 @@ func newUpCmd(opts *Options) *cobra.Command {
 				}
 			}
 
-			podManifest, err := kube.BuildPodManifest(ns, pod, pvc, labels, cfg.Spec.PodTemplate.Spec)
+			preparedSpec, err := kube.PreparePodSpec(
+				cfg.Spec.PodTemplate.Spec,
+				pvc,
+				cfg.Spec.Workspace.MountPath,
+				cfg.Spec.Sync.Engine == "syncthing",
+				cfg.Spec.Sync.Syncthing.Image,
+			)
+			if err != nil {
+				return err
+			}
+
+			podManifest, err := kube.BuildPodManifest(ns, pod, pvc, labels, preparedSpec)
 			if err != nil {
 				return err
 			}

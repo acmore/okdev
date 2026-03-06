@@ -340,6 +340,9 @@ This guarantees isolation between projects while keeping shared cluster usage si
 6. **Okteto-like sync option**
 - Optional Syncthing-based engine for continuous synchronization
 - Enabled per environment (`spec.sync.engine`) or per command (`okdev sync --engine syncthing`)
+- No manual user install required:
+  - local Syncthing binary is auto-downloaded and checksum-verified into `~/.okdev/bin/...`
+  - pod-side Syncthing is provided by an auto-injected sidecar container when engine is `syncthing`
 
 ---
 

@@ -47,6 +47,8 @@ For a named session:
 
 # continuous sync option
 ./bin/okdev sync --engine syncthing
+
+`okdev` auto-installs local Syncthing and auto-injects a pod sidecar when `sync.engine=syncthing`.
 ```
 
 ## Multi-session

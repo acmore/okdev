@@ -54,9 +54,16 @@ type MetadataMap struct {
 }
 
 type SyncSpec struct {
-	Paths   []string `yaml:"paths"`
-	Exclude []string `yaml:"exclude"`
-	Engine  string   `yaml:"engine"`
+	Paths     []string      `yaml:"paths"`
+	Exclude   []string      `yaml:"exclude"`
+	Engine    string        `yaml:"engine"`
+	Syncthing SyncthingSpec `yaml:"syncthing"`
+}
+
+type SyncthingSpec struct {
+	Version     string `yaml:"version"`
+	AutoInstall *bool  `yaml:"autoInstall"`
+	Image       string `yaml:"image"`
 }
 
 type PortMapping struct {
@@ -97,6 +104,16 @@ func (d *DevEnvironment) Validate() error {
 	if d.Spec.Sync.Engine == "" {
 		d.Spec.Sync.Engine = "native"
 	}
+	if d.Spec.Sync.Syncthing.Version == "" {
+		d.Spec.Sync.Syncthing.Version = "v1.29.7"
+	}
+	if d.Spec.Sync.Syncthing.AutoInstall == nil {
+		v := true
+		d.Spec.Sync.Syncthing.AutoInstall = &v
+	}
+	if d.Spec.Sync.Syncthing.Image == "" {
+		d.Spec.Sync.Syncthing.Image = "ghcr.io/acmore/okdev-syncthing:v1.29.7"
+	}
 	if d.Spec.SSH.User == "" {
 		d.Spec.SSH.User = "root"
 	}
@@ -107,4 +124,11 @@ func (d *DevEnvironment) Validate() error {
 		d.Spec.SSH.LocalPort = 2222
 	}
 	return nil
+}
+
+func (s SyncthingSpec) AutoInstallEnabled() bool {
+	if s.AutoInstall == nil {
+		return true
+	}
+	return *s.AutoInstall
 }

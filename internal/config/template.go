@@ -18,6 +18,10 @@ spec:
       size: 50Gi
   sync:
     engine: native
+    syncthing:
+      version: v1.29.7
+      autoInstall: true
+      image: ghcr.io/acmore/okdev-syncthing:v1.29.7
     paths:
       - .:/workspace
     exclude:
@@ -51,6 +55,10 @@ spec:
       storageClassName: fast-ssd
   sync:
     engine: native
+    syncthing:
+      version: v1.29.7
+      autoInstall: true
+      image: ghcr.io/acmore/okdev-syncthing:v1.29.7
     paths:
       - .:/workspace
     exclude:

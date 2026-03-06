@@ -18,23 +18,28 @@ import (
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
+	"github.com/acmore/okdev/internal/syncthing"
 	"github.com/spf13/cobra"
 )
+
+const syncthingContainerName = "syncthing"
 
 func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironment, namespace, sessionName, mode string, pairs []syncPair) error {
 	if len(pairs) != 1 {
 		return fmt.Errorf("syncthing engine currently supports exactly one sync path mapping")
 	}
-	if err := ensureCommand("syncthing"); err != nil {
-		return err
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	localBinary, err := syncthing.EnsureBinary(ctx, cfg.Spec.Sync.Syncthing.Version, cfg.Spec.Sync.Syncthing.AutoInstallEnabled())
+	if err != nil {
+		return fmt.Errorf("prepare local syncthing binary: %w", err)
 	}
 
 	k := newKubeClient(opts)
-	ctx, cancel := defaultContext()
-	defer cancel()
 	pod := podName(sessionName)
-	if _, err := k.ExecSh(ctx, namespace, pod, "command -v syncthing >/dev/null 2>&1"); err != nil {
-		return fmt.Errorf("syncthing engine selected but syncthing is not installed in pod: %w", err)
+	if _, err := k.ExecShInContainer(ctx, namespace, pod, syncthingContainerName, "command -v syncthing >/dev/null 2>&1"); err != nil {
+		return fmt.Errorf("syncthing sidecar not ready; run `okdev up` with sync.engine=syncthing: %w", err)
 	}
 
 	pair := pairs[0]
@@ -48,9 +53,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	if err := writeSTIgnore(absLocal, cfg.Spec.Sync.Exclude); err != nil {
 		return err
 	}
-
-	remoteHome := "/tmp/okdev-syncthing"
-	if err := startRemoteSyncthing(ctx, k, namespace, pod, remoteHome, pair.Remote); err != nil {
+	if _, err := k.ExecShInContainer(ctx, namespace, pod, syncthingContainerName, fmt.Sprintf("mkdir -p %s", shellEscape(pair.Remote))); err != nil {
 		return err
 	}
 
@@ -58,7 +61,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	if err != nil {
 		return err
 	}
-	if err := startLocalSyncthing(localHome); err != nil {
+	if err := startLocalSyncthing(localBinary, localHome); err != nil {
 		return err
 	}
 
@@ -75,7 +78,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	if err != nil {
 		return err
 	}
-	remoteKey, err := readRemoteSyncthingAPIKey(ctx, k, namespace, pod, remoteHome)
+	remoteKey, err := readRemoteSyncthingAPIKey(ctx, k, namespace, pod)
 	if err != nil {
 		return err
 	}
@@ -111,18 +114,12 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync active (%s) for session %s\n", mode, sessionName)
 	fmt.Fprintf(cmd.OutOrStdout(), "Local folder: %s\n", absLocal)
 	fmt.Fprintf(cmd.OutOrStdout(), "Remote folder: %s\n", pair.Remote)
+	fmt.Fprintf(cmd.OutOrStdout(), "Local binary: %s\n", localBinary)
 	fmt.Fprintln(cmd.OutOrStdout(), "Press Ctrl+C to stop tunnel (syncthing daemons keep running).")
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	<-sigCh
-	return nil
-}
-
-func ensureCommand(name string) error {
-	if _, err := exec.LookPath(name); err != nil {
-		return fmt.Errorf("required command %q not found in PATH", name)
-	}
 	return nil
 }
 
@@ -147,14 +144,6 @@ func writeSTIgnore(localPath string, excludes []string) error {
 	return os.WriteFile(filepath.Join(localPath, ".stignore"), []byte(b.String()), 0o644)
 }
 
-func startRemoteSyncthing(ctx context.Context, k interface {
-	ExecSh(context.Context, string, string, string) ([]byte, error)
-}, namespace, pod, home, remotePath string) error {
-	script := fmt.Sprintf("mkdir -p %s %s && syncthing -home %s generate >/dev/null 2>&1 || true; pkill -f \"syncthing -home %s\" >/dev/null 2>&1 || true; nohup syncthing -home %s -no-browser -gui-address=0.0.0.0:8384 -no-restart -skip-port-probing -listen=tcp://0.0.0.0:22000 >/tmp/okdev-syncthing.log 2>&1 &", shellEscape(home), shellEscape(remotePath), shellEscape(home), shellEscape(home), shellEscape(home))
-	_, err := k.ExecSh(ctx, namespace, pod, script)
-	return err
-}
-
 func localSyncthingHome(session string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -167,13 +156,13 @@ func localSyncthingHome(session string) (string, error) {
 	return p, nil
 }
 
-func startLocalSyncthing(home string) error {
-	generate := exec.Command("syncthing", "-home", home, "generate")
+func startLocalSyncthing(binary, home string) error {
+	generate := exec.Command(binary, "-home", home, "generate")
 	if out, err := generate.CombinedOutput(); err != nil && !strings.Contains(string(out), "already exists") {
 		return fmt.Errorf("generate local syncthing config: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 
-	cmd := exec.Command("sh", "-lc", fmt.Sprintf("pkill -f 'syncthing -home %s' >/dev/null 2>&1 || true; nohup syncthing -home %s -no-browser -gui-address=127.0.0.1:8385 -no-restart -skip-port-probing -listen=tcp://127.0.0.1:22001 >/tmp/okdev-syncthing-local.log 2>&1 &", home, home))
+	cmd := exec.Command("sh", "-lc", fmt.Sprintf("pkill -f '%s -home %s' >/dev/null 2>&1 || true; nohup %s -home %s -no-browser -gui-address=127.0.0.1:8385 -no-restart -skip-port-probing -listen=tcp://127.0.0.1:22001 >/tmp/okdev-syncthing-local.log 2>&1 &", binary, home, binary, home))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("start local syncthing: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
@@ -253,9 +242,9 @@ func readLocalSyncthingAPIKey(home string) (string, error) {
 }
 
 func readRemoteSyncthingAPIKey(ctx context.Context, k interface {
-	ExecSh(context.Context, string, string, string) ([]byte, error)
-}, namespace, pod, home string) (string, error) {
-	out, err := k.ExecSh(ctx, namespace, pod, fmt.Sprintf("cat %s/config.xml 2>/dev/null || cat %s/config/config.xml", shellEscape(home), shellEscape(home)))
+	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+}, namespace, pod string) (string, error) {
+	out, err := k.ExecShInContainer(ctx, namespace, pod, syncthingContainerName, "cat /var/syncthing/config.xml 2>/dev/null || cat /var/syncthing/config/config.xml")
 	if err != nil {
 		return "", err
 	}

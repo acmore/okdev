@@ -88,6 +88,11 @@ func (c *Client) ExecSh(ctx context.Context, namespace, pod string, script strin
 	return c.Kubectl(ctx, nil, args...)
 }
 
+func (c *Client) ExecShInContainer(ctx context.Context, namespace, pod, container, script string) ([]byte, error) {
+	args := []string{"-n", namespace, "exec", "-i", pod, "-c", container, "--", "sh", "-lc", script}
+	return c.Kubectl(ctx, nil, args...)
+}
+
 type PodSummary struct {
 	Namespace string
 	Name      string

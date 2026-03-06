@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -66,6 +67,13 @@ func runConnect(opts *Options, namespace, sessionName string, command []string, 
 	ctx, cancel := interactiveContext()
 	defer cancel()
 	return newKubeClient(opts).ExecInteractive(ctx, namespace, podName(sessionName), tty, command, os.Stdin, os.Stdout, os.Stderr)
+}
+
+func ensureCommand(name string) error {
+	if _, err := exec.LookPath(name); err != nil {
+		return fmt.Errorf("required command %q not found in PATH", name)
+	}
+	return nil
 }
 
 func age(ts time.Time) string {
