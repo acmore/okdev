@@ -5,14 +5,18 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/acmore/okdev/internal/version"
 	corev1 "k8s.io/api/core/v1"
 )
 
 const (
-	DefaultSyncthingVersion = "v1.29.7"
-	DefaultSyncthingImage   = "ghcr.io/acmore/okdev:" + DefaultSyncthingVersion
-	DefaultWorkspacePVCSize = "50Gi"
+	DefaultSyncthingVersion         = "v1.29.7"
+	DefaultSyncthingImageRepository = "ghcr.io/acmore/okdev"
+	DefaultSyncthingImageFallback   = "edge"
+	DefaultWorkspacePVCSize         = "50Gi"
 )
+
+var DefaultSyncthingImage = DefaultSyncthingImageForBinaryVersion(version.Version)
 
 // DevEnvironment is the top-level config structure for .okdev.yaml.
 type DevEnvironment struct {
@@ -107,7 +111,7 @@ func (d *DevEnvironment) SetDefaults() {
 		d.Spec.Sync.Syncthing.AutoInstall = &v
 	}
 	if d.Spec.Sync.Syncthing.Image == "" {
-		d.Spec.Sync.Syncthing.Image = DefaultSyncthingImage
+		d.Spec.Sync.Syncthing.Image = DefaultSyncthingImageForBinaryVersion(version.Version)
 	}
 	if d.Spec.SSH.User == "" {
 		d.Spec.SSH.User = "root"
@@ -216,4 +220,12 @@ func validatePortRange(field string, port int) error {
 		return fmt.Errorf("%s must be 1-65535, got %d", field, port)
 	}
 	return nil
+}
+
+func DefaultSyncthingImageForBinaryVersion(binaryVersion string) string {
+	tag := strings.TrimSpace(binaryVersion)
+	if tag == "" || tag == "unknown" || strings.Contains(tag, "dev") {
+		tag = DefaultSyncthingImageFallback
+	}
+	return DefaultSyncthingImageRepository + ":" + tag
 }

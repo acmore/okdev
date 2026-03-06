@@ -31,6 +31,15 @@ git push origin v0.1.0
    - `okdev_<os>_<arch>.tar.gz`
    - `checksums.txt`
 
+## Sidecar image tags
+
+The sidecar image tag is aligned with the `okdev` release tag:
+
+- release `vX.Y.Z` publishes `ghcr.io/acmore/okdev:vX.Y.Z`
+- dev/main pushes publish `ghcr.io/acmore/okdev:edge`
+
+`okdev` resolves default sidecar image from its own binary version, with `edge` fallback for dev builds.
+
 ## Install from release
 
 ```bash

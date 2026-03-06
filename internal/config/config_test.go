@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/acmore/okdev/internal/version"
+)
 
 func validConfig() *DevEnvironment {
 	return &DevEnvironment{
@@ -31,6 +35,9 @@ func TestSetDefaults(t *testing.T) {
 	}
 	if cfg.Spec.Sync.Engine != "syncthing" {
 		t.Fatalf("sync engine default not set: %q", cfg.Spec.Sync.Engine)
+	}
+	if cfg.Spec.Sync.Syncthing.Image != DefaultSyncthingImageForBinaryVersion(version.Version) {
+		t.Fatalf("sync image default not set: %q", cfg.Spec.Sync.Syncthing.Image)
 	}
 	if !cfg.Spec.Sync.Syncthing.AutoInstallEnabled() {
 		t.Fatal("expected syncthing autoinstall default true")
@@ -88,5 +95,14 @@ func TestValidateRejectsInvalidSSHPort(t *testing.T) {
 	cfg.Spec.SSH.LocalPort = 70000
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error")
+	}
+}
+
+func TestDefaultSyncthingImageForBinaryVersion(t *testing.T) {
+	if got := DefaultSyncthingImageForBinaryVersion("v0.2.1"); got != "ghcr.io/acmore/okdev:v0.2.1" {
+		t.Fatalf("unexpected image for release version: %s", got)
+	}
+	if got := DefaultSyncthingImageForBinaryVersion("0.0.0-dev"); got != "ghcr.io/acmore/okdev:edge" {
+		t.Fatalf("unexpected image for dev version: %s", got)
 	}
 }
