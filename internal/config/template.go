@@ -13,7 +13,6 @@ spec:
     ttlHours: 72
     idleTimeoutMinutes: 120
     shareable: true
-    lockMode: none
   workspace:
     mountPath: /workspace
     pvc:
@@ -51,7 +50,6 @@ spec:
     ttlHours: 72
     idleTimeoutMinutes: 120
     shareable: true
-    lockMode: none
   workspace:
     mountPath: /workspace
     pvc:
@@ -117,7 +115,6 @@ spec:
     ttlHours: 72
     idleTimeoutMinutes: 120
     shareable: true
-    lockMode: advisory
   workspace:
     mountPath: /workspace
     pvc:

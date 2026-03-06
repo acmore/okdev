@@ -19,7 +19,6 @@ import (
 	"github.com/acmore/okdev/internal/session"
 )
 
-const sessionLeaseDuration = 2 * time.Minute
 const sessionHeartbeatInterval = 5 * time.Minute
 
 var invalidOwnerChars = regexp.MustCompile(`[^a-z0-9._-]`)
@@ -125,37 +124,6 @@ func runConnectWithClient(k *kube.Client, namespace, sessionName string, command
 	return connect.Run(ctx, k, namespace, podName(sessionName), command, tty, os.Stdin, os.Stdout, os.Stderr)
 }
 
-func ensureSessionLock(opts *Options, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer) error {
-	stopRenew, err := acquireSessionLockWithClient(newKubeClient(opts), cfg, namespace, sessionName, out)
-	if err != nil {
-		return err
-	}
-	stopRenew()
-	return nil
-}
-
-func acquireSessionLock(opts *Options, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer) (func(), error) {
-	return acquireSessionLockWithClient(newKubeClient(opts), cfg, namespace, sessionName, out)
-}
-
-func acquireSessionLockWithClient(k *kube.Client, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer) (func(), error) {
-	if cfg.Spec.Session.LockMode == "none" {
-		return func() {}, nil
-	}
-	holder := sessionHolderIdentity()
-	leaseName := "okdev-" + sessionName
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	res, err := k.AcquireLease(ctx, namespace, leaseName, holder, cfg.Spec.Session.LockMode, sessionLeaseDuration)
-	if err != nil {
-		return nil, err
-	}
-	if !res.Acquired && cfg.Spec.Session.LockMode == "advisory" {
-		fmt.Fprintf(out, "warning: session lock currently held by %s\n", res.CurrentHolder)
-	}
-	return func() {}, nil
-}
-
 func startSessionHeartbeat(opts *Options, namespace, sessionName string, out io.Writer, interval time.Duration) func() {
 	return startSessionHeartbeatWithClient(newKubeClient(opts), namespace, sessionName, out, interval)
 }
@@ -192,52 +160,19 @@ func startSessionMaintenance(opts *Options, cfg *config.DevEnvironment, namespac
 }
 
 func startSessionMaintenanceWithClient(k *kube.Client, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer, renewLock bool, emitHeartbeat bool) func() {
-	if !renewLock && !emitHeartbeat {
+	_ = cfg
+	_ = renewLock
+	if !emitHeartbeat {
 		return func() {}
 	}
-	holder := sessionHolderIdentity()
-	leaseName := "okdev-" + sessionName
 	pod := podName(sessionName)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		var renewTicker *time.Ticker
-		var renewCh <-chan time.Time
-		if renewLock && cfg.Spec.Session.LockMode != "none" {
-			renewTicker = time.NewTicker(sessionLeaseDuration / 2)
-			renewCh = renewTicker.C
-			defer renewTicker.Stop()
-		}
-		var heartbeatTicker *time.Ticker
-		var heartbeatCh <-chan time.Time
-		if emitHeartbeat {
-			heartbeatTicker = time.NewTicker(sessionHeartbeatInterval)
-			heartbeatCh = heartbeatTicker.C
-			defer heartbeatTicker.Stop()
-		}
-
-		doRenew := func() {
-			if !renewLock || cfg.Spec.Session.LockMode == "none" {
-				return
-			}
-			renewCtx, renewCancel := context.WithTimeout(context.Background(), 15*time.Second)
-			renewRes, renewErr := k.AcquireLease(renewCtx, namespace, leaseName, holder, cfg.Spec.Session.LockMode, sessionLeaseDuration)
-			renewCancel()
-			if renewErr != nil {
-				slog.Warn("session lock renewal failed", "namespace", namespace, "session", sessionName, "holder", holder, "error", renewErr)
-				fmt.Fprintf(out, "warning: failed to renew session lock: %v\n", renewErr)
-				return
-			}
-			if !renewRes.Acquired && cfg.Spec.Session.LockMode == "advisory" {
-				slog.Warn("session advisory lock not acquired on renewal", "namespace", namespace, "session", sessionName, "holder", holder, "current_holder", renewRes.CurrentHolder)
-				fmt.Fprintf(out, "warning: session lock now held by %s\n", renewRes.CurrentHolder)
-			}
-		}
+		heartbeatTicker := time.NewTicker(sessionHeartbeatInterval)
+		defer heartbeatTicker.Stop()
 
 		doHeartbeat := func() {
-			if !emitHeartbeat {
-				return
-			}
 			beatCtx, beatCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			err := k.TouchPodActivity(beatCtx, namespace, pod)
 			beatCancel()
@@ -252,24 +187,13 @@ func startSessionMaintenanceWithClient(k *kube.Client, cfg *config.DevEnvironmen
 			select {
 			case <-ctx.Done():
 				return
-			case <-renewCh:
-				doRenew()
-			case <-heartbeatCh:
+			case <-heartbeatTicker.C:
 				doHeartbeat()
 			}
 		}
 	}()
 
 	return cancel
-}
-
-func sessionHolderIdentity() string {
-	user := currentOwner(nil)
-	host, err := os.Hostname()
-	if err != nil || host == "" {
-		host = "unknown-host"
-	}
-	return user + "@" + host
 }
 
 func currentOwner(opts *Options) string {

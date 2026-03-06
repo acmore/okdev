@@ -41,7 +41,6 @@ type SessionSpec struct {
 	TTLHours            int    `yaml:"ttlHours"`
 	IdleTimeoutMinutes  int    `yaml:"idleTimeoutMinutes"`
 	Shareable           bool   `yaml:"shareable"`
-	LockMode            string `yaml:"lockMode"`
 }
 
 type Workspace struct {
@@ -119,9 +118,6 @@ func (d *DevEnvironment) SetDefaults() {
 	if d.Spec.SSH.LocalPort == 0 {
 		d.Spec.SSH.LocalPort = 2222
 	}
-	if d.Spec.Session.LockMode == "" {
-		d.Spec.Session.LockMode = "none"
-	}
 }
 
 func (d *DevEnvironment) Validate() error {
@@ -148,9 +144,6 @@ func (d *DevEnvironment) Validate() error {
 	}
 	if d.Spec.Sync.Engine != "native" && d.Spec.Sync.Engine != "syncthing" {
 		return fmt.Errorf("spec.sync.engine must be native or syncthing, got %q", d.Spec.Sync.Engine)
-	}
-	if d.Spec.Session.LockMode != "none" && d.Spec.Session.LockMode != "advisory" && d.Spec.Session.LockMode != "exclusive" {
-		return fmt.Errorf("spec.session.lockMode must be none|advisory|exclusive, got %q", d.Spec.Session.LockMode)
 	}
 	if d.Spec.Session.TTLHours < 0 {
 		return errors.New("spec.session.ttlHours must be >= 0")

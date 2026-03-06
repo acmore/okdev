@@ -48,33 +48,27 @@ func newStatusCmd(opts *Options) *cobra.Command {
 			})
 			if opts.Output == "json" {
 				type statusRow struct {
-					Session    string `json:"session"`
-					Owner      string `json:"owner"`
-					Pod        string `json:"pod"`
-					Phase      string `json:"phase"`
-					Age        string `json:"age"`
-					Ready      string `json:"ready"`
-					Restarts   int32  `json:"restarts"`
-					Reason     string `json:"reason"`
-					LockHolder string `json:"lockHolder,omitempty"`
+					Session  string `json:"session"`
+					Owner    string `json:"owner"`
+					Pod      string `json:"pod"`
+					Phase    string `json:"phase"`
+					Age      string `json:"age"`
+					Ready    string `json:"ready"`
+					Restarts int32  `json:"restarts"`
+					Reason   string `json:"reason"`
 				}
 				rows := make([]statusRow, 0, len(pods))
 				for _, p := range pods {
 					sn := p.Labels["okdev.io/session"]
-					lockHolder, err := k.LeaseHolder(ctx, p.Namespace, "okdev-"+sn)
-					if err != nil {
-						return err
-					}
 					rows = append(rows, statusRow{
-						Session:    sn,
-						Owner:      p.Labels["okdev.io/owner"],
-						Pod:        p.Name,
-						Phase:      p.Phase,
-						Age:        age(p.CreatedAt),
-						Ready:      p.Ready,
-						Restarts:   p.Restarts,
-						Reason:     p.Reason,
-						LockHolder: lockHolder,
+						Session:  sn,
+						Owner:    p.Labels["okdev.io/owner"],
+						Pod:      p.Name,
+						Phase:    p.Phase,
+						Age:      age(p.CreatedAt),
+						Ready:    p.Ready,
+						Restarts: p.Restarts,
+						Reason:   p.Reason,
 					})
 				}
 				return outputJSON(cmd.OutOrStdout(), rows)
@@ -83,13 +77,6 @@ func newStatusCmd(opts *Options) *cobra.Command {
 			rows := make([][]string, 0, len(pods))
 			for _, p := range pods {
 				sn := p.Labels["okdev.io/session"]
-				lockHolder, err := k.LeaseHolder(ctx, p.Namespace, "okdev-"+sn)
-				if err != nil {
-					return err
-				}
-				if lockHolder == "" {
-					lockHolder = "-"
-				}
 				rows = append(rows, []string{
 					sn,
 					p.Labels["okdev.io/owner"],
@@ -98,11 +85,10 @@ func newStatusCmd(opts *Options) *cobra.Command {
 					p.Ready,
 					fmt.Sprintf("%d", p.Restarts),
 					p.Reason,
-					lockHolder,
 					age(p.CreatedAt),
 				})
 			}
-			output.PrintTable(cmd.OutOrStdout(), []string{"SESSION", "OWNER", "POD", "PHASE", "READY", "RESTARTS", "REASON", "LOCK", "AGE"}, rows)
+			output.PrintTable(cmd.OutOrStdout(), []string{"SESSION", "OWNER", "POD", "PHASE", "READY", "RESTARTS", "REASON", "AGE"}, rows)
 			return nil
 		},
 	}

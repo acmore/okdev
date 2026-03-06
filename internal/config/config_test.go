@@ -10,7 +10,7 @@ func validConfig() *DevEnvironment {
 		Spec: DevEnvSpec{
 			Workspace: Workspace{MountPath: "/workspace"},
 			Sync:      SyncSpec{Engine: "native"},
-			Session:   SessionSpec{LockMode: "none"},
+			Session:   SessionSpec{},
 		},
 	}
 }
@@ -38,22 +38,11 @@ func TestSetDefaults(t *testing.T) {
 	if cfg.Spec.SSH.User != "root" || cfg.Spec.SSH.RemotePort != 22 || cfg.Spec.SSH.LocalPort != 2222 {
 		t.Fatalf("ssh defaults not set: %+v", cfg.Spec.SSH)
 	}
-	if cfg.Spec.Session.LockMode != "none" {
-		t.Fatalf("lockMode default not set: %q", cfg.Spec.Session.LockMode)
-	}
 }
 
 func TestValidateRejectsInvalidEngine(t *testing.T) {
 	cfg := validConfig()
 	cfg.Spec.Sync.Engine = "bad"
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected validation error")
-	}
-}
-
-func TestValidateRejectsInvalidLockMode(t *testing.T) {
-	cfg := validConfig()
-	cfg.Spec.Session.LockMode = "bad"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error")
 	}

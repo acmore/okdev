@@ -263,7 +263,6 @@ Ownership model:
 
 - `okdev down [--delete-pvc]`
   - stop session; default preserves PVC for continuity
-  - always releases the session Lease immediately for fast handoff/restart
   - supports `--dry-run` to preview deletions
 
 - `okdev prune [--dry-run]`
@@ -280,11 +279,6 @@ okdev approach:
 - Session identity is cluster-native (`namespace + env name + labels`).
 - Local machine stores only ephemeral client metadata.
 - Any machine with kube access and repo can run `okdev up --attach`.
-
-Optional lock modes:
-- `none`
-- `advisory` (warn if another active client)
-- `exclusive` (single active client lease with timeout)
 
 Ownership model:
 - Owner identity resolution: `--owner` flag -> `OKDEV_OWNER` -> local `USER`.
@@ -404,7 +398,7 @@ This guarantees isolation between projects while keeping shared cluster usage si
 ### Phase 2
 - improved sync engine with change detection and conflict handling
 - idle timeout and TTL pruning
-- advisory/exclusive lease mode
+- stricter owner-scoped access controls
 - richer status diagnostics
 
 ### Phase 3

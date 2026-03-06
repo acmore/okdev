@@ -68,11 +68,6 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				}
 				return nil
 			}
-			stopRenew, err := acquireSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout())
-			if err != nil {
-				return err
-			}
-			defer stopRenew()
 			stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), renewLock, renewLock)
 			defer stopMaintenance()
 

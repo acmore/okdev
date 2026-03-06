@@ -56,11 +56,6 @@ func newUpCmd(opts *Options) *cobra.Command {
 				}
 				return nil
 			}
-			stopRenew, err := acquireSessionLockWithClient(k, cfg, ns, sn, cmd.OutOrStdout())
-			if err != nil {
-				return err
-			}
-			defer stopRenew()
 			if err := ensureSessionOwnership(opts, k, ns, sn, true); err != nil {
 				return err
 			}

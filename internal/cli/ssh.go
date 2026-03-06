@@ -39,11 +39,6 @@ func newSSHCmd(opts *Options) *cobra.Command {
 			if err := ensureSessionOwnership(opts, k, ns, sn, true); err != nil {
 				return err
 			}
-			stopRenew, err := acquireSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout())
-			if err != nil {
-				return err
-			}
-			defer stopRenew()
 			stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), true, true)
 			defer stopMaintenance()
 

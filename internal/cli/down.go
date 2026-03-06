@@ -36,7 +36,6 @@ func newDownCmd(opts *Options) *cobra.Command {
 				} else if !deletePVC && cfg.Spec.Workspace.PVC.ClaimName == "" {
 					fmt.Fprintf(cmd.OutOrStdout(), "- would retain pvc/%s\n", pvcName(cfg, sn))
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "- would delete lease/%s\n", "okdev-"+sn)
 				return nil
 			}
 
@@ -47,9 +46,6 @@ func newDownCmd(opts *Options) *cobra.Command {
 				if err := k.Delete(ctx, ns, "pvc", pvcName(cfg, sn), true); err != nil {
 					return fmt.Errorf("delete workspace pvc: %w", err)
 				}
-			}
-			if err := k.Delete(ctx, ns, "lease", "okdev-"+sn, true); err != nil {
-				return fmt.Errorf("delete session lease: %w", err)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Session stopped: %s\n", sn)
 			if !deletePVC && cfg.Spec.Workspace.PVC.ClaimName == "" {
