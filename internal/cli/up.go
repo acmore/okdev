@@ -18,6 +18,7 @@ import (
 
 func newUpCmd(opts *Options) *cobra.Command {
 	var attach bool
+	var noAttach bool
 	var waitTimeout time.Duration
 	var dryRun bool
 
@@ -25,6 +26,9 @@ func newUpCmd(opts *Options) *cobra.Command {
 		Use:   "up",
 		Short: "Create or resume a dev session",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if noAttach {
+				attach = false
+			}
 			cfg, ns, err := loadConfigAndNamespace(opts)
 			if err != nil {
 				return err
@@ -183,7 +187,8 @@ func newUpCmd(opts *Options) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().BoolVar(&attach, "attach", false, "Attach shell after session is ready")
+	cmd.Flags().BoolVar(&attach, "attach", true, "Attach shell after session is ready")
+	cmd.Flags().BoolVar(&noAttach, "no-attach", false, "Do not attach shell/background integrations after session is ready")
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 3*time.Minute, "Wait timeout for pod readiness")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview actions without applying resources")
 	return cmd

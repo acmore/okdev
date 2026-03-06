@@ -14,8 +14,8 @@
 - `okdev version`
 - `okdev init [--template basic|gpu|llm-stack] [--force]`
 - `okdev validate`
-- `okdev up [--attach] [--wait-timeout 3m] [--dry-run]`
-  - with `--attach`, starts background native sync, declared app port-forwards, and SSH tunnel bootstrap
+- `okdev up [--no-attach] [--wait-timeout 3m] [--dry-run]`
+  - attach is enabled by default; use `--no-attach` to skip shell + background integrations
 - `okdev down [--delete-pvc] [--dry-run]`
 - `okdev status [--all]`
 - `okdev list [--all-namespaces]`
