@@ -1,11 +1,15 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"strconv"
 	"time"
 
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
+	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
 )
 
@@ -81,6 +85,52 @@ func newUpCmd(opts *Options) *cobra.Command {
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Session ready: %s (namespace: %s)\n", sn, ns)
 			if attach {
+				stopHeartbeat := startSessionHeartbeat(opts, ns, sn, cmd.OutOrStdout(), time.Minute)
+				defer stopHeartbeat()
+
+				stopBackgrounds := make([]func(), 0, 2)
+				defer func() {
+					for _, stop := range stopBackgrounds {
+						stop()
+					}
+				}()
+
+				if len(cfg.Spec.Ports) > 0 {
+					forwards := make([]string, 0, len(cfg.Spec.Ports))
+					for _, p := range cfg.Spec.Ports {
+						if p.Local <= 0 || p.Remote <= 0 {
+							continue
+						}
+						forwards = append(forwards, strconv.Itoa(p.Local)+":"+strconv.Itoa(p.Remote))
+					}
+					if len(forwards) > 0 {
+						cancelPF, err := startManagedPortForward(opts, ns, pod, forwards)
+						if err != nil {
+							return fmt.Errorf("start background port-forward: %w", err)
+						}
+						stopBackgrounds = append(stopBackgrounds, cancelPF)
+						fmt.Fprintf(cmd.OutOrStdout(), "Background port-forward active: %v\n", forwards)
+					}
+				}
+
+				engine := cfg.Spec.Sync.Engine
+				if engine == "" {
+					engine = "native"
+				}
+				switch engine {
+				case "native":
+					pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.Spec.Workspace.MountPath)
+					if err != nil {
+						return err
+					}
+					syncCtx, cancelSync := context.WithCancel(context.Background())
+					stopBackgrounds = append(stopBackgrounds, cancelSync)
+					go runAttachNativeSyncLoop(syncCtx, cmd.OutOrStdout(), cmd.ErrOrStderr(), k, ns, pod, pairs, cfg.Spec.Sync.Exclude, 2*time.Second)
+					fmt.Fprintln(cmd.OutOrStdout(), "Background file sync active (native/watch)")
+				case "syncthing":
+					fmt.Fprintln(cmd.OutOrStdout(), "Sync engine is syncthing; run `okdev sync --engine syncthing` in another terminal to start it.")
+				}
+
 				return runConnect(opts, ns, sn, []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}, true)
 			}
 			return nil
@@ -90,4 +140,37 @@ func newUpCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&attach, "attach", false, "Attach shell after session is ready")
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 3*time.Minute, "Wait timeout for pod readiness")
 	return cmd
+}
+
+func runAttachNativeSyncLoop(ctx context.Context, out io.Writer, errOut io.Writer, k *kube.Client, namespace, pod string, pairs []syncengine.Pair, excludes []string, interval time.Duration) {
+	backoff := time.Second
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		if err := syncengine.RunOnce("bi", k, namespace, pod, pairs, excludes); err != nil {
+			fmt.Fprintf(errOut, "background sync tick failed: %v (retry in %s)\n", err, backoff)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < 30*time.Second {
+				backoff *= 2
+				if backoff > 30*time.Second {
+					backoff = 30 * time.Second
+				}
+			}
+			continue
+		}
+		backoff = time.Second
+		fmt.Fprintf(out, "Background sync tick completed at %s\n", time.Now().Format(time.RFC3339))
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
+	}
 }

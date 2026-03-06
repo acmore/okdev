@@ -155,6 +155,33 @@ func acquireSessionLock(opts *Options, cfg *config.DevEnvironment, namespace, se
 	return renewCancel, nil
 }
 
+func startSessionHeartbeat(opts *Options, namespace, sessionName string, out io.Writer, interval time.Duration) func() {
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	k := newKubeClient(opts)
+	pod := podName(sessionName)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				beatCtx, beatCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				err := k.TouchPodActivity(beatCtx, namespace, pod)
+				beatCancel()
+				if err != nil {
+					fmt.Fprintf(out, "warning: failed to update session activity heartbeat: %v\n", err)
+				}
+			}
+		}
+	}()
+	return cancel
+}
+
 func sessionHolderIdentity() string {
 	user := os.Getenv("USER")
 	if user == "" {

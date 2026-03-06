@@ -12,7 +12,7 @@
 ## Commands
 
 - `okdev version`
-- `okdev init [--template basic|gpu] [--force]`
+- `okdev init [--template basic|gpu|llm-stack] [--force]`
 - `okdev validate`
 - `okdev up [--attach] [--wait-timeout 3m]`
 - `okdev down [--delete-pvc]`

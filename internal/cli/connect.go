@@ -2,6 +2,7 @@ package cli
 
 import (
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -28,6 +29,8 @@ func newConnectCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			defer stopRenew()
+			stopHeartbeat := startSessionHeartbeat(opts, ns, sn, cmd.OutOrStdout(), time.Minute)
+			defer stopHeartbeat()
 
 			execCmd := []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}
 			if shell != "" {

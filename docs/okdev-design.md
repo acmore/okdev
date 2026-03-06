@@ -226,6 +226,7 @@ Ownership model:
   - create or resume session
   - wait for Pod Ready
   - optionally connect immediately
+  - with `--attach`, auto-start configured port-forwarding and native watch sync in background
   - supports explicit `--session <name>` for multiple concurrent sessions per repo
 
 - `okdev connect [--shell] [--cmd]`
@@ -261,6 +262,7 @@ Ownership model:
 
 - `okdev prune`
   - cleanup expired/idle sessions by TTL rules
+  - enforces idle timeout from heartbeat (`okdev.io/last-attach`)
 
 ---
 

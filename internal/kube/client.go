@@ -39,11 +39,12 @@ type Client struct {
 }
 
 type PodSummary struct {
-	Namespace string
-	Name      string
-	Phase     string
-	CreatedAt time.Time
-	Labels    map[string]string
+	Namespace   string
+	Name        string
+	Phase       string
+	CreatedAt   time.Time
+	Labels      map[string]string
+	Annotations map[string]string
 }
 
 type LeaseResult struct {
@@ -329,14 +330,33 @@ func (c *Client) ListPods(ctx context.Context, namespace string, allNamespaces b
 	out := make([]PodSummary, 0, len(pods.Items))
 	for _, p := range pods.Items {
 		out = append(out, PodSummary{
-			Namespace: p.Namespace,
-			Name:      p.Name,
-			Phase:     string(p.Status.Phase),
-			CreatedAt: p.CreationTimestamp.Time,
-			Labels:    p.Labels,
+			Namespace:   p.Namespace,
+			Name:        p.Name,
+			Phase:       string(p.Status.Phase),
+			CreatedAt:   p.CreationTimestamp.Time,
+			Labels:      p.Labels,
+			Annotations: p.Annotations,
 		})
 	}
 	return out, nil
+}
+
+func (c *Client) TouchPodActivity(ctx context.Context, namespace, pod string) error {
+	cs, _, err := c.clientset()
+	if err != nil {
+		return err
+	}
+	current, err := cs.CoreV1().Pods(namespace).Get(ctx, pod, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	updated := current.DeepCopy()
+	if updated.Annotations == nil {
+		updated.Annotations = map[string]string{}
+	}
+	updated.Annotations["okdev.io/last-attach"] = time.Now().UTC().Format(time.RFC3339)
+	_, err = cs.CoreV1().Pods(namespace).Update(ctx, updated, metav1.UpdateOptions{})
+	return err
 }
 
 func (c *Client) ExecInteractive(ctx context.Context, namespace, pod string, tty bool, command []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) error {

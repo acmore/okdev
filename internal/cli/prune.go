@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -41,7 +42,25 @@ func newPruneCmd(opts *Options) *cobra.Command {
 				if p.CreatedAt.IsZero() {
 					continue
 				}
-				if now.Sub(p.CreatedAt) < time.Duration(ttlHours)*time.Hour {
+				ttlExpired := now.Sub(p.CreatedAt) >= time.Duration(ttlHours)*time.Hour
+				idleExpired := false
+				idleReason := ""
+				if idleRaw := p.Annotations["okdev.io/idle-timeout-minutes"]; idleRaw != "" {
+					idleMinutes, err := strconv.Atoi(idleRaw)
+					if err == nil && idleMinutes > 0 {
+						lastActive := p.CreatedAt
+						if ts := p.Annotations["okdev.io/last-attach"]; ts != "" {
+							if parsed, parseErr := time.Parse(time.RFC3339, ts); parseErr == nil {
+								lastActive = parsed
+							}
+						}
+						if now.Sub(lastActive) >= time.Duration(idleMinutes)*time.Minute {
+							idleExpired = true
+							idleReason = fmt.Sprintf("idle>%dm", idleMinutes)
+						}
+					}
+				}
+				if !ttlExpired && !idleExpired {
 					continue
 				}
 				sessionName := p.Labels["okdev.io/session"]
@@ -54,7 +73,13 @@ func newPruneCmd(opts *Options) *cobra.Command {
 				if includePVC {
 					_ = k.Delete(ctx, p.Namespace, "pvc", "okdev-"+sessionName+"-workspace", true)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Pruned session %s in namespace %s\n", sessionName, p.Namespace)
+				reason := fmt.Sprintf("ttl>%dh", ttlHours)
+				if idleReason != "" && !ttlExpired {
+					reason = idleReason
+				} else if idleReason != "" && ttlExpired {
+					reason = reason + "," + idleReason
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Pruned session %s in namespace %s (%s)\n", sessionName, p.Namespace, reason)
 				deleted++
 			}
 

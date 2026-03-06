@@ -106,6 +106,89 @@ spec:
             claimName: okdev-workspace
 `
 
+const llmStackTemplate = `apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: llm-stack
+spec:
+  namespace: ai-dev
+  session:
+    defaultNameTemplate: "{{ .Repo }}-{{ .Branch }}-{{ .User }}"
+    ttlHours: 72
+    idleTimeoutMinutes: 120
+    shareable: true
+    lockMode: advisory
+  workspace:
+    mountPath: /workspace
+    pvc:
+      size: 200Gi
+      storageClassName: fast-ssd
+  sync:
+    engine: native
+    syncthing:
+      version: v1.29.7
+      autoInstall: true
+      image: ghcr.io/acmore/okdev-syncthing:v1.29.7
+    paths:
+      - .:/workspace
+    exclude:
+      - .git/
+      - .venv/
+      - node_modules/
+      - checkpoints/
+      - data/
+  ports:
+    - name: app
+      local: 8080
+      remote: 8080
+    - name: redis
+      local: 6379
+      remote: 6379
+    - name: qdrant
+      local: 6333
+      remote: 6333
+  ssh:
+    user: root
+    remotePort: 22
+    localPort: 2222
+  podTemplate:
+    spec:
+      containers:
+        - name: dev
+          image: nvidia/cuda:12.4.1-devel-ubuntu22.04
+          command: ["sleep", "infinity"]
+          env:
+            - name: REDIS_URL
+              value: redis://127.0.0.1:6379
+            - name: QDRANT_URL
+              value: http://127.0.0.1:6333
+          resources:
+            requests:
+              cpu: "8"
+              memory: 32Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "16"
+              memory: 64Gi
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+        - name: redis
+          image: redis:7-alpine
+          args: ["--save", "", "--appendonly", "no"]
+          ports:
+            - containerPort: 6379
+        - name: qdrant
+          image: qdrant/qdrant:v1.13.2
+          ports:
+            - containerPort: 6333
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: okdev-workspace
+`
+
 var DefaultTemplate = basicTemplate
 
 func TemplateByName(name string) (string, error) {
@@ -114,7 +197,9 @@ func TemplateByName(name string) (string, error) {
 		return basicTemplate, nil
 	case "gpu", "llm-gpu":
 		return gpuTemplate, nil
+	case "llm-stack", "multi-container":
+		return llmStackTemplate, nil
 	default:
-		return "", fmt.Errorf("unknown template %q (supported: basic, gpu)", name)
+		return "", fmt.Errorf("unknown template %q (supported: basic, gpu, llm-stack)", name)
 	}
 }

@@ -48,6 +48,6 @@ func newInitCmd(opts *Options) *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing config file")
-	cmd.Flags().StringVar(&templateName, "template", "basic", "Template to use (basic|gpu)")
+	cmd.Flags().StringVar(&templateName, "template", "basic", "Template to use (basic|gpu|llm-stack)")
 	return cmd
 }

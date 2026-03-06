@@ -41,6 +41,11 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			defer stopRenew()
+			stopHeartbeat := func() {}
+			if renewLock {
+				stopHeartbeat = startSessionHeartbeat(opts, ns, sn, cmd.OutOrStdout(), time.Minute)
+			}
+			defer stopHeartbeat()
 			if engine == "" {
 				engine = cfg.Spec.Sync.Engine
 			}

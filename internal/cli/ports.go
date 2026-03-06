@@ -29,6 +29,8 @@ func newPortsCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			defer stopRenew()
+			stopHeartbeat := startSessionHeartbeat(opts, ns, sn, cmd.OutOrStdout(), time.Minute)
+			defer stopHeartbeat()
 			if len(cfg.Spec.Ports) == 0 {
 				return fmt.Errorf("no ports configured in config")
 			}
