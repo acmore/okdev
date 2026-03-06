@@ -12,6 +12,7 @@ func newPruneCmd(opts *Options) *cobra.Command {
 	var allNamespaces bool
 	var ttlHours int
 	var includePVC bool
+	var dryRun bool
 
 	cmd := &cobra.Command{
 		Use:   "prune",
@@ -38,6 +39,7 @@ func newPruneCmd(opts *Options) *cobra.Command {
 
 			now := time.Now()
 			deleted := 0
+			candidates := 0
 			for _, p := range pods {
 				if p.CreatedAt.IsZero() {
 					continue
@@ -63,15 +65,10 @@ func newPruneCmd(opts *Options) *cobra.Command {
 				if !ttlExpired && !idleExpired {
 					continue
 				}
+				candidates++
 				sessionName := p.Labels["okdev.io/session"]
 				if sessionName == "" {
 					sessionName = p.Name
-				}
-				if err := k.Delete(ctx, p.Namespace, "pod", p.Name, true); err != nil {
-					return err
-				}
-				if includePVC {
-					_ = k.Delete(ctx, p.Namespace, "pvc", "okdev-"+sessionName+"-workspace", true)
 				}
 				reason := fmt.Sprintf("ttl>%dh", ttlHours)
 				if idleReason != "" && !ttlExpired {
@@ -79,10 +76,26 @@ func newPruneCmd(opts *Options) *cobra.Command {
 				} else if idleReason != "" && ttlExpired {
 					reason = reason + "," + idleReason
 				}
+				if dryRun {
+					fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: would prune session %s in namespace %s (%s)\n", sessionName, p.Namespace, reason)
+					if includePVC {
+						fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: would delete pvc/okdev-%s-workspace in namespace %s\n", sessionName, p.Namespace)
+					}
+					continue
+				}
+				if err := k.Delete(ctx, p.Namespace, "pod", p.Name, true); err != nil {
+					return err
+				}
+				if includePVC {
+					_ = k.Delete(ctx, p.Namespace, "pvc", "okdev-"+sessionName+"-workspace", true)
+				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Pruned session %s in namespace %s (%s)\n", sessionName, p.Namespace, reason)
 				deleted++
 			}
-
+			if dryRun {
+				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: prune candidate count=%d\n", candidates)
+				return nil
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Prune complete, deleted %d session(s)\n", deleted)
 			return nil
 		},
@@ -91,5 +104,6 @@ func newPruneCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&allNamespaces, "all-namespaces", false, "Prune sessions across all namespaces")
 	cmd.Flags().IntVar(&ttlHours, "ttl-hours", 0, "TTL in hours override")
 	cmd.Flags().BoolVar(&includePVC, "include-pvc", false, "Delete default workspace PVCs for pruned sessions")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview prune actions without deleting resources")
 	return cmd
 }

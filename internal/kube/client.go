@@ -569,6 +569,15 @@ func (c *Client) CopyFromPod(ctx context.Context, namespace, podName, remotePath
 	return nil
 }
 
+func (c *Client) StreamFromPod(ctx context.Context, namespace, podName, script string, stdout io.Writer) error {
+	cs, cfg, err := c.clientset()
+	if err != nil {
+		return err
+	}
+	cmd := []string{"sh", "-lc", script}
+	return c.execStream(ctx, cs, cfg, namespace, podName, "", cmd, nil, stdout, io.Discard, false)
+}
+
 func (c *Client) DescribePod(ctx context.Context, namespace, pod string) (string, error) {
 	cs, _, err := c.clientset()
 	if err != nil {

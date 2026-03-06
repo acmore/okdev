@@ -238,8 +238,9 @@ Ownership model:
   - SSH over auto-managed `kubectl port-forward`
   - optional in-pod public key bootstrap
 
-- `okdev sync [--mode=bi|up|down] [--engine=native|syncthing] [--watch] [--background] [--dry-run]`
+- `okdev sync [--mode=bi|up|down] [--engine=native|syncthing] [--watch] [--background] [--dry-run] [--force]`
   - native engine: tar stream over exec (single-shot or watch loop)
+  - `--force` bypasses local fingerprint cache for a full transfer
   - syncthing engine: continuous sync for single path mapping
   - supports detached syncthing mode via `--background`
   - exclude support, `.stignore` generation for syncthing
@@ -263,7 +264,7 @@ Ownership model:
   - always releases the session Lease immediately for fast handoff/restart
   - supports `--dry-run` to preview deletions
 
-- `okdev prune`
+- `okdev prune [--dry-run]`
   - cleanup expired/idle sessions by TTL rules
   - enforces idle timeout from heartbeat (`okdev.io/last-attach`)
 

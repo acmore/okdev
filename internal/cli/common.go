@@ -114,7 +114,7 @@ func runConnectWithClient(k *kube.Client, namespace, sessionName string, command
 }
 
 func ensureSessionLock(opts *Options, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer) error {
-	stopRenew, err := acquireSessionLockWithClient(newKubeClient(opts), cfg, namespace, sessionName, out, false)
+	stopRenew, err := acquireSessionLockWithClient(newKubeClient(opts), cfg, namespace, sessionName, out)
 	if err != nil {
 		return err
 	}
@@ -122,11 +122,11 @@ func ensureSessionLock(opts *Options, cfg *config.DevEnvironment, namespace, ses
 	return nil
 }
 
-func acquireSessionLock(opts *Options, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer, renew bool) (func(), error) {
-	return acquireSessionLockWithClient(newKubeClient(opts), cfg, namespace, sessionName, out, renew)
+func acquireSessionLock(opts *Options, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer) (func(), error) {
+	return acquireSessionLockWithClient(newKubeClient(opts), cfg, namespace, sessionName, out)
 }
 
-func acquireSessionLockWithClient(k *kube.Client, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer, renew bool) (func(), error) {
+func acquireSessionLockWithClient(k *kube.Client, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer) (func(), error) {
 	if cfg.Spec.Session.LockMode == "none" {
 		return func() {}, nil
 	}
@@ -141,7 +141,6 @@ func acquireSessionLockWithClient(k *kube.Client, cfg *config.DevEnvironment, na
 	if !res.Acquired && cfg.Spec.Session.LockMode == "advisory" {
 		fmt.Fprintf(out, "warning: session lock currently held by %s\n", res.CurrentHolder)
 	}
-	_ = renew
 	return func() {}, nil
 }
 
@@ -190,10 +189,20 @@ func startSessionMaintenanceWithClient(k *kube.Client, cfg *config.DevEnvironmen
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		renewTicker := time.NewTicker(sessionLeaseDuration / 2)
-		defer renewTicker.Stop()
-		heartbeatTicker := time.NewTicker(sessionHeartbeatInterval)
-		defer heartbeatTicker.Stop()
+		var renewTicker *time.Ticker
+		var renewCh <-chan time.Time
+		if renewLock && cfg.Spec.Session.LockMode != "none" {
+			renewTicker = time.NewTicker(sessionLeaseDuration / 2)
+			renewCh = renewTicker.C
+			defer renewTicker.Stop()
+		}
+		var heartbeatTicker *time.Ticker
+		var heartbeatCh <-chan time.Time
+		if emitHeartbeat {
+			heartbeatTicker = time.NewTicker(sessionHeartbeatInterval)
+			heartbeatCh = heartbeatTicker.C
+			defer heartbeatTicker.Stop()
+		}
 
 		doRenew := func() {
 			if !renewLock || cfg.Spec.Session.LockMode == "none" {
@@ -231,9 +240,9 @@ func startSessionMaintenanceWithClient(k *kube.Client, cfg *config.DevEnvironmen
 			select {
 			case <-ctx.Done():
 				return
-			case <-renewTicker.C:
+			case <-renewCh:
 				doRenew()
-			case <-heartbeatTicker.C:
+			case <-heartbeatCh:
 				doHeartbeat()
 			}
 		}

@@ -44,8 +44,8 @@ func TestShellEscape(t *testing.T) {
 }
 
 func TestBuildRemoteTarCommand(t *testing.T) {
-	cmd := buildRemoteTarCommand("/tmp/a.tar", "/workspace/app", []string{"*.pyc", "dir with space"})
-	want := "'tar' '-cf' '/tmp/a.tar' '--exclude' '*.pyc' '--exclude' 'dir with space' '-C' '/workspace/app' '.'"
+	cmd := buildRemoteTarStreamCommand("/workspace/app", []string{"*.pyc", "dir with space"})
+	want := "'tar' '-cf' '-' '--exclude' '*.pyc' '--exclude' 'dir with space' '-C' '/workspace/app' '.'"
 	if cmd != want {
 		t.Fatalf("unexpected command:\nwant: %s\ngot:  %s", want, cmd)
 	}
@@ -62,6 +62,10 @@ func (blockingSyncClient) CopyFromPod(ctx context.Context, namespace, pod, remot
 	return nil
 }
 func (blockingSyncClient) ExtractTarToPod(ctx context.Context, namespace, pod, remoteDir string, tarStream io.Reader) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (blockingSyncClient) StreamFromPod(ctx context.Context, namespace, pod, script string, w io.Writer) error {
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -98,11 +102,15 @@ func (noopSyncClient) CopyFromPod(context.Context, string, string, string, strin
 func (noopSyncClient) ExtractTarToPod(context.Context, string, string, string, io.Reader) error {
 	return nil
 }
+func (noopSyncClient) StreamFromPod(context.Context, string, string, string, io.Writer) error {
+	return nil
+}
 func (noopSyncClient) ExecSh(context.Context, string, string, string) ([]byte, error) {
 	return nil, nil
 }
 
 func TestRunOnceWithReportUpFile(t *testing.T) {
+	ResetUploadFingerprintCache()
 	tmp := t.TempDir()
 	local := filepath.Join(tmp, "file.txt")
 	content := []byte("hello")
@@ -127,5 +135,25 @@ func TestRunOnceWithReportUpFile(t *testing.T) {
 	}
 	if stats2.SkippedPaths != 1 {
 		t.Fatalf("expected skipped path on unchanged file, got %d", stats2.SkippedPaths)
+	}
+}
+
+func TestRunOnceWithOptionsForceBypassesFingerprint(t *testing.T) {
+	ResetUploadFingerprintCache()
+	tmp := t.TempDir()
+	local := filepath.Join(tmp, "file.txt")
+	if err := os.WriteFile(local, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := RunOnceWithReport(context.Background(), "up", noopSyncClient{}, "ns", "pod", []Pair{{Local: local, Remote: "/workspace/file.txt"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := RunOnceWithOptions(context.Background(), "up", noopSyncClient{}, "ns", "pod", []Pair{{Local: local, Remote: "/workspace/file.txt"}}, nil, RunOptions{Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.SkippedPaths != 0 {
+		t.Fatalf("expected force sync to bypass cache, skipped=%d", stats.SkippedPaths)
 	}
 }

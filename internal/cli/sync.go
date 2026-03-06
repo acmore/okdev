@@ -22,6 +22,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 	var interval time.Duration
 	var background bool
 	var dryRun bool
+	var force bool
 
 	cmd := &cobra.Command{
 		Use:   "sync",
@@ -55,12 +56,15 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				if watch {
 					fmt.Fprintf(cmd.OutOrStdout(), "- watch interval: %s\n", interval)
 				}
+				if force {
+					fmt.Fprintln(cmd.OutOrStdout(), "- force transfer enabled (fingerprint cache bypassed)")
+				}
 				if background {
 					fmt.Fprintln(cmd.OutOrStdout(), "- detached background mode enabled")
 				}
 				return nil
 			}
-			stopRenew, err := acquireSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout(), renewLock)
+			stopRenew, err := acquireSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout())
 			if err != nil {
 				return err
 			}
@@ -92,7 +96,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 							return nil
 						default:
 						}
-						stats, err := syncengine.RunOnceWithReport(watchCtx, mode, k, ns, pod, pairs, cfg.Spec.Sync.Exclude)
+						stats, err := syncengine.RunOnceWithOptions(watchCtx, mode, k, ns, pod, pairs, cfg.Spec.Sync.Exclude, syncengine.RunOptions{Force: force})
 						if err != nil {
 							slog.Warn("watch sync tick failed", "namespace", ns, "session", sn, "pod", pod, "mode", mode, "backoff", backoff.String(), "error", err)
 							fmt.Fprintf(cmd.ErrOrStderr(), "sync tick failed: %v (retrying in %s)\n", err, backoff)
@@ -121,7 +125,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 						}
 					}
 				}
-				stats, err := syncengine.RunOnceWithReport(context.Background(), mode, k, ns, pod, pairs, cfg.Spec.Sync.Exclude)
+				stats, err := syncengine.RunOnceWithOptions(context.Background(), mode, k, ns, pod, pairs, cfg.Spec.Sync.Exclude, syncengine.RunOptions{Force: force})
 				if err != nil {
 					return fmt.Errorf("run sync once: %w", err)
 				}
@@ -150,6 +154,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 	cmd.Flags().DurationVar(&interval, "interval", 2*time.Second, "Watch loop interval (native engine)")
 	cmd.Flags().BoolVar(&background, "background", false, "Run syncthing sync as a detached background process")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview sync actions without transferring files")
+	cmd.Flags().BoolVar(&force, "force", false, "Bypass sync fingerprint cache and force file transfer")
 	return cmd
 }
 

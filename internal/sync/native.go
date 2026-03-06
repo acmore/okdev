@@ -23,6 +23,7 @@ type Client interface {
 	CopyToPod(context.Context, string, string, string, string) error
 	CopyFromPod(context.Context, string, string, string, string) error
 	ExtractTarToPod(context.Context, string, string, string, io.Reader) error
+	StreamFromPod(context.Context, string, string, string, io.Writer) error
 	ExecSh(context.Context, string, string, string) ([]byte, error)
 }
 
@@ -33,11 +34,20 @@ type Report struct {
 	SkippedPaths  int
 }
 
+type RunOptions struct {
+	Force bool
+}
+
+type uploadFingerprintEntry struct {
+	podInstance string
+	value       string
+}
+
 var uploadFingerprintCache = struct {
 	mu sync.Mutex
-	m  map[string]string
+	m  map[string]uploadFingerprintEntry
 }{
-	m: map[string]string{},
+	m: map[string]uploadFingerprintEntry{},
 }
 
 func ParsePairs(configured []string, defaultRemote string) ([]Pair, error) {
@@ -61,15 +71,21 @@ func RunOnce(parent context.Context, mode string, k Client, namespace, pod strin
 }
 
 func RunOnceWithReport(parent context.Context, mode string, k Client, namespace, pod string, pairs []Pair, excludes []string) (Report, error) {
+	return RunOnceWithOptions(parent, mode, k, namespace, pod, pairs, excludes, RunOptions{})
+}
+
+func RunOnceWithOptions(parent context.Context, mode string, k Client, namespace, pod string, pairs []Pair, excludes []string, opts RunOptions) (Report, error) {
 	if parent == nil {
 		parent = context.Background()
 	}
+	podInstance := resolvePodInstance(parent, k, namespace, pod)
+
 	var report Report
 	switch mode {
 	case "up":
 		for _, p := range pairs {
 			ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
-			stats, err := syncUpPath(ctx, k, namespace, pod, p, excludes)
+			stats, err := syncUpPath(ctx, k, namespace, pod, podInstance, p, excludes, opts.Force)
 			cancel()
 			if err != nil {
 				return Report{}, err
@@ -100,7 +116,7 @@ func RunOnceWithReport(parent context.Context, mode string, k Client, namespace,
 		var firstErr error
 		run := func(direction string) {
 			defer wg.Done()
-			stats, err := RunOnceWithReport(parent, direction, k, namespace, pod, pairs, excludes)
+			stats, err := runOnceDirection(parent, direction, k, namespace, pod, podInstance, pairs, excludes, opts)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -129,13 +145,50 @@ func RunOnceWithReport(parent context.Context, mode string, k Client, namespace,
 	return report, nil
 }
 
+func runOnceDirection(parent context.Context, mode string, k Client, namespace, pod, podInstance string, pairs []Pair, excludes []string, opts RunOptions) (Report, error) {
+	var report Report
+	switch mode {
+	case "up":
+		for _, p := range pairs {
+			ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
+			stats, err := syncUpPath(ctx, k, namespace, pod, podInstance, p, excludes, opts.Force)
+			cancel()
+			if err != nil {
+				return Report{}, err
+			}
+			report.UploadBytes += stats.UploadBytes
+			report.Paths++
+			if stats.Skipped {
+				report.SkippedPaths++
+			}
+		}
+	case "down":
+		for _, p := range pairs {
+			ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
+			stats, err := syncDownPath(ctx, k, namespace, pod, p, excludes)
+			cancel()
+			if err != nil {
+				return Report{}, err
+			}
+			report.DownloadBytes += stats.DownloadBytes
+			report.Paths++
+			if stats.Skipped {
+				report.SkippedPaths++
+			}
+		}
+	default:
+		return Report{}, fmt.Errorf("unsupported mode %q (supported: up|down)", mode)
+	}
+	return report, nil
+}
+
 type pathStats struct {
 	UploadBytes   int64
 	DownloadBytes int64
 	Skipped       bool
 }
 
-func syncUpPath(ctx context.Context, k Client, namespace, pod string, p Pair, excludes []string) (pathStats, error) {
+func syncUpPath(ctx context.Context, k Client, namespace, pod, podInstance string, p Pair, excludes []string, force bool) (pathStats, error) {
 	absLocal, err := filepath.Abs(p.Local)
 	if err != nil {
 		return pathStats{}, err
@@ -145,16 +198,16 @@ func syncUpPath(ctx context.Context, k Client, namespace, pod string, p Pair, ex
 		return pathStats{}, err
 	}
 
+	cacheKey := uploadFingerprintCacheKey(namespace, pod, p, excludes)
 	if !st.IsDir() {
 		fingerprint := fmt.Sprintf("file:%d:%d", st.Size(), st.ModTime().UnixNano())
-		cacheKey := uploadFingerprintCacheKey(namespace, pod, p, excludes)
-		if cached, ok := getUploadFingerprint(cacheKey); ok && cached == fingerprint {
+		if !force && uploadFingerprintMatches(cacheKey, podInstance, fingerprint) {
 			return pathStats{Skipped: true}, nil
 		}
 		if err := k.CopyToPod(ctx, namespace, absLocal, pod, p.Remote); err != nil {
 			return pathStats{}, err
 		}
-		setUploadFingerprint(cacheKey, fingerprint)
+		setUploadFingerprint(cacheKey, podInstance, fingerprint)
 		return pathStats{UploadBytes: st.Size()}, nil
 	}
 
@@ -162,8 +215,7 @@ func syncUpPath(ctx context.Context, k Client, namespace, pod string, p Pair, ex
 	if err != nil {
 		return pathStats{}, err
 	}
-	cacheKey := uploadFingerprintCacheKey(namespace, pod, p, excludes)
-	if cached, ok := getUploadFingerprint(cacheKey); ok && cached == fingerprint {
+	if !force && uploadFingerprintMatches(cacheKey, podInstance, fingerprint) {
 		return pathStats{Skipped: true}, nil
 	}
 
@@ -171,8 +223,10 @@ func syncUpPath(ctx context.Context, k Client, namespace, pod string, p Pair, ex
 	if err != nil {
 		return pathStats{}, err
 	}
-	if err := k.ExtractTarToPod(ctx, namespace, pod, p.Remote, stream); err != nil {
-		_ = stream.Close()
+	defer stream.Close()
+
+	countingStream := &countingReader{Reader: stream}
+	if err := k.ExtractTarToPod(ctx, namespace, pod, p.Remote, countingStream); err != nil {
 		if tarErr := waitTar(); tarErr != nil {
 			return pathStats{}, tarErr
 		}
@@ -181,8 +235,8 @@ func syncUpPath(ctx context.Context, k Client, namespace, pod string, p Pair, ex
 	if err := waitTar(); err != nil {
 		return pathStats{}, err
 	}
-	setUploadFingerprint(cacheKey, fingerprint)
-	return pathStats{}, nil
+	setUploadFingerprint(cacheKey, podInstance, fingerprint)
+	return pathStats{UploadBytes: countingStream.BytesRead()}, nil
 }
 
 func syncDownPath(ctx context.Context, k Client, namespace, pod string, p Pair, excludes []string) (pathStats, error) {
@@ -194,31 +248,33 @@ func syncDownPath(ctx context.Context, k Client, namespace, pod string, p Pair, 
 		return pathStats{}, err
 	}
 
-	remoteTar := "/tmp/okdev-sync-down.tar"
-	localTar := filepath.Join(os.TempDir(), fmt.Sprintf("okdev-down-%d.tar", time.Now().UnixNano()))
-	defer os.Remove(localTar)
+	pr, pw := io.Pipe()
+	extractErrCh := make(chan error, 1)
+	go func() {
+		extractErrCh <- extractTarStream(pr, absLocal)
+		_ = pr.Close()
+	}()
 
-	if _, err := k.ExecSh(ctx, namespace, pod, buildRemoteTarCommand(remoteTar, p.Remote, excludes)); err != nil {
-		return pathStats{}, err
+	countWriter := &countingWriteCloser{WriteCloser: pw}
+	streamErr := k.StreamFromPod(ctx, namespace, pod, buildRemoteTarStreamCommand(p.Remote, excludes), countWriter)
+	if streamErr != nil {
+		_ = pw.CloseWithError(streamErr)
+	} else {
+		streamErr = pw.Close()
 	}
-	if err := k.CopyFromPod(ctx, namespace, pod, remoteTar, localTar); err != nil {
-		return pathStats{}, err
+
+	extractErr := <-extractErrCh
+	if streamErr != nil {
+		return pathStats{}, streamErr
 	}
-	if _, err := k.ExecSh(ctx, namespace, pod, fmt.Sprintf("rm -f %s", remoteTar)); err != nil {
-		return pathStats{}, err
+	if extractErr != nil {
+		return pathStats{}, extractErr
 	}
-	tarStat, err := os.Stat(localTar)
-	if err != nil {
-		return pathStats{}, err
-	}
-	if err := extractTar(localTar, absLocal); err != nil {
-		return pathStats{}, err
-	}
-	return pathStats{DownloadBytes: tarStat.Size()}, nil
+	return pathStats{DownloadBytes: countWriter.BytesWritten()}, nil
 }
 
-func buildRemoteTarCommand(remoteTar, remoteDir string, excludes []string) string {
-	args := []string{"tar", "-cf", remoteTar}
+func buildRemoteTarStreamCommand(remoteDir string, excludes []string) string {
+	args := []string{"tar", "-cf", "-"}
 	for _, ex := range excludes {
 		ex = strings.TrimSpace(ex)
 		if ex == "" {
@@ -235,27 +291,10 @@ func buildRemoteTarCommand(remoteTar, remoteDir string, excludes []string) strin
 	return strings.Join(escaped, " ")
 }
 
-func createTar(srcDir, outTar string, excludes []string) error {
-	args := []string{"-cf", outTar}
-	for _, ex := range excludes {
-		ex := strings.TrimSpace(ex)
-		if ex == "" {
-			continue
-		}
-		args = append(args, "--exclude", ex)
-	}
-	args = append(args, "-C", srcDir, ".")
-	cmd := exec.Command("tar", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("create tar: %w (%s)", err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
 func startLocalTarStream(ctx context.Context, srcDir string, excludes []string) (io.ReadCloser, func() error, error) {
 	args := []string{"-cf", "-"}
 	for _, ex := range excludes {
-		ex := strings.TrimSpace(ex)
+		ex = strings.TrimSpace(ex)
 		if ex == "" {
 			continue
 		}
@@ -290,12 +329,57 @@ func startLocalTarStream(ctx context.Context, srcDir string, excludes []string) 
 	}, nil
 }
 
-func extractTar(tarFile, destDir string) error {
-	cmd := exec.Command("tar", "-xf", tarFile, "-C", destDir)
+func extractTarStream(stream io.Reader, destDir string) error {
+	cmd := exec.Command("tar", "-xf", "-", "-C", destDir)
+	cmd.Stdin = stream
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("extract tar: %w (%s)", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("extract tar stream: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func resolvePodInstance(parent context.Context, k Client, namespace, pod string) string {
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	out, err := k.ExecSh(ctx, namespace, pod, "cat /proc/1/cpuset 2>/dev/null || hostname")
+	if err != nil {
+		return pod
+	}
+	id := strings.TrimSpace(string(out))
+	if id == "" {
+		return pod
+	}
+	return id
+}
+
+type countingReader struct {
+	io.Reader
+	n int64
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.n += int64(n)
+	return n, err
+}
+
+func (r *countingReader) BytesRead() int64 {
+	return r.n
+}
+
+type countingWriteCloser struct {
+	io.WriteCloser
+	n int64
+}
+
+func (w *countingWriteCloser) Write(p []byte) (int, error) {
+	n, err := w.WriteCloser.Write(p)
+	w.n += int64(n)
+	return n, err
+}
+
+func (w *countingWriteCloser) BytesWritten() int64 {
+	return w.n
 }
 
 func ShellEscape(s string) string {
@@ -306,17 +390,50 @@ func uploadFingerprintCacheKey(namespace, pod string, p Pair, excludes []string)
 	return namespace + "|" + pod + "|" + p.Local + "|" + p.Remote + "|" + strings.Join(excludes, ";")
 }
 
-func getUploadFingerprint(key string) (string, bool) {
+func uploadFingerprintMatches(key, podInstance, value string) bool {
+	entry, ok := getUploadFingerprint(key)
+	if !ok {
+		return false
+	}
+	if entry.value != value {
+		return false
+	}
+	if entry.podInstance == podInstance {
+		return true
+	}
+	clearUploadFingerprint(key)
+	return false
+}
+
+func getUploadFingerprint(key string) (uploadFingerprintEntry, bool) {
 	uploadFingerprintCache.mu.Lock()
 	defer uploadFingerprintCache.mu.Unlock()
 	v, ok := uploadFingerprintCache.m[key]
 	return v, ok
 }
 
-func setUploadFingerprint(key, value string) {
+func setUploadFingerprint(key, podInstance, value string) {
 	uploadFingerprintCache.mu.Lock()
 	defer uploadFingerprintCache.mu.Unlock()
-	uploadFingerprintCache.m[key] = value
+	uploadFingerprintCache.m[key] = uploadFingerprintEntry{podInstance: podInstance, value: value}
+}
+
+func clearUploadFingerprint(key string) {
+	uploadFingerprintCache.mu.Lock()
+	defer uploadFingerprintCache.mu.Unlock()
+	delete(uploadFingerprintCache.m, key)
+}
+
+func ResetUploadFingerprintCache() {
+	uploadFingerprintCache.mu.Lock()
+	defer uploadFingerprintCache.mu.Unlock()
+	uploadFingerprintCache.m = map[string]uploadFingerprintEntry{}
+}
+
+func uploadFingerprintCacheLen() int {
+	uploadFingerprintCache.mu.Lock()
+	defer uploadFingerprintCache.mu.Unlock()
+	return len(uploadFingerprintCache.m)
 }
 
 func localDirFingerprint(root string, excludes []string) (string, error) {

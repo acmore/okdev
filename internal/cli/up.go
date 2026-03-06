@@ -52,7 +52,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 				}
 				return nil
 			}
-			stopRenew, err := acquireSessionLockWithClient(k, cfg, ns, sn, cmd.OutOrStdout(), attach)
+			stopRenew, err := acquireSessionLockWithClient(k, cfg, ns, sn, cmd.OutOrStdout())
 			if err != nil {
 				return err
 			}
@@ -99,9 +99,11 @@ func newUpCmd(opts *Options) *cobra.Command {
 				hints := fmt.Sprintf("next steps:\n- run `okdev status --session %s`\n- run `kubectl -n %s describe pod %s`", sn, ns, pod)
 				diag, derr := k.DescribePod(ctx, ns, pod)
 				if derr == nil {
-					return fmt.Errorf("%w\n\npod diagnostics:\n%s\n\n%s", err, diag, hints)
+					fmt.Fprintf(cmd.ErrOrStderr(), "pod diagnostics:\n%s\n\n%s\n", diag, hints)
+					return fmt.Errorf("wait for pod/%s readiness failed: %w", pod, err)
 				}
-				return fmt.Errorf("%w\n\n%s", err, hints)
+				fmt.Fprintln(cmd.ErrOrStderr(), hints)
+				return fmt.Errorf("wait for pod/%s readiness failed: %w", pod, err)
 			}
 
 			if err := session.SaveActiveSession(sn); err != nil {
