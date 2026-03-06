@@ -45,6 +45,9 @@ For a named session:
 ./bin/okdev sync --mode up
 ./bin/okdev ports
 
+# one-stop attach flow (shell + sync + app ports + ssh tunnel)
+./bin/okdev up --attach
+
 # continuous sync option
 ./bin/okdev sync --engine syncthing
 

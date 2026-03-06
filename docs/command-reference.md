@@ -15,6 +15,7 @@
 - `okdev init [--template basic|gpu|llm-stack] [--force]`
 - `okdev validate`
 - `okdev up [--attach] [--wait-timeout 3m] [--dry-run]`
+  - with `--attach`, starts background native sync, declared app port-forwards, and SSH tunnel bootstrap
 - `okdev down [--delete-pvc] [--dry-run]`
 - `okdev status [--all]`
 - `okdev list [--all-namespaces]`

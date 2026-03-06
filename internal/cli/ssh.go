@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/acmore/okdev/internal/config"
 	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
 )
@@ -52,14 +53,10 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				localPort = cfg.Spec.SSH.LocalPort
 			}
 			if keyPath == "" {
-				keyPath = cfg.Spec.SSH.PrivateKeyPath
-			}
-			if keyPath == "" {
-				home, err := os.UserHomeDir()
+				keyPath, err = defaultSSHKeyPath(cfg)
 				if err != nil {
 					return err
 				}
-				keyPath = filepath.Join(home, ".ssh", "okdev_ed25519")
 			}
 
 			if setupKey {
@@ -140,4 +137,16 @@ func ensureSSHKeyOnPod(opts *Options, namespace, pod, keyPath string) error {
 
 func startSSHPortForward(opts *Options, namespace, pod string, localPort, remotePort int) (context.CancelFunc, error) {
 	return startManagedPortForward(opts, namespace, pod, []string{fmt.Sprintf("%d:%d", localPort, remotePort)})
+}
+
+func defaultSSHKeyPath(cfg *config.DevEnvironment) (string, error) {
+	keyPath := cfg.Spec.SSH.PrivateKeyPath
+	if keyPath != "" {
+		return keyPath, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".ssh", "okdev_ed25519"), nil
 }

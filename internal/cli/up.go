@@ -48,7 +48,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(), "- would apply pod/%s\n", pod)
 				fmt.Fprintf(cmd.OutOrStdout(), "- would wait for pod readiness (timeout=%s)\n", waitTimeout)
 				if attach {
-					fmt.Fprintln(cmd.OutOrStdout(), "- would attach shell and start background sync/ports")
+					fmt.Fprintln(cmd.OutOrStdout(), "- would attach shell and start background sync/ports/ssh")
 				}
 				return nil
 			}
@@ -137,6 +137,25 @@ func newUpCmd(opts *Options) *cobra.Command {
 						}
 						stopBackgrounds = append(stopBackgrounds, cancelPF)
 						fmt.Fprintf(cmd.OutOrStdout(), "Background port-forward active: %v\n", forwards)
+					}
+				}
+				if cfg.Spec.SSH.LocalPort > 0 && cfg.Spec.SSH.RemotePort > 0 {
+					keyPath, keyErr := defaultSSHKeyPath(cfg)
+					if keyErr != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to resolve SSH key path: %v\n", keyErr)
+					} else {
+						if err := ensureSSHKeyOnPod(opts, ns, pod, keyPath); err != nil {
+							fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to setup SSH key in pod: %v\n", err)
+						} else {
+							sshForward := []string{strconv.Itoa(cfg.Spec.SSH.LocalPort) + ":" + strconv.Itoa(cfg.Spec.SSH.RemotePort)}
+							cancelSSH, err := startManagedPortForwardWithClient(k, ns, pod, sshForward)
+							if err != nil {
+								fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to start SSH port-forward %v: %v\n", sshForward, err)
+							} else {
+								stopBackgrounds = append(stopBackgrounds, cancelSSH)
+								fmt.Fprintf(cmd.OutOrStdout(), "Background SSH tunnel active: ssh -p %d -i %s %s@127.0.0.1\n", cfg.Spec.SSH.LocalPort, keyPath, cfg.Spec.SSH.User)
+							}
+						}
 					}
 				}
 
