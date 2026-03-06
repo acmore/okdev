@@ -46,6 +46,9 @@ type PodSummary struct {
 	CreatedAt   time.Time
 	Labels      map[string]string
 	Annotations map[string]string
+	Ready       string
+	Restarts    int32
+	Reason      string
 }
 
 type LeaseResult struct {
@@ -375,6 +378,22 @@ func (c *Client) ListPods(ctx context.Context, namespace string, allNamespaces b
 	}
 	out := make([]PodSummary, 0, len(pods.Items))
 	for _, p := range pods.Items {
+		readyContainers := 0
+		totalContainers := len(p.Status.ContainerStatuses)
+		var restarts int32
+		reason := p.Status.Reason
+		for _, st := range p.Status.ContainerStatuses {
+			if st.Ready {
+				readyContainers++
+			}
+			restarts += st.RestartCount
+			if reason == "" && st.State.Waiting != nil && st.State.Waiting.Reason != "" {
+				reason = st.State.Waiting.Reason
+			}
+		}
+		if reason == "" {
+			reason = "-"
+		}
 		out = append(out, PodSummary{
 			Namespace:   p.Namespace,
 			Name:        p.Name,
@@ -382,9 +401,30 @@ func (c *Client) ListPods(ctx context.Context, namespace string, allNamespaces b
 			CreatedAt:   p.CreationTimestamp.Time,
 			Labels:      p.Labels,
 			Annotations: p.Annotations,
+			Ready:       fmt.Sprintf("%d/%d", readyContainers, totalContainers),
+			Restarts:    restarts,
+			Reason:      reason,
 		})
 	}
 	return out, nil
+}
+
+func (c *Client) LeaseHolder(ctx context.Context, namespace, leaseName string) (string, error) {
+	cs, _, err := c.clientset()
+	if err != nil {
+		return "", err
+	}
+	lease, err := cs.CoordinationV1().Leases(namespace).Get(ctx, leaseName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if lease.Spec.HolderIdentity == nil {
+		return "", nil
+	}
+	return *lease.Spec.HolderIdentity, nil
 }
 
 func (c *Client) TouchPodActivity(ctx context.Context, namespace, pod string) error {

@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strconv"
 	"time"
 
+	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
 	syncengine "github.com/acmore/okdev/internal/sync"
@@ -40,6 +42,9 @@ func newUpCmd(opts *Options) *cobra.Command {
 			annotations := annotationsForSession(cfg)
 			pvc := pvcName(cfg, sn)
 			pod := podName(sn)
+			if warnErr := warnIfConfigNewerThanSession(opts, k, ns, sn, pod, cmd.ErrOrStderr()); warnErr != nil {
+				slog.Debug("skip config drift warning", "error", warnErr)
+			}
 
 			ctx, cancel := defaultContext()
 			defer cancel()
@@ -145,6 +150,33 @@ func newUpCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&attach, "attach", false, "Attach shell after session is ready")
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 3*time.Minute, "Wait timeout for pod readiness")
 	return cmd
+}
+
+func warnIfConfigNewerThanSession(opts *Options, k *kube.Client, namespace, sessionName, podName string, errOut io.Writer) error {
+	cfgPath, err := config.ResolvePath(opts.ConfigPath)
+	if err != nil {
+		return err
+	}
+	cfgInfo, err := os.Stat(cfgPath)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pods, err := k.ListPods(ctx, namespace, false, "okdev.io/managed=true,okdev.io/session="+sessionName)
+	if err != nil {
+		return err
+	}
+	for _, p := range pods {
+		if p.Name != podName {
+			continue
+		}
+		if cfgInfo.ModTime().After(p.CreatedAt) {
+			fmt.Fprintf(errOut, "warning: config file is newer than running session pod (%s > %s). Run `okdev down --session %s` then `okdev up --session %s` to apply all changes.\n", cfgInfo.ModTime().UTC().Format(time.RFC3339), p.CreatedAt.UTC().Format(time.RFC3339), sessionName, sessionName)
+		}
+		break
+	}
+	return nil
 }
 
 func runAttachNativeSyncLoop(ctx context.Context, out io.Writer, errOut io.Writer, k *kube.Client, namespace, pod string, pairs []syncengine.Pair, excludes []string, interval time.Duration) {
