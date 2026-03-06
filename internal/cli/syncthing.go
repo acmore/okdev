@@ -120,10 +120,10 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	folderTypeLocal, folderTypeRemote := folderTypesForMode(mode)
 	folderID := "okdev-" + sessionName
 
-	if err := configureSyncthingPeer(localBase, localKey, localID, remoteID, syncthingPeerAddrTunnel, folderID, absLocal, folderTypeLocal); err != nil {
+	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, syncthingPeerAddrTunnel, folderID, absLocal, folderTypeLocal); err != nil {
 		return fmt.Errorf("configure local syncthing: %w", err)
 	}
-	if err := configureSyncthingPeer(remoteBase, remoteKey, remoteID, localID, syncthingPeerAddrDynamic, folderID, pair.Remote, folderTypeRemote); err != nil {
+	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, syncthingPeerAddrDynamic, folderID, pair.Remote, folderTypeRemote); err != nil {
 		return fmt.Errorf("configure remote syncthing: %w", err)
 	}
 
@@ -276,6 +276,8 @@ func readRemoteSyncthingAPIKey(ctx context.Context, k interface {
 
 func waitSyncthingAPI(ctx context.Context, base, key string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
@@ -289,7 +291,7 @@ func waitSyncthingAPI(ctx context.Context, base, key string, timeout time.Durati
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(1 * time.Second):
+		case <-ticker.C:
 		}
 	}
 	return errors.New("API did not become ready")
@@ -375,8 +377,8 @@ func folderTypesForMode(mode string) (local, remote string) {
 	}
 }
 
-func configureSyncthingPeer(base, key, selfID, peerID, peerAddr, folderID, folderPath, folderType string) error {
-	cfg, err := syncthingGetConfig(base, key)
+func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peerAddr, folderID, folderPath, folderType string) error {
+	cfg, err := syncthingGetConfig(ctx, base, key)
 	if err != nil {
 		return err
 	}
@@ -443,15 +445,15 @@ func configureSyncthingPeer(base, key, selfID, peerID, peerAddr, folderID, folde
 	}
 	cfg["folders"] = folders
 
-	if err := syncthingSetConfig(base, key, cfg); err != nil {
+	if err := syncthingSetConfig(ctx, base, key, cfg); err != nil {
 		return err
 	}
-	return syncthingPost(base, key, "/rest/system/restart", nil)
+	return syncthingPost(ctx, base, key, "/rest/system/restart", nil)
 }
 
-func syncthingGetConfig(base, key string) (map[string]any, error) {
+func syncthingGetConfig(ctx context.Context, base, key string) (map[string]any, error) {
 	cfg := map[string]any{}
-	body, err := syncthingAPIRequest(http.MethodGet, base, key, "/rest/config", nil, "")
+	body, err := syncthingAPIRequestWithContext(ctx, http.MethodGet, base, key, "/rest/config", nil, "")
 	if err != nil {
 		return nil, err
 	}
@@ -461,20 +463,20 @@ func syncthingGetConfig(base, key string) (map[string]any, error) {
 	return cfg, nil
 }
 
-func syncthingSetConfig(base, key string, cfg map[string]any) error {
+func syncthingSetConfig(ctx context.Context, base, key string, cfg map[string]any) error {
 	b, err := json.Marshal(cfg)
 	if err != nil {
 		return err
 	}
-	_, err = syncthingAPIRequest(http.MethodPost, base, key, "/rest/config", b, "application/json")
+	_, err = syncthingAPIRequestWithContext(ctx, http.MethodPost, base, key, "/rest/config", b, "application/json")
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func syncthingPost(base, key, path string, body []byte) error {
-	_, err := syncthingAPIRequest(http.MethodPost, base, key, path, body, "")
+func syncthingPost(ctx context.Context, base, key, path string, body []byte) error {
+	_, err := syncthingAPIRequestWithContext(ctx, http.MethodPost, base, key, path, body, "")
 	if err != nil {
 		return err
 	}
@@ -486,7 +488,11 @@ func syncthingAPIRequest(method, base, key, path string, body []byte, contentTyp
 }
 
 func syncthingAPIRequestWithContext(ctx context.Context, method, base, key, path string, body []byte, contentType string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, method, base+path, bytes.NewReader(body))
+	var reqBody io.Reader
+	if len(body) > 0 {
+		reqBody = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, base+path, reqBody)
 	if err != nil {
 		return nil, err
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/acmore/okdev/internal/connect"
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 const sessionHeartbeatInterval = 5 * time.Minute
@@ -233,19 +234,19 @@ func isSessionShareable(p kube.PodSummary) bool {
 func ensureSessionOwnership(opts *Options, k *kube.Client, namespace, sessionName string, allowShareable bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	pods, err := k.ListPods(ctx, namespace, false, "okdev.io/managed=true,okdev.io/session="+sessionName)
+	pod, err := k.GetPodSummary(ctx, namespace, podName(sessionName))
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
 		return err
 	}
-	if len(pods) == 0 {
-		return nil
-	}
 	owner := currentOwner(opts)
-	otherOwner := strings.TrimSpace(pods[0].Labels["okdev.io/owner"])
+	otherOwner := strings.TrimSpace(pod.Labels["okdev.io/owner"])
 	if otherOwner == "" || otherOwner == owner {
 		return nil
 	}
-	if allowShareable && isSessionShareable(pods[0]) {
+	if allowShareable && isSessionShareable(*pod) {
 		return nil
 	}
 	return fmt.Errorf("session %q is owned by %q (current owner: %q); set --owner %s or mark session as shareable", sessionName, otherOwner, owner, otherOwner)

@@ -7,22 +7,34 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 const stateDirName = ".okdev"
 const sessionFileName = "active_session"
 
+var (
+	repoRootOnce sync.Once
+	repoRootVal  string
+	repoRootErr  error
+)
+
 func RepoRoot() (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-	out, err := cmd.Output()
-	if err == nil {
-		return strings.TrimSpace(string(out)), nil
-	}
-	wd, werr := os.Getwd()
-	if werr != nil {
-		return "", fmt.Errorf("get working directory: %w", werr)
-	}
-	return wd, nil
+	repoRootOnce.Do(func() {
+		cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+		out, err := cmd.Output()
+		if err == nil {
+			repoRootVal = strings.TrimSpace(string(out))
+			return
+		}
+		wd, werr := os.Getwd()
+		if werr != nil {
+			repoRootErr = fmt.Errorf("get working directory: %w", werr)
+			return
+		}
+		repoRootVal = wd
+	})
+	return repoRootVal, repoRootErr
 }
 
 func ActiveSessionPath() (string, error) {

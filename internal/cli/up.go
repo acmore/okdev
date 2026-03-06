@@ -193,18 +193,12 @@ func warnIfConfigNewerThanSession(opts *Options, k *kube.Client, namespace, sess
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	pods, err := k.ListPods(ctx, namespace, false, "okdev.io/managed=true,okdev.io/session="+sessionName)
+	podSummary, err := k.GetPodSummary(ctx, namespace, podName)
 	if err != nil {
 		return err
 	}
-	for _, p := range pods {
-		if p.Name != podName {
-			continue
-		}
-		if cfgInfo.ModTime().After(p.CreatedAt) {
-			fmt.Fprintf(errOut, "warning: config file is newer than running session pod (%s > %s). Run `okdev down --session %s` then `okdev up --session %s` to apply all changes.\n", cfgInfo.ModTime().UTC().Format(time.RFC3339), p.CreatedAt.UTC().Format(time.RFC3339), sessionName, sessionName)
-		}
-		break
+	if cfgInfo.ModTime().After(podSummary.CreatedAt) {
+		fmt.Fprintf(errOut, "warning: config file is newer than running session pod (%s > %s). Run `okdev down --session %s` then `okdev up --session %s` to apply all changes.\n", cfgInfo.ModTime().UTC().Format(time.RFC3339), podSummary.CreatedAt.UTC().Format(time.RFC3339), sessionName, sessionName)
 	}
 	return nil
 }

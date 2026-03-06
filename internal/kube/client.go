@@ -21,6 +21,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -75,14 +76,10 @@ func (c *Client) restConfig() (*rest.Config, error) {
 
 func (c *Client) clientset() (*kubernetes.Clientset, *rest.Config, error) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.cachedSet != nil && c.cachedConfig != nil {
-		cs := c.cachedSet
-		cfg := c.cachedConfig
-		c.mu.Unlock()
-		return cs, cfg, nil
+		return c.cachedSet, c.cachedConfig, nil
 	}
-	c.mu.Unlock()
-
 	restCfg, err := c.restConfig()
 	if err != nil {
 		return nil, nil, err
@@ -91,12 +88,8 @@ func (c *Client) clientset() (*kubernetes.Clientset, *rest.Config, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("create kubernetes client: %w", err)
 	}
-
-	c.mu.Lock()
 	c.cachedSet = cs
 	c.cachedConfig = restCfg
-	c.mu.Unlock()
-
 	return cs, restCfg, nil
 }
 
@@ -352,35 +345,22 @@ func (c *Client) ListPods(ctx context.Context, namespace string, allNamespaces b
 	}
 	out := make([]PodSummary, 0, len(pods.Items))
 	for _, p := range pods.Items {
-		readyContainers := 0
-		totalContainers := len(p.Status.ContainerStatuses)
-		var restarts int32
-		reason := p.Status.Reason
-		for _, st := range p.Status.ContainerStatuses {
-			if st.Ready {
-				readyContainers++
-			}
-			restarts += st.RestartCount
-			if reason == "" && st.State.Waiting != nil && st.State.Waiting.Reason != "" {
-				reason = st.State.Waiting.Reason
-			}
-		}
-		if reason == "" {
-			reason = "-"
-		}
-		out = append(out, PodSummary{
-			Namespace:   p.Namespace,
-			Name:        p.Name,
-			Phase:       string(p.Status.Phase),
-			CreatedAt:   p.CreationTimestamp.Time,
-			Labels:      p.Labels,
-			Annotations: p.Annotations,
-			Ready:       fmt.Sprintf("%d/%d", readyContainers, totalContainers),
-			Restarts:    restarts,
-			Reason:      reason,
-		})
+		out = append(out, podSummaryFromPod(&p))
 	}
 	return out, nil
+}
+
+func (c *Client) GetPodSummary(ctx context.Context, namespace, name string) (*PodSummary, error) {
+	cs, _, err := c.clientset()
+	if err != nil {
+		return nil, err
+	}
+	p, err := cs.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	s := podSummaryFromPod(p)
+	return &s, nil
 }
 
 func (c *Client) TouchPodActivity(ctx context.Context, namespace, pod string) error {
@@ -388,16 +368,8 @@ func (c *Client) TouchPodActivity(ctx context.Context, namespace, pod string) er
 	if err != nil {
 		return err
 	}
-	current, err := cs.CoreV1().Pods(namespace).Get(ctx, pod, metav1.GetOptions{})
-	if err != nil {
-		return err
-	}
-	updated := current.DeepCopy()
-	if updated.Annotations == nil {
-		updated.Annotations = map[string]string{}
-	}
-	updated.Annotations["okdev.io/last-attach"] = time.Now().UTC().Format(time.RFC3339)
-	_, err = cs.CoreV1().Pods(namespace).Update(ctx, updated, metav1.UpdateOptions{})
+	patch := []byte(fmt.Sprintf(`{"metadata":{"annotations":{"okdev.io/last-attach":"%s"}}}`, time.Now().UTC().Format(time.RFC3339)))
+	_, err = cs.CoreV1().Pods(namespace).Patch(ctx, pod, types.MergePatchType, patch, metav1.PatchOptions{})
 	return err
 }
 
@@ -445,12 +417,13 @@ func (c *Client) CopyToPod(ctx context.Context, namespace, localPath, podName, r
 	if err != nil {
 		return err
 	}
-	b, err := osReadFile(localPath)
+	f, err := os.Open(localPath)
 	if err != nil {
 		return err
 	}
+	defer f.Close()
 	cmd := []string{"sh", "-lc", fmt.Sprintf("cat > %s", shellQuote(remotePath))}
-	return c.execStream(ctx, cs, cfg, namespace, podName, "", cmd, bytes.NewReader(b), io.Discard, io.Discard, false)
+	return c.execStream(ctx, cs, cfg, namespace, podName, "", cmd, f, io.Discard, io.Discard, false)
 }
 
 func (c *Client) ExtractTarToPod(ctx context.Context, namespace, podName, remoteDir string, tarStream io.Reader) error {
@@ -576,11 +549,40 @@ func shellQuote(s string) string {
 }
 
 // wrappers for testability.
-var osReadFile = func(path string) ([]byte, error) { return os.ReadFile(path) }
 var osWriteFile = func(path string, b []byte, perm fs.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	return os.WriteFile(path, b, perm)
+}
+
+func podSummaryFromPod(p *corev1.Pod) PodSummary {
+	readyContainers := 0
+	totalContainers := len(p.Status.ContainerStatuses)
+	var restarts int32
+	reason := p.Status.Reason
+	for _, st := range p.Status.ContainerStatuses {
+		if st.Ready {
+			readyContainers++
+		}
+		restarts += st.RestartCount
+		if reason == "" && st.State.Waiting != nil && st.State.Waiting.Reason != "" {
+			reason = st.State.Waiting.Reason
+		}
+	}
+	if reason == "" {
+		reason = "-"
+	}
+	return PodSummary{
+		Namespace:   p.Namespace,
+		Name:        p.Name,
+		Phase:       string(p.Status.Phase),
+		CreatedAt:   p.CreationTimestamp.Time,
+		Labels:      p.Labels,
+		Annotations: p.Annotations,
+		Ready:       fmt.Sprintf("%d/%d", readyContainers, totalContainers),
+		Restarts:    restarts,
+		Reason:      reason,
+	}
 }

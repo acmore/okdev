@@ -2,11 +2,9 @@ package syncthing
 
 import (
 	"archive/tar"
-	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -58,12 +56,7 @@ func EnsureBinary(ctx context.Context, version string, autoInstall bool) (string
 	}
 
 	archiveURL := fmt.Sprintf("%s/%s/%s", releaseBaseURL, version, archiveName)
-	checksumURL := fmt.Sprintf("%s/%s/sha256sum.txt", releaseBaseURL, version)
-
-	archive, err := httpGet(ctx, archiveURL)
-	if err != nil {
-		return "", fmt.Errorf("download syncthing archive: %w", err)
-	}
+	checksumURL := fmt.Sprintf("%s/%s/sha256sum.txt.asc", releaseBaseURL, version)
 	checksums, err := httpGet(ctx, checksumURL)
 	if err != nil {
 		return "", fmt.Errorf("download syncthing checksums: %w", err)
@@ -72,12 +65,17 @@ func EnsureBinary(ctx context.Context, version string, autoInstall bool) (string
 	if err != nil {
 		return "", err
 	}
-	got := sha256Hex(archive)
+	archiveFile, got, err := downloadArchiveToTemp(ctx, archiveURL, archiveName)
+	if err != nil {
+		return "", fmt.Errorf("download syncthing archive: %w", err)
+	}
+	defer os.Remove(archiveFile)
+
 	if !strings.EqualFold(want, got) {
 		return "", fmt.Errorf("checksum mismatch for %s: want %s got %s", archiveName, want, got)
 	}
 
-	binary, err := extractSyncthingBinary(archive)
+	binary, err := extractSyncthingBinaryFromFile(archiveFile)
 	if err != nil {
 		return "", err
 	}
@@ -136,13 +134,13 @@ func checksumForArchive(checksums string, archiveName string) (string, error) {
 	return "", fmt.Errorf("checksum for %s not found", archiveName)
 }
 
-func sha256Hex(b []byte) string {
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:])
-}
-
-func extractSyncthingBinary(archive []byte) ([]byte, error) {
-	gz, err := gzip.NewReader(bytes.NewReader(archive))
+func extractSyncthingBinaryFromFile(archivePath string) ([]byte, error) {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
 	if err != nil {
 		return nil, err
 	}
@@ -165,6 +163,41 @@ func extractSyncthingBinary(archive []byte) ([]byte, error) {
 		}
 	}
 	return nil, errors.New("syncthing binary not found in archive")
+}
+
+func downloadArchiveToTemp(ctx context.Context, archiveURL, archiveName string) (string, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, archiveURL, nil)
+	if err != nil {
+		return "", "", err
+	}
+	resp, err := installerHTTPClient.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return "", "", fmt.Errorf("%s returned %s", archiveURL, resp.Status)
+	}
+
+	tmpFile, err := os.CreateTemp("", "okdev-syncthing-"+strings.ReplaceAll(archiveName, "/", "_")+"-*.tar.gz")
+	if err != nil {
+		return "", "", err
+	}
+	tmpName := tmpFile.Name()
+	defer func() {
+		_ = tmpFile.Close()
+	}()
+
+	hasher := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(tmpFile, hasher), resp.Body); err != nil {
+		_ = os.Remove(tmpName)
+		return "", "", err
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return "", "", err
+	}
+	return tmpName, fmt.Sprintf("%x", hasher.Sum(nil)), nil
 }
 
 func lookupInPath(name string) (string, error) {

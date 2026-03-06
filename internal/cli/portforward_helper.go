@@ -7,7 +7,6 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -36,7 +35,10 @@ func startManagedPortForwardWithClient(k interface {
 	}
 
 	ports := localPortsFromForwards(forwards)
-	deadline := time.Now().Add(10 * time.Second)
+	readinessTicker := time.NewTicker(200 * time.Millisecond)
+	defer readinessTicker.Stop()
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
 	for {
 		select {
 		case err := <-errCh:
@@ -45,17 +47,14 @@ func startManagedPortForwardWithClient(k interface {
 				return nil, err
 			}
 			return nil, fmt.Errorf("port-forward exited before ready")
-		default:
-		}
-
-		if allPortsReachable(ports) {
-			return cancelAndWait, nil
-		}
-		if time.Now().After(deadline) {
+		case <-readinessTicker.C:
+			if allPortsReachable(ports) {
+				return cancelAndWait, nil
+			}
+		case <-timeout.C:
 			cancelAndWait()
 			return nil, fmt.Errorf("timeout waiting for port-forward readiness")
 		}
-		time.Sleep(200 * time.Millisecond)
 	}
 }
 
@@ -79,27 +78,12 @@ func allPortsReachable(ports []int) bool {
 	if len(ports) == 0 {
 		return false
 	}
-	var wg sync.WaitGroup
-	results := make(chan bool, len(ports))
 	for _, p := range ports {
-		wg.Add(1)
-		go func(port int) {
-			defer wg.Done()
-			conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
-			if err != nil {
-				results <- false
-				return
-			}
-			_ = conn.Close()
-			results <- true
-		}(p)
-	}
-	wg.Wait()
-	close(results)
-	for ok := range results {
-		if !ok {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", p), 200*time.Millisecond)
+		if err != nil {
 			return false
 		}
+		_ = conn.Close()
 	}
 	return true
 }
