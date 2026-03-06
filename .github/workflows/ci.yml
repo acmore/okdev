@@ -17,10 +17,7 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test -race ./...
-      - name: Lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          args: --disable-all --enable=gofmt --enable=govet --timeout=5m
+      - name: Fmt
+        run: test -z "$(gofmt -l .)"
       - name: Build
         run: go build ./cmd/okdev
