@@ -79,27 +79,9 @@ type SSHSpec struct {
 	PrivateKeyPath string `yaml:"privateKeyPath"`
 }
 
-func (d *DevEnvironment) Validate() error {
+func (d *DevEnvironment) SetDefaults() {
 	if d == nil {
-		return errors.New("config is nil")
-	}
-	if d.APIVersion == "" {
-		return errors.New("apiVersion is required")
-	}
-	if d.APIVersion != "okdev.io/v1alpha1" {
-		return fmt.Errorf("apiVersion must be okdev.io/v1alpha1, got %q", d.APIVersion)
-	}
-	if d.Kind == "" {
-		return errors.New("kind is required")
-	}
-	if d.Kind != "DevEnvironment" {
-		return fmt.Errorf("kind must be DevEnvironment, got %q", d.Kind)
-	}
-	if d.Metadata.Name == "" {
-		return errors.New("metadata.name is required")
-	}
-	if d.Spec.Workspace.MountPath == "" {
-		return errors.New("spec.workspace.mountPath is required")
+		return
 	}
 	if d.Spec.Namespace == "" {
 		d.Spec.Namespace = "default"
@@ -125,6 +107,33 @@ func (d *DevEnvironment) Validate() error {
 	}
 	if d.Spec.SSH.LocalPort == 0 {
 		d.Spec.SSH.LocalPort = 2222
+	}
+}
+
+func (d *DevEnvironment) Validate() error {
+	if d == nil {
+		return errors.New("config is nil")
+	}
+	if d.APIVersion == "" {
+		return errors.New("apiVersion is required")
+	}
+	if d.APIVersion != "okdev.io/v1alpha1" {
+		return fmt.Errorf("apiVersion must be okdev.io/v1alpha1, got %q", d.APIVersion)
+	}
+	if d.Kind == "" {
+		return errors.New("kind is required")
+	}
+	if d.Kind != "DevEnvironment" {
+		return fmt.Errorf("kind must be DevEnvironment, got %q", d.Kind)
+	}
+	if d.Metadata.Name == "" {
+		return errors.New("metadata.name is required")
+	}
+	if d.Spec.Workspace.MountPath == "" {
+		return errors.New("spec.workspace.mountPath is required")
+	}
+	if d.Spec.Sync.Engine != "native" && d.Spec.Sync.Engine != "syncthing" {
+		return fmt.Errorf("spec.sync.engine must be native or syncthing, got %q", d.Spec.Sync.Engine)
 	}
 	return nil
 }

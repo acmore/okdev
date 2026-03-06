@@ -6,7 +6,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func BuildPVCManifest(namespace, name, size, storageClass string, labels map[string]string) ([]byte, error) {
+func BuildPVCManifest(namespace, name, size, storageClass string, labels map[string]string, annotations map[string]string) ([]byte, error) {
 	if size == "" {
 		size = "50Gi"
 	}
@@ -14,9 +14,10 @@ func BuildPVCManifest(namespace, name, size, storageClass string, labels map[str
 		"apiVersion": "v1",
 		"kind":       "PersistentVolumeClaim",
 		"metadata": map[string]any{
-			"name":      name,
-			"namespace": namespace,
-			"labels":    labels,
+			"name":        name,
+			"namespace":   namespace,
+			"labels":      labels,
+			"annotations": annotations,
 		},
 		"spec": map[string]any{
 			"accessModes": []string{"ReadWriteOnce"},
@@ -37,7 +38,7 @@ func BuildPVCManifest(namespace, name, size, storageClass string, labels map[str
 	return b, nil
 }
 
-func BuildPodManifest(namespace, name, claimName string, labels map[string]string, podSpec map[string]any) ([]byte, error) {
+func BuildPodManifest(namespace, name, claimName string, labels map[string]string, annotations map[string]string, podSpec map[string]any) ([]byte, error) {
 	spec := podSpec
 	if len(spec) == 0 {
 		spec = map[string]any{
@@ -66,9 +67,10 @@ func BuildPodManifest(namespace, name, claimName string, labels map[string]strin
 		"apiVersion": "v1",
 		"kind":       "Pod",
 		"metadata": map[string]any{
-			"name":      name,
-			"namespace": namespace,
-			"labels":    labels,
+			"name":        name,
+			"namespace":   namespace,
+			"labels":      labels,
+			"annotations": annotations,
 		},
 		"spec": spec,
 	}

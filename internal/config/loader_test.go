@@ -90,6 +90,30 @@ func TestLoadValidationError(t *testing.T) {
 	}
 }
 
+func TestResolvePathStopsAtGitRoot(t *testing.T) {
+	tmp := t.TempDir()
+	repo := filepath.Join(tmp, "repo")
+	child := filepath.Join(repo, "a", "b")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Config outside the git repo should not be discovered.
+	writeFile(t, filepath.Join(tmp, DefaultFile), validConfigYAML("outside"))
+
+	oldwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(child); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ResolvePath(""); err == nil {
+		t.Fatal("expected no config found because discovery should stop at git root")
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

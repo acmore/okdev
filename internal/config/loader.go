@@ -29,6 +29,7 @@ func Load(configPath string) (*DevEnvironment, string, error) {
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return nil, "", fmt.Errorf("parse config %q: %w", path, err)
 	}
+	cfg.SetDefaults()
 	if err := cfg.Validate(); err != nil {
 		return nil, "", fmt.Errorf("validate config %q: %w", path, err)
 	}
@@ -53,7 +54,8 @@ func ResolvePath(configPath string) (string, error) {
 		return "", fmt.Errorf("get working directory: %w", err)
 	}
 
-	p, err := discoverInParents(wd, DefaultFile, LegacyFile)
+	gitRoot, _ := findGitRoot(wd)
+	p, err := discoverInParents(wd, gitRoot, DefaultFile, LegacyFile)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("no config found; create %s or pass -c/--config", DefaultFile)
@@ -63,7 +65,7 @@ func ResolvePath(configPath string) (string, error) {
 	return p, nil
 }
 
-func discoverInParents(start string, names ...string) (string, error) {
+func discoverInParents(start, stopAt string, names ...string) (string, error) {
 	current := start
 	for {
 		for _, name := range names {
@@ -72,7 +74,26 @@ func discoverInParents(start string, names ...string) (string, error) {
 				return candidate, nil
 			}
 		}
+		if stopAt != "" && current == stopAt {
+			break
+		}
 
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
+	}
+	return "", os.ErrNotExist
+}
+
+func findGitRoot(start string) (string, error) {
+	current := start
+	for {
+		dotgit := filepath.Join(current, ".git")
+		if _, err := os.Stat(dotgit); err == nil {
+			return current, nil
+		}
 		parent := filepath.Dir(current)
 		if parent == current {
 			break

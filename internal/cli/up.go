@@ -26,6 +26,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			labels := labelsForSession(cfg, sn)
+			annotations := annotationsForSession(cfg)
 			pvc := pvcName(cfg, sn)
 			pod := podName(sn)
 
@@ -34,7 +35,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 			k := newKubeClient(opts)
 
 			if cfg.Spec.Workspace.PVC.ClaimName == "" {
-				pvcManifest, err := kube.BuildPVCManifest(ns, pvc, cfg.Spec.Workspace.PVC.Size, cfg.Spec.Workspace.PVC.StorageClassName, labels)
+				pvcManifest, err := kube.BuildPVCManifest(ns, pvc, cfg.Spec.Workspace.PVC.Size, cfg.Spec.Workspace.PVC.StorageClassName, labels, annotations)
 				if err != nil {
 					return err
 				}
@@ -54,7 +55,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 				return err
 			}
 
-			podManifest, err := kube.BuildPodManifest(ns, pod, pvc, labels, preparedSpec)
+			podManifest, err := kube.BuildPodManifest(ns, pod, pvc, labels, annotations, preparedSpec)
 			if err != nil {
 				return err
 			}

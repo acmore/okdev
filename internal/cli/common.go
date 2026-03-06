@@ -51,6 +51,19 @@ func labelsForSession(cfg *config.DevEnvironment, sessionName string) map[string
 	}
 }
 
+func annotationsForSession(cfg *config.DevEnvironment) map[string]string {
+	out := map[string]string{
+		"okdev.io/last-attach": time.Now().UTC().Format(time.RFC3339),
+	}
+	if cfg.Spec.Session.TTLHours > 0 {
+		out["okdev.io/ttl-hours"] = fmt.Sprintf("%d", cfg.Spec.Session.TTLHours)
+	}
+	if cfg.Spec.Session.IdleTimeoutMinutes > 0 {
+		out["okdev.io/idle-timeout-minutes"] = fmt.Sprintf("%d", cfg.Spec.Session.IdleTimeoutMinutes)
+	}
+	return out
+}
+
 func podName(sessionName string) string {
 	return "okdev-" + sessionName
 }

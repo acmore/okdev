@@ -1,0 +1,67 @@
+package cli
+
+import (
+	"os"
+	"testing"
+	"time"
+
+	"github.com/acmore/okdev/internal/config"
+)
+
+func TestNamesAndLabels(t *testing.T) {
+	t.Setenv("USER", "alice")
+	cfg := &config.DevEnvironment{Metadata: config.Metadata{Name: "proj"}}
+	labels := labelsForSession(cfg, "sess1")
+	if labels["okdev.io/session"] != "sess1" {
+		t.Fatalf("session label mismatch: %+v", labels)
+	}
+	if labels["okdev.io/owner"] != "alice" {
+		t.Fatalf("owner label mismatch: %+v", labels)
+	}
+	if podName("sess1") != "okdev-sess1" {
+		t.Fatalf("unexpected pod name %q", podName("sess1"))
+	}
+}
+
+func TestPVCName(t *testing.T) {
+	cfg := &config.DevEnvironment{}
+	if pvcName(cfg, "s1") != "okdev-s1-workspace" {
+		t.Fatal("unexpected pvc default name")
+	}
+	cfg.Spec.Workspace.PVC.ClaimName = "existing"
+	if pvcName(cfg, "s1") != "existing" {
+		t.Fatal("expected explicit claim name")
+	}
+}
+
+func TestAnnotationsForSession(t *testing.T) {
+	cfg := &config.DevEnvironment{}
+	cfg.Spec.Session.TTLHours = 72
+	cfg.Spec.Session.IdleTimeoutMinutes = 120
+	a := annotationsForSession(cfg)
+	if a["okdev.io/ttl-hours"] != "72" || a["okdev.io/idle-timeout-minutes"] != "120" {
+		t.Fatalf("unexpected annotations: %+v", a)
+	}
+	if _, err := time.Parse(time.RFC3339, a["okdev.io/last-attach"]); err != nil {
+		t.Fatalf("invalid timestamp: %v", err)
+	}
+}
+
+func TestAge(t *testing.T) {
+	if age(time.Time{}) != "-" {
+		t.Fatal("zero time should render as -")
+	}
+	now := time.Now()
+	if got := age(now.Add(-30 * time.Second)); got == "-" {
+		t.Fatalf("unexpected age: %s", got)
+	}
+}
+
+func TestEnsureCommandMissing(t *testing.T) {
+	oldPath := os.Getenv("PATH")
+	t.Cleanup(func() { _ = os.Setenv("PATH", oldPath) })
+	_ = os.Setenv("PATH", "")
+	if err := ensureCommand("definitely-not-a-real-command"); err == nil {
+		t.Fatal("expected missing command error")
+	}
+}

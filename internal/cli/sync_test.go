@@ -27,3 +27,10 @@ func TestSyncPairsInvalid(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestShellEscape(t *testing.T) {
+	got := shellEscape("a'b")
+	if got != "'a'\\''b'" {
+		t.Fatalf("unexpected escaped shell string %q", got)
+	}
+}
