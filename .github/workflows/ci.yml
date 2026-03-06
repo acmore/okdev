@@ -18,7 +18,7 @@ jobs:
       - name: Test
         run: go test -race ./...
       - name: Lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
           version: latest
           args: --disable-all --enable=gofmt --enable=govet --timeout=5m
