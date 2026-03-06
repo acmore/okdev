@@ -13,7 +13,7 @@ func TestBuildPVCManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(m)
-	if !strings.Contains(s, "PersistentVolumeClaim") || !strings.Contains(s, "10Gi") || !strings.Contains(s, "okdev.io/ttl-hours") {
+	if !strings.Contains(s, "PersistentVolumeClaim") || !strings.Contains(s, "ReadWriteOnce") || !strings.Contains(s, "okdev.io/ttl-hours") {
 		t.Fatalf("unexpected manifest: %s", s)
 	}
 }

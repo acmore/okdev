@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -65,14 +64,11 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				}
 			}
 
-			pfCmd, err := startSSHPortForward(opts, ns, podName(sn), localPort, remotePort)
+			cancelPF, err := startSSHPortForward(opts, ns, podName(sn), localPort, remotePort)
 			if err != nil {
 				return err
 			}
-			defer func() {
-				_ = pfCmd.Process.Kill()
-				_, _ = pfCmd.Process.Wait()
-			}()
+			defer cancelPF()
 
 			sshArgs := []string{
 				"-p", fmt.Sprintf("%d", localPort),
@@ -138,49 +134,6 @@ func ensureSSHKeyOnPod(opts *Options, namespace, pod, keyPath string) error {
 	return nil
 }
 
-func startSSHPortForward(opts *Options, namespace, pod string, localPort, remotePort int) (*exec.Cmd, error) {
-	args := []string{}
-	if opts.Context != "" {
-		args = append(args, "--context", opts.Context)
-	}
-	args = append(args, "-n", namespace, "port-forward", "pod/"+pod, fmt.Sprintf("%d:%d", localPort, remotePort))
-	cmd := exec.Command("kubectl", args...)
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	ready := make(chan error, 1)
-	go func() {
-		s := bufio.NewScanner(stderr)
-		for s.Scan() {
-			line := s.Text()
-			if strings.Contains(line, "Forwarding from") {
-				ready <- nil
-				return
-			}
-		}
-		if err := s.Err(); err != nil {
-			ready <- err
-			return
-		}
-		ready <- errors.New("port-forward exited before becoming ready")
-	}()
-
-	select {
-	case err := <-ready:
-		if err != nil {
-			_ = cmd.Process.Kill()
-			_, _ = cmd.Process.Wait()
-			return nil, err
-		}
-		return cmd, nil
-	case <-time.After(10 * time.Second):
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
-		return nil, errors.New("timeout waiting for ssh port-forward")
-	}
+func startSSHPortForward(opts *Options, namespace, pod string, localPort, remotePort int) (context.CancelFunc, error) {
+	return startManagedPortForward(opts, namespace, pod, []string{fmt.Sprintf("%d:%d", localPort, remotePort)})
 }

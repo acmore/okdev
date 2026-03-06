@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -66,14 +65,11 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		return err
 	}
 
-	pfCmd, err := startSyncthingPortForward(opts, namespace, pod)
+	cancelPF, err := startSyncthingPortForward(opts, namespace, pod)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		_ = pfCmd.Process.Kill()
-		_, _ = pfCmd.Process.Wait()
-	}()
+	defer cancelPF()
 
 	localKey, err := readLocalSyncthingAPIKey(localHome)
 	if err != nil {
@@ -170,51 +166,8 @@ func startLocalSyncthing(binary, home string) error {
 	return nil
 }
 
-func startSyncthingPortForward(opts *Options, namespace, pod string) (*exec.Cmd, error) {
-	args := []string{}
-	if opts.Context != "" {
-		args = append(args, "--context", opts.Context)
-	}
-	args = append(args, "-n", namespace, "port-forward", "pod/"+pod, "18384:8384", "22000:22000")
-	cmd := exec.Command("kubectl", args...)
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	ready := make(chan error, 1)
-	go func() {
-		s := bufio.NewScanner(stderr)
-		for s.Scan() {
-			line := s.Text()
-			if strings.Contains(line, "Forwarding from") {
-				ready <- nil
-				return
-			}
-		}
-		if err := s.Err(); err != nil {
-			ready <- err
-			return
-		}
-		ready <- errors.New("port-forward exited before becoming ready")
-	}()
-
-	select {
-	case err := <-ready:
-		if err != nil {
-			_ = cmd.Process.Kill()
-			_, _ = cmd.Process.Wait()
-			return nil, err
-		}
-		return cmd, nil
-	case <-time.After(10 * time.Second):
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
-		return nil, errors.New("timeout waiting for syncthing port-forward")
-	}
+func startSyncthingPortForward(opts *Options, namespace, pod string) (context.CancelFunc, error) {
+	return startManagedPortForward(opts, namespace, pod, []string{"18384:8384", "22000:22000"})
 }
 
 type syncthingConfigXML struct {

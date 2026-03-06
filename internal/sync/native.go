@@ -117,7 +117,7 @@ func syncDownPath(ctx context.Context, k Client, namespace, pod string, p Pair, 
 		}
 		excludeFlags += fmt.Sprintf(" --exclude=%s", ShellEscape(strings.TrimSpace(ex)))
 	}
-	if _, err := k.ExecSh(ctx, namespace, pod, fmt.Sprintf("tar -cf %s -C %s%s .", remoteTar, ShellEscape(p.Remote), excludeFlags)); err != nil {
+	if _, err := k.ExecSh(ctx, namespace, pod, fmt.Sprintf("tar -cf %s%s -C %s .", remoteTar, excludeFlags, ShellEscape(p.Remote))); err != nil {
 		return err
 	}
 	if err := k.CopyFromPod(ctx, namespace, pod, remoteTar, localTar); err != nil {

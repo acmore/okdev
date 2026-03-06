@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -96,8 +97,15 @@ func (c *Client) Apply(ctx context.Context, namespace string, manifest []byte) e
 		if err != nil {
 			return err
 		}
-		pod.ResourceVersion = existing.ResourceVersion
-		_, err = cs.CoreV1().Pods(namespace).Update(ctx, &pod, metav1.UpdateOptions{})
+		if reflect.DeepEqual(existing.Spec, pod.Spec) &&
+			reflect.DeepEqual(existing.Labels, pod.Labels) &&
+			reflect.DeepEqual(existing.Annotations, pod.Annotations) {
+			return nil
+		}
+		if err := cs.CoreV1().Pods(namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil {
+			return err
+		}
+		_, err = cs.CoreV1().Pods(namespace).Create(ctx, &pod, metav1.CreateOptions{})
 		return err
 	case "PersistentVolumeClaim":
 		var pvc corev1.PersistentVolumeClaim
@@ -272,19 +280,19 @@ func (c *Client) ExecInteractive(ctx context.Context, namespace, pod string, tty
 	if len(command) == 0 {
 		return errors.New("exec command cannot be empty")
 	}
-	_, cfg, err := c.clientset()
+	cs, cfg, err := c.clientset()
 	if err != nil {
 		return err
 	}
-	return c.execStream(ctx, cfg, namespace, pod, "", command, stdin, stdout, stderr, tty)
+	return c.execStream(ctx, cs, cfg, namespace, pod, "", command, stdin, stdout, stderr, tty)
 }
 
 func (c *Client) PortForward(ctx context.Context, namespace, pod string, forwards []string, stdout io.Writer, stderr io.Writer) error {
-	_, cfg, err := c.clientset()
+	cs, cfg, err := c.clientset()
 	if err != nil {
 		return err
 	}
-	reqURL, err := c.portForwardURL(namespace, pod)
+	reqURL, err := c.portForwardURL(cs, namespace, pod)
 	if err != nil {
 		return err
 	}
@@ -308,7 +316,7 @@ func (c *Client) PortForward(ctx context.Context, namespace, pod string, forward
 }
 
 func (c *Client) CopyToPod(ctx context.Context, namespace, localPath, podName, remotePath string) error {
-	_, cfg, err := c.clientset()
+	cs, cfg, err := c.clientset()
 	if err != nil {
 		return err
 	}
@@ -317,18 +325,18 @@ func (c *Client) CopyToPod(ctx context.Context, namespace, localPath, podName, r
 		return err
 	}
 	cmd := []string{"sh", "-lc", fmt.Sprintf("cat > %s", shellQuote(remotePath))}
-	return c.execStream(ctx, cfg, namespace, podName, "", cmd, bytes.NewReader(b), io.Discard, io.Discard, false)
+	return c.execStream(ctx, cs, cfg, namespace, podName, "", cmd, bytes.NewReader(b), io.Discard, io.Discard, false)
 }
 
 func (c *Client) CopyFromPod(ctx context.Context, namespace, podName, remotePath, localPath string) error {
-	_, cfg, err := c.clientset()
+	cs, cfg, err := c.clientset()
 	if err != nil {
 		return err
 	}
 	var out bytes.Buffer
 	var errBuf bytes.Buffer
 	cmd := []string{"sh", "-lc", fmt.Sprintf("cat %s", shellQuote(remotePath))}
-	if err := c.execStream(ctx, cfg, namespace, podName, "", cmd, nil, &out, &errBuf, false); err != nil {
+	if err := c.execStream(ctx, cs, cfg, namespace, podName, "", cmd, nil, &out, &errBuf, false); err != nil {
 		return err
 	}
 	if err := osWriteFile(localPath, out.Bytes(), 0o644); err != nil {
@@ -370,13 +378,13 @@ func (c *Client) ExecShInContainer(ctx context.Context, namespace, pod, containe
 }
 
 func (c *Client) execCapture(ctx context.Context, namespace, pod, container string, command []string) ([]byte, error) {
-	_, cfg, err := c.clientset()
+	cs, cfg, err := c.clientset()
 	if err != nil {
 		return nil, err
 	}
 	var out bytes.Buffer
 	var errBuf bytes.Buffer
-	if err := c.execStream(ctx, cfg, namespace, pod, container, command, nil, &out, &errBuf, false); err != nil {
+	if err := c.execStream(ctx, cs, cfg, namespace, pod, container, command, nil, &out, &errBuf, false); err != nil {
 		if errBuf.Len() > 0 {
 			return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(errBuf.String()))
 		}
@@ -385,11 +393,7 @@ func (c *Client) execCapture(ctx context.Context, namespace, pod, container stri
 	return out.Bytes(), nil
 }
 
-func (c *Client) execStream(ctx context.Context, cfg *rest.Config, namespace, pod, container string, command []string, stdin io.Reader, stdout, stderr io.Writer, tty bool) error {
-	cs, _, err := c.clientset()
-	if err != nil {
-		return err
-	}
+func (c *Client) execStream(ctx context.Context, cs *kubernetes.Clientset, cfg *rest.Config, namespace, pod, container string, command []string, stdin io.Reader, stdout, stderr io.Writer, tty bool) error {
 	req := cs.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(pod).
@@ -419,11 +423,7 @@ func (c *Client) execStream(ctx context.Context, cfg *rest.Config, namespace, po
 	})
 }
 
-func (c *Client) portForwardURL(namespace, pod string) (*url.URL, error) {
-	cs, _, err := c.clientset()
-	if err != nil {
-		return nil, err
-	}
+func (c *Client) portForwardURL(cs *kubernetes.Clientset, namespace, pod string) (*url.URL, error) {
 	req := cs.CoreV1().RESTClient().Post().Resource("pods").Namespace(namespace).Name(pod).SubResource("portforward")
 	return req.URL(), nil
 }

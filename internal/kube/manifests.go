@@ -5,6 +5,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -12,28 +13,34 @@ func BuildPVCManifest(namespace, name, size, storageClass string, labels map[str
 	if size == "" {
 		size = "50Gi"
 	}
-	m := map[string]any{
-		"apiVersion": "v1",
-		"kind":       "PersistentVolumeClaim",
-		"metadata": map[string]any{
-			"name":        name,
-			"namespace":   namespace,
-			"labels":      labels,
-			"annotations": annotations,
+	qty, err := resource.ParseQuantity(size)
+	if err != nil {
+		return nil, fmt.Errorf("parse pvc size %q: %w", size, err)
+	}
+	pvc := corev1.PersistentVolumeClaim{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "PersistentVolumeClaim",
 		},
-		"spec": map[string]any{
-			"accessModes": []string{"ReadWriteOnce"},
-			"resources": map[string]any{
-				"requests": map[string]string{
-					"storage": size,
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        name,
+			Namespace:   namespace,
+			Labels:      labels,
+			Annotations: annotations,
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: qty,
 				},
 			},
 		},
 	}
 	if storageClass != "" {
-		m["spec"].(map[string]any)["storageClassName"] = storageClass
+		pvc.Spec.StorageClassName = &storageClass
 	}
-	b, err := yaml.Marshal(m)
+	b, err := yaml.Marshal(pvc)
 	if err != nil {
 		return nil, fmt.Errorf("marshal pvc manifest: %w", err)
 	}
