@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -75,12 +76,30 @@ func localPortsFromForwards(forwards []string) []int {
 }
 
 func allPortsReachable(ports []int) bool {
+	if len(ports) == 0 {
+		return false
+	}
+	var wg sync.WaitGroup
+	results := make(chan bool, len(ports))
 	for _, p := range ports {
-		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", p), 200*time.Millisecond)
-		if err != nil {
+		wg.Add(1)
+		go func(port int) {
+			defer wg.Done()
+			conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
+			if err != nil {
+				results <- false
+				return
+			}
+			_ = conn.Close()
+			results <- true
+		}(p)
+	}
+	wg.Wait()
+	close(results)
+	for ok := range results {
+		if !ok {
 			return false
 		}
-		_ = conn.Close()
 	}
-	return len(ports) > 0
+	return true
 }

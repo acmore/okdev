@@ -83,3 +83,33 @@ func TestRunOnceHonorsParentContextCancellation(t *testing.T) {
 		t.Fatalf("expected context cancellation error, got %v", err)
 	}
 }
+
+type noopSyncClient struct{}
+
+func (noopSyncClient) CopyToPod(context.Context, string, string, string, string) error { return nil }
+func (noopSyncClient) CopyFromPod(context.Context, string, string, string, string) error {
+	return nil
+}
+func (noopSyncClient) ExecSh(context.Context, string, string, string) ([]byte, error) {
+	return nil, nil
+}
+
+func TestRunOnceWithReportUpFile(t *testing.T) {
+	tmp := t.TempDir()
+	local := filepath.Join(tmp, "file.txt")
+	content := []byte("hello")
+	if err := os.WriteFile(local, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := RunOnceWithReport(context.Background(), "up", noopSyncClient{}, "ns", "pod", []Pair{{Local: local, Remote: "/workspace/file.txt"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Paths != 1 {
+		t.Fatalf("unexpected paths count: %d", stats.Paths)
+	}
+	if stats.UploadBytes != int64(len(content)) {
+		t.Fatalf("unexpected upload bytes: %d", stats.UploadBytes)
+	}
+}

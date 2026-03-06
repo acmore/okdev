@@ -80,7 +80,8 @@ func newSyncCmd(opts *Options) *cobra.Command {
 							return nil
 						default:
 						}
-						if err := syncengine.RunOnce(watchCtx, mode, k, ns, pod, pairs, cfg.Spec.Sync.Exclude); err != nil {
+						stats, err := syncengine.RunOnceWithReport(watchCtx, mode, k, ns, pod, pairs, cfg.Spec.Sync.Exclude)
+						if err != nil {
 							slog.Warn("watch sync tick failed", "namespace", ns, "session", sn, "pod", pod, "mode", mode, "backoff", backoff.String(), "error", err)
 							fmt.Fprintf(cmd.ErrOrStderr(), "sync tick failed: %v (retrying in %s)\n", err, backoff)
 							select {
@@ -99,7 +100,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 						}
 						backoff = 1 * time.Second
 						slog.Debug("watch sync tick completed", "namespace", ns, "session", sn, "pod", pod, "mode", mode)
-						fmt.Fprintf(cmd.OutOrStdout(), "Sync tick completed at %s\n", time.Now().Format(time.RFC3339))
+						fmt.Fprintf(cmd.OutOrStdout(), "Sync tick completed at %s (paths=%d upload=%dB download=%dB)\n", time.Now().Format(time.RFC3339), stats.Paths, stats.UploadBytes, stats.DownloadBytes)
 						select {
 						case <-sigCh:
 							fmt.Fprintln(cmd.OutOrStdout(), "Stopping watch sync")
@@ -108,13 +109,11 @@ func newSyncCmd(opts *Options) *cobra.Command {
 						}
 					}
 				}
-				if err := syncengine.RunOnce(context.Background(), mode, k, ns, pod, pairs, cfg.Spec.Sync.Exclude); err != nil {
+				stats, err := syncengine.RunOnceWithReport(context.Background(), mode, k, ns, pod, pairs, cfg.Spec.Sync.Exclude)
+				if err != nil {
 					return fmt.Errorf("run sync once: %w", err)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Sync complete (%s/%s) for session %s\n", engine, mode, sn)
-				if mode == "bi" {
-					fmt.Fprintln(cmd.OutOrStdout(), "Note: bi mode currently performs upload then download in sequence")
-				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Sync complete (%s/%s) for session %s (paths=%d upload=%dB download=%dB)\n", engine, mode, sn, stats.Paths, stats.UploadBytes, stats.DownloadBytes)
 				return nil
 			case "syncthing":
 				return runSyncthingSync(cmd, opts, cfg, ns, sn, mode, pairs)

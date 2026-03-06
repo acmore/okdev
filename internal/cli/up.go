@@ -157,7 +157,8 @@ func runAttachNativeSyncLoop(ctx context.Context, out io.Writer, errOut io.Write
 			return
 		default:
 		}
-		if err := syncengine.RunOnce(ctx, "bi", k, namespace, pod, pairs, excludes); err != nil {
+		stats, err := syncengine.RunOnceWithReport(ctx, "bi", k, namespace, pod, pairs, excludes)
+		if err != nil {
 			slog.Warn("background sync tick failed", "namespace", namespace, "pod", pod, "backoff", backoff.String(), "error", err)
 			fmt.Fprintf(errOut, "background sync tick failed: %v (retry in %s)\n", err, backoff)
 			select {
@@ -175,7 +176,7 @@ func runAttachNativeSyncLoop(ctx context.Context, out io.Writer, errOut io.Write
 		}
 		backoff = time.Second
 		slog.Debug("background sync tick completed", "namespace", namespace, "pod", pod)
-		fmt.Fprintf(out, "Background sync tick completed at %s\n", time.Now().Format(time.RFC3339))
+		fmt.Fprintf(out, "Background sync tick completed at %s (paths=%d upload=%dB download=%dB)\n", time.Now().Format(time.RFC3339), stats.Paths, stats.UploadBytes, stats.DownloadBytes)
 		select {
 		case <-ctx.Done():
 			return

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/acmore/okdev/internal/shellutil"
@@ -21,6 +22,12 @@ type Client interface {
 	CopyToPod(context.Context, string, string, string, string) error
 	CopyFromPod(context.Context, string, string, string, string) error
 	ExecSh(context.Context, string, string, string) ([]byte, error)
+}
+
+type Report struct {
+	UploadBytes   int64
+	DownloadBytes int64
+	Paths         int
 }
 
 func ParsePairs(configured []string, defaultRemote string) ([]Pair, error) {
@@ -39,76 +46,122 @@ func ParsePairs(configured []string, defaultRemote string) ([]Pair, error) {
 }
 
 func RunOnce(parent context.Context, mode string, k Client, namespace, pod string, pairs []Pair, excludes []string) error {
+	_, err := RunOnceWithReport(parent, mode, k, namespace, pod, pairs, excludes)
+	return err
+}
+
+func RunOnceWithReport(parent context.Context, mode string, k Client, namespace, pod string, pairs []Pair, excludes []string) (Report, error) {
 	if parent == nil {
 		parent = context.Background()
 	}
+	var report Report
 	switch mode {
 	case "up":
 		for _, p := range pairs {
 			ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
-			err := syncUpPath(ctx, k, namespace, pod, p, excludes)
+			stats, err := syncUpPath(ctx, k, namespace, pod, p, excludes)
 			cancel()
 			if err != nil {
-				return err
+				return Report{}, err
 			}
+			report.UploadBytes += stats.UploadBytes
+			report.Paths++
 		}
 	case "down":
 		for _, p := range pairs {
 			ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
-			err := syncDownPath(ctx, k, namespace, pod, p, excludes)
+			stats, err := syncDownPath(ctx, k, namespace, pod, p, excludes)
 			cancel()
 			if err != nil {
-				return err
+				return Report{}, err
 			}
+			report.DownloadBytes += stats.DownloadBytes
+			report.Paths++
 		}
 	case "bi":
-		if err := RunOnce(parent, "up", k, namespace, pod, pairs, excludes); err != nil {
-			return err
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		var firstErr error
+		run := func(direction string) {
+			defer wg.Done()
+			stats, err := RunOnceWithReport(parent, direction, k, namespace, pod, pairs, excludes)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				return
+			}
+			report.UploadBytes += stats.UploadBytes
+			report.DownloadBytes += stats.DownloadBytes
+			if stats.Paths > report.Paths {
+				report.Paths = stats.Paths
+			}
 		}
-		if err := RunOnce(parent, "down", k, namespace, pod, pairs, excludes); err != nil {
-			return err
+		wg.Add(2)
+		go run("up")
+		go run("down")
+		wg.Wait()
+		if firstErr != nil {
+			return Report{}, firstErr
 		}
 	default:
-		return fmt.Errorf("unsupported mode %q (supported: up|down|bi)", mode)
+		return Report{}, fmt.Errorf("unsupported mode %q (supported: up|down|bi)", mode)
 	}
-	return nil
+	return report, nil
 }
 
-func syncUpPath(ctx context.Context, k Client, namespace, pod string, p Pair, excludes []string) error {
+type pathStats struct {
+	UploadBytes   int64
+	DownloadBytes int64
+}
+
+func syncUpPath(ctx context.Context, k Client, namespace, pod string, p Pair, excludes []string) (pathStats, error) {
 	absLocal, err := filepath.Abs(p.Local)
 	if err != nil {
-		return err
+		return pathStats{}, err
 	}
 	st, err := os.Stat(absLocal)
 	if err != nil {
-		return err
+		return pathStats{}, err
 	}
 
 	if !st.IsDir() {
-		return k.CopyToPod(ctx, namespace, absLocal, pod, p.Remote)
+		if err := k.CopyToPod(ctx, namespace, absLocal, pod, p.Remote); err != nil {
+			return pathStats{}, err
+		}
+		return pathStats{UploadBytes: st.Size()}, nil
 	}
 
 	tarFile := filepath.Join(os.TempDir(), fmt.Sprintf("okdev-up-%d.tar", time.Now().UnixNano()))
 	defer os.Remove(tarFile)
 
 	if err := createTar(absLocal, tarFile, excludes); err != nil {
-		return err
+		return pathStats{}, err
+	}
+	tarStat, err := os.Stat(tarFile)
+	if err != nil {
+		return pathStats{}, err
 	}
 	remoteTar := "/tmp/okdev-sync-up.tar"
 	if err := k.CopyToPod(ctx, namespace, tarFile, pod, remoteTar); err != nil {
-		return err
+		return pathStats{}, err
 	}
 	_, err = k.ExecSh(ctx, namespace, pod, fmt.Sprintf("mkdir -p %s && tar -xf %s -C %s && rm -f %s", ShellEscape(p.Remote), remoteTar, ShellEscape(p.Remote), remoteTar))
-	return err
+	if err != nil {
+		return pathStats{}, err
+	}
+	return pathStats{UploadBytes: tarStat.Size()}, nil
 }
 
-func syncDownPath(ctx context.Context, k Client, namespace, pod string, p Pair, excludes []string) error {
+func syncDownPath(ctx context.Context, k Client, namespace, pod string, p Pair, excludes []string) (pathStats, error) {
 	absLocal, err := filepath.Abs(p.Local)
 	if err != nil {
-		return err
+		return pathStats{}, err
 	}
 	if err := os.MkdirAll(absLocal, 0o755); err != nil {
-		return err
+		return pathStats{}, err
 	}
 
 	remoteTar := "/tmp/okdev-sync-down.tar"
@@ -116,15 +169,22 @@ func syncDownPath(ctx context.Context, k Client, namespace, pod string, p Pair, 
 	defer os.Remove(localTar)
 
 	if _, err := k.ExecSh(ctx, namespace, pod, buildRemoteTarCommand(remoteTar, p.Remote, excludes)); err != nil {
-		return err
+		return pathStats{}, err
 	}
 	if err := k.CopyFromPod(ctx, namespace, pod, remoteTar, localTar); err != nil {
-		return err
+		return pathStats{}, err
 	}
 	if _, err := k.ExecSh(ctx, namespace, pod, fmt.Sprintf("rm -f %s", remoteTar)); err != nil {
-		return err
+		return pathStats{}, err
 	}
-	return extractTar(localTar, absLocal)
+	tarStat, err := os.Stat(localTar)
+	if err != nil {
+		return pathStats{}, err
+	}
+	if err := extractTar(localTar, absLocal); err != nil {
+		return pathStats{}, err
+	}
+	return pathStats{DownloadBytes: tarStat.Size()}, nil
 }
 
 func buildRemoteTarCommand(remoteTar, remoteDir string, excludes []string) string {
