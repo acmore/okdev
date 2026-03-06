@@ -113,6 +113,8 @@ spec:
       - .git/
       - .venv/
       - node_modules/
+    remoteExclude:
+      - checkpoints/
   ports:
     - name: api
       local: 8080
@@ -241,7 +243,7 @@ Ownership model:
 - `okdev sync [--mode=bi|up|down] [--background] [--dry-run]`
   - syncthing engine: continuous sync for single path mapping
   - supports detached syncthing mode via `--background`
-  - exclude support, `.stignore` generation for syncthing
+  - exclude support, `.stignore` generation for local (`exclude`) and remote (`remoteExclude`)
 
 - `okdev ports`
   - establish all declared forwards

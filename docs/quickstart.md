@@ -64,6 +64,7 @@ For a named session:
 
 `okdev` auto-installs local Syncthing and auto-injects a pod sidecar when `sync.engine=syncthing`.
 Default sidecar image tag follows the running `okdev` binary version (`ghcr.io/<repo-owner>/okdev:<okdev-version>`). For dev builds, fallback is `ghcr.io/<repo-owner>/okdev:edge`. Update `spec.sync.syncthing.image` only if you publish to a different registry/repository.
+Use `spec.sync.exclude` for local ignore patterns and `spec.sync.remoteExclude` for remote-only ignore patterns.
 
 Preview-only mode (no cluster changes):
 

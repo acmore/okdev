@@ -57,3 +57,13 @@ func TestSyncthingCompletion(t *testing.T) {
 		t.Fatalf("unexpected completion values pct=%v need=%d", pct, need)
 	}
 }
+
+func TestBuildSTIgnoreContent(t *testing.T) {
+	content, ok := buildSTIgnoreContent([]string{" .git/ ", "", "node_modules/"})
+	if !ok {
+		t.Fatal("expected content")
+	}
+	if content != ".git/\nnode_modules/\n" {
+		t.Fatalf("unexpected content %q", content)
+	}
+}

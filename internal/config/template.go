@@ -29,6 +29,7 @@ spec:
       - .git/
       - .venv/
       - node_modules/
+    remoteExclude: []
   ports:
     - name: app
       local: 8080
@@ -69,6 +70,7 @@ spec:
       - node_modules/
       - checkpoints/
       - data/
+    remoteExclude: []
   ports:
     - name: api
       local: 8080
@@ -134,6 +136,7 @@ spec:
       - node_modules/
       - checkpoints/
       - data/
+    remoteExclude: []
   ports:
     - name: app
       local: 8080

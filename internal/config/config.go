@@ -68,10 +68,11 @@ type MetadataMap struct {
 }
 
 type SyncSpec struct {
-	Paths     []string      `yaml:"paths"`
-	Exclude   []string      `yaml:"exclude"`
-	Engine    string        `yaml:"engine"`
-	Syncthing SyncthingSpec `yaml:"syncthing"`
+	Paths         []string      `yaml:"paths"`
+	Exclude       []string      `yaml:"exclude"`
+	RemoteExclude []string      `yaml:"remoteExclude"`
+	Engine        string        `yaml:"engine"`
+	Syncthing     SyncthingSpec `yaml:"syncthing"`
 }
 
 type SyncthingSpec struct {

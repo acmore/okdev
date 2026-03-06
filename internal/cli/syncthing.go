@@ -72,6 +72,9 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	if _, err := k.ExecShInContainer(ctx, namespace, pod, syncthingContainerName, fmt.Sprintf("mkdir -p %s", syncengine.ShellEscape(pair.Remote))); err != nil {
 		return err
 	}
+	if err := writeRemoteSTIgnoreInPod(ctx, k, namespace, pod, pair.Remote, cfg.Spec.Sync.RemoteExclude); err != nil {
+		return err
+	}
 
 	localHome, err := localSyncthingHome(sessionName)
 	if err != nil {
@@ -144,8 +147,16 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 }
 
 func writeSTIgnore(localPath string, excludes []string) error {
-	if len(excludes) == 0 {
+	content, ok := buildSTIgnoreContent(excludes)
+	if !ok {
 		return nil
+	}
+	return os.WriteFile(filepath.Join(localPath, ".stignore"), []byte(content), 0o644)
+}
+
+func buildSTIgnoreContent(excludes []string) (string, bool) {
+	if len(excludes) == 0 {
+		return "", false
 	}
 	var b strings.Builder
 	for _, ex := range excludes {
@@ -159,9 +170,25 @@ func writeSTIgnore(localPath string, excludes []string) error {
 		}
 	}
 	if b.Len() == 0 {
+		return "", false
+	}
+	return b.String(), true
+}
+
+func writeRemoteSTIgnoreInPod(ctx context.Context, k interface {
+	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+}, namespace, pod, remotePath string, excludes []string) error {
+	content, ok := buildSTIgnoreContent(excludes)
+	if !ok {
 		return nil
 	}
-	return os.WriteFile(filepath.Join(localPath, ".stignore"), []byte(b.String()), 0o644)
+	ignorePath := strings.TrimRight(remotePath, "/") + "/.stignore"
+	if ignorePath == "/.stignore" || strings.TrimSpace(ignorePath) == "" {
+		return fmt.Errorf("invalid remote sync path %q for remoteExclude", remotePath)
+	}
+	cmd := fmt.Sprintf("cat > %s <<'OKDEV_STIGNORE_EOF'\n%sOKDEV_STIGNORE_EOF\n", syncengine.ShellEscape(ignorePath), content)
+	_, err := k.ExecShInContainer(ctx, namespace, pod, syncthingContainerName, cmd)
+	return err
 }
 
 func localSyncthingHome(session string) (string, error) {
