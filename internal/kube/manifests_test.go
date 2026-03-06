@@ -13,7 +13,7 @@ func TestBuildPVCManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(m)
-	if !strings.Contains(s, "PersistentVolumeClaim") || !strings.Contains(s, "ReadWriteOnce") || !strings.Contains(s, "okdev.io/ttl-hours") {
+	if !strings.Contains(s, "kind: PersistentVolumeClaim") || !strings.Contains(s, "apiVersion: v1") || !strings.Contains(s, "ReadWriteOnce") || !strings.Contains(s, "okdev.io/ttl-hours") {
 		t.Fatalf("unexpected manifest: %s", s)
 	}
 }
@@ -27,7 +27,7 @@ func TestBuildPodManifestDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(m)
-	if !strings.Contains(s, "kind: Pod") || !strings.Contains(s, "name: dev") {
+	if !strings.Contains(s, "kind: Pod") || !strings.Contains(s, "apiVersion: v1") || !strings.Contains(s, "name: pod1") {
 		t.Fatalf("unexpected pod manifest: %s", s)
 	}
 }

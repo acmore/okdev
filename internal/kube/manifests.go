@@ -4,10 +4,9 @@ import (
 	"fmt"
 
 	"github.com/acmore/okdev/internal/config"
-	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/yaml"
 )
 
 func BuildPVCManifest(namespace, name, size, storageClass string, labels map[string]string, annotations map[string]string) ([]byte, error) {
@@ -18,30 +17,29 @@ func BuildPVCManifest(namespace, name, size, storageClass string, labels map[str
 	if err != nil {
 		return nil, fmt.Errorf("parse pvc size %q: %w", size, err)
 	}
-	pvc := corev1.PersistentVolumeClaim{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "v1",
-			Kind:       "PersistentVolumeClaim",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Namespace:   namespace,
-			Labels:      labels,
-			Annotations: annotations,
-		},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: qty,
-				},
+	pvcSpec := corev1.PersistentVolumeClaimSpec{
+		AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+		Resources: corev1.VolumeResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceStorage: qty,
 			},
 		},
 	}
 	if storageClass != "" {
-		pvc.Spec.StorageClassName = &storageClass
+		pvcSpec.StorageClassName = &storageClass
 	}
-	b, err := yaml.Marshal(pvc)
+	manifest := map[string]any{
+		"apiVersion": "v1",
+		"kind":       "PersistentVolumeClaim",
+		"metadata": map[string]any{
+			"name":        name,
+			"namespace":   namespace,
+			"labels":      labels,
+			"annotations": annotations,
+		},
+		"spec": pvcSpec,
+	}
+	b, err := yaml.Marshal(manifest)
 	if err != nil {
 		return nil, fmt.Errorf("marshal pvc manifest: %w", err)
 	}
@@ -49,21 +47,19 @@ func BuildPVCManifest(namespace, name, size, storageClass string, labels map[str
 }
 
 func BuildPodManifest(namespace, name string, labels map[string]string, annotations map[string]string, podSpec corev1.PodSpec) ([]byte, error) {
-	pod := corev1.Pod{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "v1",
-			Kind:       "Pod",
+	manifest := map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Pod",
+		"metadata": map[string]any{
+			"name":        name,
+			"namespace":   namespace,
+			"labels":      labels,
+			"annotations": annotations,
 		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Namespace:   namespace,
-			Labels:      labels,
-			Annotations: annotations,
-		},
-		Spec: podSpec,
+		"spec": podSpec,
 	}
 
-	b, err := yaml.Marshal(pod)
+	b, err := yaml.Marshal(manifest)
 	if err != nil {
 		return nil, fmt.Errorf("marshal pod manifest: %w", err)
 	}

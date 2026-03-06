@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/acmore/okdev/internal/shellutil"
-	"gopkg.in/yaml.v3"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -31,6 +30,7 @@ import (
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/transport/spdy"
+	"sigs.k8s.io/yaml"
 )
 
 type Client struct {
