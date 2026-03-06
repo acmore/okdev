@@ -72,6 +72,8 @@ Preview-only mode (no cluster changes):
 ./bin/okdev list
 ./bin/okdev use serving-main-alice
 ./bin/okdev status --all
+# cross-owner visibility only when explicitly requested
+./bin/okdev list --all-users
 ```
 
 ## Stop and cleanup

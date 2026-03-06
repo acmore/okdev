@@ -24,6 +24,10 @@ func newPortsCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			k := newKubeClient(opts)
+			if err := ensureSessionOwnership(opts, k, ns, sn, true); err != nil {
+				return err
+			}
 			stopRenew, err := acquireSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout())
 			if err != nil {
 				return err
@@ -49,7 +53,6 @@ func newPortsCmd(opts *Options) *cobra.Command {
 			ctx, cancel := interactiveContext()
 			defer cancel()
 			fmt.Fprintf(cmd.OutOrStdout(), "Forwarding %v from session %s\n", forwards, sn)
-			k := newKubeClient(opts)
 			slog.Debug("ports start", "namespace", ns, "session", sn, "forwards", forwards)
 			return portsrunner.ForwardWithRetry(ctx, k, ns, podName(sn), forwards, os.Stdout, cmd.ErrOrStderr(), 30*time.Second)
 		},

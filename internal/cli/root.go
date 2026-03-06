@@ -8,6 +8,7 @@ import (
 type Options struct {
 	ConfigPath string
 	Session    string
+	Owner      string
 	Namespace  string
 	Context    string
 	Output     string
@@ -27,6 +28,7 @@ func NewRootCmd() *cobra.Command {
 
 	cmd.PersistentFlags().StringVarP(&opts.ConfigPath, "config", "c", "", "Path to config file")
 	cmd.PersistentFlags().StringVar(&opts.Session, "session", "", "Session name")
+	cmd.PersistentFlags().StringVar(&opts.Owner, "owner", "", "Session owner identity override")
 	cmd.PersistentFlags().StringVarP(&opts.Namespace, "namespace", "n", "", "Kubernetes namespace override")
 	cmd.PersistentFlags().StringVar(&opts.Context, "context", "", "Kubernetes context override")
 	cmd.PersistentFlags().StringVar(&opts.Output, "output", "text", "Output format: text|json")

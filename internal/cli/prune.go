@@ -10,6 +10,7 @@ import (
 
 func newPruneCmd(opts *Options) *cobra.Command {
 	var allNamespaces bool
+	var allUsers bool
 	var ttlHours int
 	var includePVC bool
 	var dryRun bool
@@ -32,7 +33,11 @@ func newPruneCmd(opts *Options) *cobra.Command {
 			ctx, cancel := defaultContext()
 			defer cancel()
 			k := newKubeClient(opts)
-			pods, err := k.ListPods(ctx, ns, allNamespaces, "okdev.io/managed=true")
+			label := "okdev.io/managed=true"
+			if !allUsers {
+				label = label + "," + ownerLabelSelector(opts)
+			}
+			pods, err := k.ListPods(ctx, ns, allNamespaces, label)
 			if err != nil {
 				return err
 			}
@@ -102,6 +107,7 @@ func newPruneCmd(opts *Options) *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&allNamespaces, "all-namespaces", false, "Prune sessions across all namespaces")
+	cmd.Flags().BoolVar(&allUsers, "all-users", false, "Prune sessions for all owners")
 	cmd.Flags().IntVar(&ttlHours, "ttl-hours", 0, "TTL in hours override")
 	cmd.Flags().BoolVar(&includePVC, "include-pvc", false, "Delete default workspace PVCs for pruned sessions")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview prune actions without deleting resources")

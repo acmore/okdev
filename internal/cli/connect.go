@@ -23,6 +23,10 @@ func newConnectCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			k := newKubeClient(opts)
+			if err := ensureSessionOwnership(opts, k, ns, sn, true); err != nil {
+				return err
+			}
 			stopRenew, err := acquireSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout())
 			if err != nil {
 				return err
@@ -44,7 +48,7 @@ func newConnectCmd(opts *Options) *cobra.Command {
 			if len(execCmd) == 1 && strings.TrimSpace(execCmd[0]) == "" {
 				execCmd = []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}
 			}
-			return runConnect(opts, ns, sn, execCmd, !noTTY)
+			return runConnectWithClient(k, ns, sn, execCmd, !noTTY)
 		},
 	}
 	cmd.Flags().StringVar(&shell, "shell", "", "Shell to start (default auto-detects bash/sh)")

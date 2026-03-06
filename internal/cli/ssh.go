@@ -35,6 +35,10 @@ func newSSHCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			k := newKubeClient(opts)
+			if err := ensureSessionOwnership(opts, k, ns, sn, true); err != nil {
+				return err
+			}
 			stopRenew, err := acquireSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout())
 			if err != nil {
 				return err

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,6 +21,8 @@ import (
 
 const sessionLeaseDuration = 2 * time.Minute
 const sessionHeartbeatInterval = 5 * time.Minute
+
+var invalidOwnerChars = regexp.MustCompile(`[^a-z0-9._-]`)
 
 func loadConfigAndNamespace(opts *Options) (*config.DevEnvironment, string, error) {
 	cfg, path, err := config.Load(opts.ConfigPath)
@@ -48,11 +51,8 @@ func resolveSessionName(opts *Options, cfg *config.DevEnvironment) (string, erro
 	return session.Resolve(opts.Session, cfg.Spec.Session.DefaultNameTemplate)
 }
 
-func labelsForSession(cfg *config.DevEnvironment, sessionName string) map[string]string {
-	owner := os.Getenv("USER")
-	if owner == "" {
-		owner = "dev"
-	}
+func labelsForSession(opts *Options, cfg *config.DevEnvironment, sessionName string) map[string]string {
+	owner := currentOwner(opts)
 	repo := "unknown"
 	if root, err := session.RepoRoot(); err == nil && root != "" {
 		repo = filepath.Base(root)
@@ -63,12 +63,24 @@ func labelsForSession(cfg *config.DevEnvironment, sessionName string) map[string
 		"okdev.io/session": sessionName,
 		"okdev.io/owner":   owner,
 		"okdev.io/repo":    repo,
+		"okdev.io/shareable": func() string {
+			if cfg.Spec.Session.Shareable {
+				return "true"
+			}
+			return "false"
+		}(),
 	}
 }
 
 func annotationsForSession(cfg *config.DevEnvironment) map[string]string {
 	out := map[string]string{
 		"okdev.io/last-attach": time.Now().UTC().Format(time.RFC3339),
+		"okdev.io/shareable": func() string {
+			if cfg.Spec.Session.Shareable {
+				return "true"
+			}
+			return "false"
+		}(),
 	}
 	if cfg.Spec.Session.TTLHours > 0 {
 		out["okdev.io/ttl-hours"] = fmt.Sprintf("%d", cfg.Spec.Session.TTLHours)
@@ -252,15 +264,67 @@ func startSessionMaintenanceWithClient(k *kube.Client, cfg *config.DevEnvironmen
 }
 
 func sessionHolderIdentity() string {
-	user := os.Getenv("USER")
-	if user == "" {
-		user = "dev"
-	}
+	user := currentOwner(nil)
 	host, err := os.Hostname()
 	if err != nil || host == "" {
 		host = "unknown-host"
 	}
 	return user + "@" + host
+}
+
+func currentOwner(opts *Options) string {
+	if opts != nil {
+		if v := normalizeOwner(opts.Owner); v != "" {
+			return v
+		}
+	}
+	if v := normalizeOwner(os.Getenv("OKDEV_OWNER")); v != "" {
+		return v
+	}
+	if v := normalizeOwner(os.Getenv("USER")); v != "" {
+		return v
+	}
+	return "dev"
+}
+
+func normalizeOwner(v string) string {
+	s := strings.ToLower(strings.TrimSpace(v))
+	s = strings.ReplaceAll(s, " ", "-")
+	s = invalidOwnerChars.ReplaceAllString(s, "-")
+	s = strings.Trim(s, "-")
+	return s
+}
+
+func ownerLabelSelector(opts *Options) string {
+	return "okdev.io/owner=" + currentOwner(opts)
+}
+
+func isSessionShareable(p kube.PodSummary) bool {
+	if strings.EqualFold(strings.TrimSpace(p.Annotations["okdev.io/shareable"]), "true") {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(p.Labels["okdev.io/shareable"]), "true")
+}
+
+func ensureSessionOwnership(opts *Options, k *kube.Client, namespace, sessionName string, allowShareable bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pods, err := k.ListPods(ctx, namespace, false, "okdev.io/managed=true,okdev.io/session="+sessionName)
+	if err != nil {
+		return err
+	}
+	if len(pods) == 0 {
+		return nil
+	}
+	owner := currentOwner(opts)
+	otherOwner := strings.TrimSpace(pods[0].Labels["okdev.io/owner"])
+	if otherOwner == "" || otherOwner == owner {
+		return nil
+	}
+	if allowShareable && isSessionShareable(pods[0]) {
+		return nil
+	}
+	return fmt.Errorf("session %q is owned by %q (current owner: %q); set --owner %s or mark session as shareable", sessionName, otherOwner, owner, otherOwner)
 }
 
 func ensureCommand(name string) error {

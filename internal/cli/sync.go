@@ -36,6 +36,10 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			k := newKubeClient(opts)
+			if err := ensureSessionOwnership(opts, k, ns, sn, true); err != nil {
+				return err
+			}
 			renewLock := watch
 			if engine == "" {
 				engine = cfg.Spec.Sync.Engine
@@ -72,7 +76,6 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), renewLock, renewLock)
 			defer stopMaintenance()
 
-			k := newKubeClient(opts)
 			pod := podName(sn)
 
 			switch engine {

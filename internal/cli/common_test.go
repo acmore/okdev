@@ -11,12 +11,15 @@ import (
 func TestNamesAndLabels(t *testing.T) {
 	t.Setenv("USER", "alice")
 	cfg := &config.DevEnvironment{Metadata: config.Metadata{Name: "proj"}}
-	labels := labelsForSession(cfg, "sess1")
+	labels := labelsForSession(&Options{}, cfg, "sess1")
 	if labels["okdev.io/session"] != "sess1" {
 		t.Fatalf("session label mismatch: %+v", labels)
 	}
 	if labels["okdev.io/owner"] != "alice" {
 		t.Fatalf("owner label mismatch: %+v", labels)
+	}
+	if labels["okdev.io/shareable"] != "false" {
+		t.Fatalf("shareable label mismatch: %+v", labels)
 	}
 	if podName("sess1") != "okdev-sess1" {
 		t.Fatalf("unexpected pod name %q", podName("sess1"))

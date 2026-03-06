@@ -23,6 +23,9 @@ func newDownCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			k := newKubeClient(opts)
+			if err := ensureSessionOwnership(opts, k, ns, sn, false); err != nil {
+				return err
+			}
 			ctx, cancel := defaultContext()
 			defer cancel()
 			if dryRun {

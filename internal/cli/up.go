@@ -38,7 +38,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			labels := labelsForSession(cfg, sn)
+			labels := labelsForSession(opts, cfg, sn)
 			annotations := annotationsForSession(cfg)
 			pvc := pvcName(cfg, sn)
 			pod := podName(sn)
@@ -61,6 +61,9 @@ func newUpCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			defer stopRenew()
+			if err := ensureSessionOwnership(opts, k, ns, sn, true); err != nil {
+				return err
+			}
 			if warnErr := warnIfConfigNewerThanSession(opts, k, ns, sn, pod, cmd.ErrOrStderr()); warnErr != nil {
 				slog.Debug("skip config drift warning", "error", warnErr)
 			}

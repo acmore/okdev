@@ -11,6 +11,7 @@ import (
 
 func newListCmd(opts *Options) *cobra.Command {
 	var allNamespaces bool
+	var allUsers bool
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -32,7 +33,11 @@ func newListCmd(opts *Options) *cobra.Command {
 			}
 			ctx, cancel := defaultContext()
 			defer cancel()
-			pods, err := newKubeClient(opts).ListPods(ctx, ns, allNamespaces, "okdev.io/managed=true")
+			label := "okdev.io/managed=true"
+			if !allUsers {
+				label = label + "," + ownerLabelSelector(opts)
+			}
+			pods, err := newKubeClient(opts).ListPods(ctx, ns, allNamespaces, label)
 			if err != nil {
 				return err
 			}
@@ -43,6 +48,7 @@ func newListCmd(opts *Options) *cobra.Command {
 				type listRow struct {
 					Namespace string `json:"namespace"`
 					Session   string `json:"session"`
+					Owner     string `json:"owner"`
 					Phase     string `json:"phase"`
 					Age       string `json:"age"`
 					Active    bool   `json:"active"`
@@ -53,6 +59,7 @@ func newListCmd(opts *Options) *cobra.Command {
 					rows = append(rows, listRow{
 						Namespace: p.Namespace,
 						Session:   sn,
+						Owner:     p.Labels["okdev.io/owner"],
 						Phase:     p.Phase,
 						Age:       age(p.CreatedAt),
 						Active:    sn != "" && sn == activeSession,
@@ -69,15 +76,17 @@ func newListCmd(opts *Options) *cobra.Command {
 				rows = append(rows, []string{
 					p.Namespace,
 					sn,
+					p.Labels["okdev.io/owner"],
 					p.Phase,
 					age(p.CreatedAt),
 				})
 			}
-			output.PrintTable(cmd.OutOrStdout(), []string{"NAMESPACE", "SESSION", "PHASE", "AGE"}, rows)
+			output.PrintTable(cmd.OutOrStdout(), []string{"NAMESPACE", "SESSION", "OWNER", "PHASE", "AGE"}, rows)
 			return nil
 		},
 	}
 
 	cmd.Flags().BoolVar(&allNamespaces, "all-namespaces", false, "List sessions across all namespaces")
+	cmd.Flags().BoolVar(&allUsers, "all-users", false, "List sessions for all owners")
 	return cmd
 }

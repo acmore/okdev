@@ -10,6 +10,7 @@ import (
 
 func newStatusCmd(opts *Options) *cobra.Command {
 	var all bool
+	var allUsers bool
 
 	cmd := &cobra.Command{
 		Use:   "status",
@@ -20,6 +21,9 @@ func newStatusCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			label := "okdev.io/managed=true"
+			if !allUsers {
+				label = label + "," + ownerLabelSelector(opts)
+			}
 			if !all {
 				sn, err := resolveSessionName(opts, cfg)
 				if err != nil {
@@ -45,6 +49,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 			if opts.Output == "json" {
 				type statusRow struct {
 					Session    string `json:"session"`
+					Owner      string `json:"owner"`
 					Pod        string `json:"pod"`
 					Phase      string `json:"phase"`
 					Age        string `json:"age"`
@@ -62,6 +67,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 					}
 					rows = append(rows, statusRow{
 						Session:    sn,
+						Owner:      p.Labels["okdev.io/owner"],
 						Pod:        p.Name,
 						Phase:      p.Phase,
 						Age:        age(p.CreatedAt),
@@ -86,6 +92,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 				}
 				rows = append(rows, []string{
 					sn,
+					p.Labels["okdev.io/owner"],
 					p.Name,
 					p.Phase,
 					p.Ready,
@@ -95,10 +102,11 @@ func newStatusCmd(opts *Options) *cobra.Command {
 					age(p.CreatedAt),
 				})
 			}
-			output.PrintTable(cmd.OutOrStdout(), []string{"SESSION", "POD", "PHASE", "READY", "RESTARTS", "REASON", "LOCK", "AGE"}, rows)
+			output.PrintTable(cmd.OutOrStdout(), []string{"SESSION", "OWNER", "POD", "PHASE", "READY", "RESTARTS", "REASON", "LOCK", "AGE"}, rows)
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "Show all sessions in namespace")
+	cmd.Flags().BoolVar(&allUsers, "all-users", false, "Show sessions for all owners")
 	return cmd
 }

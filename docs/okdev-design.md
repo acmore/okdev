@@ -250,9 +250,11 @@ Ownership model:
 
 - `okdev status`
   - show pod state, sync health, forwarded ports, idle timer
+  - defaults to current owner visibility; `--all-users` required to include other owners
 
 - `okdev list`
-  - list all sessions in current namespace/context (or across namespaces with flag)
+  - list sessions in current namespace/context (or across namespaces with flag)
+  - defaults to current owner visibility; `--all-users` required to include other owners
   - includes repo, branch, owner, age, status, and lock mode
 
 - `okdev use <session>`
@@ -265,7 +267,7 @@ Ownership model:
   - supports `--dry-run` to preview deletions
 
 - `okdev prune [--dry-run]`
-  - cleanup expired/idle sessions by TTL rules
+  - cleanup expired/idle sessions by TTL rules (owner-scoped by default)
   - enforces idle timeout from heartbeat (`okdev.io/last-attach`)
 
 ---
@@ -280,9 +282,14 @@ okdev approach:
 - Any machine with kube access and repo can run `okdev up --attach`.
 
 Optional lock modes:
-- `none` (default shared)
+- `none`
 - `advisory` (warn if another active client)
 - `exclusive` (single active client lease with timeout)
+
+Ownership model:
+- Owner identity resolution: `--owner` flag -> `OKDEV_OWNER` -> local `USER`.
+- Sessions are labeled with `okdev.io/owner=<owner>`.
+- Mutating commands refuse non-owner sessions unless session is explicitly marked shareable.
 
 Lease behavior:
 - Lease duration is short-lived (default 2 minutes) and renewed in background for long-running commands (`connect`, `ssh`, `ports`, `sync --watch`, `sync --engine syncthing`, and `up --attach`).

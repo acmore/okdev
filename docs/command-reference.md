@@ -4,6 +4,7 @@
 
 - `-c, --config`: config file path
 - `--session`: session name override
+- `--owner`: owner identity override (default: `OKDEV_OWNER` or local `USER`)
 - `-n, --namespace`: namespace override
 - `--context`: kube context override
 - `--output text|json`: output format for list/status
@@ -17,11 +18,11 @@
 - `okdev up [--no-attach] [--wait-timeout 3m] [--dry-run]`
   - attach is enabled by default; use `--no-attach` to skip shell + background integrations
 - `okdev down [--delete-pvc] [--dry-run]`
-- `okdev status [--all]`
-- `okdev list [--all-namespaces]`
+- `okdev status [--all] [--all-users]`
+- `okdev list [--all-namespaces] [--all-users]`
 - `okdev use <session>`
 - `okdev connect [--shell /bin/bash] [--cmd "..."] [--no-tty]`
 - `okdev ssh [--setup-key] [--user root] [--cmd "..."]`
 - `okdev ports`
 - `okdev sync [--mode up|down|bi] [--engine native|syncthing] [--watch] [--background] [--dry-run] [--force]`
-- `okdev prune [--ttl-hours 72] [--all-namespaces] [--include-pvc] [--dry-run]`
+- `okdev prune [--ttl-hours 72] [--all-namespaces] [--all-users] [--include-pvc] [--dry-run]`
