@@ -26,15 +26,15 @@ func newDownCmd(opts *Options) *cobra.Command {
 			defer cancel()
 
 			if err := k.Delete(ctx, ns, "pod", podName(sn), true); err != nil {
-				return err
+				return fmt.Errorf("delete session pod: %w", err)
 			}
 			if deletePVC && cfg.Spec.Workspace.PVC.ClaimName == "" {
 				if err := k.Delete(ctx, ns, "pvc", pvcName(cfg, sn), true); err != nil {
-					return err
+					return fmt.Errorf("delete workspace pvc: %w", err)
 				}
 			}
 			if err := k.Delete(ctx, ns, "lease", "okdev-"+sn, true); err != nil {
-				return err
+				return fmt.Errorf("delete session lease: %w", err)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Session stopped: %s\n", sn)
 			return nil

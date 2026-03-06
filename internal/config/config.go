@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	defaultSyncthingVersion = "v1.29.7"
-	defaultSyncthingImage   = "ghcr.io/acmore/okdev-syncthing:" + defaultSyncthingVersion
+	DefaultSyncthingVersion = "v1.29.7"
+	DefaultSyncthingImage   = "ghcr.io/acmore/okdev-syncthing:" + DefaultSyncthingVersion
+	DefaultWorkspacePVCSize = "50Gi"
 )
 
 // DevEnvironment is the top-level config structure for .okdev.yaml.
@@ -100,14 +101,14 @@ func (d *DevEnvironment) SetDefaults() {
 		d.Spec.Sync.Engine = "native"
 	}
 	if d.Spec.Sync.Syncthing.Version == "" {
-		d.Spec.Sync.Syncthing.Version = defaultSyncthingVersion
+		d.Spec.Sync.Syncthing.Version = DefaultSyncthingVersion
 	}
 	if d.Spec.Sync.Syncthing.AutoInstall == nil {
 		v := true
 		d.Spec.Sync.Syncthing.AutoInstall = &v
 	}
 	if d.Spec.Sync.Syncthing.Image == "" {
-		d.Spec.Sync.Syncthing.Image = defaultSyncthingImage
+		d.Spec.Sync.Syncthing.Image = DefaultSyncthingImage
 	}
 	if d.Spec.SSH.User == "" {
 		d.Spec.SSH.User = "root"

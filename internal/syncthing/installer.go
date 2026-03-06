@@ -16,6 +16,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/acmore/okdev/internal/config"
 )
 
 const releaseBaseURL = "https://github.com/syncthing/syncthing/releases/download"
@@ -35,7 +37,7 @@ func EnsureBinary(ctx context.Context, version string, autoInstall bool) (string
 		return "", errors.New("syncthing not found in PATH and autoInstall is disabled")
 	}
 	if version == "" {
-		version = "v1.29.7"
+		version = config.DefaultSyncthingVersion
 	}
 
 	platform, archiveName, err := platformArchiveName(version)

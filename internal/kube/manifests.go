@@ -3,6 +3,7 @@ package kube
 import (
 	"fmt"
 
+	"github.com/acmore/okdev/internal/config"
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -11,7 +12,7 @@ import (
 
 func BuildPVCManifest(namespace, name, size, storageClass string, labels map[string]string, annotations map[string]string) ([]byte, error) {
 	if size == "" {
-		size = "50Gi"
+		size = config.DefaultWorkspacePVCSize
 	}
 	qty, err := resource.ParseQuantity(size)
 	if err != nil {

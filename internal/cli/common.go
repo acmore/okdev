@@ -149,10 +149,12 @@ func acquireSessionLockWithClient(k *kube.Client, cfg *config.DevEnvironment, na
 				renewRes, renewErr := k.AcquireLease(renewCallCtx, namespace, leaseName, holder, cfg.Spec.Session.LockMode, sessionLeaseDuration)
 				renewCallCancel()
 				if renewErr != nil {
+					slog.Warn("session lock renewal failed", "namespace", namespace, "session", sessionName, "holder", holder, "error", renewErr)
 					fmt.Fprintf(out, "warning: failed to renew session lock: %v\n", renewErr)
 					continue
 				}
 				if !renewRes.Acquired && cfg.Spec.Session.LockMode == "advisory" {
+					slog.Warn("session advisory lock not acquired on renewal", "namespace", namespace, "session", sessionName, "holder", holder, "current_holder", renewRes.CurrentHolder)
 					fmt.Fprintf(out, "warning: session lock now held by %s\n", renewRes.CurrentHolder)
 				}
 			}
@@ -184,6 +186,7 @@ func startSessionHeartbeatWithClient(k *kube.Client, namespace, sessionName stri
 				err := k.TouchPodActivity(beatCtx, namespace, pod)
 				beatCancel()
 				if err != nil {
+					slog.Warn("session activity heartbeat failed", "namespace", namespace, "session", sessionName, "pod", pod, "error", err)
 					fmt.Fprintf(out, "warning: failed to update session activity heartbeat: %v\n", err)
 				}
 			}

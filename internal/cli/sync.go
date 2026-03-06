@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -80,6 +81,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 						default:
 						}
 						if err := syncengine.RunOnce(watchCtx, mode, k, ns, pod, pairs, cfg.Spec.Sync.Exclude); err != nil {
+							slog.Warn("watch sync tick failed", "namespace", ns, "session", sn, "pod", pod, "mode", mode, "backoff", backoff.String(), "error", err)
 							fmt.Fprintf(cmd.ErrOrStderr(), "sync tick failed: %v (retrying in %s)\n", err, backoff)
 							select {
 							case <-sigCh:
@@ -96,6 +98,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 							continue
 						}
 						backoff = 1 * time.Second
+						slog.Debug("watch sync tick completed", "namespace", ns, "session", sn, "pod", pod, "mode", mode)
 						fmt.Fprintf(cmd.OutOrStdout(), "Sync tick completed at %s\n", time.Now().Format(time.RFC3339))
 						select {
 						case <-sigCh:
@@ -106,7 +109,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 					}
 				}
 				if err := syncengine.RunOnce(context.Background(), mode, k, ns, pod, pairs, cfg.Spec.Sync.Exclude); err != nil {
-					return err
+					return fmt.Errorf("run sync once: %w", err)
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Sync complete (%s/%s) for session %s\n", engine, mode, sn)
 				if mode == "bi" {

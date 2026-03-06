@@ -2,7 +2,7 @@ package config
 
 import "fmt"
 
-const basicTemplate = `apiVersion: okdev.io/v1alpha1
+var basicTemplate = fmt.Sprintf(`apiVersion: okdev.io/v1alpha1
 kind: DevEnvironment
 metadata:
   name: my-project
@@ -17,13 +17,13 @@ spec:
   workspace:
     mountPath: /workspace
     pvc:
-      size: 50Gi
+      size: %s
   sync:
     engine: native
     syncthing:
-      version: v1.29.7
+      version: %s
       autoInstall: true
-      image: ghcr.io/acmore/okdev-syncthing:v1.29.7
+      image: %s
     paths:
       - .:/workspace
     exclude:
@@ -38,9 +38,9 @@ spec:
     user: root
     remotePort: 22
     localPort: 2222
-`
+`, DefaultWorkspacePVCSize, DefaultSyncthingVersion, DefaultSyncthingImage)
 
-const gpuTemplate = `apiVersion: okdev.io/v1alpha1
+var gpuTemplate = fmt.Sprintf(`apiVersion: okdev.io/v1alpha1
 kind: DevEnvironment
 metadata:
   name: llm-project
@@ -60,9 +60,9 @@ spec:
   sync:
     engine: native
     syncthing:
-      version: v1.29.7
+      version: %s
       autoInstall: true
-      image: ghcr.io/acmore/okdev-syncthing:v1.29.7
+      image: %s
     paths:
       - .:/workspace
     exclude:
@@ -104,9 +104,9 @@ spec:
         - name: workspace
           persistentVolumeClaim:
             claimName: okdev-workspace
-`
+`, DefaultSyncthingVersion, DefaultSyncthingImage)
 
-const llmStackTemplate = `apiVersion: okdev.io/v1alpha1
+var llmStackTemplate = fmt.Sprintf(`apiVersion: okdev.io/v1alpha1
 kind: DevEnvironment
 metadata:
   name: llm-stack
@@ -126,9 +126,9 @@ spec:
   sync:
     engine: native
     syncthing:
-      version: v1.29.7
+      version: %s
       autoInstall: true
-      image: ghcr.io/acmore/okdev-syncthing:v1.29.7
+      image: %s
     paths:
       - .:/workspace
     exclude:
@@ -187,7 +187,7 @@ spec:
         - name: workspace
           persistentVolumeClaim:
             claimName: okdev-workspace
-`
+`, DefaultSyncthingVersion, DefaultSyncthingImage)
 
 var DefaultTemplate = basicTemplate
 

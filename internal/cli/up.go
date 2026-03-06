@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -144,6 +145,8 @@ func newUpCmd(opts *Options) *cobra.Command {
 
 func runAttachNativeSyncLoop(ctx context.Context, out io.Writer, errOut io.Writer, k *kube.Client, namespace, pod string, pairs []syncengine.Pair, excludes []string, interval time.Duration) {
 	backoff := time.Second
+	slog.Debug("background sync loop started", "namespace", namespace, "pod", pod, "interval", interval.String())
+	defer slog.Debug("background sync loop stopped", "namespace", namespace, "pod", pod)
 	for {
 		select {
 		case <-ctx.Done():
@@ -151,6 +154,7 @@ func runAttachNativeSyncLoop(ctx context.Context, out io.Writer, errOut io.Write
 		default:
 		}
 		if err := syncengine.RunOnce(ctx, "bi", k, namespace, pod, pairs, excludes); err != nil {
+			slog.Warn("background sync tick failed", "namespace", namespace, "pod", pod, "backoff", backoff.String(), "error", err)
 			fmt.Fprintf(errOut, "background sync tick failed: %v (retry in %s)\n", err, backoff)
 			select {
 			case <-ctx.Done():
@@ -166,6 +170,7 @@ func runAttachNativeSyncLoop(ctx context.Context, out io.Writer, errOut io.Write
 			continue
 		}
 		backoff = time.Second
+		slog.Debug("background sync tick completed", "namespace", namespace, "pod", pod)
 		fmt.Fprintf(out, "Background sync tick completed at %s\n", time.Now().Format(time.RFC3339))
 		select {
 		case <-ctx.Done():
