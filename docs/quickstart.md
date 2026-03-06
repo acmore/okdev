@@ -48,11 +48,11 @@ For a named session:
 # one-stop attach flow (shell + sync + app ports + ssh tunnel)
 ./bin/okdev up --attach
 
-# continuous sync option
-./bin/okdev sync --engine syncthing
+# continuous sync (syncthing)
+./bin/okdev sync
 
 # detached syncthing mode
-./bin/okdev sync --engine syncthing --background
+./bin/okdev sync --background
 ```
 
 `okdev` auto-installs local Syncthing and auto-injects a pod sidecar when `sync.engine=syncthing`.

@@ -9,7 +9,7 @@ func validConfig() *DevEnvironment {
 		Metadata:   Metadata{Name: "x"},
 		Spec: DevEnvSpec{
 			Workspace: Workspace{MountPath: "/workspace"},
-			Sync:      SyncSpec{Engine: "native"},
+			Sync:      SyncSpec{Engine: "syncthing"},
 			Session:   SessionSpec{},
 		},
 	}
@@ -29,7 +29,7 @@ func TestSetDefaults(t *testing.T) {
 	if cfg.Spec.Namespace != "default" {
 		t.Fatalf("namespace default not set: %q", cfg.Spec.Namespace)
 	}
-	if cfg.Spec.Sync.Engine != "native" {
+	if cfg.Spec.Sync.Engine != "syncthing" {
 		t.Fatalf("sync engine default not set: %q", cfg.Spec.Sync.Engine)
 	}
 	if !cfg.Spec.Sync.Syncthing.AutoInstallEnabled() {
@@ -42,7 +42,7 @@ func TestSetDefaults(t *testing.T) {
 
 func TestValidateRejectsInvalidEngine(t *testing.T) {
 	cfg := validConfig()
-	cfg.Spec.Sync.Engine = "bad"
+	cfg.Spec.Sync.Engine = "native"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error")
 	}
@@ -66,7 +66,6 @@ func TestValidateRejectsInvalidSyncPath(t *testing.T) {
 
 func TestValidateRejectsSyncthingMultiplePaths(t *testing.T) {
 	cfg := validConfig()
-	cfg.Spec.Sync.Engine = "syncthing"
 	cfg.Spec.Sync.Paths = []string{"./a:/workspace/a", "./b:/workspace/b"}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error")

@@ -97,7 +97,7 @@ func (d *DevEnvironment) SetDefaults() {
 		d.Spec.Namespace = "default"
 	}
 	if d.Spec.Sync.Engine == "" {
-		d.Spec.Sync.Engine = "native"
+		d.Spec.Sync.Engine = "syncthing"
 	}
 	if d.Spec.Sync.Syncthing.Version == "" {
 		d.Spec.Sync.Syncthing.Version = DefaultSyncthingVersion
@@ -142,8 +142,8 @@ func (d *DevEnvironment) Validate() error {
 	if d.Spec.Workspace.MountPath == "" {
 		return errors.New("spec.workspace.mountPath is required")
 	}
-	if d.Spec.Sync.Engine != "native" && d.Spec.Sync.Engine != "syncthing" {
-		return fmt.Errorf("spec.sync.engine must be native or syncthing, got %q", d.Spec.Sync.Engine)
+	if d.Spec.Sync.Engine != "syncthing" {
+		return fmt.Errorf("spec.sync.engine must be syncthing, got %q", d.Spec.Sync.Engine)
 	}
 	if d.Spec.Session.TTLHours < 0 {
 		return errors.New("spec.session.ttlHours must be >= 0")
@@ -154,7 +154,7 @@ func (d *DevEnvironment) Validate() error {
 	if err := validateSyncPaths(d.Spec.Sync.Paths); err != nil {
 		return err
 	}
-	if d.Spec.Sync.Engine == "syncthing" && len(d.Spec.Sync.Paths) > 1 {
+	if len(d.Spec.Sync.Paths) > 1 {
 		return errors.New("spec.sync.paths must contain at most one mapping when engine is syncthing")
 	}
 	if err := validatePortMappings(d.Spec.Ports); err != nil {

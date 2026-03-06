@@ -12,7 +12,6 @@ import (
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
-	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
 )
 
@@ -161,22 +160,13 @@ func newUpCmd(opts *Options) *cobra.Command {
 					}
 				}
 
-				engine := cfg.Spec.Sync.Engine
-				if engine == "" {
-					engine = "native"
-				}
-				switch engine {
-				case "native":
-					pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.Spec.Workspace.MountPath)
+				if cfg.Spec.Sync.Engine == "" || cfg.Spec.Sync.Engine == "syncthing" {
+					logPath, err := startDetachedSyncthingSync(opts, "bi", sn)
 					if err != nil {
-						return err
+						fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to start syncthing background sync: %v\n", err)
+					} else {
+						fmt.Fprintf(cmd.OutOrStdout(), "Background syncthing sync active (mode=bi). Logs: %s\n", logPath)
 					}
-					syncCtx, cancelSync := context.WithCancel(context.Background())
-					stopBackgrounds = append(stopBackgrounds, cancelSync)
-					go runAttachNativeSyncLoop(syncCtx, cmd.OutOrStdout(), cmd.ErrOrStderr(), k, ns, pod, pairs, cfg.Spec.Sync.Exclude, 2*time.Second)
-					fmt.Fprintln(cmd.OutOrStdout(), "Background file sync active (native/watch)")
-				case "syncthing":
-					fmt.Fprintln(cmd.OutOrStdout(), "Sync engine is syncthing; run `okdev sync --engine syncthing` in another terminal to start it.")
 				}
 
 				return runConnectWithClient(k, ns, sn, []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}, true)
@@ -217,42 +207,4 @@ func warnIfConfigNewerThanSession(opts *Options, k *kube.Client, namespace, sess
 		break
 	}
 	return nil
-}
-
-func runAttachNativeSyncLoop(ctx context.Context, out io.Writer, errOut io.Writer, k *kube.Client, namespace, pod string, pairs []syncengine.Pair, excludes []string, interval time.Duration) {
-	backoff := time.Second
-	slog.Debug("background sync loop started", "namespace", namespace, "pod", pod, "interval", interval.String())
-	defer slog.Debug("background sync loop stopped", "namespace", namespace, "pod", pod)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		stats, err := syncengine.RunOnceWithReport(ctx, "bi", k, namespace, pod, pairs, excludes)
-		if err != nil {
-			slog.Warn("background sync tick failed", "namespace", namespace, "pod", pod, "backoff", backoff.String(), "error", err)
-			fmt.Fprintf(errOut, "background sync tick failed: %v (retry in %s)\n", err, backoff)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(backoff):
-			}
-			if backoff < 30*time.Second {
-				backoff *= 2
-				if backoff > 30*time.Second {
-					backoff = 30 * time.Second
-				}
-			}
-			continue
-		}
-		backoff = time.Second
-		slog.Debug("background sync tick completed", "namespace", namespace, "pod", pod)
-		fmt.Fprintf(out, "Background sync tick completed at %s (paths=%d skipped=%d upload=%dB download=%dB)\n", time.Now().Format(time.RFC3339), stats.Paths, stats.SkippedPaths, stats.UploadBytes, stats.DownloadBytes)
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(interval):
-		}
-	}
 }

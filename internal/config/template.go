@@ -18,7 +18,7 @@ spec:
     pvc:
       size: %s
   sync:
-    engine: native
+    engine: syncthing
     syncthing:
       version: %s
       autoInstall: true
@@ -56,7 +56,7 @@ spec:
       size: 200Gi
       storageClassName: fast-ssd
   sync:
-    engine: native
+    engine: syncthing
     syncthing:
       version: %s
       autoInstall: true
@@ -121,7 +121,7 @@ spec:
       size: 200Gi
       storageClassName: fast-ssd
   sync:
-    engine: native
+    engine: syncthing
     syncthing:
       version: %s
       autoInstall: true

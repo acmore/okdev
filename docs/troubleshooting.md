@@ -15,7 +15,7 @@
 - Ensure `tar` is available locally and inside container image.
 - Verify mount path exists and is writable in the container.
 - Start with one-way sync (`--mode up` or `--mode down`) to isolate direction issues.
-- For `--engine syncthing`, `okdev` auto-installs local Syncthing; ensure the syncthing sidecar is enabled in pod spec (`sync.engine=syncthing`).
+- `okdev` auto-installs local Syncthing; ensure the syncthing sidecar is enabled in pod spec (`sync.engine=syncthing`).
 - Current syncthing mode supports one `local:remote` mapping.
 
 ## Port-forward disconnects

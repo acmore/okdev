@@ -106,7 +106,7 @@ spec:
     idleTimeoutMinutes: 120
     shareable: true
   sync:
-    engine: native # native | syncthing
+    engine: syncthing
     paths:
       - .:/workspace
     exclude:
@@ -226,7 +226,7 @@ Ownership model:
   - create or resume session
   - wait for Pod Ready (watch-based readiness events)
   - optionally connect immediately
-  - with `--attach`, auto-start configured port-forwarding and native watch sync in background
+  - with `--attach`, auto-start configured port-forwarding and syncthing in background
   - supports `--dry-run` to preview operations without applying
   - supports explicit `--session <name>` for multiple concurrent sessions per repo
 
@@ -238,9 +238,7 @@ Ownership model:
   - SSH over auto-managed `kubectl port-forward`
   - optional in-pod public key bootstrap
 
-- `okdev sync [--mode=bi|up|down] [--engine=native|syncthing] [--watch] [--background] [--dry-run] [--force]`
-  - native engine: tar stream over exec (single-shot or watch loop)
-  - `--force` bypasses local fingerprint cache for a full transfer
+- `okdev sync [--mode=bi|up|down] [--background] [--dry-run]`
   - syncthing engine: continuous sync for single path mapping
   - supports detached syncthing mode via `--background`
   - exclude support, `.stignore` generation for syncthing
@@ -286,7 +284,7 @@ Ownership model:
 - Mutating commands refuse non-owner sessions unless session is explicitly marked shareable.
 
 Lease behavior:
-- Lease duration is short-lived (default 2 minutes) and renewed in background for long-running commands (`connect`, `ssh`, `ports`, `sync --watch`, `sync --engine syncthing`, and `up --attach`).
+- Session heartbeat is updated in background for long-running commands (`connect`, `ssh`, `ports`, `sync`, and `up --attach`).
 - `okdev down` deletes the Lease object so exclusive sessions can be reacquired immediately.
 
 ## 10.1 Multi-Session Model (Multi-Project and Multi-Branch)
@@ -351,7 +349,7 @@ This guarantees isolation between projects while keeping shared cluster usage si
 
 6. **Okteto-like sync option**
 - Optional Syncthing-based engine for continuous synchronization
-- Enabled per environment (`spec.sync.engine`) or per command (`okdev sync --engine syncthing`)
+- Enabled per environment (`spec.sync.engine: syncthing`)
 - No manual user install required:
   - local Syncthing binary is auto-downloaded and checksum-verified into `~/.okdev/bin/...`
   - pod-side Syncthing is provided by an auto-injected sidecar container when engine is `syncthing`
