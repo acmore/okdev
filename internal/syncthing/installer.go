@@ -93,7 +93,7 @@ func platformArchiveName(version string) (platform string, archiveName string, e
 		return "", "", fmt.Errorf("unsupported architecture %q for syncthing auto-install", arch)
 	}
 	platform = osName + "-" + arch
-	archiveName = fmt.Sprintf("syncthing-%s-%s-%s.tar.gz", version, osName, arch)
+	archiveName = fmt.Sprintf("syncthing-%s-%s-%s.tar.gz", osName, arch, version)
 	return platform, archiveName, nil
 }
 

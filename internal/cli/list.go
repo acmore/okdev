@@ -3,6 +3,7 @@ package cli
 import (
 	"sort"
 
+	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/output"
 	"github.com/spf13/cobra"
 )
@@ -14,11 +15,15 @@ func newListCmd(opts *Options) *cobra.Command {
 		Use:   "list",
 		Short: "List dev sessions",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, ns, err := loadConfigAndNamespace(opts)
-			if err != nil {
-				return err
+			ns := opts.Namespace
+			if ns == "" {
+				if cfg, _, err := config.Load(opts.ConfigPath); err == nil && cfg.Spec.Namespace != "" {
+					ns = cfg.Spec.Namespace
+				}
 			}
-			_ = cfg
+			if ns == "" {
+				ns = "default"
+			}
 			ctx, cancel := defaultContext()
 			defer cancel()
 			pods, err := newKubeClient(opts).ListPods(ctx, ns, allNamespaces, "okdev.io/managed=true")

@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/acmore/okdev/internal/kube"
@@ -54,10 +56,29 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			case "native":
 				if watch {
 					fmt.Fprintf(cmd.OutOrStdout(), "Starting native watch sync (%s) for session %s every %s\n", mode, sn, interval)
+					sigCh := make(chan os.Signal, 1)
+					signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+					defer signal.Stop(sigCh)
+					backoff := 1 * time.Second
 					for {
-						if err := syncOnce(mode, k, ns, pod, pairs, cfg.Spec.Sync.Exclude); err != nil {
-							return err
+						select {
+						case <-sigCh:
+							fmt.Fprintln(cmd.OutOrStdout(), "Stopping watch sync")
+							return nil
+						default:
 						}
+						if err := syncOnce(mode, k, ns, pod, pairs, cfg.Spec.Sync.Exclude); err != nil {
+							fmt.Fprintf(cmd.ErrOrStderr(), "sync tick failed: %v (retrying in %s)\n", err, backoff)
+							time.Sleep(backoff)
+							if backoff < 30*time.Second {
+								backoff *= 2
+								if backoff > 30*time.Second {
+									backoff = 30 * time.Second
+								}
+							}
+							continue
+						}
+						backoff = 1 * time.Second
 						fmt.Fprintf(cmd.OutOrStdout(), "Sync tick completed at %s\n", time.Now().Format(time.RFC3339))
 						time.Sleep(interval)
 					}
@@ -197,7 +218,7 @@ func syncDownPath(ctx context.Context, k interface {
 		}
 		excludeFlags += fmt.Sprintf(" --exclude=%s", shellEscape(strings.TrimSpace(ex)))
 	}
-	if _, err := k.ExecSh(ctx, namespace, pod, fmt.Sprintf("tar -cf %s -C %s .%s", remoteTar, shellEscape(p.Remote), excludeFlags)); err != nil {
+	if _, err := k.ExecSh(ctx, namespace, pod, fmt.Sprintf("tar -cf %s -C %s%s .", remoteTar, shellEscape(p.Remote), excludeFlags)); err != nil {
 		return err
 	}
 	if err := k.CopyFromPod(ctx, namespace, pod, remoteTar, localTar); err != nil {

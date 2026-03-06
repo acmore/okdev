@@ -86,6 +86,9 @@ func (d *DevEnvironment) Validate() error {
 	if d.APIVersion == "" {
 		return errors.New("apiVersion is required")
 	}
+	if d.APIVersion != "okdev.io/v1alpha1" {
+		return fmt.Errorf("apiVersion must be okdev.io/v1alpha1, got %q", d.APIVersion)
+	}
 	if d.Kind == "" {
 		return errors.New("kind is required")
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -33,10 +34,20 @@ func resolveSessionName(opts *Options, cfg *config.DevEnvironment) (string, erro
 }
 
 func labelsForSession(cfg *config.DevEnvironment, sessionName string) map[string]string {
+	owner := os.Getenv("USER")
+	if owner == "" {
+		owner = "dev"
+	}
+	repo := "unknown"
+	if root, err := session.RepoRoot(); err == nil && root != "" {
+		repo = filepath.Base(root)
+	}
 	return map[string]string{
 		"okdev.io/managed": "true",
 		"okdev.io/name":    cfg.Metadata.Name,
 		"okdev.io/session": sessionName,
+		"okdev.io/owner":   owner,
+		"okdev.io/repo":    repo,
 	}
 }
 

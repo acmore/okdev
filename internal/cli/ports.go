@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -39,7 +40,22 @@ func newPortsCmd(opts *Options) *cobra.Command {
 			ctx, cancel := interactiveContext()
 			defer cancel()
 			fmt.Fprintf(cmd.OutOrStdout(), "Forwarding %v from session %s\n", forwards, sn)
-			return newKubeClient(opts).PortForward(ctx, ns, podName(sn), forwards, os.Stdout, os.Stderr)
+			k := newKubeClient(opts)
+			backoff := 1 * time.Second
+			for {
+				err := k.PortForward(ctx, ns, podName(sn), forwards, os.Stdout, os.Stderr)
+				if err == nil {
+					return nil
+				}
+				fmt.Fprintf(cmd.ErrOrStderr(), "port-forward error: %v (retrying in %s)\n", err, backoff)
+				time.Sleep(backoff)
+				if backoff < 30*time.Second {
+					backoff *= 2
+					if backoff > 30*time.Second {
+						backoff = 30 * time.Second
+					}
+				}
+			}
 		},
 	}
 }
