@@ -27,7 +27,10 @@ func newConnectCmd(opts *Options) *cobra.Command {
 				return err
 			}
 
-			execCmd := []string{shell}
+			execCmd := []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}
+			if shell != "" {
+				execCmd = []string{shell}
+			}
 			if cmdStr != "" {
 				execCmd = []string{"sh", "-lc", cmdStr}
 			}
@@ -35,12 +38,12 @@ func newConnectCmd(opts *Options) *cobra.Command {
 				execCmd = args
 			}
 			if len(execCmd) == 1 && strings.TrimSpace(execCmd[0]) == "" {
-				execCmd = []string{"/bin/sh"}
+				execCmd = []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}
 			}
 			return runConnect(opts, ns, sn, execCmd, !noTTY)
 		},
 	}
-	cmd.Flags().StringVar(&shell, "shell", "/bin/bash", "Shell to start")
+	cmd.Flags().StringVar(&shell, "shell", "", "Shell to start (default auto-detects bash/sh)")
 	cmd.Flags().StringVar(&cmdStr, "cmd", "", "Command string to execute")
 	cmd.Flags().BoolVar(&noTTY, "no-tty", false, "Disable TTY allocation")
 	return cmd

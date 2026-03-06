@@ -17,12 +17,23 @@ func ForwardWithRetry(ctx context.Context, client PortForwardClient, namespace, 
 	}
 	backoff := 1 * time.Second
 	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		err := client.PortForward(ctx, namespace, pod, forwards, stdout, stderr)
 		if err == nil {
 			return nil
 		}
 		fmt.Fprintf(stderr, "port-forward error: %v (retrying in %s)\n", err, backoff)
-		time.Sleep(backoff)
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 		if backoff < maxBackoff {
 			backoff *= 2
 			if backoff > maxBackoff {
