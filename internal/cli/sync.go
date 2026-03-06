@@ -43,11 +43,8 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			defer stopRenew()
-			stopHeartbeat := func() {}
-			if renewLock {
-				stopHeartbeat = startSessionHeartbeat(opts, ns, sn, cmd.OutOrStdout(), time.Minute)
-			}
-			defer stopHeartbeat()
+			stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), renewLock, renewLock)
+			defer stopMaintenance()
 			if engine == "" {
 				engine = cfg.Spec.Sync.Engine
 			}
@@ -100,7 +97,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 						}
 						backoff = 1 * time.Second
 						slog.Debug("watch sync tick completed", "namespace", ns, "session", sn, "pod", pod, "mode", mode)
-						fmt.Fprintf(cmd.OutOrStdout(), "Sync tick completed at %s (paths=%d upload=%dB download=%dB)\n", time.Now().Format(time.RFC3339), stats.Paths, stats.UploadBytes, stats.DownloadBytes)
+						fmt.Fprintf(cmd.OutOrStdout(), "Sync tick completed at %s (paths=%d skipped=%d upload=%dB download=%dB)\n", time.Now().Format(time.RFC3339), stats.Paths, stats.SkippedPaths, stats.UploadBytes, stats.DownloadBytes)
 						select {
 						case <-sigCh:
 							fmt.Fprintln(cmd.OutOrStdout(), "Stopping watch sync")
@@ -113,7 +110,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("run sync once: %w", err)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Sync complete (%s/%s) for session %s (paths=%d upload=%dB download=%dB)\n", engine, mode, sn, stats.Paths, stats.UploadBytes, stats.DownloadBytes)
+				fmt.Fprintf(cmd.OutOrStdout(), "Sync complete (%s/%s) for session %s (paths=%d skipped=%d upload=%dB download=%dB)\n", engine, mode, sn, stats.Paths, stats.SkippedPaths, stats.UploadBytes, stats.DownloadBytes)
 				return nil
 			case "syncthing":
 				return runSyncthingSync(cmd, opts, cfg, ns, sn, mode, pairs)

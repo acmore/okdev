@@ -19,6 +19,7 @@ import (
 )
 
 const sessionLeaseDuration = 2 * time.Minute
+const sessionHeartbeatInterval = 5 * time.Minute
 
 func loadConfigAndNamespace(opts *Options) (*config.DevEnvironment, string, error) {
 	cfg, path, err := config.Load(opts.ConfigPath)
@@ -140,36 +141,8 @@ func acquireSessionLockWithClient(k *kube.Client, cfg *config.DevEnvironment, na
 	if !res.Acquired && cfg.Spec.Session.LockMode == "advisory" {
 		fmt.Fprintf(out, "warning: session lock currently held by %s\n", res.CurrentHolder)
 	}
-	if !renew {
-		return func() {}, nil
-	}
-
-	renewCtx, renewCancel := context.WithCancel(context.Background())
-	go func() {
-		ticker := time.NewTicker(sessionLeaseDuration / 2)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-renewCtx.Done():
-				return
-			case <-ticker.C:
-				renewCallCtx, renewCallCancel := context.WithTimeout(context.Background(), 15*time.Second)
-				renewRes, renewErr := k.AcquireLease(renewCallCtx, namespace, leaseName, holder, cfg.Spec.Session.LockMode, sessionLeaseDuration)
-				renewCallCancel()
-				if renewErr != nil {
-					slog.Warn("session lock renewal failed", "namespace", namespace, "session", sessionName, "holder", holder, "error", renewErr)
-					fmt.Fprintf(out, "warning: failed to renew session lock: %v\n", renewErr)
-					continue
-				}
-				if !renewRes.Acquired && cfg.Spec.Session.LockMode == "advisory" {
-					slog.Warn("session advisory lock not acquired on renewal", "namespace", namespace, "session", sessionName, "holder", holder, "current_holder", renewRes.CurrentHolder)
-					fmt.Fprintf(out, "warning: session lock now held by %s\n", renewRes.CurrentHolder)
-				}
-			}
-		}
-	}()
-
-	return renewCancel, nil
+	_ = renew
+	return func() {}, nil
 }
 
 func startSessionHeartbeat(opts *Options, namespace, sessionName string, out io.Writer, interval time.Duration) func() {
@@ -200,6 +173,72 @@ func startSessionHeartbeatWithClient(k *kube.Client, namespace, sessionName stri
 			}
 		}
 	}()
+	return cancel
+}
+
+func startSessionMaintenance(opts *Options, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer, renewLock bool, emitHeartbeat bool) func() {
+	return startSessionMaintenanceWithClient(newKubeClient(opts), cfg, namespace, sessionName, out, renewLock, emitHeartbeat)
+}
+
+func startSessionMaintenanceWithClient(k *kube.Client, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer, renewLock bool, emitHeartbeat bool) func() {
+	if !renewLock && !emitHeartbeat {
+		return func() {}
+	}
+	holder := sessionHolderIdentity()
+	leaseName := "okdev-" + sessionName
+	pod := podName(sessionName)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		renewTicker := time.NewTicker(sessionLeaseDuration / 2)
+		defer renewTicker.Stop()
+		heartbeatTicker := time.NewTicker(sessionHeartbeatInterval)
+		defer heartbeatTicker.Stop()
+
+		doRenew := func() {
+			if !renewLock || cfg.Spec.Session.LockMode == "none" {
+				return
+			}
+			renewCtx, renewCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			renewRes, renewErr := k.AcquireLease(renewCtx, namespace, leaseName, holder, cfg.Spec.Session.LockMode, sessionLeaseDuration)
+			renewCancel()
+			if renewErr != nil {
+				slog.Warn("session lock renewal failed", "namespace", namespace, "session", sessionName, "holder", holder, "error", renewErr)
+				fmt.Fprintf(out, "warning: failed to renew session lock: %v\n", renewErr)
+				return
+			}
+			if !renewRes.Acquired && cfg.Spec.Session.LockMode == "advisory" {
+				slog.Warn("session advisory lock not acquired on renewal", "namespace", namespace, "session", sessionName, "holder", holder, "current_holder", renewRes.CurrentHolder)
+				fmt.Fprintf(out, "warning: session lock now held by %s\n", renewRes.CurrentHolder)
+			}
+		}
+
+		doHeartbeat := func() {
+			if !emitHeartbeat {
+				return
+			}
+			beatCtx, beatCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			err := k.TouchPodActivity(beatCtx, namespace, pod)
+			beatCancel()
+			if err != nil {
+				slog.Warn("session activity heartbeat failed", "namespace", namespace, "session", sessionName, "pod", pod, "error", err)
+				fmt.Fprintf(out, "warning: failed to update session activity heartbeat: %v\n", err)
+			}
+		}
+
+		doHeartbeat()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-renewTicker.C:
+				doRenew()
+			case <-heartbeatTicker.C:
+				doHeartbeat()
+			}
+		}
+	}()
+
 	return cancel
 }
 

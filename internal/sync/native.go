@@ -28,6 +28,14 @@ type Report struct {
 	UploadBytes   int64
 	DownloadBytes int64
 	Paths         int
+	SkippedPaths  int
+}
+
+var uploadFingerprintCache = struct {
+	mu sync.Mutex
+	m  map[string]string
+}{
+	m: map[string]string{},
 }
 
 func ParsePairs(configured []string, defaultRemote string) ([]Pair, error) {
@@ -66,6 +74,9 @@ func RunOnceWithReport(parent context.Context, mode string, k Client, namespace,
 			}
 			report.UploadBytes += stats.UploadBytes
 			report.Paths++
+			if stats.Skipped {
+				report.SkippedPaths++
+			}
 		}
 	case "down":
 		for _, p := range pairs {
@@ -77,6 +88,9 @@ func RunOnceWithReport(parent context.Context, mode string, k Client, namespace,
 			}
 			report.DownloadBytes += stats.DownloadBytes
 			report.Paths++
+			if stats.Skipped {
+				report.SkippedPaths++
+			}
 		}
 	case "bi":
 		var mu sync.Mutex
@@ -98,6 +112,7 @@ func RunOnceWithReport(parent context.Context, mode string, k Client, namespace,
 			if stats.Paths > report.Paths {
 				report.Paths = stats.Paths
 			}
+			report.SkippedPaths += stats.SkippedPaths
 		}
 		wg.Add(2)
 		go run("up")
@@ -115,6 +130,7 @@ func RunOnceWithReport(parent context.Context, mode string, k Client, namespace,
 type pathStats struct {
 	UploadBytes   int64
 	DownloadBytes int64
+	Skipped       bool
 }
 
 func syncUpPath(ctx context.Context, k Client, namespace, pod string, p Pair, excludes []string) (pathStats, error) {
@@ -128,10 +144,25 @@ func syncUpPath(ctx context.Context, k Client, namespace, pod string, p Pair, ex
 	}
 
 	if !st.IsDir() {
+		fingerprint := fmt.Sprintf("file:%d:%d", st.Size(), st.ModTime().UnixNano())
+		cacheKey := uploadFingerprintCacheKey(namespace, pod, p, excludes)
+		if cached, ok := getUploadFingerprint(cacheKey); ok && cached == fingerprint {
+			return pathStats{Skipped: true}, nil
+		}
 		if err := k.CopyToPod(ctx, namespace, absLocal, pod, p.Remote); err != nil {
 			return pathStats{}, err
 		}
+		setUploadFingerprint(cacheKey, fingerprint)
 		return pathStats{UploadBytes: st.Size()}, nil
+	}
+
+	fingerprint, err := localDirFingerprint(absLocal, excludes)
+	if err != nil {
+		return pathStats{}, err
+	}
+	cacheKey := uploadFingerprintCacheKey(namespace, pod, p, excludes)
+	if cached, ok := getUploadFingerprint(cacheKey); ok && cached == fingerprint {
+		return pathStats{Skipped: true}, nil
 	}
 
 	tarFile := filepath.Join(os.TempDir(), fmt.Sprintf("okdev-up-%d.tar", time.Now().UnixNano()))
@@ -152,6 +183,7 @@ func syncUpPath(ctx context.Context, k Client, namespace, pod string, p Pair, ex
 	if err != nil {
 		return pathStats{}, err
 	}
+	setUploadFingerprint(cacheKey, fingerprint)
 	return pathStats{UploadBytes: tarStat.Size()}, nil
 }
 
@@ -232,4 +264,88 @@ func extractTar(tarFile, destDir string) error {
 
 func ShellEscape(s string) string {
 	return shellutil.Quote(s)
+}
+
+func uploadFingerprintCacheKey(namespace, pod string, p Pair, excludes []string) string {
+	return namespace + "|" + pod + "|" + p.Local + "|" + p.Remote + "|" + strings.Join(excludes, ";")
+}
+
+func getUploadFingerprint(key string) (string, bool) {
+	uploadFingerprintCache.mu.Lock()
+	defer uploadFingerprintCache.mu.Unlock()
+	v, ok := uploadFingerprintCache.m[key]
+	return v, ok
+}
+
+func setUploadFingerprint(key, value string) {
+	uploadFingerprintCache.mu.Lock()
+	defer uploadFingerprintCache.mu.Unlock()
+	uploadFingerprintCache.m[key] = value
+}
+
+func localDirFingerprint(root string, excludes []string) (string, error) {
+	var files int64
+	var bytes int64
+	var latest int64
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if matchesExclude(rel, excludes, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		files++
+		bytes += info.Size()
+		mod := info.ModTime().UnixNano()
+		if mod > latest {
+			latest = mod
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("dir:%d:%d:%d", files, bytes, latest), nil
+}
+
+func matchesExclude(rel string, excludes []string, isDir bool) bool {
+	for _, ex := range excludes {
+		ex = strings.TrimSpace(ex)
+		if ex == "" {
+			continue
+		}
+		dirPattern := strings.TrimSuffix(ex, "/")
+		if strings.HasSuffix(ex, "/") {
+			if rel == dirPattern || strings.HasPrefix(rel, dirPattern+"/") {
+				return true
+			}
+		}
+		if matched, _ := filepath.Match(ex, rel); matched {
+			return true
+		}
+		if isDir {
+			if matched, _ := filepath.Match(ex, rel+"/"); matched {
+				return true
+			}
+		}
+	}
+	return false
 }

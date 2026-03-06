@@ -90,8 +90,8 @@ func newUpCmd(opts *Options) *cobra.Command {
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Session ready: %s (namespace: %s)\n", sn, ns)
 			if attach {
-				stopHeartbeat := startSessionHeartbeatWithClient(k, ns, sn, cmd.OutOrStdout(), time.Minute)
-				defer stopHeartbeat()
+				stopMaintenance := startSessionMaintenanceWithClient(k, cfg, ns, sn, cmd.OutOrStdout(), true, true)
+				defer stopMaintenance()
 
 				stopBackgrounds := make([]func(), 0, 2)
 				defer func() {
@@ -176,7 +176,7 @@ func runAttachNativeSyncLoop(ctx context.Context, out io.Writer, errOut io.Write
 		}
 		backoff = time.Second
 		slog.Debug("background sync tick completed", "namespace", namespace, "pod", pod)
-		fmt.Fprintf(out, "Background sync tick completed at %s (paths=%d upload=%dB download=%dB)\n", time.Now().Format(time.RFC3339), stats.Paths, stats.UploadBytes, stats.DownloadBytes)
+		fmt.Fprintf(out, "Background sync tick completed at %s (paths=%d skipped=%d upload=%dB download=%dB)\n", time.Now().Format(time.RFC3339), stats.Paths, stats.SkippedPaths, stats.UploadBytes, stats.DownloadBytes)
 		select {
 		case <-ctx.Done():
 			return

@@ -112,4 +112,12 @@ func TestRunOnceWithReportUpFile(t *testing.T) {
 	if stats.UploadBytes != int64(len(content)) {
 		t.Fatalf("unexpected upload bytes: %d", stats.UploadBytes)
 	}
+
+	stats2, err := RunOnceWithReport(context.Background(), "up", noopSyncClient{}, "ns", "pod", []Pair{{Local: local, Remote: "/workspace/file.txt"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats2.SkippedPaths != 1 {
+		t.Fatalf("expected skipped path on unchanged file, got %d", stats2.SkippedPaths)
+	}
 }

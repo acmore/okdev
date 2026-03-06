@@ -39,8 +39,8 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			defer stopRenew()
-			stopHeartbeat := startSessionHeartbeat(opts, ns, sn, cmd.OutOrStdout(), time.Minute)
-			defer stopHeartbeat()
+			stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), true, true)
+			defer stopMaintenance()
 
 			if user == "" {
 				user = cfg.Spec.SSH.User
