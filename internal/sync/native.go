@@ -110,14 +110,7 @@ func syncDownPath(ctx context.Context, k Client, namespace, pod string, p Pair, 
 	localTar := filepath.Join(os.TempDir(), fmt.Sprintf("okdev-down-%d.tar", time.Now().UnixNano()))
 	defer os.Remove(localTar)
 
-	excludeFlags := ""
-	for _, ex := range excludes {
-		if strings.TrimSpace(ex) == "" {
-			continue
-		}
-		excludeFlags += fmt.Sprintf(" --exclude=%s", ShellEscape(strings.TrimSpace(ex)))
-	}
-	if _, err := k.ExecSh(ctx, namespace, pod, fmt.Sprintf("tar -cf %s%s -C %s .", remoteTar, excludeFlags, ShellEscape(p.Remote))); err != nil {
+	if _, err := k.ExecSh(ctx, namespace, pod, buildRemoteTarCommand(remoteTar, p.Remote, excludes)); err != nil {
 		return err
 	}
 	if err := k.CopyFromPod(ctx, namespace, pod, remoteTar, localTar); err != nil {
@@ -127,6 +120,24 @@ func syncDownPath(ctx context.Context, k Client, namespace, pod string, p Pair, 
 		return err
 	}
 	return extractTar(localTar, absLocal)
+}
+
+func buildRemoteTarCommand(remoteTar, remoteDir string, excludes []string) string {
+	args := []string{"tar", "-cf", remoteTar}
+	for _, ex := range excludes {
+		ex = strings.TrimSpace(ex)
+		if ex == "" {
+			continue
+		}
+		args = append(args, "--exclude", ex)
+	}
+	args = append(args, "-C", remoteDir, ".")
+
+	escaped := make([]string, 0, len(args))
+	for _, a := range args {
+		escaped = append(escaped, ShellEscape(a))
+	}
+	return strings.Join(escaped, " ")
 }
 
 func createTar(srcDir, outTar string, excludes []string) error {

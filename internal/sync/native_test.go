@@ -34,3 +34,11 @@ func TestShellEscape(t *testing.T) {
 		t.Fatalf("unexpected escaped shell string %q", got)
 	}
 }
+
+func TestBuildRemoteTarCommand(t *testing.T) {
+	cmd := buildRemoteTarCommand("/tmp/a.tar", "/workspace/app", []string{"*.pyc", "dir with space"})
+	want := "'tar' '-cf' '/tmp/a.tar' '--exclude' '*.pyc' '--exclude' 'dir with space' '-C' '/workspace/app' '.'"
+	if cmd != want {
+		t.Fatalf("unexpected command:\nwant: %s\ngot:  %s", want, cmd)
+	}
+}

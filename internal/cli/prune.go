@@ -52,9 +52,7 @@ func newPruneCmd(opts *Options) *cobra.Command {
 					return err
 				}
 				if includePVC {
-					if sessionName != "" {
-						_ = k.Delete(ctx, p.Namespace, "pvc", "okdev-"+sessionName+"-workspace", true)
-					}
+					_ = k.Delete(ctx, p.Namespace, "pvc", "okdev-"+sessionName+"-workspace", true)
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Pruned session %s in namespace %s\n", sessionName, p.Namespace)
 				deleted++
