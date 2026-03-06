@@ -96,18 +96,18 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 
 	localBase := syncthingLocalAPIBase
 	remoteBase := syncthingRemoteAPIBase
-	if err := waitSyncthingAPI(localBase, localKey, syncthingAPIReadyTimeout); err != nil {
+	if err := waitSyncthingAPI(ctx, localBase, localKey, syncthingAPIReadyTimeout); err != nil {
 		return fmt.Errorf("local syncthing not ready: %w", err)
 	}
-	if err := waitSyncthingAPI(remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
+	if err := waitSyncthingAPI(ctx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
 		return fmt.Errorf("remote syncthing not ready: %w", err)
 	}
 
-	localID, err := syncthingDeviceID(localBase, localKey)
+	localID, err := syncthingDeviceID(ctx, localBase, localKey)
 	if err != nil {
 		return err
 	}
-	remoteID, err := syncthingDeviceID(remoteBase, remoteKey)
+	remoteID, err := syncthingDeviceID(ctx, remoteBase, remoteKey)
 	if err != nil {
 		return err
 	}
@@ -242,25 +242,34 @@ func readRemoteSyncthingAPIKey(ctx context.Context, k interface {
 	return cfg.GUI.APIKey, nil
 }
 
-func waitSyncthingAPI(base, key string, timeout time.Duration) error {
+func waitSyncthingAPI(ctx context.Context, base, key string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		_, err := syncthingDeviceID(base, key)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		_, err := syncthingDeviceID(ctx, base, key)
 		if err == nil {
 			return nil
 		}
-		time.Sleep(1 * time.Second)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(1 * time.Second):
+		}
 	}
 	return errors.New("API did not become ready")
 }
 
-func syncthingDeviceID(base, key string) (string, error) {
-	req, err := http.NewRequest(http.MethodGet, base+"/rest/system/status", nil)
+func syncthingDeviceID(ctx context.Context, base, key string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/rest/system/status", nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("X-API-Key", key)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := syncthingHTTPClient.Do(req)
 	if err != nil {
 		return "", err
 	}

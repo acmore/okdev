@@ -48,8 +48,19 @@ For a named session:
 # continuous sync option
 ./bin/okdev sync --engine syncthing
 
+# detached syncthing mode
+./bin/okdev sync --engine syncthing --background
+```
+
 `okdev` auto-installs local Syncthing and auto-injects a pod sidecar when `sync.engine=syncthing`.
 Default sidecar image is `ghcr.io/<repo-owner>/okdev-syncthing:<version>`; update `spec.sync.syncthing.image` if you publish under a different registry.
+
+Preview-only mode (no cluster changes):
+
+```bash
+./bin/okdev up --dry-run
+./bin/okdev sync --dry-run
+./bin/okdev down --dry-run
 ```
 
 ## Multi-session

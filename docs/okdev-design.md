@@ -224,9 +224,10 @@ Ownership model:
 
 - `okdev up [--attach] [--name] [-c|--config]`
   - create or resume session
-  - wait for Pod Ready
+  - wait for Pod Ready (watch-based readiness events)
   - optionally connect immediately
   - with `--attach`, auto-start configured port-forwarding and native watch sync in background
+  - supports `--dry-run` to preview operations without applying
   - supports explicit `--session <name>` for multiple concurrent sessions per repo
 
 - `okdev connect [--shell] [--cmd]`
@@ -237,9 +238,10 @@ Ownership model:
   - SSH over auto-managed `kubectl port-forward`
   - optional in-pod public key bootstrap
 
-- `okdev sync [--mode=bi|up|down] [--engine=native|syncthing] [--watch]`
-  - native engine: tar/cp sync (single-shot or watch loop)
+- `okdev sync [--mode=bi|up|down] [--engine=native|syncthing] [--watch] [--background] [--dry-run]`
+  - native engine: tar stream over exec (single-shot or watch loop)
   - syncthing engine: continuous sync for single path mapping
+  - supports detached syncthing mode via `--background`
   - exclude support, `.stignore` generation for syncthing
 
 - `okdev ports`
@@ -259,6 +261,7 @@ Ownership model:
 - `okdev down [--delete-pvc]`
   - stop session; default preserves PVC for continuity
   - always releases the session Lease immediately for fast handoff/restart
+  - supports `--dry-run` to preview deletions
 
 - `okdev prune`
   - cleanup expired/idle sessions by TTL rules
