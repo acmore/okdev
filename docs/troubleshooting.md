@@ -17,6 +17,7 @@
 - Start with one-way sync (`--mode up` or `--mode down`) to isolate direction issues.
 - `okdev` auto-installs local Syncthing; ensure the syncthing sidecar is enabled in pod spec (`sync.engine=syncthing`).
 - Current syncthing mode supports one `local:remote` mapping.
+- If pod events show `ErrImagePull` with GHCR `403 Forbidden`, the image package is not publicly pullable. Set `spec.sync.syncthing.image` to a public image, or make the GHCR package public.
 
 ## Port-forward disconnects
 

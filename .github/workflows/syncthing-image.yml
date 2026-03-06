@@ -1,4 +1,4 @@
-name: Syncthing Sidecar Image
+name: Sidecar Image
 
 on:
   workflow_dispatch:
@@ -51,7 +51,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/okdev-syncthing
+          images: ghcr.io/${{ github.repository_owner }}/okdev
           tags: |
             type=raw,value=edge,enable={{is_default_branch}}
             type=sha,prefix=edge-

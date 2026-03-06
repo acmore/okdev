@@ -10,7 +10,7 @@ import (
 
 const (
 	DefaultSyncthingVersion = "v1.29.7"
-	DefaultSyncthingImage   = "ghcr.io/acmore/okdev-syncthing:" + DefaultSyncthingVersion
+	DefaultSyncthingImage   = "ghcr.io/acmore/okdev:" + DefaultSyncthingVersion
 	DefaultWorkspacePVCSize = "50Gi"
 )
 
