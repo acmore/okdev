@@ -19,4 +19,5 @@ nav:
   - Command Reference: command-reference.md
   - Design: okdev-design.md
   - Implementation Plan: okdev-implementation-plan.md
+  - Release: release.md
   - Troubleshooting: troubleshooting.md

@@ -3,11 +3,13 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     strategy:
       matrix:
         goos: [linux, darwin]
@@ -17,12 +19,49 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Build binary
+      - name: Build archive
         run: |
           mkdir -p dist
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o dist/okdev-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/okdev
-      - name: Upload artifact
+          VERSION="${GITHUB_REF_NAME}"
+          COMMIT="${GITHUB_SHA}"
+          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          BIN="okdev_${{ matrix.goos }}_${{ matrix.goarch }}"
+          OUT_DIR="dist/${BIN}"
+          mkdir -p "${OUT_DIR}"
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build \
+            -trimpath \
+            -ldflags="-s -w -X github.com/acmore/okdev/internal/version.Version=${VERSION} -X github.com/acmore/okdev/internal/version.Commit=${COMMIT} -X github.com/acmore/okdev/internal/version.Date=${BUILD_DATE}" \
+            -o "${OUT_DIR}/okdev" \
+            ./cmd/okdev
+          tar -C "${OUT_DIR}" -czf "dist/${BIN}.tar.gz" okdev
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: okdev-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/okdev-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/okdev_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: okdev-*
+          merge-multiple: true
+
+      - name: Create checksums
+        run: |
+          cd dist
+          sha256sum okdev_*.tar.gz > checksums.txt
+
+      - name: Publish GitHub release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/okdev_*.tar.gz
+            dist/checksums.txt

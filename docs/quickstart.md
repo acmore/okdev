@@ -12,6 +12,13 @@
 go build -o bin/okdev ./cmd/okdev
 ```
 
+## Install prebuilt binary
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/acmore/okdev/main/scripts/install.sh | sh
+okdev version
+```
+
 ## Initialize config
 
 ```bash

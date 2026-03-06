@@ -8,6 +8,22 @@ Lightweight Kubernetes-native dev environments for AI infra engineering.
 - Cross-machine reattach using cluster-native session identity
 - Syncthing-based sync engine (`okdev sync`)
 
+## Install
+
+Latest release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/acmore/okdev/main/scripts/install.sh | sh
+```
+
+Specific version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/acmore/okdev/main/scripts/install.sh | sh -s -- v0.1.0
+```
+
+Binary assets are published to GitHub Releases for `linux/darwin` on `amd64/arm64`.
+
 See:
 - `docs/quickstart.md`
 - `docs/command-reference.md`
