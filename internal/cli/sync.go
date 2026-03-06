@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -18,6 +20,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 	var engine string
 	var watch bool
 	var interval time.Duration
+	var background bool
 
 	cmd := &cobra.Command{
 		Use:   "sync",
@@ -61,6 +64,9 @@ func newSyncCmd(opts *Options) *cobra.Command {
 
 			switch engine {
 			case "native":
+				if background {
+					return fmt.Errorf("--background is only supported with --engine syncthing")
+				}
 				if watch {
 					fmt.Fprintf(cmd.OutOrStdout(), "Starting native watch sync (%s) for session %s every %s\n", mode, sn, interval)
 					sigCh := make(chan os.Signal, 1)
@@ -113,6 +119,15 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(), "Sync complete (%s/%s) for session %s (paths=%d skipped=%d upload=%dB download=%dB)\n", engine, mode, sn, stats.Paths, stats.SkippedPaths, stats.UploadBytes, stats.DownloadBytes)
 				return nil
 			case "syncthing":
+				if background && os.Getenv("OKDEV_SYNCTHING_BACKGROUND_CHILD") != "1" {
+					logPath, err := startDetachedSyncthingSync(opts, mode, sn)
+					if err != nil {
+						return err
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "Started syncthing sync in background for session %s\n", sn)
+					fmt.Fprintf(cmd.OutOrStdout(), "Logs: %s\n", logPath)
+					return nil
+				}
 				return runSyncthingSync(cmd, opts, cfg, ns, sn, mode, pairs)
 			default:
 				return fmt.Errorf("unsupported sync engine %q (supported: native|syncthing)", engine)
@@ -124,5 +139,57 @@ func newSyncCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&engine, "engine", "", "Sync engine override: native|syncthing")
 	cmd.Flags().BoolVar(&watch, "watch", false, "Continuously sync in a loop (native engine)")
 	cmd.Flags().DurationVar(&interval, "interval", 2*time.Second, "Watch loop interval (native engine)")
+	cmd.Flags().BoolVar(&background, "background", false, "Run syncthing sync as a detached background process")
 	return cmd
+}
+
+func startDetachedSyncthingSync(opts *Options, mode, sessionName string) (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	logDir := filepath.Join(home, ".okdev", "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return "", err
+	}
+	logPath := filepath.Join(logDir, "syncthing-"+sessionName+".log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return "", err
+	}
+
+	args := make([]string, 0, 16)
+	if opts.ConfigPath != "" {
+		args = append(args, "--config", opts.ConfigPath)
+	}
+	if opts.Session != "" {
+		args = append(args, "--session", opts.Session)
+	}
+	if opts.Namespace != "" {
+		args = append(args, "--namespace", opts.Namespace)
+	}
+	if opts.Context != "" {
+		args = append(args, "--context", opts.Context)
+	}
+	if opts.Verbose {
+		args = append(args, "--verbose")
+	}
+	args = append(args, "sync", "--engine", "syncthing", "--mode", mode)
+
+	cmd := exec.Command(exe, args...)
+	cmd.Env = append(os.Environ(), "OKDEV_SYNCTHING_BACKGROUND_CHILD=1")
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.Stdin = nil
+	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
+		return "", err
+	}
+	_ = cmd.Process.Release()
+	_ = logFile.Close()
+	return logPath, nil
 }
