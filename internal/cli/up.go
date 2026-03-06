@@ -72,12 +72,16 @@ func newUpCmd(opts *Options) *cobra.Command {
 			if err := k.Apply(ctx, ns, podManifest); err != nil {
 				return err
 			}
-			if err := k.WaitReady(ctx, ns, pod, waitTimeout); err != nil {
+			progressPrinter := func(p kube.PodReadinessProgress) {
+				fmt.Fprintf(cmd.OutOrStdout(), "Waiting for pod/%s: phase=%s ready=%d/%d reason=%s\n", pod, p.Phase, p.ReadyContainers, p.TotalContainers, p.Reason)
+			}
+			if err := k.WaitReadyWithProgress(ctx, ns, pod, waitTimeout, progressPrinter); err != nil {
+				hints := fmt.Sprintf("next steps:\n- run `okdev status --session %s`\n- run `kubectl -n %s describe pod %s`", sn, ns, pod)
 				diag, derr := k.DescribePod(ctx, ns, pod)
 				if derr == nil {
-					return fmt.Errorf("%w\n\npod diagnostics:\n%s", err, diag)
+					return fmt.Errorf("%w\n\npod diagnostics:\n%s\n\n%s", err, diag, hints)
 				}
-				return err
+				return fmt.Errorf("%w\n\n%s", err, hints)
 			}
 
 			if err := session.SaveActiveSession(sn); err != nil {

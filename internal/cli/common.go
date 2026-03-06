@@ -21,10 +21,11 @@ import (
 const sessionLeaseDuration = 2 * time.Minute
 
 func loadConfigAndNamespace(opts *Options) (*config.DevEnvironment, string, error) {
-	cfg, _, err := config.Load(opts.ConfigPath)
+	cfg, path, err := config.Load(opts.ConfigPath)
 	if err != nil {
 		return nil, "", err
 	}
+	announceConfigPath(path)
 	ns := cfg.Spec.Namespace
 	if opts.Namespace != "" {
 		ns = opts.Namespace
@@ -33,6 +34,13 @@ func loadConfigAndNamespace(opts *Options) (*config.DevEnvironment, string, erro
 		ns = "default"
 	}
 	return cfg, ns, nil
+}
+
+func announceConfigPath(path string) {
+	if strings.TrimSpace(path) == "" {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Using config: %s\n", path)
 }
 
 func resolveSessionName(opts *Options, cfg *config.DevEnvironment) (string, error) {

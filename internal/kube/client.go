@@ -53,6 +53,13 @@ type LeaseResult struct {
 	CurrentHolder string
 }
 
+type PodReadinessProgress struct {
+	Phase           corev1.PodPhase
+	ReadyContainers int
+	TotalContainers int
+	Reason          string
+}
+
 func (c *Client) restConfig() (*rest.Config, error) {
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	overrides := &clientcmd.ConfigOverrides{}
@@ -287,6 +294,10 @@ func (c *Client) AcquireLease(ctx context.Context, namespace, name, holder, mode
 }
 
 func (c *Client) WaitReady(ctx context.Context, namespace, pod string, timeout time.Duration) error {
+	return c.WaitReadyWithProgress(ctx, namespace, pod, timeout, nil)
+}
+
+func (c *Client) WaitReadyWithProgress(ctx context.Context, namespace, pod string, timeout time.Duration, onProgress func(PodReadinessProgress)) error {
 	ctxWait, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -297,6 +308,7 @@ func (c *Client) WaitReady(ctx context.Context, namespace, pod string, timeout t
 
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
+	var lastProgress *PodReadinessProgress
 
 	for {
 		select {
@@ -306,6 +318,12 @@ func (c *Client) WaitReady(ctx context.Context, namespace, pod string, timeout t
 			p, err := cs.CoreV1().Pods(namespace).Get(ctxWait, pod, metav1.GetOptions{})
 			if err != nil {
 				return err
+			}
+			progress := podProgress(p)
+			if onProgress != nil && (lastProgress == nil || *lastProgress != progress) {
+				onProgress(progress)
+				copyProgress := progress
+				lastProgress = &copyProgress
 			}
 			if p.DeletionTimestamp != nil {
 				return fmt.Errorf("pod/%s is terminating", pod)
@@ -317,6 +335,28 @@ func (c *Client) WaitReady(ctx context.Context, namespace, pod string, timeout t
 			}
 		}
 	}
+}
+
+func podProgress(p *corev1.Pod) PodReadinessProgress {
+	progress := PodReadinessProgress{
+		Phase:           p.Status.Phase,
+		ReadyContainers: 0,
+		TotalContainers: len(p.Status.ContainerStatuses),
+		Reason:          p.Status.Reason,
+	}
+	for _, c := range p.Status.ContainerStatuses {
+		if c.Ready {
+			progress.ReadyContainers++
+			continue
+		}
+		if c.State.Waiting != nil && c.State.Waiting.Reason != "" {
+			progress.Reason = c.State.Waiting.Reason
+		}
+	}
+	if progress.Reason == "" {
+		progress.Reason = "-"
+	}
+	return progress
 }
 
 func (c *Client) ListPods(ctx context.Context, namespace string, allNamespaces bool, labelSelector string) ([]PodSummary, error) {
