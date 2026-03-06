@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
 )
 
@@ -127,7 +128,7 @@ func ensureSSHKeyOnPod(opts *Options, namespace, pod, keyPath string) error {
 		return errors.New("public key is empty")
 	}
 
-	script := fmt.Sprintf("mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && (grep -qxF %s ~/.ssh/authorized_keys || echo %s >> ~/.ssh/authorized_keys)", shellEscape(pubKey), shellEscape(pubKey))
+	script := fmt.Sprintf("mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && (grep -qxF %s ~/.ssh/authorized_keys || echo %s >> ~/.ssh/authorized_keys)", syncengine.ShellEscape(pubKey), syncengine.ShellEscape(pubKey))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, err = newKubeClient(opts).ExecSh(ctx, namespace, pod, script)

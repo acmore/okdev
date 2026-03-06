@@ -18,13 +18,14 @@ import (
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
+	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/acmore/okdev/internal/syncthing"
 	"github.com/spf13/cobra"
 )
 
 const syncthingContainerName = "syncthing"
 
-func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironment, namespace, sessionName, mode string, pairs []syncPair) error {
+func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironment, namespace, sessionName, mode string, pairs []syncengine.Pair) error {
 	if len(pairs) != 1 {
 		return fmt.Errorf("syncthing engine currently supports exactly one sync path mapping")
 	}
@@ -53,7 +54,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	if err := writeSTIgnore(absLocal, cfg.Spec.Sync.Exclude); err != nil {
 		return err
 	}
-	if _, err := k.ExecShInContainer(ctx, namespace, pod, syncthingContainerName, fmt.Sprintf("mkdir -p %s", shellEscape(pair.Remote))); err != nil {
+	if _, err := k.ExecShInContainer(ctx, namespace, pod, syncthingContainerName, fmt.Sprintf("mkdir -p %s", syncengine.ShellEscape(pair.Remote))); err != nil {
 		return err
 	}
 

@@ -3,6 +3,8 @@ package config
 import (
 	"errors"
 	"fmt"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 // DevEnvironment is the top-level config structure for .okdev.yaml.
@@ -48,7 +50,7 @@ type PVCSettings struct {
 
 type PodTemplateRef struct {
 	Metadata MetadataMap    `yaml:"metadata"`
-	Spec     map[string]any `yaml:"spec"`
+	Spec     corev1.PodSpec `yaml:"spec"`
 }
 
 type MetadataMap struct {

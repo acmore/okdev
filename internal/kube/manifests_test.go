@@ -3,6 +3,8 @@ package kube
 import (
 	"strings"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 func TestBuildPVCManifest(t *testing.T) {
@@ -17,12 +19,15 @@ func TestBuildPVCManifest(t *testing.T) {
 }
 
 func TestBuildPodManifestDefault(t *testing.T) {
-	m, err := BuildPodManifest("dev", "pod1", "pvc1", map[string]string{"okdev.io/managed": "true"}, map[string]string{"okdev.io/last-attach": "x"}, nil)
+	spec := corev1.PodSpec{
+		Containers: []corev1.Container{{Name: "dev", Image: "ubuntu:22.04"}},
+	}
+	m, err := BuildPodManifest("dev", "pod1", map[string]string{"okdev.io/managed": "true"}, map[string]string{"okdev.io/last-attach": "x"}, spec)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(m)
-	if !strings.Contains(s, "kind: Pod") || !strings.Contains(s, "claimName: pvc1") {
+	if !strings.Contains(s, "kind: Pod") || !strings.Contains(s, "name: dev") {
 		t.Fatalf("unexpected pod manifest: %s", s)
 	}
 }

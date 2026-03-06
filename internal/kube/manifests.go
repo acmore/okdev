@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"gopkg.in/yaml.v3"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func BuildPVCManifest(namespace, name, size, storageClass string, labels map[string]string, annotations map[string]string) ([]byte, error) {
@@ -38,44 +40,22 @@ func BuildPVCManifest(namespace, name, size, storageClass string, labels map[str
 	return b, nil
 }
 
-func BuildPodManifest(namespace, name, claimName string, labels map[string]string, annotations map[string]string, podSpec map[string]any) ([]byte, error) {
-	spec := podSpec
-	if len(spec) == 0 {
-		spec = map[string]any{
-			"containers": []map[string]any{
-				{
-					"name":    "dev",
-					"image":   "ubuntu:22.04",
-					"command": []string{"sleep", "infinity"},
-					"volumeMounts": []map[string]any{
-						{"name": "workspace", "mountPath": "/workspace"},
-					},
-				},
-			},
-			"volumes": []map[string]any{
-				{
-					"name": "workspace",
-					"persistentVolumeClaim": map[string]any{
-						"claimName": claimName,
-					},
-				},
-			},
-		}
-	}
-
-	m := map[string]any{
-		"apiVersion": "v1",
-		"kind":       "Pod",
-		"metadata": map[string]any{
-			"name":        name,
-			"namespace":   namespace,
-			"labels":      labels,
-			"annotations": annotations,
+func BuildPodManifest(namespace, name string, labels map[string]string, annotations map[string]string, podSpec corev1.PodSpec) ([]byte, error) {
+	pod := corev1.Pod{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "Pod",
 		},
-		"spec": spec,
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        name,
+			Namespace:   namespace,
+			Labels:      labels,
+			Annotations: annotations,
+		},
+		Spec: podSpec,
 	}
 
-	b, err := yaml.Marshal(m)
+	b, err := yaml.Marshal(pod)
 	if err != nil {
 		return nil, fmt.Errorf("marshal pod manifest: %w", err)
 	}

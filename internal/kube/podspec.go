@@ -1,105 +1,90 @@
 package kube
 
-import "fmt"
+import (
+	"fmt"
 
-func PreparePodSpec(podSpec map[string]any, workspaceClaim, workspaceMountPath string, syncthingEnabled bool, syncthingImage string) (map[string]any, error) {
-	spec := podSpec
-	if len(spec) == 0 {
-		spec = map[string]any{}
+	corev1 "k8s.io/api/core/v1"
+)
+
+func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath string, syncthingEnabled bool, syncthingImage string) (corev1.PodSpec, error) {
+	spec := podSpec.DeepCopy()
+	if spec == nil {
+		spec = &corev1.PodSpec{}
 	}
-
-	containers, _ := spec["containers"].([]any)
-	if len(containers) == 0 {
-		containers = []any{map[string]any{
-			"name":    "dev",
-			"image":   "ubuntu:22.04",
-			"command": []any{"sleep", "infinity"},
+	if len(spec.Containers) == 0 {
+		spec.Containers = []corev1.Container{{
+			Name:    "dev",
+			Image:   "ubuntu:22.04",
+			Command: []string{"sleep", "infinity"},
 		}}
 	}
 
-	volumes, _ := spec["volumes"].([]any)
-	volumes = ensureVolume(volumes, "workspace", map[string]any{
-		"persistentVolumeClaim": map[string]any{"claimName": workspaceClaim},
+	spec.Volumes = ensureVolume(spec.Volumes, corev1.Volume{
+		Name: "workspace",
+		VolumeSource: corev1.VolumeSource{
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: workspaceClaim},
+		},
 	})
 
-	for i, c := range containers {
-		cm, ok := c.(map[string]any)
-		if !ok {
-			continue
-		}
-		vms, _ := cm["volumeMounts"].([]any)
-		vms = ensureVolumeMount(vms, "workspace", workspaceMountPath)
-		cm["volumeMounts"] = vms
-		containers[i] = cm
+	for i := range spec.Containers {
+		spec.Containers[i].VolumeMounts = ensureVolumeMount(spec.Containers[i].VolumeMounts, corev1.VolumeMount{
+			Name:      "workspace",
+			MountPath: workspaceMountPath,
+		})
 	}
 
 	if syncthingEnabled {
 		if syncthingImage == "" {
-			return nil, fmt.Errorf("syncthing image cannot be empty when syncthing is enabled")
+			return corev1.PodSpec{}, fmt.Errorf("syncthing image cannot be empty when syncthing is enabled")
 		}
-		volumes = ensureVolume(volumes, "syncthing-home", map[string]any{"emptyDir": map[string]any{}})
-		if !hasContainer(containers, "syncthing") {
-			containers = append(containers, map[string]any{
-				"name":    "syncthing",
-				"image":   syncthingImage,
-				"command": []any{"sh", "-lc", "syncthing -home /var/syncthing -no-browser -gui-address=0.0.0.0:8384 -no-restart -skip-port-probing -listen=tcp://0.0.0.0:22000"},
-				"ports": []any{
-					map[string]any{"containerPort": 8384, "name": "st-gui"},
-					map[string]any{"containerPort": 22000, "name": "st-sync"},
+		spec.Volumes = ensureVolume(spec.Volumes, corev1.Volume{
+			Name:         "syncthing-home",
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		})
+		if !hasContainer(spec.Containers, "syncthing") {
+			spec.Containers = append(spec.Containers, corev1.Container{
+				Name:    "syncthing",
+				Image:   syncthingImage,
+				Command: []string{"sh", "-lc", "syncthing -home /var/syncthing -no-browser -gui-address=0.0.0.0:8384 -no-restart -skip-port-probing -listen=tcp://0.0.0.0:22000"},
+				Ports: []corev1.ContainerPort{
+					{ContainerPort: 8384, Name: "st-gui"},
+					{ContainerPort: 22000, Name: "st-sync"},
 				},
-				"volumeMounts": []any{
-					map[string]any{"name": "workspace", "mountPath": workspaceMountPath},
-					map[string]any{"name": "syncthing-home", "mountPath": "/var/syncthing"},
+				VolumeMounts: []corev1.VolumeMount{
+					{Name: "workspace", MountPath: workspaceMountPath},
+					{Name: "syncthing-home", MountPath: "/var/syncthing"},
 				},
 			})
 		}
 	}
 
-	spec["containers"] = containers
-	spec["volumes"] = volumes
-	return spec, nil
+	return *spec, nil
 }
 
-func ensureVolume(volumes []any, name string, def map[string]any) []any {
-	for _, v := range volumes {
-		vm, ok := v.(map[string]any)
-		if !ok {
-			continue
-		}
-		if vm["name"] == name {
+func ensureVolume(volumes []corev1.Volume, v corev1.Volume) []corev1.Volume {
+	for _, item := range volumes {
+		if item.Name == v.Name {
 			return volumes
 		}
 	}
-	m := map[string]any{"name": name}
-	for k, v := range def {
-		m[k] = v
-	}
-	return append(volumes, m)
+	return append(volumes, v)
 }
 
-func ensureVolumeMount(mounts []any, name, mountPath string) []any {
-	for _, m := range mounts {
-		mm, ok := m.(map[string]any)
-		if !ok {
-			continue
-		}
-		if mm["name"] == name {
-			if mm["mountPath"] == nil {
-				mm["mountPath"] = mountPath
+func ensureVolumeMount(mounts []corev1.VolumeMount, vm corev1.VolumeMount) []corev1.VolumeMount {
+	for i := range mounts {
+		if mounts[i].Name == vm.Name {
+			if mounts[i].MountPath == "" {
+				mounts[i].MountPath = vm.MountPath
 			}
 			return mounts
 		}
 	}
-	return append(mounts, map[string]any{"name": name, "mountPath": mountPath})
+	return append(mounts, vm)
 }
 
-func hasContainer(containers []any, name string) bool {
+func hasContainer(containers []corev1.Container, name string) bool {
 	for _, c := range containers {
-		cm, ok := c.(map[string]any)
-		if !ok {
-			continue
-		}
-		if cm["name"] == name {
+		if c.Name == name {
 			return true
 		}
 	}

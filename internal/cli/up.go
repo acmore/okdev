@@ -58,7 +58,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 				return err
 			}
 
-			podManifest, err := kube.BuildPodManifest(ns, pod, pvc, labels, annotations, preparedSpec)
+			podManifest, err := kube.BuildPodManifest(ns, pod, labels, annotations, preparedSpec)
 			if err != nil {
 				return err
 			}

@@ -1,9 +1,9 @@
-package cli
+package sync
 
 import "testing"
 
-func TestSyncPairsDefault(t *testing.T) {
-	pairs, err := syncPairs(nil, "/workspace")
+func TestParsePairsDefault(t *testing.T) {
+	pairs, err := ParsePairs(nil, "/workspace")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -12,8 +12,8 @@ func TestSyncPairsDefault(t *testing.T) {
 	}
 }
 
-func TestSyncPairsConfigured(t *testing.T) {
-	pairs, err := syncPairs([]string{".:/workspace", "./cfg:/etc/app"}, "/workspace")
+func TestParsePairsConfigured(t *testing.T) {
+	pairs, err := ParsePairs([]string{".:/workspace", "./cfg:/etc/app"}, "/workspace")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,14 +22,14 @@ func TestSyncPairsConfigured(t *testing.T) {
 	}
 }
 
-func TestSyncPairsInvalid(t *testing.T) {
-	if _, err := syncPairs([]string{"invalid"}, "/workspace"); err == nil {
+func TestParsePairsInvalid(t *testing.T) {
+	if _, err := ParsePairs([]string{"invalid"}, "/workspace"); err == nil {
 		t.Fatal("expected error")
 	}
 }
 
 func TestShellEscape(t *testing.T) {
-	got := shellEscape("a'b")
+	got := ShellEscape("a'b")
 	if got != "'a'\\''b'" {
 		t.Fatalf("unexpected escaped shell string %q", got)
 	}
