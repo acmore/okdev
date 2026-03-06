@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -60,6 +61,10 @@ func (blockingSyncClient) CopyToPod(ctx context.Context, namespace, local, pod, 
 func (blockingSyncClient) CopyFromPod(ctx context.Context, namespace, pod, remote, local string) error {
 	return nil
 }
+func (blockingSyncClient) ExtractTarToPod(ctx context.Context, namespace, pod, remoteDir string, tarStream io.Reader) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
 
 func (blockingSyncClient) ExecSh(ctx context.Context, namespace, pod, script string) ([]byte, error) {
 	return nil, nil
@@ -88,6 +93,9 @@ type noopSyncClient struct{}
 
 func (noopSyncClient) CopyToPod(context.Context, string, string, string, string) error { return nil }
 func (noopSyncClient) CopyFromPod(context.Context, string, string, string, string) error {
+	return nil
+}
+func (noopSyncClient) ExtractTarToPod(context.Context, string, string, string, io.Reader) error {
 	return nil
 }
 func (noopSyncClient) ExecSh(context.Context, string, string, string) ([]byte, error) {

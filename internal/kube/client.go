@@ -22,6 +22,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -309,35 +311,79 @@ func (c *Client) WaitReadyWithProgress(ctx context.Context, namespace, pod strin
 		return err
 	}
 
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+	current, err := cs.CoreV1().Pods(namespace).Get(ctxWait, pod, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
 	var lastProgress *PodReadinessProgress
+	emitProgress := func(p *corev1.Pod) {
+		progress := podProgress(p)
+		if onProgress != nil && (lastProgress == nil || *lastProgress != progress) {
+			onProgress(progress)
+			copyProgress := progress
+			lastProgress = &copyProgress
+		}
+	}
+	emitProgress(current)
+	if isPodReady(current) {
+		return nil
+	}
+	resourceVersion := current.ResourceVersion
 
 	for {
-		select {
-		case <-ctxWait.Done():
-			return fmt.Errorf("wait for pod/%s ready: %w", pod, ctxWait.Err())
-		case <-ticker.C:
-			p, err := cs.CoreV1().Pods(namespace).Get(ctxWait, pod, metav1.GetOptions{})
-			if err != nil {
-				return err
-			}
-			progress := podProgress(p)
-			if onProgress != nil && (lastProgress == nil || *lastProgress != progress) {
-				onProgress(progress)
-				copyProgress := progress
-				lastProgress = &copyProgress
-			}
-			if p.DeletionTimestamp != nil {
-				return fmt.Errorf("pod/%s is terminating", pod)
-			}
-			for _, cond := range p.Status.Conditions {
-				if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
-					return nil
+		watcher, err := cs.CoreV1().Pods(namespace).Watch(ctxWait, metav1.ListOptions{
+			FieldSelector:   fields.OneTermEqualSelector("metadata.name", pod).String(),
+			ResourceVersion: resourceVersion,
+		})
+		if err != nil {
+			return err
+		}
+		restartWatch := false
+		for !restartWatch {
+			select {
+			case <-ctxWait.Done():
+				watcher.Stop()
+				return fmt.Errorf("wait for pod/%s ready: %w", pod, ctxWait.Err())
+			case evt, ok := <-watcher.ResultChan():
+				if !ok {
+					restartWatch = true
+					continue
+				}
+				switch evt.Type {
+				case watch.Added, watch.Modified:
+					p, ok := evt.Object.(*corev1.Pod)
+					if !ok {
+						continue
+					}
+					resourceVersion = p.ResourceVersion
+					emitProgress(p)
+					if p.DeletionTimestamp != nil {
+						watcher.Stop()
+						return fmt.Errorf("pod/%s is terminating", pod)
+					}
+					if isPodReady(p) {
+						watcher.Stop()
+						return nil
+					}
+				case watch.Deleted:
+					watcher.Stop()
+					return fmt.Errorf("pod/%s was deleted while waiting for readiness", pod)
+				case watch.Error:
+					restartWatch = true
 				}
 			}
 		}
+		watcher.Stop()
 	}
+}
+
+func isPodReady(p *corev1.Pod) bool {
+	for _, cond := range p.Status.Conditions {
+		if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }
 
 func podProgress(p *corev1.Pod) PodReadinessProgress {
@@ -495,6 +541,15 @@ func (c *Client) CopyToPod(ctx context.Context, namespace, localPath, podName, r
 	}
 	cmd := []string{"sh", "-lc", fmt.Sprintf("cat > %s", shellQuote(remotePath))}
 	return c.execStream(ctx, cs, cfg, namespace, podName, "", cmd, bytes.NewReader(b), io.Discard, io.Discard, false)
+}
+
+func (c *Client) ExtractTarToPod(ctx context.Context, namespace, podName, remoteDir string, tarStream io.Reader) error {
+	cs, cfg, err := c.clientset()
+	if err != nil {
+		return err
+	}
+	cmd := []string{"sh", "-lc", fmt.Sprintf("mkdir -p %s && tar -xf - -C %s", shellQuote(remoteDir), shellQuote(remoteDir))}
+	return c.execStream(ctx, cs, cfg, namespace, podName, "", cmd, tarStream, io.Discard, io.Discard, false)
 }
 
 func (c *Client) CopyFromPod(ctx context.Context, namespace, podName, remotePath, localPath string) error {

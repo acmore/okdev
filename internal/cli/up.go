@@ -19,6 +19,7 @@ import (
 func newUpCmd(opts *Options) *cobra.Command {
 	var attach bool
 	var waitTimeout time.Duration
+	var dryRun bool
 
 	cmd := &cobra.Command{
 		Use:   "up",
@@ -33,15 +34,29 @@ func newUpCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			labels := labelsForSession(cfg, sn)
+			annotations := annotationsForSession(cfg)
+			pvc := pvcName(cfg, sn)
+			pod := podName(sn)
+			if dryRun {
+				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: session=%s namespace=%s\n", sn, ns)
+				if cfg.Spec.Workspace.PVC.ClaimName == "" {
+					fmt.Fprintf(cmd.OutOrStdout(), "- would apply pvc/%s\n", pvc)
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "- using existing pvc/%s\n", pvc)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "- would apply pod/%s\n", pod)
+				fmt.Fprintf(cmd.OutOrStdout(), "- would wait for pod readiness (timeout=%s)\n", waitTimeout)
+				if attach {
+					fmt.Fprintln(cmd.OutOrStdout(), "- would attach shell and start background sync/ports")
+				}
+				return nil
+			}
 			stopRenew, err := acquireSessionLockWithClient(k, cfg, ns, sn, cmd.OutOrStdout(), attach)
 			if err != nil {
 				return err
 			}
 			defer stopRenew()
-			labels := labelsForSession(cfg, sn)
-			annotations := annotationsForSession(cfg)
-			pvc := pvcName(cfg, sn)
-			pod := podName(sn)
 			if warnErr := warnIfConfigNewerThanSession(opts, k, ns, sn, pod, cmd.ErrOrStderr()); warnErr != nil {
 				slog.Debug("skip config drift warning", "error", warnErr)
 			}
@@ -149,6 +164,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 
 	cmd.Flags().BoolVar(&attach, "attach", false, "Attach shell after session is ready")
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 3*time.Minute, "Wait timeout for pod readiness")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview actions without applying resources")
 	return cmd
 }
 

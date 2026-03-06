@@ -21,6 +21,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 	var watch bool
 	var interval time.Duration
 	var background bool
+	var dryRun bool
 
 	cmd := &cobra.Command{
 		Use:   "sync",
@@ -38,8 +39,26 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if engine == "" {
 				engine = cfg.Spec.Sync.Engine
 			}
+			if engine == "" {
+				engine = "native"
+			}
 			if engine == "syncthing" {
 				renewLock = true
+			}
+			pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.Spec.Workspace.MountPath)
+			if err != nil {
+				return err
+			}
+			if dryRun {
+				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: sync session=%s namespace=%s engine=%s mode=%s\n", sn, ns, engine, mode)
+				fmt.Fprintf(cmd.OutOrStdout(), "- paths: %v\n", pairs)
+				if watch {
+					fmt.Fprintf(cmd.OutOrStdout(), "- watch interval: %s\n", interval)
+				}
+				if background {
+					fmt.Fprintln(cmd.OutOrStdout(), "- detached background mode enabled")
+				}
+				return nil
 			}
 			stopRenew, err := acquireSessionLock(opts, cfg, ns, sn, cmd.OutOrStdout(), renewLock)
 			if err != nil {
@@ -48,16 +67,6 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			defer stopRenew()
 			stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), renewLock, renewLock)
 			defer stopMaintenance()
-			if engine == "" {
-				engine = cfg.Spec.Sync.Engine
-			}
-			if engine == "" {
-				engine = "native"
-			}
-			pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.Spec.Workspace.MountPath)
-			if err != nil {
-				return err
-			}
 
 			k := newKubeClient(opts)
 			pod := podName(sn)
@@ -140,6 +149,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&watch, "watch", false, "Continuously sync in a loop (native engine)")
 	cmd.Flags().DurationVar(&interval, "interval", 2*time.Second, "Watch loop interval (native engine)")
 	cmd.Flags().BoolVar(&background, "background", false, "Run syncthing sync as a detached background process")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview sync actions without transferring files")
 	return cmd
 }
 

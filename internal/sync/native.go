@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +22,7 @@ type Pair struct {
 type Client interface {
 	CopyToPod(context.Context, string, string, string, string) error
 	CopyFromPod(context.Context, string, string, string, string) error
+	ExtractTarToPod(context.Context, string, string, string, io.Reader) error
 	ExecSh(context.Context, string, string, string) ([]byte, error)
 }
 
@@ -165,26 +167,22 @@ func syncUpPath(ctx context.Context, k Client, namespace, pod string, p Pair, ex
 		return pathStats{Skipped: true}, nil
 	}
 
-	tarFile := filepath.Join(os.TempDir(), fmt.Sprintf("okdev-up-%d.tar", time.Now().UnixNano()))
-	defer os.Remove(tarFile)
-
-	if err := createTar(absLocal, tarFile, excludes); err != nil {
-		return pathStats{}, err
-	}
-	tarStat, err := os.Stat(tarFile)
+	stream, waitTar, err := startLocalTarStream(ctx, absLocal, excludes)
 	if err != nil {
 		return pathStats{}, err
 	}
-	remoteTar := "/tmp/okdev-sync-up.tar"
-	if err := k.CopyToPod(ctx, namespace, tarFile, pod, remoteTar); err != nil {
+	if err := k.ExtractTarToPod(ctx, namespace, pod, p.Remote, stream); err != nil {
+		_ = stream.Close()
+		if tarErr := waitTar(); tarErr != nil {
+			return pathStats{}, tarErr
+		}
 		return pathStats{}, err
 	}
-	_, err = k.ExecSh(ctx, namespace, pod, fmt.Sprintf("mkdir -p %s && tar -xf %s -C %s && rm -f %s", ShellEscape(p.Remote), remoteTar, ShellEscape(p.Remote), remoteTar))
-	if err != nil {
+	if err := waitTar(); err != nil {
 		return pathStats{}, err
 	}
 	setUploadFingerprint(cacheKey, fingerprint)
-	return pathStats{UploadBytes: tarStat.Size()}, nil
+	return pathStats{}, nil
 }
 
 func syncDownPath(ctx context.Context, k Client, namespace, pod string, p Pair, excludes []string) (pathStats, error) {
@@ -252,6 +250,44 @@ func createTar(srcDir, outTar string, excludes []string) error {
 		return fmt.Errorf("create tar: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func startLocalTarStream(ctx context.Context, srcDir string, excludes []string) (io.ReadCloser, func() error, error) {
+	args := []string{"-cf", "-"}
+	for _, ex := range excludes {
+		ex := strings.TrimSpace(ex)
+		if ex == "" {
+			continue
+		}
+		args = append(args, "--exclude", ex)
+	}
+	args = append(args, "-C", srcDir, ".")
+
+	pr, pw := io.Pipe()
+	var errBuf strings.Builder
+	cmd := exec.CommandContext(ctx, "tar", args...)
+	cmd.Stdout = pw
+	cmd.Stderr = &errBuf
+	if err := cmd.Start(); err != nil {
+		_ = pr.Close()
+		_ = pw.Close()
+		return nil, nil, fmt.Errorf("start tar stream: %w", err)
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		err := cmd.Wait()
+		if err != nil {
+			wrapped := fmt.Errorf("create tar stream: %w (%s)", err, strings.TrimSpace(errBuf.String()))
+			_ = pw.CloseWithError(wrapped)
+			errCh <- wrapped
+			return
+		}
+		_ = pw.Close()
+		errCh <- nil
+	}()
+	return pr, func() error {
+		return <-errCh
+	}, nil
 }
 
 func extractTar(tarFile, destDir string) error {
