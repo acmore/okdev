@@ -1,0 +1,22 @@
+site_name: okdev
+site_description: Lightweight Kubernetes-native dev environments for AI infra engineering
+repo_url: https://github.com/acmore/okdev
+repo_name: acmore/okdev
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Command Reference: command-reference.md
+  - Design: okdev-design.md
+  - Implementation Plan: okdev-implementation-plan.md
+  - Troubleshooting: troubleshooting.md

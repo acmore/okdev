@@ -13,3 +13,11 @@ See:
 - `docs/command-reference.md`
 - `docs/okdev-design.md`
 - `docs/okdev-implementation-plan.md`
+
+## GitHub Pages Docs
+
+Docs are published from `docs/` via GitHub Actions + MkDocs.
+
+- Workflow: `.github/workflows/docs.yml`
+- Source config: `mkdocs.yml`
+- Expected URL: `https://acmore.github.io/okdev/`
