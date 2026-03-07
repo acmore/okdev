@@ -10,7 +10,7 @@ import (
 
 var semverTagPattern = regexp.MustCompile(`^v?\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$`)
 
-func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath string, syncthingEnabled bool, sidecarImage string) (corev1.PodSpec, error) {
+func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath, sidecarImage string) (corev1.PodSpec, error) {
 	if strings.TrimSpace(sidecarImage) == "" {
 		return corev1.PodSpec{}, fmt.Errorf("sidecar image cannot be empty")
 	}

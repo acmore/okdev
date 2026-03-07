@@ -7,7 +7,7 @@ import (
 )
 
 func TestPreparePodSpecShareProcessNamespace(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", true, "ghcr.io/acmore/okdev-sidecar:edge")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -17,7 +17,7 @@ func TestPreparePodSpecShareProcessNamespace(t *testing.T) {
 }
 
 func TestPreparePodSpecSidecarName(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", true, "ghcr.io/acmore/okdev-sidecar:edge")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func TestPreparePodSpecSidecarName(t *testing.T) {
 }
 
 func TestPreparePodSpecSidecarPorts(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", true, "ghcr.io/acmore/okdev-sidecar:edge")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestPreparePodSpecSidecarPorts(t *testing.T) {
 }
 
 func TestPreparePodSpecSidecarVolumeMounts(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", true, "ghcr.io/acmore/okdev-sidecar:edge")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestPreparePodSpecSidecarVolumeMounts(t *testing.T) {
 }
 
 func TestPreparePodSpecContainerCount(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", true, "ghcr.io/acmore/okdev-sidecar:edge")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestPreparePodSpecContainerCount(t *testing.T) {
 
 func TestPreparePodSpecSidecarAlwaysAdded(t *testing.T) {
 	// Even with syncthingEnabled=false, sidecar is still added.
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", false, "ghcr.io/acmore/okdev-sidecar:edge")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestPreparePodSpecSidecarAlwaysAdded(t *testing.T) {
 }
 
 func TestPreparePodSpecErrorsOnEmptyImage(t *testing.T) {
-	_, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", true, "")
+	_, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "")
 	if err == nil {
 		t.Fatal("expected error for empty sidecar image")
 	}

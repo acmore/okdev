@@ -24,7 +24,7 @@
 - `okdev use <session>`
 - `okdev connect [--shell /bin/bash] [--cmd "..."] [--no-tty]`
 - `okdev ssh [--setup-key] [--user root] [--cmd "..."]`
-  - SSH target is configured by `spec.ssh.mode` (`dev-container` or `sidecar`).
+  - SSH always targets the merged `okdev-sidecar` container (`sshd` + syncthing).
   - `okdev` writes managed host aliases to `~/.ssh/config` as `okdev-<session>`.
 - `okdev ports`
 - `okdev sync [--mode up|down|bi] [--background] [--dry-run]`

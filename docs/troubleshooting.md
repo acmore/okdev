@@ -26,9 +26,7 @@
 
 ## SSH connect issues
 
-- Ensure an SSH server is available:
-  - `spec.ssh.mode=dev-container`: dev container must run sshd.
-  - `spec.ssh.mode=sidecar`: okdev injects `okdev-ssh` sidecar on port 22.
+- Ensure the merged `okdev-sidecar` container is running (`sshd` listens on port 22).
 - Use `okdev ssh --setup-key` once to install your public key in the pod.
 - If port `2222` is busy locally, pass `okdev ssh --local-port <port>`.
 - Check managed SSH alias in `~/.ssh/config` (`Host okdev-<session>`).

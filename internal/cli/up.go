@@ -71,8 +71,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 				cfg.Spec.PodTemplate.Spec,
 				pvc,
 				cfg.Spec.Workspace.MountPath,
-				cfg.Spec.Sync.Engine == "syncthing",
-				cfg.Spec.Sync.Syncthing.Image,
+				cfg.Spec.Sidecar.Image,
 			)
 			if err != nil {
 				return err
@@ -104,7 +103,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Session ready: %s (namespace: %s)\n", sn, ns)
-			if cfg.Spec.SSH.LocalPort > 0 && cfg.Spec.SSH.RemotePort > 0 {
+			if cfg.Spec.SSH.RemotePort > 0 {
 				keyPath, keyErr := defaultSSHKeyPath(cfg)
 				if keyErr != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to resolve SSH key path: %v\n", keyErr)
@@ -114,7 +113,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 					}
 					alias := sshHostAlias(sn)
 					cfgPath, _ := config.ResolvePath(opts.ConfigPath)
-					if cfgErr := ensureSSHConfigEntry(alias, sn, cfg.Spec.SSH.User, cfg.Spec.SSH.LocalPort, cfg.Spec.SSH.RemotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
+					if cfgErr := ensureSSHConfigEntry(alias, sn, cfg.Spec.SSH.User, cfg.Spec.SSH.RemotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
 						fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
 					} else {
 						// Force-refresh managed master so forward rules are always current after `okdev up`.

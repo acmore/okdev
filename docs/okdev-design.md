@@ -125,9 +125,9 @@ spec:
   ssh:
     user: root
     remotePort: 22
-    localPort: 2222
-    mode: sidecar
-    sidecarImage: ghcr.io/acmore/okdev-sshd:v0.1.0
+    autoDetectPorts: true
+  sidecar:
+    image: ghcr.io/acmore/okdev:v0.1.0
   podTemplate:
     metadata:
       labels:
@@ -241,7 +241,7 @@ Ownership model:
   - SSH over auto-managed `kubectl port-forward`
   - optional in-pod public key bootstrap
   - writes managed host alias (`okdev-<session>`) to `~/.ssh/config`
-  - supports `spec.ssh.mode=sidecar` to avoid requiring sshd in dev container
+  - SSH always targets the merged `okdev-sidecar` container
 
 - `okdev sync [--mode=bi|up|down] [--background] [--dry-run]`
   - syncthing engine: continuous sync for single path mapping
@@ -289,7 +289,7 @@ Ownership model:
 - Mutating commands refuse non-owner sessions unless session is explicitly marked shareable.
 
 Heartbeat behavior:
-- Session heartbeat is updated in background for long-running commands (`connect`, `ssh`, `ports`, `sync`, and `up` default attach flow).
+- Session heartbeat is updated in background for long-running commands (`connect`, `ssh`, `ports`, and `sync`).
 - No Lease objects are required; implementation remains CRD-less and object-light.
 
 ## 10.1 Multi-Session Model (Multi-Project and Multi-Branch)

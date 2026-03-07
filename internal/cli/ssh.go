@@ -52,7 +52,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				remotePort = cfg.Spec.SSH.RemotePort
 			}
 			if localPort == 0 {
-				localPort = cfg.Spec.SSH.LocalPort
+				localPort = 2222
 			}
 			if keyPath == "" {
 				keyPath, err = defaultSSHKeyPath(cfg)
@@ -75,7 +75,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 
 			sshHost := sshHostAlias(sn)
 			cfgPath, _ := config.ResolvePath(opts.ConfigPath)
-			if cfgErr := ensureSSHConfigEntry(sshHost, sn, user, localPort, remotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
+			if cfgErr := ensureSSHConfigEntry(sshHost, sn, user, remotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
 			}
 
@@ -178,17 +178,15 @@ func sshTargetContainer(cfg *config.DevEnvironment) string {
 	if cfg == nil {
 		return ""
 	}
-	if strings.EqualFold(strings.TrimSpace(cfg.Spec.SSH.Mode), "sidecar") {
-		return "okdev-ssh"
-	}
-	return ""
+	// Sidecar is always used; target the merged okdev-sidecar container.
+	return "okdev-sidecar"
 }
 
 func sshHostAlias(sessionName string) string {
 	return "okdev-" + sessionName
 }
 
-func ensureSSHConfigEntry(hostAlias, sessionName, user string, localPort, remotePort int, keyPath, okdevConfigPath string, forwards []config.PortMapping) error {
+func ensureSSHConfigEntry(hostAlias, sessionName, user string, remotePort int, keyPath, okdevConfigPath string, forwards []config.PortMapping) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -202,7 +200,7 @@ func ensureSSHConfigEntry(hostAlias, sessionName, user string, localPort, remote
 
 	begin := "# BEGIN OKDEV " + hostAlias
 	end := "# END OKDEV " + hostAlias
-	proxyInner := fmt.Sprintf("okdev --session %s ssh-proxy --local-port %d --remote-port %d", shellQuote(sessionName), localPort, remotePort)
+	proxyInner := fmt.Sprintf("okdev --session %s ssh-proxy --remote-port %d", shellQuote(sessionName), remotePort)
 	if strings.TrimSpace(okdevConfigPath) != "" {
 		proxyInner += " -c " + shellQuote(okdevConfigPath)
 	}
@@ -268,7 +266,6 @@ func shellQuote(v string) string {
 }
 
 func newSSHProxyCmd(opts *Options) *cobra.Command {
-	var localPort int
 	var remotePort int
 	cmd := &cobra.Command{
 		Use:    "ssh-proxy",
@@ -287,13 +284,10 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 			if err := ensureSessionOwnership(opts, k, ns, sn, true); err != nil {
 				return err
 			}
-			if localPort == 0 {
-				localPort = cfg.Spec.SSH.LocalPort
-			}
 			if remotePort == 0 {
 				remotePort = cfg.Spec.SSH.RemotePort
 			}
-			cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(k, ns, podName(sn), localPort, remotePort)
+			cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(k, ns, podName(sn), 2222, remotePort)
 			if err != nil {
 				return err
 			}
@@ -332,7 +326,6 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 			return copyErr
 		},
 	}
-	cmd.Flags().IntVar(&localPort, "local-port", 0, "Local port for SSH tunnel")
 	cmd.Flags().IntVar(&remotePort, "remote-port", 0, "Remote SSH port in pod")
 	return cmd
 }

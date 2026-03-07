@@ -36,17 +36,41 @@ func TestSetDefaults(t *testing.T) {
 	if cfg.Spec.Sync.Engine != "syncthing" {
 		t.Fatalf("sync engine default not set: %q", cfg.Spec.Sync.Engine)
 	}
-	if cfg.Spec.Sync.Syncthing.Image != DefaultSyncthingImageForBinaryVersion(version.Version) {
+	if cfg.Spec.Sync.Syncthing.Image != DefaultSidecarImageForBinaryVersion(version.Version) {
 		t.Fatalf("sync image default not set: %q", cfg.Spec.Sync.Syncthing.Image)
 	}
 	if !cfg.Spec.Sync.Syncthing.AutoInstallEnabled() {
 		t.Fatal("expected syncthing autoinstall default true")
 	}
-	if cfg.Spec.SSH.User != "root" || cfg.Spec.SSH.RemotePort != 22 || cfg.Spec.SSH.LocalPort != 2222 {
+	if cfg.Spec.SSH.User != "root" || cfg.Spec.SSH.RemotePort != 22 {
 		t.Fatalf("ssh defaults not set: %+v", cfg.Spec.SSH)
 	}
-	if cfg.Spec.SSH.Mode != DefaultSSHMode {
-		t.Fatalf("ssh mode default not set: %q", cfg.Spec.SSH.Mode)
+	if cfg.Spec.SSH.AutoDetectPorts == nil || !*cfg.Spec.SSH.AutoDetectPorts {
+		t.Fatal("expected ssh autoDetectPorts default true")
+	}
+	if cfg.Spec.Sidecar.Image == "" {
+		t.Fatal("expected sidecar image default to be set")
+	}
+	if cfg.Spec.Sidecar.Image != DefaultSidecarImageForBinaryVersion(version.Version) {
+		t.Fatalf("sidecar image default not set correctly: %q", cfg.Spec.Sidecar.Image)
+	}
+}
+
+func TestSetDefaultsAutoDetectPortsFalse(t *testing.T) {
+	cfg := &DevEnvironment{
+		APIVersion: "okdev.io/v1alpha1",
+		Kind:       "DevEnvironment",
+		Metadata:   Metadata{Name: "x"},
+		Spec: DevEnvSpec{
+			Workspace: Workspace{MountPath: "/workspace"},
+		},
+	}
+	v := false
+	cfg.Spec.SSH.AutoDetectPorts = &v
+	cfg.SetDefaults()
+
+	if cfg.Spec.SSH.AutoDetectPorts == nil || *cfg.Spec.SSH.AutoDetectPorts {
+		t.Fatal("expected ssh autoDetectPorts to remain false when explicitly set")
 	}
 }
 
@@ -93,48 +117,34 @@ func TestValidateRejectsDuplicateLocalPorts(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsInvalidSSHPort(t *testing.T) {
+func TestValidateRejectsEmptySidecarImage(t *testing.T) {
 	cfg := validConfig()
-	cfg.Spec.SSH.LocalPort = 70000
+	cfg.SetDefaults()
+	cfg.Spec.Sidecar.Image = ""
 	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected validation error")
+		t.Fatal("expected validation error for empty sidecar image")
 	}
 }
 
-func TestValidateRejectsInvalidSSHMode(t *testing.T) {
+func TestValidateAcceptsValidConfig(t *testing.T) {
 	cfg := validConfig()
-	cfg.Spec.SSH.Mode = "invalid"
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected validation error")
+	cfg.SetDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
 	}
 }
 
-func TestValidateRejectsEmptySSHSidecarImage(t *testing.T) {
-	cfg := validConfig()
-	cfg.Spec.SSH.Mode = "sidecar"
-	cfg.Spec.SSH.SidecarImage = ""
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected validation error")
-	}
-}
-
-func TestDefaultSyncthingImageForBinaryVersion(t *testing.T) {
-	if got := DefaultSyncthingImageForBinaryVersion("v0.2.1"); got != "ghcr.io/acmore/okdev:v0.2.1" {
+func TestDefaultSidecarImageForBinaryVersion(t *testing.T) {
+	if got := DefaultSidecarImageForBinaryVersion("v0.2.1"); got != "ghcr.io/acmore/okdev:v0.2.1" {
 		t.Fatalf("unexpected image for release version: %s", got)
 	}
-	if got := DefaultSyncthingImageForBinaryVersion("0.0.0-dev"); got != "ghcr.io/acmore/okdev:edge" {
+	if got := DefaultSidecarImageForBinaryVersion("0.0.0-dev"); got != "ghcr.io/acmore/okdev:edge" {
 		t.Fatalf("unexpected image for dev version: %s", got)
 	}
-}
-
-func TestDefaultSSHSidecarImageForBinaryVersion(t *testing.T) {
-	if got := DefaultSSHSidecarImageForBinaryVersion("v0.2.1"); got != "ghcr.io/acmore/okdev-sshd:v0.2.1" {
-		t.Fatalf("unexpected image for release version: %s", got)
-	}
-	if got := DefaultSSHSidecarImageForBinaryVersion("unknown"); got != "ghcr.io/acmore/okdev-sshd:edge" {
+	if got := DefaultSidecarImageForBinaryVersion("unknown"); got != "ghcr.io/acmore/okdev:edge" {
 		t.Fatalf("unexpected image for unknown version: %s", got)
 	}
-	if got := DefaultSSHSidecarImageForBinaryVersion("dev-build"); got != "ghcr.io/acmore/okdev-sshd:edge" {
-		t.Fatalf("unexpected image for dev version: %s", got)
+	if got := DefaultSidecarImageForBinaryVersion(""); got != "ghcr.io/acmore/okdev:edge" {
+		t.Fatalf("unexpected image for empty version: %s", got)
 	}
 }

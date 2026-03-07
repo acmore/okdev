@@ -22,7 +22,6 @@ spec:
     syncthing:
       version: %s
       autoInstall: true
-      image: %s
     paths:
       - .:/workspace
     exclude:
@@ -37,9 +36,9 @@ spec:
   ssh:
     user: root
     remotePort: 22
-    localPort: 2222
-    mode: dev-container
-`, DefaultWorkspacePVCSize, DefaultSyncthingVersion, DefaultSyncthingImage)
+  sidecar:
+    image: %s
+`, DefaultWorkspacePVCSize, DefaultSyncthingVersion, DefaultSidecarImage)
 
 var gpuTemplate = fmt.Sprintf(`apiVersion: okdev.io/v1alpha1
 kind: DevEnvironment
@@ -62,7 +61,6 @@ spec:
     syncthing:
       version: %s
       autoInstall: true
-      image: %s
     paths:
       - .:/workspace
     exclude:
@@ -82,8 +80,8 @@ spec:
   ssh:
     user: root
     remotePort: 22
-    localPort: 2222
-    mode: dev-container
+  sidecar:
+    image: %s
   podTemplate:
     spec:
       containers:
@@ -106,7 +104,7 @@ spec:
         - name: workspace
           persistentVolumeClaim:
             claimName: okdev-workspace
-`, DefaultSyncthingVersion, DefaultSyncthingImage)
+`, DefaultSyncthingVersion, DefaultSidecarImage)
 
 var llmStackTemplate = fmt.Sprintf(`apiVersion: okdev.io/v1alpha1
 kind: DevEnvironment
@@ -129,7 +127,6 @@ spec:
     syncthing:
       version: %s
       autoInstall: true
-      image: %s
     paths:
       - .:/workspace
     exclude:
@@ -152,8 +149,8 @@ spec:
   ssh:
     user: root
     remotePort: 22
-    localPort: 2222
-    mode: dev-container
+  sidecar:
+    image: %s
   podTemplate:
     spec:
       containers:
@@ -190,7 +187,7 @@ spec:
         - name: workspace
           persistentVolumeClaim:
             claimName: okdev-workspace
-`, DefaultSyncthingVersion, DefaultSyncthingImage)
+`, DefaultSyncthingVersion, DefaultSidecarImage)
 
 var DefaultTemplate = basicTemplate
 
