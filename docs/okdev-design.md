@@ -71,7 +71,7 @@ Core flow:
 2. `okdev up` creates/resumes a dev session in a namespace.
 3. `okdev connect` opens terminal/SSH and optionally starts port forwards.
 4. `okdev sync` mirrors local repo <-> pod workspace.
-5. Developer can leave and later reconnect from another machine via `okdev up --attach`.
+5. Developer can leave and later reconnect from another machine via `okdev up`.
 6. `okdev down` stops session (or deletes, based on policy).
 
 ---
@@ -226,11 +226,10 @@ Ownership model:
   - scaffolds `.okdev.yaml` from template and detects language/runtime hints
   - supports `-c, --config` to generate a custom config filename/path
 
-- `okdev up [--no-attach] [--name] [-c|--config]`
+- `okdev up [--name] [-c|--config]`
   - create or resume session
   - wait for Pod Ready (watch-based readiness events)
-  - by default, attach shell and auto-start configured sync/port-forward/ssh tunnel
-  - with `--no-attach`, skip shell and background integrations
+  - setup sync/port-forward/ssh integration, then exit
   - supports `--dry-run` to preview operations without applying
   - supports explicit `--session <name>` for multiple concurrent sessions per repo
 
@@ -282,7 +281,7 @@ Problem with local-only tools: state is tied to one machine.
 okdev approach:
 - Session identity is cluster-native (`namespace + env name + labels`).
 - Local machine stores only ephemeral client metadata.
-- Any machine with kube access and repo can run `okdev up --attach`.
+- Any machine with kube access and repo can run `okdev up`.
 
 Ownership model:
 - Owner identity resolution: `--owner` flag -> `OKDEV_OWNER` -> local `USER`.

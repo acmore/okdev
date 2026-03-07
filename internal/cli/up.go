@@ -16,8 +16,6 @@ import (
 )
 
 func newUpCmd(opts *Options) *cobra.Command {
-	var attach bool
-	var noAttach bool
 	var waitTimeout time.Duration
 	var dryRun bool
 
@@ -25,9 +23,6 @@ func newUpCmd(opts *Options) *cobra.Command {
 		Use:   "up",
 		Short: "Create or resume a dev session",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if noAttach {
-				attach = false
-			}
 			cfg, ns, err := loadConfigAndNamespace(opts)
 			if err != nil {
 				return err
@@ -50,9 +45,8 @@ func newUpCmd(opts *Options) *cobra.Command {
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "- would apply pod/%s\n", pod)
 				fmt.Fprintf(cmd.OutOrStdout(), "- would wait for pod readiness (timeout=%s)\n", waitTimeout)
-				if attach {
-					fmt.Fprintln(cmd.OutOrStdout(), "- would attach shell and start background sync/ports/ssh")
-				}
+				fmt.Fprintln(cmd.OutOrStdout(), "- would setup SSH config + managed SSH/port-forwards")
+				fmt.Fprintln(cmd.OutOrStdout(), "- would start background sync (when sync.engine=syncthing)")
 				return nil
 			}
 			if err := ensureSessionOwnership(opts, k, ns, sn, true); err != nil {
@@ -113,56 +107,51 @@ func newUpCmd(opts *Options) *cobra.Command {
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Session ready: %s (namespace: %s)\n", sn, ns)
-			if attach {
-				stopMaintenance := startSessionMaintenanceWithClient(k, cfg, ns, sn, cmd.OutOrStdout(), true, true)
-				defer stopMaintenance()
-
-				if cfg.Spec.SSH.LocalPort > 0 && cfg.Spec.SSH.RemotePort > 0 {
-					keyPath, keyErr := defaultSSHKeyPath(cfg)
-					if keyErr != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to resolve SSH key path: %v\n", keyErr)
+			if cfg.Spec.SSH.LocalPort > 0 && cfg.Spec.SSH.RemotePort > 0 {
+				keyPath, keyErr := defaultSSHKeyPath(cfg)
+				if keyErr != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to resolve SSH key path: %v\n", keyErr)
+				} else {
+					if err := ensureSSHKeyOnPod(opts, cfg, ns, pod, keyPath); err != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to setup SSH key in pod: %v\n", err)
+					}
+					alias := sshHostAlias(sn)
+					cfgPath, _ := config.ResolvePath(opts.ConfigPath)
+					if cfgErr := ensureSSHConfigEntry(alias, sn, cfg.Spec.SSH.User, cfg.Spec.SSH.LocalPort, cfg.Spec.SSH.RemotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
 					} else {
-						if err := ensureSSHKeyOnPod(opts, cfg, ns, pod, keyPath); err != nil {
-							fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to setup SSH key in pod: %v\n", err)
+						// Force-refresh managed master so forward rules are always current after `okdev up`.
+						_ = stopManagedSSHForward(alias)
+						if err := startManagedSSHForward(alias); err != nil {
+							fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to start managed SSH/port-forwards: %v\n", err)
 						} else {
-							alias := sshHostAlias(sn)
-							cfgPath, _ := config.ResolvePath(opts.ConfigPath)
-							if cfgErr := ensureSSHConfigEntry(alias, sn, cfg.Spec.SSH.User, cfg.Spec.SSH.LocalPort, cfg.Spec.SSH.RemotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
-								fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
-							} else if err := startManagedSSHForward(alias); err != nil {
-								fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to start managed SSH/port-forwards: %v\n", err)
+							if len(cfg.Spec.Ports) > 0 {
+								fmt.Fprintf(cmd.OutOrStdout(), "SSH ready: ssh %s (managed forwards active)\n", alias)
 							} else {
-								if len(cfg.Spec.Ports) > 0 {
-									fmt.Fprintf(cmd.OutOrStdout(), "Background SSH tunnel + port-forwards active via %s\n", alias)
-								} else {
-									fmt.Fprintf(cmd.OutOrStdout(), "Background SSH tunnel active: ssh %s\n", alias)
-								}
+								fmt.Fprintf(cmd.OutOrStdout(), "SSH ready: ssh %s\n", alias)
 							}
 						}
 					}
 				}
+			}
 
-				if cfg.Spec.Sync.Engine == "" || cfg.Spec.Sync.Engine == "syncthing" {
-					logPath, started, err := startDetachedSyncthingSync(opts, "bi", sn)
-					if err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to start syncthing background sync: %v\n", err)
+			if cfg.Spec.Sync.Engine == "" || cfg.Spec.Sync.Engine == "syncthing" {
+				logPath, started, err := startDetachedSyncthingSync(opts, "bi", sn)
+				if err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to start syncthing background sync: %v\n", err)
+				} else {
+					if started {
+						fmt.Fprintf(cmd.OutOrStdout(), "Background syncthing sync active (mode=bi). Logs: %s\n", logPath)
 					} else {
-						if started {
-							fmt.Fprintf(cmd.OutOrStdout(), "Background syncthing sync active (mode=bi). Logs: %s\n", logPath)
-						} else {
-							fmt.Fprintf(cmd.OutOrStdout(), "Background syncthing sync already running (mode=bi). Logs: %s\n", logPath)
-						}
+						fmt.Fprintf(cmd.OutOrStdout(), "Background syncthing sync already running (mode=bi). Logs: %s\n", logPath)
 					}
 				}
-
-				return runConnectWithClient(k, ns, sn, []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}, true)
 			}
+
 			return nil
 		},
 	}
 
-	cmd.Flags().BoolVar(&attach, "attach", true, "Attach shell after session is ready")
-	cmd.Flags().BoolVar(&noAttach, "no-attach", false, "Do not attach shell/background integrations after session is ready")
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 3*time.Minute, "Wait timeout for pod readiness")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview actions without applying resources")
 	return cmd

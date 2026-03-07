@@ -15,9 +15,9 @@
 - `okdev version`
 - `okdev init [--template basic|gpu|llm-stack] [--force]`
 - `okdev validate`
-- `okdev up [--no-attach] [--wait-timeout 3m] [--dry-run]`
-  - attach is enabled by default; use `--no-attach` to skip shell + background integrations
-  - in attach flow, `spec.ports` are applied via managed SSH `LocalForward` rules
+- `okdev up [--wait-timeout 3m] [--dry-run]`
+  - prepares pod/workspace, SSH config, managed SSH+port-forwards, and background sync (when enabled), then exits
+  - `spec.ports` are applied via managed SSH `LocalForward` rules
 - `okdev down [--delete-pvc] [--dry-run]`
 - `okdev status [--all] [--all-users]`
 - `okdev list [--all-namespaces] [--all-users]`

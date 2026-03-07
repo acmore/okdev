@@ -46,7 +46,7 @@ Definition of done:
 Deliverables:
 - `okdev connect` (interactive shell/command execution)
 - `okdev ports` with config-defined forwards
-- Cross-machine reattach (`okdev up --attach`)
+- Cross-machine reattach (`okdev up`)
 - Local active-session pointer in repo metadata
 
 Definition of done:

@@ -138,19 +138,24 @@ func ensureSSHKeyOnPod(opts *Options, cfg *config.DevEnvironment, namespace, pod
 	}
 
 	script := fmt.Sprintf("mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && (grep -qxF %s ~/.ssh/authorized_keys || echo %s >> ~/.ssh/authorized_keys)", syncengine.ShellEscape(pubKey), syncengine.ShellEscape(pubKey))
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 	k := newKubeClient(opts)
 	container := sshTargetContainer(cfg)
-	if container == "" {
-		_, err = k.ExecSh(ctx, namespace, pod, script)
-	} else {
-		_, err = k.ExecShInContainer(ctx, namespace, pod, container, script)
+	var lastErr error
+	for i := 0; i < 3; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if container == "" {
+			_, err = k.ExecSh(ctx, namespace, pod, script)
+		} else {
+			_, err = k.ExecShInContainer(ctx, namespace, pod, container, script)
+		}
+		cancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		time.Sleep(time.Duration(i+1) * 500 * time.Millisecond)
 	}
-	if err != nil {
-		return fmt.Errorf("install ssh key in pod: %w", err)
-	}
-	return nil
+	return fmt.Errorf("install ssh key in pod: %w", lastErr)
 }
 
 func defaultSSHKeyPath(cfg *config.DevEnvironment) (string, error) {
@@ -162,7 +167,11 @@ func defaultSSHKeyPath(cfg *config.DevEnvironment) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".ssh", "okdev_ed25519"), nil
+	legacy := filepath.Join(home, ".ssh", "okdev_ed25519")
+	if _, err := os.Stat(legacy); err == nil {
+		return legacy, nil
+	}
+	return filepath.Join(home, ".okdev", "ssh", "id_ed25519"), nil
 }
 
 func sshTargetContainer(cfg *config.DevEnvironment) string {

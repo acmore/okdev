@@ -52,8 +52,8 @@ For a named session:
 ./bin/okdev sync --mode up
 ./bin/okdev ports
 
-# one-stop attach flow (shell + sync + app ports + ssh tunnel)
-./bin/okdev up --attach
+# one-step setup flow (sync + app ports + ssh tunnel), then exit
+./bin/okdev up
 
 # continuous sync (syncthing)
 ./bin/okdev sync
@@ -67,7 +67,7 @@ Default sidecar image tag follows the running `okdev` binary version (`ghcr.io/<
 Use `spec.sync.exclude` for local ignore patterns and `spec.sync.remoteExclude` for remote-only ignore patterns.
 For SSH, default mode is `spec.ssh.mode=dev-container` (your dev image runs sshd). Set `spec.ssh.mode=sidecar` to use `ghcr.io/<repo-owner>/okdev-sshd:<okdev-version>` instead.
 `okdev ssh` and `okdev up` manage `~/.ssh/config` entries as `okdev-<session>`.
-Configured `spec.ports` are written as SSH `LocalForward` rules and can be auto-started by `okdev up --attach`.
+Configured `spec.ports` are written as SSH `LocalForward` rules and auto-start with `okdev up`.
 
 Preview-only mode (no cluster changes):
 
