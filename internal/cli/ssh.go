@@ -84,6 +84,9 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				"-p", fmt.Sprintf("%d", usedLocalPort),
 				"-o", "StrictHostKeyChecking=no",
 				"-o", "UserKnownHostsFile=/dev/null",
+				"-o", "ServerAliveInterval=30",
+				"-o", "ServerAliveCountMax=10",
+				"-o", "TCPKeepAlive=yes",
 				"-i", keyPath,
 			}
 			if cmdStr != "" {
@@ -214,7 +217,8 @@ func ensureSSHConfigEntry(hostAlias, sessionName, user string, localPort, remote
 	}
 	blockLines = append(blockLines,
 		"  ServerAliveInterval 30",
-		"  ServerAliveCountMax 3",
+		"  ServerAliveCountMax 10",
+		"  TCPKeepAlive yes",
 		end,
 	)
 	block := strings.Join(blockLines, "\n") + "\n"
@@ -370,6 +374,9 @@ func startManagedSSHForward(hostAlias string) error {
 		"-S", socketPath,
 		"-o", "ControlPersist=600",
 		"-o", "ExitOnForwardFailure=yes",
+		"-o", "ServerAliveInterval=30",
+		"-o", "ServerAliveCountMax=10",
+		"-o", "TCPKeepAlive=yes",
 		hostAlias,
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
