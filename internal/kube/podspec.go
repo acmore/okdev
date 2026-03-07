@@ -2,9 +2,13 @@ package kube
 
 import (
 	"fmt"
+	"regexp"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 )
+
+var semverTagPattern = regexp.MustCompile(`^v?\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$`)
 
 func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath string, syncthingEnabled bool, syncthingImage string) (corev1.PodSpec, error) {
 	spec := podSpec.DeepCopy()
@@ -43,9 +47,10 @@ func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath s
 		})
 		if !hasContainer(spec.Containers, "syncthing") {
 			spec.Containers = append(spec.Containers, corev1.Container{
-				Name:    "syncthing",
-				Image:   syncthingImage,
-				Command: []string{"sh", "-lc", "syncthing serve --home /var/syncthing --no-browser --gui-address=http://0.0.0.0:8384 --no-restart --skip-port-probing"},
+				Name:            "syncthing",
+				Image:           syncthingImage,
+				ImagePullPolicy: syncthingImagePullPolicy(syncthingImage),
+				Command:         []string{"sh", "-lc", "syncthing serve --home /var/syncthing --no-browser --gui-address=http://0.0.0.0:8384 --no-restart --skip-port-probing"},
 				Ports: []corev1.ContainerPort{
 					{ContainerPort: 8384, Name: "st-gui"},
 					{ContainerPort: 22000, Name: "st-sync"},
@@ -59,6 +64,29 @@ func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath s
 	}
 
 	return *spec, nil
+}
+
+func syncthingImagePullPolicy(image string) corev1.PullPolicy {
+	if strings.Contains(image, "@sha256:") {
+		return corev1.PullIfNotPresent
+	}
+	tag := imageTag(image)
+	if tag == "" {
+		return corev1.PullAlways
+	}
+	if semverTagPattern.MatchString(tag) {
+		return corev1.PullIfNotPresent
+	}
+	return corev1.PullAlways
+}
+
+func imageTag(image string) string {
+	lastSlash := strings.LastIndex(image, "/")
+	lastColon := strings.LastIndex(image, ":")
+	if lastColon <= lastSlash {
+		return ""
+	}
+	return strings.TrimSpace(image[lastColon+1:])
 }
 
 func ensureVolume(volumes []corev1.Volume, v corev1.Volume) []corev1.Volume {

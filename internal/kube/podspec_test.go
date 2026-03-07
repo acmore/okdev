@@ -17,6 +17,16 @@ func TestPreparePodSpecAddsWorkspaceAndSyncthing(t *testing.T) {
 	if !hasContainer(spec.Containers, "syncthing") {
 		t.Fatal("expected syncthing container")
 	}
+	var st corev1.Container
+	for _, c := range spec.Containers {
+		if c.Name == "syncthing" {
+			st = c
+			break
+		}
+	}
+	if st.ImagePullPolicy != corev1.PullAlways {
+		t.Fatalf("expected PullAlways for mutable tag, got %s", st.ImagePullPolicy)
+	}
 }
 
 func TestPreparePodSpecWithoutSyncthing(t *testing.T) {
@@ -26,5 +36,24 @@ func TestPreparePodSpecWithoutSyncthing(t *testing.T) {
 	}
 	if hasContainer(spec.Containers, "syncthing") {
 		t.Fatal("did not expect syncthing container")
+	}
+}
+
+func TestSyncthingImagePullPolicy(t *testing.T) {
+	cases := []struct {
+		image string
+		want  corev1.PullPolicy
+	}{
+		{image: "ghcr.io/acmore/okdev:edge", want: corev1.PullAlways},
+		{image: "ghcr.io/acmore/okdev:latest", want: corev1.PullAlways},
+		{image: "ghcr.io/acmore/okdev", want: corev1.PullAlways},
+		{image: "ghcr.io/acmore/okdev:v0.1.0", want: corev1.PullIfNotPresent},
+		{image: "ghcr.io/acmore/okdev:1.2.3", want: corev1.PullIfNotPresent},
+		{image: "ghcr.io/acmore/okdev@sha256:deadbeef", want: corev1.PullIfNotPresent},
+	}
+	for _, tc := range cases {
+		if got := syncthingImagePullPolicy(tc.image); got != tc.want {
+			t.Fatalf("image %q: want %s, got %s", tc.image, tc.want, got)
+		}
 	}
 }
