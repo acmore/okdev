@@ -37,3 +37,7 @@ Docs are published from `docs/` via GitHub Actions + MkDocs.
 - Workflow: `.github/workflows/docs.yml`
 - Source config: `mkdocs.yml`
 - Expected URL: `https://acmore.github.io/okdev/`
+
+## License
+
+Apache License 2.0. See `LICENSE`.
