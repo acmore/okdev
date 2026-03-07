@@ -76,7 +76,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 
 			sshHost := sshHostAlias(sn)
 			cfgPath, _ := config.ResolvePath(opts.ConfigPath)
-			if cfgErr := ensureSSHConfigEntry(sshHost, sn, user, remotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
+			if cfgErr := ensureSSHConfigEntry(sshHost, sn, ns, user, remotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
 			}
 
@@ -188,7 +188,7 @@ func sshHostAlias(sessionName string) string {
 	return "okdev-" + sessionName
 }
 
-func ensureSSHConfigEntry(hostAlias, sessionName, user string, remotePort int, keyPath, okdevConfigPath string, forwards []config.PortMapping) error {
+func ensureSSHConfigEntry(hostAlias, sessionName, namespace, user string, remotePort int, keyPath, okdevConfigPath string, forwards []config.PortMapping) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -202,7 +202,7 @@ func ensureSSHConfigEntry(hostAlias, sessionName, user string, remotePort int, k
 
 	begin := "# BEGIN OKDEV " + hostAlias
 	end := "# END OKDEV " + hostAlias
-	proxyInner := fmt.Sprintf("okdev --session %s ssh-proxy --remote-port %d", shellQuote(sessionName), remotePort)
+	proxyInner := fmt.Sprintf("okdev --session %s -n %s ssh-proxy --remote-port %d", shellQuote(sessionName), shellQuote(namespace), remotePort)
 	if strings.TrimSpace(okdevConfigPath) != "" {
 		proxyInner += " -c " + shellQuote(okdevConfigPath)
 	}

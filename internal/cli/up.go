@@ -113,7 +113,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 					}
 					alias := sshHostAlias(sn)
 					cfgPath, _ := config.ResolvePath(opts.ConfigPath)
-					if cfgErr := ensureSSHConfigEntry(alias, sn, cfg.Spec.SSH.User, cfg.Spec.SSH.RemotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
+					if cfgErr := ensureSSHConfigEntry(alias, sn, ns, cfg.Spec.SSH.User, cfg.Spec.SSH.RemotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
 						fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
 					} else {
 						// Force-refresh managed master so forward rules are always current after `okdev up`.
