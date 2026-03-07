@@ -67,7 +67,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				}
 			}
 
-			cancelPF, err := startSSHPortForward(opts, ns, podName(sn), localPort, remotePort)
+			cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(newKubeClient(opts), ns, podName(sn), localPort, remotePort)
 			if err != nil {
 				return err
 			}
@@ -81,7 +81,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 
 			sshArgs := []string{
 				"-F", "/dev/null",
-				"-p", fmt.Sprintf("%d", localPort),
+				"-p", fmt.Sprintf("%d", usedLocalPort),
 				"-o", "StrictHostKeyChecking=no",
 				"-o", "UserKnownHostsFile=/dev/null",
 				"-i", keyPath,
@@ -148,10 +148,6 @@ func ensureSSHKeyOnPod(opts *Options, cfg *config.DevEnvironment, namespace, pod
 		return fmt.Errorf("install ssh key in pod: %w", err)
 	}
 	return nil
-}
-
-func startSSHPortForward(opts *Options, namespace, pod string, localPort, remotePort int) (context.CancelFunc, error) {
-	return startManagedPortForward(opts, namespace, pod, []string{fmt.Sprintf("%d:%d", localPort, remotePort)})
 }
 
 func defaultSSHKeyPath(cfg *config.DevEnvironment) (string, error) {
@@ -274,14 +270,14 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 			if remotePort == 0 {
 				remotePort = cfg.Spec.SSH.RemotePort
 			}
-			cancelPF, err := startManagedPortForwardNoProbeWithClient(k, ns, podName(sn), []string{fmt.Sprintf("%d:%d", localPort, remotePort)})
-			if err != nil && !strings.Contains(strings.ToLower(err.Error()), "address already in use") {
+			cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(k, ns, podName(sn), localPort, remotePort)
+			if err != nil {
 				return err
 			}
 			if cancelPF != nil {
 				defer cancelPF()
 			}
-			conn, err := waitDialLocal(localPort, 10*time.Second)
+			conn, err := waitDialLocal(usedLocalPort, 10*time.Second)
 			if err != nil {
 				return err
 			}
@@ -334,4 +330,52 @@ func waitDialLocal(localPort int, timeout time.Duration) (net.Conn, error) {
 		lastErr = fmt.Errorf("timed out connecting to %s", addr)
 	}
 	return nil, lastErr
+}
+
+func startSSHPortForwardWithFallback(k interface {
+	PortForward(context.Context, string, string, []string, io.Writer, io.Writer) error
+}, namespace, pod string, preferredLocalPort, remotePort int) (context.CancelFunc, int, error) {
+	tryPorts := []int{preferredLocalPort}
+	if preferredLocalPort > 0 {
+		if p, err := reserveEphemeralPort(); err == nil {
+			tryPorts = append(tryPorts, p)
+		}
+	}
+	var lastErr error
+	for _, lp := range tryPorts {
+		cancel, err := startManagedPortForwardNoProbeWithClient(k, namespace, pod, []string{fmt.Sprintf("%d:%d", lp, remotePort)})
+		if err == nil {
+			return cancel, lp, nil
+		}
+		lastErr = err
+		if !isPortListenConflict(err) {
+			return nil, 0, err
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("failed to start ssh port-forward")
+	}
+	return nil, 0, lastErr
+}
+
+func isPortListenConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "address already in use") ||
+		strings.Contains(msg, "unable to listen on any of the requested ports")
+}
+
+func reserveEphemeralPort() (int, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer ln.Close()
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, fmt.Errorf("unexpected listener address type %T", ln.Addr())
+	}
+	return addr.Port, nil
 }
