@@ -117,13 +117,6 @@ func newUpCmd(opts *Options) *cobra.Command {
 				stopMaintenance := startSessionMaintenanceWithClient(k, cfg, ns, sn, cmd.OutOrStdout(), true, true)
 				defer stopMaintenance()
 
-				stopBackgrounds := make([]func(), 0, 1)
-				defer func() {
-					for _, stop := range stopBackgrounds {
-						stop()
-					}
-				}()
-
 				if cfg.Spec.SSH.LocalPort > 0 && cfg.Spec.SSH.RemotePort > 0 {
 					keyPath, keyErr := defaultSSHKeyPath(cfg)
 					if keyErr != nil {
@@ -139,7 +132,6 @@ func newUpCmd(opts *Options) *cobra.Command {
 							} else if err := startManagedSSHForward(alias); err != nil {
 								fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to start managed SSH/port-forwards: %v\n", err)
 							} else {
-								stopBackgrounds = append(stopBackgrounds, func() { _ = stopManagedSSHForward(alias) })
 								if len(cfg.Spec.Ports) > 0 {
 									fmt.Fprintf(cmd.OutOrStdout(), "Background SSH tunnel + port-forwards active via %s\n", alias)
 								} else {
