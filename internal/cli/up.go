@@ -158,7 +158,8 @@ func newUpCmd(opts *Options) *cobra.Command {
 							} else {
 								stopBackgrounds = append(stopBackgrounds, cancelSSH)
 								alias := sshHostAlias(sn)
-								if cfgErr := ensureSSHConfigEntry(alias, cfg.Spec.SSH.User, cfg.Spec.SSH.LocalPort, keyPath); cfgErr != nil {
+								cfgPath, _ := config.ResolvePath(opts.ConfigPath)
+								if cfgErr := ensureSSHConfigEntry(alias, sn, cfg.Spec.SSH.User, cfg.Spec.SSH.LocalPort, cfg.Spec.SSH.RemotePort, keyPath, cfgPath); cfgErr != nil {
 									fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
 								}
 								fmt.Fprintf(cmd.OutOrStdout(), "Background SSH tunnel active: ssh %s\n", alias)

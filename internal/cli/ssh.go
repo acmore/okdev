@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
@@ -71,20 +74,22 @@ func newSSHCmd(opts *Options) *cobra.Command {
 			defer cancelPF()
 
 			sshHost := sshHostAlias(sn)
-			if cfgErr := ensureSSHConfigEntry(sshHost, user, localPort, keyPath); cfgErr != nil {
+			cfgPath, _ := config.ResolvePath(opts.ConfigPath)
+			if cfgErr := ensureSSHConfigEntry(sshHost, sn, user, localPort, remotePort, keyPath, cfgPath); cfgErr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
 			}
 
 			sshArgs := []string{
+				"-F", "/dev/null",
 				"-p", fmt.Sprintf("%d", localPort),
 				"-o", "StrictHostKeyChecking=no",
 				"-o", "UserKnownHostsFile=/dev/null",
 				"-i", keyPath,
 			}
 			if cmdStr != "" {
-				sshArgs = append(sshArgs, sshHost, cmdStr)
+				sshArgs = append(sshArgs, fmt.Sprintf("%s@127.0.0.1", user), cmdStr)
 			} else {
-				sshArgs = append(sshArgs, sshHost)
+				sshArgs = append(sshArgs, fmt.Sprintf("%s@127.0.0.1", user))
 			}
 			sshCmd := exec.Command("ssh", sshArgs...)
 			sshCmd.Stdin = os.Stdin
@@ -175,7 +180,7 @@ func sshHostAlias(sessionName string) string {
 	return "okdev-" + sessionName
 }
 
-func ensureSSHConfigEntry(hostAlias, user string, localPort int, keyPath string) error {
+func ensureSSHConfigEntry(hostAlias, sessionName, user string, localPort, remotePort int, keyPath, okdevConfigPath string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -184,26 +189,32 @@ func ensureSSHConfigEntry(hostAlias, user string, localPort int, keyPath string)
 	if err := os.MkdirAll(sshDir, 0o700); err != nil {
 		return err
 	}
-	configPath := filepath.Join(sshDir, "config")
-	existing, _ := os.ReadFile(configPath)
+	sshConfigPath := filepath.Join(sshDir, "config")
+	existing, _ := os.ReadFile(sshConfigPath)
 
 	begin := "# BEGIN OKDEV " + hostAlias
 	end := "# END OKDEV " + hostAlias
+	proxyInner := fmt.Sprintf("okdev --session %s ssh-proxy --local-port %d --remote-port %d", shellQuote(sessionName), localPort, remotePort)
+	if strings.TrimSpace(okdevConfigPath) != "" {
+		proxyInner += " -c " + shellQuote(okdevConfigPath)
+	}
+	proxyCmd := "sh -lc " + shellQuote(proxyInner)
 	blockLines := []string{
 		begin,
 		"Host " + hostAlias,
 		"  HostName 127.0.0.1",
-		fmt.Sprintf("  Port %d", localPort),
+		fmt.Sprintf("  Port %d", remotePort),
 		"  User " + user,
 		"  IdentityFile " + keyPath,
 		"  StrictHostKeyChecking no",
 		"  UserKnownHostsFile /dev/null",
+		"  ProxyCommand " + proxyCmd,
 		end,
 	}
 	block := strings.Join(blockLines, "\n") + "\n"
 	updated := stripManagedSSHBlock(string(existing), begin, end) + "\n" + block
 	updated = strings.TrimSpace(updated) + "\n"
-	return os.WriteFile(configPath, []byte(updated), 0o600)
+	return os.WriteFile(sshConfigPath, []byte(updated), 0o600)
 }
 
 func stripManagedSSHBlock(content, begin, end string) string {
@@ -228,4 +239,99 @@ func stripManagedSSHBlock(content, begin, end string) string {
 		out = out[:len(out)-1]
 	}
 	return strings.Join(out, "\n")
+}
+
+func shellQuote(v string) string {
+	if v == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(v, "'", `'"'"'`) + "'"
+}
+
+func newSSHProxyCmd(opts *Options) *cobra.Command {
+	var localPort int
+	var remotePort int
+	cmd := &cobra.Command{
+		Use:    "ssh-proxy",
+		Short:  "Internal SSH proxy bridge",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, ns, err := loadConfigAndNamespace(opts)
+			if err != nil {
+				return err
+			}
+			sn, err := resolveSessionName(opts, cfg)
+			if err != nil {
+				return err
+			}
+			k := newKubeClient(opts)
+			if err := ensureSessionOwnership(opts, k, ns, sn, true); err != nil {
+				return err
+			}
+			if localPort == 0 {
+				localPort = cfg.Spec.SSH.LocalPort
+			}
+			if remotePort == 0 {
+				remotePort = cfg.Spec.SSH.RemotePort
+			}
+			cancelPF, err := startManagedPortForwardNoProbeWithClient(k, ns, podName(sn), []string{fmt.Sprintf("%d:%d", localPort, remotePort)})
+			if err != nil && !strings.Contains(strings.ToLower(err.Error()), "address already in use") {
+				return err
+			}
+			if cancelPF != nil {
+				defer cancelPF()
+			}
+			conn, err := waitDialLocal(localPort, 10*time.Second)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+			var wg sync.WaitGroup
+			var copyErr error
+			var once sync.Once
+			setErr := func(err error) {
+				if err == nil || errors.Is(err, io.EOF) {
+					return
+				}
+				once.Do(func() { copyErr = err })
+			}
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				_, err := io.Copy(conn, os.Stdin)
+				setErr(err)
+				if cw, ok := conn.(interface{ CloseWrite() error }); ok {
+					_ = cw.CloseWrite()
+				}
+			}()
+			go func() {
+				defer wg.Done()
+				_, err := io.Copy(os.Stdout, conn)
+				setErr(err)
+			}()
+			wg.Wait()
+			return copyErr
+		},
+	}
+	cmd.Flags().IntVar(&localPort, "local-port", 0, "Local port for SSH tunnel")
+	cmd.Flags().IntVar(&remotePort, "remote-port", 0, "Remote SSH port in pod")
+	return cmd
+}
+
+func waitDialLocal(localPort int, timeout time.Duration) (net.Conn, error) {
+	deadline := time.Now().Add(timeout)
+	addr := fmt.Sprintf("127.0.0.1:%d", localPort)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 750*time.Millisecond)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		time.Sleep(150 * time.Millisecond)
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("timed out connecting to %s", addr)
+	}
+	return nil, lastErr
 }

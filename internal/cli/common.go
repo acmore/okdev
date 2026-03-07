@@ -41,6 +41,9 @@ func loadConfigAndNamespace(opts *Options) (*config.DevEnvironment, string, erro
 }
 
 func announceConfigPath(path string) {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("OKDEV_QUIET_CONFIG_ANNOUNCE")), "1") {
+		return
+	}
 	if strings.TrimSpace(path) == "" {
 		return
 	}
