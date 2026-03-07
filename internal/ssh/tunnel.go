@@ -1,11 +1,14 @@
 package ssh
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +34,8 @@ type TunnelManager struct {
 	listeners map[int]net.Listener
 	ctx       context.Context
 	cancel    context.CancelFunc
+
+	autoCancel context.CancelFunc
 }
 
 // Connect establishes an SSH connection to host:port.
@@ -71,6 +76,10 @@ func (tm *TunnelManager) Connect(ctx context.Context, host string, port int) err
 func (tm *TunnelManager) Close() error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
+	if tm.autoCancel != nil {
+		tm.autoCancel()
+		tm.autoCancel = nil
+	}
 	if tm.cancel != nil {
 		tm.cancel()
 	}
@@ -84,6 +93,73 @@ func (tm *TunnelManager) Close() error {
 	err := tm.client.Close()
 	tm.client = nil
 	return err
+}
+
+// ListListeningPorts queries remote TCP listeners.
+func (tm *TunnelManager) ListListeningPorts() ([]int, error) {
+	out, err := tm.Exec("ss -H -ltn")
+	if err != nil {
+		// Fallback for minimal images without `ss`.
+		out, err = tm.Exec("cat /proc/net/tcp /proc/net/tcp6")
+		if err != nil {
+			return nil, err
+		}
+		return parseProcNetTCPPorts(string(out)), nil
+	}
+	return parseSSListeningPorts(string(out)), nil
+}
+
+// StartAutoDetect polls listening ports and calls onAdd/onRemove for diffs.
+func (tm *TunnelManager) StartAutoDetect(interval time.Duration, configured map[int]struct{}, exclude map[int]struct{}, onAdd func(port int), onRemove func(port int)) {
+	tm.mu.Lock()
+	if tm.autoCancel != nil {
+		tm.autoCancel()
+	}
+	ctx := tm.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	autoCtx, cancel := context.WithCancel(ctx)
+	tm.autoCancel = cancel
+	tm.mu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		last := map[int]struct{}{}
+		for {
+			ports, err := tm.ListListeningPorts()
+			if err == nil {
+				curr := map[int]struct{}{}
+				for _, p := range ports {
+					if _, ok := configured[p]; ok {
+						continue
+					}
+					if _, ok := exclude[p]; ok {
+						continue
+					}
+					curr[p] = struct{}{}
+				}
+				for p := range curr {
+					if _, existed := last[p]; !existed && onAdd != nil {
+						onAdd(p)
+					}
+				}
+				for p := range last {
+					if _, still := curr[p]; !still && onRemove != nil {
+						onRemove(p)
+					}
+				}
+				last = curr
+			}
+
+			select {
+			case <-autoCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 }
 
 // IsConnected reports if an SSH client is present.
@@ -232,4 +308,81 @@ func copyBothWays(a net.Conn, b net.Conn) {
 		_, _ = io.Copy(b, a)
 	}()
 	wg.Wait()
+}
+
+func parseSSListeningPorts(raw string) []int {
+	ports := map[int]struct{}{}
+	sc := bufio.NewScanner(strings.NewReader(raw))
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		localAddr := fields[3]
+		port, ok := parsePortFromAddr(localAddr)
+		if ok {
+			ports[port] = struct{}{}
+		}
+	}
+	return sortedPorts(ports)
+}
+
+func parseProcNetTCPPorts(raw string) []int {
+	ports := map[int]struct{}{}
+	sc := bufio.NewScanner(strings.NewReader(raw))
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "sl") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		local := fields[1]
+		parts := strings.Split(local, ":")
+		if len(parts) != 2 {
+			continue
+		}
+		p, err := strconv.ParseInt(parts[1], 16, 32)
+		if err != nil {
+			continue
+		}
+		if p > 0 {
+			ports[int(p)] = struct{}{}
+		}
+	}
+	return sortedPorts(ports)
+}
+
+func parsePortFromAddr(addr string) (int, bool) {
+	i := strings.LastIndex(addr, ":")
+	if i < 0 || i == len(addr)-1 {
+		return 0, false
+	}
+	p, err := strconv.Atoi(addr[i+1:])
+	if err != nil || p <= 0 {
+		return 0, false
+	}
+	return p, true
+}
+
+func sortedPorts(m map[int]struct{}) []int {
+	out := make([]int, 0, len(m))
+	for p := range m {
+		out = append(out, p)
+	}
+	// Small sizes expected; keep dependency surface low.
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[j] < out[i] {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	return out
 }

@@ -3,6 +3,7 @@ package ssh
 import (
 	"context"
 	"net"
+	"reflect"
 	"testing"
 )
 
@@ -34,5 +35,31 @@ func TestTunnelManagerRemoveForwardClosesListener(t *testing.T) {
 	tm.RemoveForward(localPort)
 	if _, ok := tm.listeners[localPort]; ok {
 		t.Fatal("listener should be removed")
+	}
+}
+
+func TestParseSSListeningPorts(t *testing.T) {
+	raw := `
+LISTEN 0      4096      127.0.0.1:8080      0.0.0.0:*
+LISTEN 0      4096      0.0.0.0:22          0.0.0.0:*
+LISTEN 0      4096         [::]:22000          [::]:*
+`
+	got := parseSSListeningPorts(raw)
+	want := []int{22, 8080, 22000}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected ports: got=%v want=%v", got, want)
+	}
+}
+
+func TestParseProcNetTCPPorts(t *testing.T) {
+	raw := `
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000   0        0 0 1 0000000000000000 100 0 0 10 0
+   1: 00000000:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000   0        0 0 1 0000000000000000 100 0 0 10 0
+`
+	got := parseProcNetTCPPorts(raw)
+	want := []int{22, 8080}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected ports: got=%v want=%v", got, want)
 	}
 }
