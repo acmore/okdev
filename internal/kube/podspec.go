@@ -49,10 +49,14 @@ func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath, 
 	}
 
 	if !hasContainer(spec.Containers, "okdev-sidecar") {
+		privileged := true
 		spec.Containers = append(spec.Containers, corev1.Container{
 			Name:            "okdev-sidecar",
 			Image:           sidecarImage,
 			ImagePullPolicy: syncthingImagePullPolicy(sidecarImage),
+			SecurityContext: &corev1.SecurityContext{
+				Privileged: &privileged,
+			},
 			Ports: []corev1.ContainerPort{
 				{ContainerPort: 22, Name: "ssh"},
 				{ContainerPort: 8384, Name: "st-gui"},

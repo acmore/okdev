@@ -79,6 +79,23 @@ func TestPreparePodSpecSidecarVolumeMounts(t *testing.T) {
 	}
 }
 
+func TestPreparePodSpecSidecarPrivileged(t *testing.T) {
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sidecar corev1.Container
+	for _, c := range spec.Containers {
+		if c.Name == "okdev-sidecar" {
+			sidecar = c
+			break
+		}
+	}
+	if sidecar.SecurityContext == nil || sidecar.SecurityContext.Privileged == nil || !*sidecar.SecurityContext.Privileged {
+		t.Fatal("expected okdev-sidecar to run privileged for nsenter")
+	}
+}
+
 func TestPreparePodSpecContainerCount(t *testing.T) {
 	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge")
 	if err != nil {
