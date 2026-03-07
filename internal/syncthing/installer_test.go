@@ -25,6 +25,35 @@ func TestChecksumForArchiveNotFound(t *testing.T) {
 	}
 }
 
+func TestSelectArchiveNameChoosesFirstMatch(t *testing.T) {
+	checksums := "aaa  syncthing-linux-amd64-v1.2.3.tar.gz\nbbb  syncthing-macos-arm64-v1.2.3.zip\n"
+	got, err := selectArchiveName(checksums, []string{"syncthing-macos-arm64-v1.2.3.zip", "syncthing-darwin-arm64-v1.2.3.tar.gz"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "syncthing-macos-arm64-v1.2.3.zip" {
+		t.Fatalf("unexpected archive %q", got)
+	}
+}
+
+func TestSelectArchiveNameNotFound(t *testing.T) {
+	if _, err := selectArchiveName("aaa syncthing-linux-amd64-v1.2.3.tar.gz", []string{"syncthing-macos-arm64-v1.2.3.zip"}); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestLooksLikeSyncthingBinaryPath(t *testing.T) {
+	if !looksLikeSyncthingBinaryPath("syncthing-macos-arm64-v1.2.3/syncthing", 20<<20) {
+		t.Fatal("expected binary path match")
+	}
+	if looksLikeSyncthingBinaryPath("syncthing-macos-arm64-v1.2.3/etc/firewall-ufw/syncthing", 175) {
+		t.Fatal("did not expect helper file to match")
+	}
+	if looksLikeSyncthingBinaryPath("syncthing", 120) {
+		t.Fatal("did not expect tiny file to match")
+	}
+}
+
 type fakeHTTPDoer struct {
 	resp *http.Response
 	err  error

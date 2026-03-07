@@ -2,6 +2,7 @@ package syncthing
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -28,17 +29,17 @@ type httpDoer interface {
 var installerHTTPClient httpDoer = &http.Client{Timeout: installerHTTPTimeout}
 
 func EnsureBinary(ctx context.Context, version string, autoInstall bool) (string, error) {
-	if p, err := lookupInPath("syncthing"); err == nil {
-		return p, nil
-	}
 	if !autoInstall {
+		if p, err := lookupInPath("syncthing"); err == nil {
+			return p, nil
+		}
 		return "", errors.New("syncthing not found in PATH and autoInstall is disabled")
 	}
 	if version == "" {
 		version = config.DefaultSyncthingVersion
 	}
 
-	platform, archiveName, err := platformArchiveName(version)
+	platform, archiveNames, err := platformArchiveNames(version)
 	if err != nil {
 		return "", err
 	}
@@ -55,12 +56,16 @@ func EnsureBinary(ctx context.Context, version string, autoInstall bool) (string
 		return "", err
 	}
 
-	archiveURL := fmt.Sprintf("%s/%s/%s", releaseBaseURL, version, archiveName)
 	checksumURL := fmt.Sprintf("%s/%s/sha256sum.txt.asc", releaseBaseURL, version)
 	checksums, err := httpGet(ctx, checksumURL)
 	if err != nil {
 		return "", fmt.Errorf("download syncthing checksums: %w", err)
 	}
+	archiveName, err := selectArchiveName(string(checksums), archiveNames)
+	if err != nil {
+		return "", err
+	}
+	archiveURL := fmt.Sprintf("%s/%s/%s", releaseBaseURL, version, archiveName)
 	want, err := checksumForArchive(string(checksums), archiveName)
 	if err != nil {
 		return "", err
@@ -76,7 +81,7 @@ func EnsureBinary(ctx context.Context, version string, autoInstall bool) (string
 	}
 
 	tmp := binPath + ".tmp"
-	if err := extractSyncthingBinaryFromFileToPath(archiveFile, tmp); err != nil {
+	if err := extractSyncthingBinaryFromFileToPath(archiveFile, archiveName, tmp); err != nil {
 		return "", err
 	}
 	if err := os.Rename(tmp, binPath); err != nil {
@@ -85,18 +90,33 @@ func EnsureBinary(ctx context.Context, version string, autoInstall bool) (string
 	return binPath, nil
 }
 
-func platformArchiveName(version string) (platform string, archiveName string, err error) {
+func platformArchiveNames(version string) (platform string, archiveNames []string, err error) {
 	osName := runtime.GOOS
 	arch := runtime.GOARCH
 	if osName != "linux" && osName != "darwin" {
-		return "", "", fmt.Errorf("unsupported OS %q for syncthing auto-install", osName)
+		return "", nil, fmt.Errorf("unsupported OS %q for syncthing auto-install", osName)
 	}
 	if arch != "amd64" && arch != "arm64" {
-		return "", "", fmt.Errorf("unsupported architecture %q for syncthing auto-install", arch)
+		return "", nil, fmt.Errorf("unsupported architecture %q for syncthing auto-install", arch)
 	}
 	platform = osName + "-" + arch
-	archiveName = fmt.Sprintf("syncthing-%s-%s-%s.tar.gz", osName, arch, version)
-	return platform, archiveName, nil
+	if osName == "linux" {
+		return platform, []string{fmt.Sprintf("syncthing-linux-%s-%s.tar.gz", arch, version)}, nil
+	}
+	// macOS assets are distributed as zip archives under "macos-<arch>" names.
+	return platform, []string{
+		fmt.Sprintf("syncthing-macos-%s-%s.zip", arch, version),
+		fmt.Sprintf("syncthing-darwin-%s-%s.tar.gz", arch, version),
+	}, nil
+}
+
+func selectArchiveName(checksums string, archiveNames []string) (string, error) {
+	for _, archiveName := range archiveNames {
+		if _, err := checksumForArchive(checksums, archiveName); err == nil {
+			return archiveName, nil
+		}
+	}
+	return "", fmt.Errorf("checksum not found for candidate archives: %s", strings.Join(archiveNames, ", "))
 }
 
 func httpGet(ctx context.Context, url string) ([]byte, error) {
@@ -129,7 +149,14 @@ func checksumForArchive(checksums string, archiveName string) (string, error) {
 	return "", fmt.Errorf("checksum for %s not found", archiveName)
 }
 
-func extractSyncthingBinaryFromFileToPath(archivePath, outPath string) error {
+func extractSyncthingBinaryFromFileToPath(archivePath, archiveName, outPath string) error {
+	if strings.HasSuffix(archiveName, ".zip") {
+		return extractSyncthingBinaryFromZipToPath(archivePath, outPath)
+	}
+	return extractSyncthingBinaryFromTarGzToPath(archivePath, outPath)
+}
+
+func extractSyncthingBinaryFromTarGzToPath(archivePath, outPath string) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return err
@@ -153,6 +180,9 @@ func extractSyncthingBinaryFromFileToPath(archivePath, outPath string) error {
 		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
+		if !looksLikeSyncthingBinaryPath(hdr.Name, hdr.Size) {
+			continue
+		}
 		if strings.HasSuffix(hdr.Name, "/syncthing") || hdr.Name == "syncthing" {
 			out, err := os.OpenFile(outPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
 			if err != nil {
@@ -171,6 +201,69 @@ func extractSyncthingBinaryFromFileToPath(archivePath, outPath string) error {
 		}
 	}
 	return errors.New("syncthing binary not found in archive")
+}
+
+func extractSyncthingBinaryFromZipToPath(archivePath, outPath string) error {
+	zr, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return err
+	}
+	defer zr.Close()
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		if !looksLikeSyncthingBinaryPath(f.Name, int64(f.UncompressedSize64)) {
+			continue
+		}
+		if strings.HasSuffix(f.Name, "/syncthing") || f.Name == "syncthing" {
+			rc, err := f.Open()
+			if err != nil {
+				return err
+			}
+			out, err := os.OpenFile(outPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+			if err != nil {
+				_ = rc.Close()
+				return err
+			}
+			if _, err := io.Copy(out, rc); err != nil {
+				_ = rc.Close()
+				_ = out.Close()
+				_ = os.Remove(outPath)
+				return err
+			}
+			if err := rc.Close(); err != nil {
+				_ = out.Close()
+				_ = os.Remove(outPath)
+				return err
+			}
+			if err := out.Close(); err != nil {
+				_ = os.Remove(outPath)
+				return err
+			}
+			return nil
+		}
+	}
+	return errors.New("syncthing binary not found in archive")
+}
+
+func looksLikeSyncthingBinaryPath(name string, size int64) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	parts := strings.Split(name, "/")
+	if len(parts) == 0 || parts[len(parts)-1] != "syncthing" {
+		return false
+	}
+	// Skip service/unit helper files also named "syncthing".
+	for _, p := range parts {
+		if p == "etc" {
+			return false
+		}
+	}
+	// Actual binaries are large; helper files are tiny text files.
+	return size > 1<<20
 }
 
 func downloadArchiveToTemp(ctx context.Context, archiveURL, archiveName string) (string, string, error) {

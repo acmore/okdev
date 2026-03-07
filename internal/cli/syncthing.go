@@ -203,12 +203,15 @@ func localSyncthingHome(session string) (string, error) {
 }
 
 func startLocalSyncthing(binary, home string) error {
-	generate := exec.Command(binary, "-home", home, "generate")
-	if out, err := generate.CombinedOutput(); err != nil && !strings.Contains(string(out), "already exists") {
-		return fmt.Errorf("generate local syncthing config: %w (%s)", err, strings.TrimSpace(string(out)))
+	genOut, genErr := exec.Command(binary, "generate", "--home", home).CombinedOutput()
+	if genErr != nil {
+		legacyOut, legacyErr := exec.Command(binary, "-home", home, "generate").CombinedOutput()
+		if legacyErr != nil && !strings.Contains(string(genOut), "already exists") && !strings.Contains(string(legacyOut), "already exists") {
+			return fmt.Errorf("generate local syncthing config: %w (%s)", genErr, strings.TrimSpace(string(genOut)))
+		}
 	}
 
-	pattern := syncengine.ShellEscape(binary + " -home " + home)
+	pattern := syncengine.ShellEscape(binary + " serve --home " + home)
 	binaryQ := syncengine.ShellEscape(binary)
 	homeQ := syncengine.ShellEscape(home)
 	cmd := exec.Command("sh", "-lc", fmt.Sprintf("pkill -f %s >/dev/null 2>&1 || true; nohup %s serve --home %s --no-browser --gui-address=http://%s --no-restart --skip-port-probing >%s 2>&1 &", pattern, binaryQ, homeQ, syncengine.ShellEscape(syncthingLocalGUIAddr), syncengine.ShellEscape(syncthingLocalLogPath)))
@@ -219,7 +222,7 @@ func startLocalSyncthing(binary, home string) error {
 }
 
 func stopLocalSyncthing(binary, home string) error {
-	pattern := syncengine.ShellEscape(binary + " -home " + home)
+	pattern := syncengine.ShellEscape(binary + " serve --home " + home)
 	cmd := exec.Command("sh", "-lc", fmt.Sprintf("pkill -f %s >/dev/null 2>&1 || true", pattern))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("stop local syncthing: %w (%s)", err, strings.TrimSpace(string(out)))
@@ -455,7 +458,7 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 	if err := syncthingSetConfig(ctx, base, key, cfg); err != nil {
 		return err
 	}
-	return syncthingPost(ctx, base, key, "/rest/system/restart", nil)
+	return nil
 }
 
 func syncthingGetConfig(ctx context.Context, base, key string) (map[string]any, error) {
@@ -475,7 +478,7 @@ func syncthingSetConfig(ctx context.Context, base, key string, cfg map[string]an
 	if err != nil {
 		return err
 	}
-	_, err = syncthingAPIRequestWithContext(ctx, http.MethodPost, base, key, "/rest/config", b, "application/json")
+	_, err = syncthingAPIRequestWithContext(ctx, http.MethodPut, base, key, "/rest/config", b, "application/json")
 	if err != nil {
 		return err
 	}
