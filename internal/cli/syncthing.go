@@ -33,7 +33,6 @@ const (
 	syncthingPeerAddrTunnel    = "tcp://127.0.0.1:22000"
 	syncthingPeerAddrDynamic   = "dynamic"
 	syncthingAPIReadyTimeout   = 30 * time.Second
-	syncthingLocalListenAddr   = "tcp://127.0.0.1:22001"
 	syncthingLocalLogPath      = "/tmp/okdev-syncthing-local.log"
 	syncthingHTTPClientTimeout = 15 * time.Second
 )
@@ -212,7 +211,7 @@ func startLocalSyncthing(binary, home string) error {
 	pattern := syncengine.ShellEscape(binary + " -home " + home)
 	binaryQ := syncengine.ShellEscape(binary)
 	homeQ := syncengine.ShellEscape(home)
-	cmd := exec.Command("sh", "-lc", fmt.Sprintf("pkill -f %s >/dev/null 2>&1 || true; nohup %s -home %s -no-browser -gui-address=%s -no-restart -skip-port-probing -listen=%s >%s 2>&1 &", pattern, binaryQ, homeQ, syncengine.ShellEscape(syncthingLocalGUIAddr), syncengine.ShellEscape(syncthingLocalListenAddr), syncengine.ShellEscape(syncthingLocalLogPath)))
+	cmd := exec.Command("sh", "-lc", fmt.Sprintf("pkill -f %s >/dev/null 2>&1 || true; nohup %s serve --home %s --no-browser --gui-address=http://%s --no-restart --skip-port-probing >%s 2>&1 &", pattern, binaryQ, homeQ, syncengine.ShellEscape(syncthingLocalGUIAddr), syncengine.ShellEscape(syncthingLocalLogPath)))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("start local syncthing: %w (%s)", err, strings.TrimSpace(string(out)))
 	}

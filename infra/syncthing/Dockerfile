@@ -26,4 +26,4 @@ WORKDIR /workspace
 
 EXPOSE 8384 22000
 
-CMD ["syncthing", "-home", "/var/syncthing", "-no-browser", "-gui-address=0.0.0.0:8384", "-no-restart", "-skip-port-probing", "-listen=tcp://0.0.0.0:22000"]
+CMD ["syncthing", "serve", "--home", "/var/syncthing", "--no-browser", "--gui-address=http://0.0.0.0:8384", "--no-restart", "--skip-port-probing"]

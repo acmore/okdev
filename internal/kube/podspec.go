@@ -45,7 +45,7 @@ func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath s
 			spec.Containers = append(spec.Containers, corev1.Container{
 				Name:    "syncthing",
 				Image:   syncthingImage,
-				Command: []string{"sh", "-lc", "syncthing -home /var/syncthing -no-browser -gui-address=0.0.0.0:8384 -no-restart -skip-port-probing -listen=tcp://0.0.0.0:22000"},
+				Command: []string{"sh", "-lc", "syncthing serve --home /var/syncthing --no-browser --gui-address=http://0.0.0.0:8384 --no-restart --skip-port-probing"},
 				Ports: []corev1.ContainerPort{
 					{ContainerPort: 8384, Name: "st-gui"},
 					{ContainerPort: 22000, Name: "st-sync"},
