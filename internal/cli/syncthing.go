@@ -25,7 +25,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const syncthingContainerName = "syncthing"
+const (
+	syncthingContainerName       = "okdev-sidecar"
+	legacySyncthingContainerName = "syncthing"
+)
 const (
 	syncthingLocalGUIAddr      = "127.0.0.1:8385"
 	syncthingLocalAPIBase      = "http://127.0.0.1:8385"
@@ -53,7 +56,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 
 	k := newKubeClient(opts)
 	pod := podName(sessionName)
-	if _, err := k.ExecShInContainer(ctx, namespace, pod, syncthingContainerName, "command -v syncthing >/dev/null 2>&1"); err != nil {
+	if _, err := execInSyncthingContainer(ctx, k, namespace, pod, "command -v syncthing >/dev/null 2>&1"); err != nil {
 		return fmt.Errorf("syncthing sidecar not ready; run `okdev up` with sync.engine=syncthing: %w", err)
 	}
 
@@ -68,7 +71,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	if err := writeSTIgnore(absLocal, cfg.Spec.Sync.Exclude); err != nil {
 		return err
 	}
-	if _, err := k.ExecShInContainer(ctx, namespace, pod, syncthingContainerName, fmt.Sprintf("mkdir -p %s", syncengine.ShellEscape(pair.Remote))); err != nil {
+	if _, err := execInSyncthingContainer(ctx, k, namespace, pod, fmt.Sprintf("mkdir -p %s", syncengine.ShellEscape(pair.Remote))); err != nil {
 		return err
 	}
 	if err := writeRemoteSTIgnoreInPod(ctx, k, namespace, pod, pair.Remote, cfg.Spec.Sync.RemoteExclude); err != nil {
@@ -186,7 +189,7 @@ func writeRemoteSTIgnoreInPod(ctx context.Context, k interface {
 		return fmt.Errorf("invalid remote sync path %q for remoteExclude", remotePath)
 	}
 	cmd := fmt.Sprintf("cat > %s <<'OKDEV_STIGNORE_EOF'\n%sOKDEV_STIGNORE_EOF\n", syncengine.ShellEscape(ignorePath), content)
-	_, err := k.ExecShInContainer(ctx, namespace, pod, syncthingContainerName, cmd)
+	_, err := execInSyncthingContainer(ctx, k, namespace, pod, cmd)
 	return err
 }
 
@@ -262,7 +265,7 @@ func readLocalSyncthingAPIKey(home string) (string, error) {
 func readRemoteSyncthingAPIKey(ctx context.Context, k interface {
 	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
 }, namespace, pod string) (string, error) {
-	out, err := k.ExecShInContainer(ctx, namespace, pod, syncthingContainerName, "cat /var/syncthing/config.xml 2>/dev/null || cat /var/syncthing/config/config.xml")
+	out, err := execInSyncthingContainer(ctx, k, namespace, pod, "cat /var/syncthing/config.xml 2>/dev/null || cat /var/syncthing/config/config.xml")
 	if err != nil {
 		return "", err
 	}
@@ -274,6 +277,20 @@ func readRemoteSyncthingAPIKey(ctx context.Context, k interface {
 		return "", errors.New("remote syncthing API key is empty")
 	}
 	return cfg.GUI.APIKey, nil
+}
+
+func execInSyncthingContainer(ctx context.Context, k interface {
+	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+}, namespace, pod, script string) ([]byte, error) {
+	out, err := k.ExecShInContainer(ctx, namespace, pod, syncthingContainerName, script)
+	if err == nil {
+		return out, nil
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "container "+syncthingContainerName+" is not valid") || strings.Contains(msg, "container not found") {
+		return k.ExecShInContainer(ctx, namespace, pod, legacySyncthingContainerName, script)
+	}
+	return nil, err
 }
 
 func waitSyncthingAPI(ctx context.Context, base, key string, timeout time.Duration) error {
