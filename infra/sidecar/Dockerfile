@@ -1,0 +1,33 @@
+FROM alpine:3.21
+
+ARG SYNCTHING_VERSION=v1.29.7
+
+# Install openssh-server + syncthing dependencies + nsenter (util-linux)
+RUN apk add --no-cache openssh-server ca-certificates curl tar util-linux \
+    && mkdir -p /run/sshd /root/.ssh \
+    && chmod 700 /root/.ssh
+
+# Install syncthing
+RUN arch="$(uname -m)" \
+    && case "$arch" in \
+         x86_64) syncthing_arch="amd64" ;; \
+         aarch64) syncthing_arch="arm64" ;; \
+         *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
+       esac \
+    && os="linux" \
+    && archive="syncthing-${os}-${syncthing_arch}-${SYNCTHING_VERSION}.tar.gz" \
+    && base_url="https://github.com/syncthing/syncthing/releases/download/${SYNCTHING_VERSION}" \
+    && curl -fsSL "${base_url}/sha256sum.txt.asc" -o /tmp/sha256sum.txt \
+    && curl -fsSL "${base_url}/${archive}" -o "/tmp/${archive}" \
+    && (cd /tmp && grep " ${archive}$" sha256sum.txt | sha256sum -c -) \
+    && tar -xzf "/tmp/${archive}" -C /tmp \
+    && install -m 0755 "/tmp/syncthing-${os}-${syncthing_arch}-${SYNCTHING_VERSION}/syncthing" /usr/local/bin/syncthing \
+    && rm -rf /tmp/syncthing* /tmp/sha256sum.txt
+
+COPY sshd_config /etc/ssh/sshd_config
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 22 8384 22000
+
+ENTRYPOINT ["/entrypoint.sh"]
