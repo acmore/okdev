@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
+	okssh "github.com/acmore/okdev/internal/ssh"
 	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
 )
@@ -79,27 +80,28 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
 			}
 
-			sshArgs := []string{
-				"-F", "/dev/null",
-				"-p", fmt.Sprintf("%d", usedLocalPort),
-				"-o", "StrictHostKeyChecking=no",
-				"-o", "UserKnownHostsFile=/dev/null",
-				"-o", "ServerAliveInterval=30",
-				"-o", "ServerAliveCountMax=10",
-				"-o", "TCPKeepAlive=yes",
-				"-i", keyPath,
+			tm := &okssh.TunnelManager{
+				SSHUser:    user,
+				SSHKeyPath: keyPath,
+				RemotePort: remotePort,
 			}
+			if err := tm.Connect(cmd.Context(), "127.0.0.1", usedLocalPort); err != nil {
+				return fmt.Errorf("connect ssh tunnel: %w", err)
+			}
+			defer tm.Close()
+
 			if cmdStr != "" {
-				sshArgs = append(sshArgs, fmt.Sprintf("%s@127.0.0.1", user), cmdStr)
-			} else {
-				sshArgs = append(sshArgs, fmt.Sprintf("%s@127.0.0.1", user))
+				out, err := tm.Exec(cmdStr)
+				if len(out) > 0 {
+					_, _ = cmd.OutOrStdout().Write(out)
+				}
+				if err != nil {
+					return fmt.Errorf("ssh command failed: %w", err)
+				}
+				return nil
 			}
-			sshCmd := exec.Command("ssh", sshArgs...)
-			sshCmd.Stdin = os.Stdin
-			sshCmd.Stdout = os.Stdout
-			sshCmd.Stderr = os.Stderr
-			if err := sshCmd.Run(); err != nil {
-				return fmt.Errorf("ssh failed: %w", err)
+			if err := tm.OpenShell(); err != nil {
+				return fmt.Errorf("ssh shell failed: %w", err)
 			}
 			return nil
 		},
