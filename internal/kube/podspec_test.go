@@ -6,53 +6,104 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-func TestPreparePodSpecAddsWorkspaceAndSyncthing(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", true, "syncthing:latest")
+func TestPreparePodSpecShareProcessNamespace(t *testing.T) {
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", true, "ghcr.io/acmore/okdev-sidecar:edge")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(spec.Containers) < 2 {
-		t.Fatalf("expected at least 2 containers, got %d", len(spec.Containers))
+	if spec.ShareProcessNamespace == nil || !*spec.ShareProcessNamespace {
+		t.Fatal("expected ShareProcessNamespace to be true")
 	}
-	if !hasContainer(spec.Containers, "syncthing") {
-		t.Fatal("expected syncthing container")
+}
+
+func TestPreparePodSpecSidecarName(t *testing.T) {
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", true, "ghcr.io/acmore/okdev-sidecar:edge")
+	if err != nil {
+		t.Fatal(err)
 	}
-	var st corev1.Container
+	if !hasContainer(spec.Containers, "okdev-sidecar") {
+		t.Fatal("expected okdev-sidecar container")
+	}
+}
+
+func TestPreparePodSpecSidecarPorts(t *testing.T) {
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", true, "ghcr.io/acmore/okdev-sidecar:edge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sidecar corev1.Container
 	for _, c := range spec.Containers {
-		if c.Name == "syncthing" {
-			st = c
+		if c.Name == "okdev-sidecar" {
+			sidecar = c
 			break
 		}
 	}
-	if st.ImagePullPolicy != corev1.PullAlways {
-		t.Fatalf("expected PullAlways for mutable tag, got %s", st.ImagePullPolicy)
+	wantPorts := map[int32]bool{22: false, 8384: false, 22000: false}
+	for _, p := range sidecar.Ports {
+		if _, ok := wantPorts[p.ContainerPort]; ok {
+			wantPorts[p.ContainerPort] = true
+		}
+	}
+	for port, found := range wantPorts {
+		if !found {
+			t.Fatalf("expected port %d on okdev-sidecar", port)
+		}
 	}
 }
 
-func TestPreparePodSpecWithoutSyncthing(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", false, "")
+func TestPreparePodSpecSidecarVolumeMounts(t *testing.T) {
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", true, "ghcr.io/acmore/okdev-sidecar:edge")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hasContainer(spec.Containers, "syncthing") {
-		t.Fatal("did not expect syncthing container")
+	var sidecar corev1.Container
+	for _, c := range spec.Containers {
+		if c.Name == "okdev-sidecar" {
+			sidecar = c
+			break
+		}
+	}
+	hasMount := func(name string) bool {
+		for _, m := range sidecar.VolumeMounts {
+			if m.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasMount("workspace") {
+		t.Fatal("expected workspace volume mount on okdev-sidecar")
+	}
+	if !hasMount("syncthing-home") {
+		t.Fatal("expected syncthing-home volume mount on okdev-sidecar")
 	}
 }
 
-func TestPreparePodSpecWithSSHSidecar(t *testing.T) {
-	spec, err := PreparePodSpecWithSSH(corev1.PodSpec{}, "ws-pvc", "/workspace", false, "", true, "ghcr.io/acmore/okdev-sshd:edge")
+func TestPreparePodSpecContainerCount(t *testing.T) {
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", true, "ghcr.io/acmore/okdev-sidecar:edge")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasContainer(spec.Containers, "okdev-ssh") {
-		t.Fatal("expected okdev-ssh container")
+	if len(spec.Containers) != 2 {
+		t.Fatalf("expected 2 containers (dev + okdev-sidecar), got %d", len(spec.Containers))
 	}
 }
 
-func TestPreparePodSpecWithSSHErrorsOnEmptyImage(t *testing.T) {
-	_, err := PreparePodSpecWithSSH(corev1.PodSpec{}, "ws-pvc", "/workspace", false, "", true, "")
+func TestPreparePodSpecSidecarAlwaysAdded(t *testing.T) {
+	// Even with syncthingEnabled=false, sidecar is still added.
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", false, "ghcr.io/acmore/okdev-sidecar:edge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasContainer(spec.Containers, "okdev-sidecar") {
+		t.Fatal("expected okdev-sidecar container even when syncthingEnabled is false")
+	}
+}
+
+func TestPreparePodSpecErrorsOnEmptyImage(t *testing.T) {
+	_, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", true, "")
 	if err == nil {
-		t.Fatal("expected error for empty ssh sidecar image")
+		t.Fatal("expected error for empty sidecar image")
 	}
 }
 

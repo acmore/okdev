@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
@@ -68,14 +67,12 @@ func newUpCmd(opts *Options) *cobra.Command {
 				}
 			}
 
-			preparedSpec, err := kube.PreparePodSpecWithSSH(
+			preparedSpec, err := kube.PreparePodSpec(
 				cfg.Spec.PodTemplate.Spec,
 				pvc,
 				cfg.Spec.Workspace.MountPath,
 				cfg.Spec.Sync.Engine == "syncthing",
 				cfg.Spec.Sync.Syncthing.Image,
-				strings.EqualFold(cfg.Spec.SSH.Mode, "sidecar"),
-				cfg.Spec.SSH.SidecarImage,
 			)
 			if err != nil {
 				return err

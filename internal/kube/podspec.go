@@ -10,7 +10,11 @@ import (
 
 var semverTagPattern = regexp.MustCompile(`^v?\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$`)
 
-func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath string, syncthingEnabled bool, syncthingImage string) (corev1.PodSpec, error) {
+func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath string, syncthingEnabled bool, sidecarImage string) (corev1.PodSpec, error) {
+	if strings.TrimSpace(sidecarImage) == "" {
+		return corev1.PodSpec{}, fmt.Errorf("sidecar image cannot be empty")
+	}
+
 	spec := podSpec.DeepCopy()
 	if spec == nil {
 		spec = &corev1.PodSpec{}
@@ -23,11 +27,18 @@ func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath s
 		}}
 	}
 
+	shareProcessNamespace := true
+	spec.ShareProcessNamespace = &shareProcessNamespace
+
 	spec.Volumes = ensureVolume(spec.Volumes, corev1.Volume{
 		Name: "workspace",
 		VolumeSource: corev1.VolumeSource{
 			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: workspaceClaim},
 		},
+	})
+	spec.Volumes = ensureVolume(spec.Volumes, corev1.Volume{
+		Name:         "syncthing-home",
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 	})
 
 	for i := range spec.Containers {
@@ -37,60 +48,24 @@ func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath s
 		})
 	}
 
-	if syncthingEnabled {
-		if syncthingImage == "" {
-			return corev1.PodSpec{}, fmt.Errorf("syncthing image cannot be empty when syncthing is enabled")
-		}
-		spec.Volumes = ensureVolume(spec.Volumes, corev1.Volume{
-			Name:         "syncthing-home",
-			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-		})
-		if !hasContainer(spec.Containers, "syncthing") {
-			spec.Containers = append(spec.Containers, corev1.Container{
-				Name:            "syncthing",
-				Image:           syncthingImage,
-				ImagePullPolicy: syncthingImagePullPolicy(syncthingImage),
-				Command:         []string{"sh", "-lc", "syncthing serve --home /var/syncthing --no-browser --gui-address=http://0.0.0.0:8384 --no-restart --skip-port-probing"},
-				Ports: []corev1.ContainerPort{
-					{ContainerPort: 8384, Name: "st-gui"},
-					{ContainerPort: 22000, Name: "st-sync"},
-				},
-				VolumeMounts: []corev1.VolumeMount{
-					{Name: "workspace", MountPath: workspaceMountPath},
-					{Name: "syncthing-home", MountPath: "/var/syncthing"},
-				},
-			})
-		}
-	}
-
-	return *spec, nil
-}
-
-func PreparePodSpecWithSSH(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath string, syncthingEnabled bool, syncthingImage string, sshSidecarEnabled bool, sshSidecarImage string) (corev1.PodSpec, error) {
-	spec, err := PreparePodSpec(podSpec, workspaceClaim, workspaceMountPath, syncthingEnabled, syncthingImage)
-	if err != nil {
-		return corev1.PodSpec{}, err
-	}
-	if !sshSidecarEnabled {
-		return spec, nil
-	}
-	if strings.TrimSpace(sshSidecarImage) == "" {
-		return corev1.PodSpec{}, fmt.Errorf("ssh sidecar image cannot be empty when ssh sidecar is enabled")
-	}
-	if !hasContainer(spec.Containers, "okdev-ssh") {
+	if !hasContainer(spec.Containers, "okdev-sidecar") {
 		spec.Containers = append(spec.Containers, corev1.Container{
-			Name:            "okdev-ssh",
-			Image:           sshSidecarImage,
-			ImagePullPolicy: syncthingImagePullPolicy(sshSidecarImage),
+			Name:            "okdev-sidecar",
+			Image:           sidecarImage,
+			ImagePullPolicy: syncthingImagePullPolicy(sidecarImage),
 			Ports: []corev1.ContainerPort{
 				{ContainerPort: 22, Name: "ssh"},
+				{ContainerPort: 8384, Name: "st-gui"},
+				{ContainerPort: 22000, Name: "st-sync"},
 			},
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: "workspace", MountPath: workspaceMountPath},
+				{Name: "syncthing-home", MountPath: "/var/syncthing"},
 			},
 		})
 	}
-	return spec, nil
+
+	return *spec, nil
 }
 
 func syncthingImagePullPolicy(image string) corev1.PullPolicy {
