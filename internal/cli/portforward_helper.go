@@ -16,6 +16,10 @@ func startManagedPortForward(opts *Options, namespace, pod string, forwards []st
 	return startManagedPortForwardWithClient(newKubeClient(opts), namespace, pod, forwards)
 }
 
+func startManagedPortForwardNoProbe(opts *Options, namespace, pod string, forwards []string) (context.CancelFunc, error) {
+	return startManagedPortForwardNoProbeWithClient(newKubeClient(opts), namespace, pod, forwards)
+}
+
 func startManagedPortForwardWithClient(k interface {
 	PortForward(context.Context, string, string, []string, io.Writer, io.Writer) error
 }, namespace, pod string, forwards []string) (context.CancelFunc, error) {
@@ -55,6 +59,37 @@ func startManagedPortForwardWithClient(k interface {
 			cancelAndWait()
 			return nil, fmt.Errorf("timeout waiting for port-forward readiness")
 		}
+	}
+}
+
+func startManagedPortForwardNoProbeWithClient(k interface {
+	PortForward(context.Context, string, string, []string, io.Writer, io.Writer) error
+}, namespace, pod string, forwards []string) (context.CancelFunc, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		errCh <- k.PortForward(ctx, namespace, pod, forwards, io.Discard, io.Discard)
+	}()
+	cancelAndWait := func() {
+		cancel()
+		select {
+		case <-doneCh:
+		case <-time.After(portForwardShutdownWait):
+		}
+	}
+	timer := time.NewTimer(500 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case err := <-errCh:
+		cancelAndWait()
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("port-forward exited before ready")
+	case <-timer.C:
+		return cancelAndWait, nil
 	}
 }
 

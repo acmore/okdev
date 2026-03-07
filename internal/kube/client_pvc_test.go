@@ -42,6 +42,31 @@ func TestPVCSpecDiffMutableAndImmutableChange(t *testing.T) {
 	}
 }
 
+func TestPVCSpecDiffIgnoresServerDefaultedFields(t *testing.T) {
+	storageClass := "local-path"
+	mode := corev1.PersistentVolumeFilesystem
+	existing := pvcSpec("50Gi", []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, &storageClass)
+	existing.VolumeName = "pvc-abc"
+	existing.VolumeMode = &mode
+
+	desired := pvcSpec("50Gi", []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, nil)
+	mutableChanged, immutableChanged := pvcSpecDiff(existing, desired)
+	if mutableChanged || immutableChanged {
+		t.Fatalf("expected no drift for server-defaulted fields, got mutable=%v immutable=%v", mutableChanged, immutableChanged)
+	}
+}
+
+func TestPVCSpecDiffDetectsExplicitStorageClassChange(t *testing.T) {
+	existingClass := "local-path"
+	desiredClass := "fast-ssd"
+	existing := pvcSpec("50Gi", []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, &existingClass)
+	desired := pvcSpec("50Gi", []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}, &desiredClass)
+	mutableChanged, immutableChanged := pvcSpecDiff(existing, desired)
+	if mutableChanged || !immutableChanged {
+		t.Fatalf("expected immutable storage class change, got mutable=%v immutable=%v", mutableChanged, immutableChanged)
+	}
+}
+
 func pvcSpec(size string, accessModes []corev1.PersistentVolumeAccessMode, storageClass *string) corev1.PersistentVolumeClaimSpec {
 	qty := resource.MustParse(size)
 	return corev1.PersistentVolumeClaimSpec{

@@ -38,6 +38,7 @@ spec:
     user: root
     remotePort: 22
     localPort: 2222
+    mode: dev-container
 `, DefaultWorkspacePVCSize, DefaultSyncthingVersion, DefaultSyncthingImage)
 
 var gpuTemplate = fmt.Sprintf(`apiVersion: okdev.io/v1alpha1
@@ -82,6 +83,7 @@ spec:
     user: root
     remotePort: 22
     localPort: 2222
+    mode: dev-container
   podTemplate:
     spec:
       containers:
@@ -151,6 +153,7 @@ spec:
     user: root
     remotePort: 22
     localPort: 2222
+    mode: dev-container
   podTemplate:
     spec:
       containers:

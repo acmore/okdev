@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,8 @@ import (
 	"k8s.io/client-go/transport/spdy"
 	"sigs.k8s.io/yaml"
 )
+
+var chooseContainerErrPattern = regexp.MustCompile(`choose one of: \[([^\]]+)\]`)
 
 type Client struct {
 	Context string
@@ -118,12 +121,22 @@ func (c *Client) Apply(ctx context.Context, namespace string, manifest []byte) e
 		if err != nil {
 			return err
 		}
+		if existing.DeletionTimestamp != nil {
+			if err := waitForPodDeletion(ctx, cs, namespace, pod.Name); err != nil {
+				return err
+			}
+			_, err = cs.CoreV1().Pods(namespace).Create(ctx, &pod, metav1.CreateOptions{})
+			return err
+		}
 		if reflect.DeepEqual(existing.Spec, pod.Spec) &&
 			reflect.DeepEqual(existing.Labels, pod.Labels) &&
 			reflect.DeepEqual(existing.Annotations, pod.Annotations) {
 			return nil
 		}
 		if err := cs.CoreV1().Pods(namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil {
+			return err
+		}
+		if err := waitForPodDeletion(ctx, cs, namespace, pod.Name); err != nil {
 			return err
 		}
 		_, err = cs.CoreV1().Pods(namespace).Create(ctx, &pod, metav1.CreateOptions{})
@@ -170,6 +183,25 @@ func (c *Client) Apply(ctx context.Context, namespace string, manifest []byte) e
 	}
 }
 
+func waitForPodDeletion(ctx context.Context, cs *kubernetes.Clientset, namespace, name string) error {
+	ticker := time.NewTicker(300 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		_, err := cs.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 func pvcSpecDiff(existing, desired corev1.PersistentVolumeClaimSpec) (mutableChanged bool, immutableChanged bool) {
 	if reflect.DeepEqual(existing, desired) {
 		return false, false
@@ -181,10 +213,23 @@ func pvcSpecDiff(existing, desired corev1.PersistentVolumeClaimSpec) (mutableCha
 	desiredComparable := desired.DeepCopy()
 	existingComparable.Resources = desiredComparable.Resources
 	existingComparable.VolumeAttributesClassName = desiredComparable.VolumeAttributesClassName
+	normalizeComparablePVCSpec(existingComparable, desiredComparable)
 	if reflect.DeepEqual(existingComparable, desiredComparable) {
 		return mutableChanged, false
 	}
 	return mutableChanged, true
+}
+
+func normalizeComparablePVCSpec(existing, desired *corev1.PersistentVolumeClaimSpec) {
+	// Kubernetes binds and defaults these fields server-side; if user didn't
+	// specify them in desired spec, don't treat this as immutable drift.
+	if desired.StorageClassName == nil {
+		desired.StorageClassName = existing.StorageClassName
+	}
+	if desired.VolumeMode == nil {
+		desired.VolumeMode = existing.VolumeMode
+	}
+	desired.VolumeName = existing.VolumeName
 }
 
 func cloneStringMap(in map[string]string) map[string]string {
@@ -381,7 +426,15 @@ func (c *Client) ExecInteractive(ctx context.Context, namespace, pod string, tty
 	if err != nil {
 		return err
 	}
-	return c.execStream(ctx, cs, cfg, namespace, pod, "", command, stdin, stdout, stderr, tty)
+	err = c.execStream(ctx, cs, cfg, namespace, pod, "", command, stdin, stdout, stderr, tty)
+	if err == nil {
+		return nil
+	}
+	container := preferredContainerFromExecErr(err)
+	if container == "" {
+		return err
+	}
+	return c.execStream(ctx, cs, cfg, namespace, pod, container, command, stdin, stdout, stderr, tty)
 }
 
 func (c *Client) PortForward(ctx context.Context, namespace, pod string, forwards []string, stdout io.Writer, stderr io.Writer) error {
@@ -509,6 +562,15 @@ func (c *Client) execCapture(ctx context.Context, namespace, pod, container stri
 	var out bytes.Buffer
 	var errBuf bytes.Buffer
 	if err := c.execStream(ctx, cs, cfg, namespace, pod, container, command, nil, &out, &errBuf, false); err != nil {
+		if container == "" {
+			if fallback := preferredContainerFromExecErr(err); fallback != "" {
+				out.Reset()
+				errBuf.Reset()
+				if retryErr := c.execStream(ctx, cs, cfg, namespace, pod, fallback, command, nil, &out, &errBuf, false); retryErr == nil {
+					return out.Bytes(), nil
+				}
+			}
+		}
 		if errBuf.Len() > 0 {
 			return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(errBuf.String()))
 		}
@@ -593,4 +655,30 @@ func podSummaryFromPod(p *corev1.Pod) PodSummary {
 		Restarts:    restarts,
 		Reason:      reason,
 	}
+}
+
+func preferredContainerFromExecErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	match := chooseContainerErrPattern.FindStringSubmatch(msg)
+	if len(match) != 2 {
+		return ""
+	}
+	names := strings.Fields(strings.TrimSpace(match[1]))
+	if len(names) == 0 {
+		return ""
+	}
+	for _, n := range names {
+		if n == "dev" {
+			return n
+		}
+	}
+	for _, n := range names {
+		if n != "syncthing" {
+			return n
+		}
+	}
+	return names[0]
 }

@@ -7,12 +7,14 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
 	"github.com/spf13/cobra"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 func newUpCmd(opts *Options) *cobra.Command {
@@ -61,6 +63,16 @@ func newUpCmd(opts *Options) *cobra.Command {
 			if warnErr := warnIfConfigNewerThanSession(opts, k, ns, sn, pod, cmd.ErrOrStderr()); warnErr != nil {
 				slog.Debug("skip config drift warning", "error", warnErr)
 			}
+			existingRunningReady := false
+			{
+				ctxCheck, cancelCheck := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancelCheck()
+				if ps, perr := k.GetPodSummary(ctxCheck, ns, pod); perr == nil {
+					existingRunningReady = strings.EqualFold(ps.Phase, "Running") && podReadyFromSummary(ps.Ready)
+				} else if !apierrors.IsNotFound(perr) {
+					return perr
+				}
+			}
 
 			ctx, cancel := defaultContext()
 			defer cancel()
@@ -75,36 +87,40 @@ func newUpCmd(opts *Options) *cobra.Command {
 				}
 			}
 
-			preparedSpec, err := kube.PreparePodSpec(
+			preparedSpec, err := kube.PreparePodSpecWithSSH(
 				cfg.Spec.PodTemplate.Spec,
 				pvc,
 				cfg.Spec.Workspace.MountPath,
 				cfg.Spec.Sync.Engine == "syncthing",
 				cfg.Spec.Sync.Syncthing.Image,
+				strings.EqualFold(cfg.Spec.SSH.Mode, "sidecar"),
+				cfg.Spec.SSH.SidecarImage,
 			)
 			if err != nil {
 				return err
 			}
 
-			podManifest, err := kube.BuildPodManifest(ns, pod, labels, annotations, preparedSpec)
-			if err != nil {
-				return err
-			}
-			if err := k.Apply(ctx, ns, podManifest); err != nil {
-				return err
-			}
-			progressPrinter := func(p kube.PodReadinessProgress) {
-				fmt.Fprintf(cmd.OutOrStdout(), "Waiting for pod/%s: phase=%s ready=%d/%d reason=%s\n", pod, p.Phase, p.ReadyContainers, p.TotalContainers, p.Reason)
-			}
-			if err := k.WaitReadyWithProgress(ctx, ns, pod, waitTimeout, progressPrinter); err != nil {
-				hints := fmt.Sprintf("next steps:\n- run `okdev status --session %s`\n- run `kubectl -n %s describe pod %s`", sn, ns, pod)
-				diag, derr := k.DescribePod(ctx, ns, pod)
-				if derr == nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "pod diagnostics:\n%s\n\n%s\n", diag, hints)
+			if !existingRunningReady {
+				podManifest, err := kube.BuildPodManifest(ns, pod, labels, annotations, preparedSpec)
+				if err != nil {
+					return err
+				}
+				if err := k.Apply(ctx, ns, podManifest); err != nil {
+					return err
+				}
+				progressPrinter := func(p kube.PodReadinessProgress) {
+					fmt.Fprintf(cmd.OutOrStdout(), "Waiting for pod/%s: phase=%s ready=%d/%d reason=%s\n", pod, p.Phase, p.ReadyContainers, p.TotalContainers, p.Reason)
+				}
+				if err := k.WaitReadyWithProgress(ctx, ns, pod, waitTimeout, progressPrinter); err != nil {
+					hints := fmt.Sprintf("next steps:\n- run `okdev status --session %s`\n- run `kubectl -n %s describe pod %s`", sn, ns, pod)
+					diag, derr := k.DescribePod(ctx, ns, pod)
+					if derr == nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "pod diagnostics:\n%s\n\n%s\n", diag, hints)
+						return fmt.Errorf("wait for pod/%s readiness failed: %w", pod, err)
+					}
+					fmt.Fprintln(cmd.ErrOrStderr(), hints)
 					return fmt.Errorf("wait for pod/%s readiness failed: %w", pod, err)
 				}
-				fmt.Fprintln(cmd.ErrOrStderr(), hints)
-				return fmt.Errorf("wait for pod/%s readiness failed: %w", pod, err)
 			}
 
 			if err := session.SaveActiveSession(sn); err != nil {
@@ -132,12 +148,13 @@ func newUpCmd(opts *Options) *cobra.Command {
 						forwards = append(forwards, strconv.Itoa(p.Local)+":"+strconv.Itoa(p.Remote))
 					}
 					if len(forwards) > 0 {
-						cancelPF, err := startManagedPortForwardWithClient(k, ns, pod, forwards)
+						cancelPF, err := startManagedPortForwardNoProbeWithClient(k, ns, pod, forwards)
 						if err != nil {
-							return fmt.Errorf("start background port-forward: %w", err)
+							fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to start background port-forward: %v\n", err)
+						} else {
+							stopBackgrounds = append(stopBackgrounds, cancelPF)
+							fmt.Fprintf(cmd.OutOrStdout(), "Background port-forward active: %v\n", forwards)
 						}
-						stopBackgrounds = append(stopBackgrounds, cancelPF)
-						fmt.Fprintf(cmd.OutOrStdout(), "Background port-forward active: %v\n", forwards)
 					}
 				}
 				if cfg.Spec.SSH.LocalPort > 0 && cfg.Spec.SSH.RemotePort > 0 {
@@ -145,16 +162,20 @@ func newUpCmd(opts *Options) *cobra.Command {
 					if keyErr != nil {
 						fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to resolve SSH key path: %v\n", keyErr)
 					} else {
-						if err := ensureSSHKeyOnPod(opts, ns, pod, keyPath); err != nil {
+						if err := ensureSSHKeyOnPod(opts, cfg, ns, pod, keyPath); err != nil {
 							fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to setup SSH key in pod: %v\n", err)
 						} else {
 							sshForward := []string{strconv.Itoa(cfg.Spec.SSH.LocalPort) + ":" + strconv.Itoa(cfg.Spec.SSH.RemotePort)}
-							cancelSSH, err := startManagedPortForwardWithClient(k, ns, pod, sshForward)
+							cancelSSH, err := startManagedPortForwardNoProbeWithClient(k, ns, pod, sshForward)
 							if err != nil {
 								fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to start SSH port-forward %v: %v\n", sshForward, err)
 							} else {
 								stopBackgrounds = append(stopBackgrounds, cancelSSH)
-								fmt.Fprintf(cmd.OutOrStdout(), "Background SSH tunnel active: ssh -p %d -i %s %s@127.0.0.1\n", cfg.Spec.SSH.LocalPort, keyPath, cfg.Spec.SSH.User)
+								alias := sshHostAlias(sn)
+								if cfgErr := ensureSSHConfigEntry(alias, cfg.Spec.SSH.User, cfg.Spec.SSH.LocalPort, keyPath); cfgErr != nil {
+									fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
+								}
+								fmt.Fprintf(cmd.OutOrStdout(), "Background SSH tunnel active: ssh %s\n", alias)
 							}
 						}
 					}
@@ -205,4 +226,12 @@ func warnIfConfigNewerThanSession(opts *Options, k *kube.Client, namespace, sess
 		fmt.Fprintf(errOut, "warning: config file is newer than running session pod (%s > %s). Run `okdev down --session %s` then `okdev up --session %s` to apply all changes.\n", cfgInfo.ModTime().UTC().Format(time.RFC3339), podSummary.CreatedAt.UTC().Format(time.RFC3339), sessionName, sessionName)
 	}
 	return nil
+}
+
+func podReadyFromSummary(ready string) bool {
+	parts := strings.Split(strings.TrimSpace(ready), "/")
+	if len(parts) != 2 {
+		return false
+	}
+	return parts[0] == parts[1] && parts[0] != "0"
 }

@@ -25,7 +25,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "ssh",
-		Short: "Connect to session pod over SSH (requires sshd in container)",
+		Short: "Connect to session pod over SSH (dev container or okdev SSH sidecar)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, ns, err := loadConfigAndNamespace(opts)
 			if err != nil {
@@ -59,7 +59,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 			}
 
 			if setupKey {
-				if err := ensureSSHKeyOnPod(opts, ns, podName(sn), keyPath); err != nil {
+				if err := ensureSSHKeyOnPod(opts, cfg, ns, podName(sn), keyPath); err != nil {
 					return err
 				}
 			}
@@ -70,6 +70,11 @@ func newSSHCmd(opts *Options) *cobra.Command {
 			}
 			defer cancelPF()
 
+			sshHost := sshHostAlias(sn)
+			if cfgErr := ensureSSHConfigEntry(sshHost, user, localPort, keyPath); cfgErr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
+			}
+
 			sshArgs := []string{
 				"-p", fmt.Sprintf("%d", localPort),
 				"-o", "StrictHostKeyChecking=no",
@@ -77,9 +82,9 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				"-i", keyPath,
 			}
 			if cmdStr != "" {
-				sshArgs = append(sshArgs, fmt.Sprintf("%s@127.0.0.1", user), cmdStr)
+				sshArgs = append(sshArgs, sshHost, cmdStr)
 			} else {
-				sshArgs = append(sshArgs, fmt.Sprintf("%s@127.0.0.1", user))
+				sshArgs = append(sshArgs, sshHost)
 			}
 			sshCmd := exec.Command("ssh", sshArgs...)
 			sshCmd.Stdin = os.Stdin
@@ -101,7 +106,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 	return cmd
 }
 
-func ensureSSHKeyOnPod(opts *Options, namespace, pod, keyPath string) error {
+func ensureSSHKeyOnPod(opts *Options, cfg *config.DevEnvironment, namespace, pod, keyPath string) error {
 	if err := ensureCommand("ssh-keygen"); err != nil {
 		return err
 	}
@@ -127,7 +132,13 @@ func ensureSSHKeyOnPod(opts *Options, namespace, pod, keyPath string) error {
 	script := fmt.Sprintf("mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && (grep -qxF %s ~/.ssh/authorized_keys || echo %s >> ~/.ssh/authorized_keys)", syncengine.ShellEscape(pubKey), syncengine.ShellEscape(pubKey))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, err = newKubeClient(opts).ExecSh(ctx, namespace, pod, script)
+	k := newKubeClient(opts)
+	container := sshTargetContainer(cfg)
+	if container == "" {
+		_, err = k.ExecSh(ctx, namespace, pod, script)
+	} else {
+		_, err = k.ExecShInContainer(ctx, namespace, pod, container, script)
+	}
 	if err != nil {
 		return fmt.Errorf("install ssh key in pod: %w", err)
 	}
@@ -148,4 +159,73 @@ func defaultSSHKeyPath(cfg *config.DevEnvironment) (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".ssh", "okdev_ed25519"), nil
+}
+
+func sshTargetContainer(cfg *config.DevEnvironment) string {
+	if cfg == nil {
+		return ""
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.Spec.SSH.Mode), "sidecar") {
+		return "okdev-ssh"
+	}
+	return ""
+}
+
+func sshHostAlias(sessionName string) string {
+	return "okdev-" + sessionName
+}
+
+func ensureSSHConfigEntry(hostAlias, user string, localPort int, keyPath string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		return err
+	}
+	configPath := filepath.Join(sshDir, "config")
+	existing, _ := os.ReadFile(configPath)
+
+	begin := "# BEGIN OKDEV " + hostAlias
+	end := "# END OKDEV " + hostAlias
+	blockLines := []string{
+		begin,
+		"Host " + hostAlias,
+		"  HostName 127.0.0.1",
+		fmt.Sprintf("  Port %d", localPort),
+		"  User " + user,
+		"  IdentityFile " + keyPath,
+		"  StrictHostKeyChecking no",
+		"  UserKnownHostsFile /dev/null",
+		end,
+	}
+	block := strings.Join(blockLines, "\n") + "\n"
+	updated := stripManagedSSHBlock(string(existing), begin, end) + "\n" + block
+	updated = strings.TrimSpace(updated) + "\n"
+	return os.WriteFile(configPath, []byte(updated), 0o600)
+}
+
+func stripManagedSSHBlock(content, begin, end string) string {
+	lines := strings.Split(content, "\n")
+	out := make([]string, 0, len(lines))
+	inBlock := false
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		if t == begin {
+			inBlock = true
+			continue
+		}
+		if inBlock {
+			if t == end {
+				inBlock = false
+			}
+			continue
+		}
+		out = append(out, line)
+	}
+	for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
+		out = out[:len(out)-1]
+	}
+	return strings.Join(out, "\n")
 }

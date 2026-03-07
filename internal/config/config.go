@@ -13,10 +13,14 @@ const (
 	DefaultSyncthingVersion         = "v1.29.7"
 	DefaultSyncthingImageRepository = "ghcr.io/acmore/okdev"
 	DefaultSyncthingImageFallback   = "edge"
+	DefaultSSHImageRepository       = "ghcr.io/acmore/okdev-sshd"
+	DefaultSSHImageFallback         = "edge"
 	DefaultWorkspacePVCSize         = "50Gi"
+	DefaultSSHMode                  = "dev-container"
 )
 
 var DefaultSyncthingImage = DefaultSyncthingImageForBinaryVersion(version.Version)
+var DefaultSSHSidecarImage = DefaultSSHSidecarImageForBinaryVersion(version.Version)
 
 // DevEnvironment is the top-level config structure for .okdev.yaml.
 type DevEnvironment struct {
@@ -92,6 +96,8 @@ type SSHSpec struct {
 	RemotePort     int    `yaml:"remotePort"`
 	LocalPort      int    `yaml:"localPort"`
 	PrivateKeyPath string `yaml:"privateKeyPath"`
+	Mode           string `yaml:"mode"`
+	SidecarImage   string `yaml:"sidecarImage"`
 }
 
 func (d *DevEnvironment) SetDefaults() {
@@ -122,6 +128,12 @@ func (d *DevEnvironment) SetDefaults() {
 	}
 	if d.Spec.SSH.LocalPort == 0 {
 		d.Spec.SSH.LocalPort = 2222
+	}
+	if d.Spec.SSH.Mode == "" {
+		d.Spec.SSH.Mode = DefaultSSHMode
+	}
+	if d.Spec.SSH.Mode == "sidecar" && d.Spec.SSH.SidecarImage == "" {
+		d.Spec.SSH.SidecarImage = DefaultSSHSidecarImageForBinaryVersion(version.Version)
 	}
 }
 
@@ -170,6 +182,12 @@ func (d *DevEnvironment) Validate() error {
 	}
 	if err := validatePortRange("spec.ssh.localPort", d.Spec.SSH.LocalPort); err != nil {
 		return err
+	}
+	if d.Spec.SSH.Mode != "dev-container" && d.Spec.SSH.Mode != "sidecar" {
+		return fmt.Errorf("spec.ssh.mode must be dev-container or sidecar, got %q", d.Spec.SSH.Mode)
+	}
+	if d.Spec.SSH.Mode == "sidecar" && strings.TrimSpace(d.Spec.SSH.SidecarImage) == "" {
+		return errors.New("spec.ssh.sidecarImage is required when spec.ssh.mode=sidecar")
 	}
 	return nil
 }
@@ -229,4 +247,12 @@ func DefaultSyncthingImageForBinaryVersion(binaryVersion string) string {
 		tag = DefaultSyncthingImageFallback
 	}
 	return DefaultSyncthingImageRepository + ":" + tag
+}
+
+func DefaultSSHSidecarImageForBinaryVersion(binaryVersion string) string {
+	tag := strings.TrimSpace(binaryVersion)
+	if tag == "" || tag == "unknown" || strings.Contains(tag, "dev") {
+		tag = DefaultSSHImageFallback
+	}
+	return DefaultSSHImageRepository + ":" + tag
 }

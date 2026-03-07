@@ -66,6 +66,33 @@ func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath s
 	return *spec, nil
 }
 
+func PreparePodSpecWithSSH(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath string, syncthingEnabled bool, syncthingImage string, sshSidecarEnabled bool, sshSidecarImage string) (corev1.PodSpec, error) {
+	spec, err := PreparePodSpec(podSpec, workspaceClaim, workspaceMountPath, syncthingEnabled, syncthingImage)
+	if err != nil {
+		return corev1.PodSpec{}, err
+	}
+	if !sshSidecarEnabled {
+		return spec, nil
+	}
+	if strings.TrimSpace(sshSidecarImage) == "" {
+		return corev1.PodSpec{}, fmt.Errorf("ssh sidecar image cannot be empty when ssh sidecar is enabled")
+	}
+	if !hasContainer(spec.Containers, "okdev-ssh") {
+		spec.Containers = append(spec.Containers, corev1.Container{
+			Name:            "okdev-ssh",
+			Image:           sshSidecarImage,
+			ImagePullPolicy: syncthingImagePullPolicy(sshSidecarImage),
+			Ports: []corev1.ContainerPort{
+				{ContainerPort: 22, Name: "ssh"},
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: "workspace", MountPath: workspaceMountPath},
+			},
+		})
+	}
+	return spec, nil
+}
+
 func syncthingImagePullPolicy(image string) corev1.PullPolicy {
 	if strings.Contains(image, "@sha256:") {
 		return corev1.PullIfNotPresent

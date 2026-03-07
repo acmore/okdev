@@ -39,6 +39,23 @@ func TestPreparePodSpecWithoutSyncthing(t *testing.T) {
 	}
 }
 
+func TestPreparePodSpecWithSSHSidecar(t *testing.T) {
+	spec, err := PreparePodSpecWithSSH(corev1.PodSpec{}, "ws-pvc", "/workspace", false, "", true, "ghcr.io/acmore/okdev-sshd:edge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasContainer(spec.Containers, "okdev-ssh") {
+		t.Fatal("expected okdev-ssh container")
+	}
+}
+
+func TestPreparePodSpecWithSSHErrorsOnEmptyImage(t *testing.T) {
+	_, err := PreparePodSpecWithSSH(corev1.PodSpec{}, "ws-pvc", "/workspace", false, "", true, "")
+	if err == nil {
+		t.Fatal("expected error for empty ssh sidecar image")
+	}
+}
+
 func TestSyncthingImagePullPolicy(t *testing.T) {
 	cases := []struct {
 		image string
