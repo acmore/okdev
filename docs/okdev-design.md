@@ -126,6 +126,8 @@ spec:
     user: root
     remotePort: 22
     localPort: 2222
+    mode: sidecar
+    sidecarImage: ghcr.io/acmore/okdev-sshd:v0.1.0
   podTemplate:
     metadata:
       labels:
@@ -180,7 +182,7 @@ Notes:
 - Pod (or Deployment/StatefulSet later)
 - PVC(s) for workspace/cache
 - ConfigMap/Secret for metadata and credentials
-- Lease annotation/label for ownership and heartbeat
+- Labels/annotations for ownership and metadata
 
 3. **Optional in-pod helper (small sidecar)**
 - Handles optimized sync endpoint and health checks
@@ -224,11 +226,11 @@ Ownership model:
   - scaffolds `.okdev.yaml` from template and detects language/runtime hints
   - supports `-c, --config` to generate a custom config filename/path
 
-- `okdev up [--attach] [--name] [-c|--config]`
+- `okdev up [--no-attach] [--name] [-c|--config]`
   - create or resume session
   - wait for Pod Ready (watch-based readiness events)
-  - optionally connect immediately
-  - with `--attach`, auto-start configured port-forwarding and syncthing in background
+  - by default, attach shell and auto-start configured sync/port-forward/ssh tunnel
+  - with `--no-attach`, skip shell and background integrations
   - supports `--dry-run` to preview operations without applying
   - supports explicit `--session <name>` for multiple concurrent sessions per repo
 
@@ -239,6 +241,8 @@ Ownership model:
 - `okdev ssh [--setup-key] [--cmd]`
   - SSH over auto-managed `kubectl port-forward`
   - optional in-pod public key bootstrap
+  - writes managed host alias (`okdev-<session>`) to `~/.ssh/config`
+  - supports `spec.ssh.mode=sidecar` to avoid requiring sshd in dev container
 
 - `okdev sync [--mode=bi|up|down] [--background] [--dry-run]`
   - syncthing engine: continuous sync for single path mapping
@@ -285,9 +289,9 @@ Ownership model:
 - Sessions are labeled with `okdev.io/owner=<owner>`.
 - Mutating commands refuse non-owner sessions unless session is explicitly marked shareable.
 
-Lease behavior:
-- Session heartbeat is updated in background for long-running commands (`connect`, `ssh`, `ports`, `sync`, and `up --attach`).
-- `okdev down` deletes the Lease object so exclusive sessions can be reacquired immediately.
+Heartbeat behavior:
+- Session heartbeat is updated in background for long-running commands (`connect`, `ssh`, `ports`, `sync`, and `up` default attach flow).
+- No Lease objects are required; implementation remains CRD-less and object-light.
 
 ## 10.1 Multi-Session Model (Multi-Project and Multi-Branch)
 
