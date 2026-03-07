@@ -14,7 +14,6 @@ import (
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
 	"github.com/spf13/cobra"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 func newUpCmd(opts *Options) *cobra.Command {
@@ -63,17 +62,6 @@ func newUpCmd(opts *Options) *cobra.Command {
 			if warnErr := warnIfConfigNewerThanSession(opts, k, ns, sn, pod, cmd.ErrOrStderr()); warnErr != nil {
 				slog.Debug("skip config drift warning", "error", warnErr)
 			}
-			existingRunningReady := false
-			{
-				ctxCheck, cancelCheck := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancelCheck()
-				if ps, perr := k.GetPodSummary(ctxCheck, ns, pod); perr == nil {
-					existingRunningReady = strings.EqualFold(ps.Phase, "Running") && podReadyFromSummary(ps.Ready)
-				} else if !apierrors.IsNotFound(perr) {
-					return perr
-				}
-			}
-
 			ctx, cancel := defaultContext()
 			defer cancel()
 
@@ -100,27 +88,25 @@ func newUpCmd(opts *Options) *cobra.Command {
 				return err
 			}
 
-			if !existingRunningReady {
-				podManifest, err := kube.BuildPodManifest(ns, pod, labels, annotations, preparedSpec)
-				if err != nil {
-					return err
-				}
-				if err := k.Apply(ctx, ns, podManifest); err != nil {
-					return err
-				}
-				progressPrinter := func(p kube.PodReadinessProgress) {
-					fmt.Fprintf(cmd.OutOrStdout(), "Waiting for pod/%s: phase=%s ready=%d/%d reason=%s\n", pod, p.Phase, p.ReadyContainers, p.TotalContainers, p.Reason)
-				}
-				if err := k.WaitReadyWithProgress(ctx, ns, pod, waitTimeout, progressPrinter); err != nil {
-					hints := fmt.Sprintf("next steps:\n- run `okdev status --session %s`\n- run `kubectl -n %s describe pod %s`", sn, ns, pod)
-					diag, derr := k.DescribePod(ctx, ns, pod)
-					if derr == nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "pod diagnostics:\n%s\n\n%s\n", diag, hints)
-						return fmt.Errorf("wait for pod/%s readiness failed: %w", pod, err)
-					}
-					fmt.Fprintln(cmd.ErrOrStderr(), hints)
+			podManifest, err := kube.BuildPodManifest(ns, pod, labels, annotations, preparedSpec)
+			if err != nil {
+				return err
+			}
+			if err := k.Apply(ctx, ns, podManifest); err != nil {
+				return err
+			}
+			progressPrinter := func(p kube.PodReadinessProgress) {
+				fmt.Fprintf(cmd.OutOrStdout(), "Waiting for pod/%s: phase=%s ready=%d/%d reason=%s\n", pod, p.Phase, p.ReadyContainers, p.TotalContainers, p.Reason)
+			}
+			if err := k.WaitReadyWithProgress(ctx, ns, pod, waitTimeout, progressPrinter); err != nil {
+				hints := fmt.Sprintf("next steps:\n- run `okdev status --session %s`\n- run `kubectl -n %s describe pod %s`", sn, ns, pod)
+				diag, derr := k.DescribePod(ctx, ns, pod)
+				if derr == nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "pod diagnostics:\n%s\n\n%s\n", diag, hints)
 					return fmt.Errorf("wait for pod/%s readiness failed: %w", pod, err)
 				}
+				fmt.Fprintln(cmd.ErrOrStderr(), hints)
+				return fmt.Errorf("wait for pod/%s readiness failed: %w", pod, err)
 			}
 
 			if err := session.SaveActiveSession(sn); err != nil {
@@ -226,12 +212,4 @@ func warnIfConfigNewerThanSession(opts *Options, k *kube.Client, namespace, sess
 		fmt.Fprintf(errOut, "warning: config file is newer than running session pod (%s > %s). Run `okdev down --session %s` then `okdev up --session %s` to apply all changes.\n", cfgInfo.ModTime().UTC().Format(time.RFC3339), podSummary.CreatedAt.UTC().Format(time.RFC3339), sessionName, sessionName)
 	}
 	return nil
-}
-
-func podReadyFromSummary(ready string) bool {
-	parts := strings.Split(strings.TrimSpace(ready), "/")
-	if len(parts) != 2 {
-		return false
-	}
-	return parts[0] == parts[1] && parts[0] != "0"
 }
