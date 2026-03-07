@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -118,31 +117,13 @@ func newUpCmd(opts *Options) *cobra.Command {
 				stopMaintenance := startSessionMaintenanceWithClient(k, cfg, ns, sn, cmd.OutOrStdout(), true, true)
 				defer stopMaintenance()
 
-				stopBackgrounds := make([]func(), 0, 2)
+				stopBackgrounds := make([]func(), 0, 1)
 				defer func() {
 					for _, stop := range stopBackgrounds {
 						stop()
 					}
 				}()
 
-				if len(cfg.Spec.Ports) > 0 {
-					forwards := make([]string, 0, len(cfg.Spec.Ports))
-					for _, p := range cfg.Spec.Ports {
-						if p.Local <= 0 || p.Remote <= 0 {
-							continue
-						}
-						forwards = append(forwards, strconv.Itoa(p.Local)+":"+strconv.Itoa(p.Remote))
-					}
-					if len(forwards) > 0 {
-						cancelPF, err := startManagedPortForwardNoProbeWithClient(k, ns, pod, forwards)
-						if err != nil {
-							fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to start background port-forward: %v\n", err)
-						} else {
-							stopBackgrounds = append(stopBackgrounds, cancelPF)
-							fmt.Fprintf(cmd.OutOrStdout(), "Background port-forward active: %v\n", forwards)
-						}
-					}
-				}
 				if cfg.Spec.SSH.LocalPort > 0 && cfg.Spec.SSH.RemotePort > 0 {
 					keyPath, keyErr := defaultSSHKeyPath(cfg)
 					if keyErr != nil {
@@ -151,18 +132,19 @@ func newUpCmd(opts *Options) *cobra.Command {
 						if err := ensureSSHKeyOnPod(opts, cfg, ns, pod, keyPath); err != nil {
 							fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to setup SSH key in pod: %v\n", err)
 						} else {
-							sshForward := []string{strconv.Itoa(cfg.Spec.SSH.LocalPort) + ":" + strconv.Itoa(cfg.Spec.SSH.RemotePort)}
-							cancelSSH, err := startManagedPortForwardNoProbeWithClient(k, ns, pod, sshForward)
-							if err != nil {
-								fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to start SSH port-forward %v: %v\n", sshForward, err)
+							alias := sshHostAlias(sn)
+							cfgPath, _ := config.ResolvePath(opts.ConfigPath)
+							if cfgErr := ensureSSHConfigEntry(alias, sn, cfg.Spec.SSH.User, cfg.Spec.SSH.LocalPort, cfg.Spec.SSH.RemotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
+								fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
+							} else if err := startManagedSSHForward(alias); err != nil {
+								fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to start managed SSH/port-forwards: %v\n", err)
 							} else {
-								stopBackgrounds = append(stopBackgrounds, cancelSSH)
-								alias := sshHostAlias(sn)
-								cfgPath, _ := config.ResolvePath(opts.ConfigPath)
-								if cfgErr := ensureSSHConfigEntry(alias, sn, cfg.Spec.SSH.User, cfg.Spec.SSH.LocalPort, cfg.Spec.SSH.RemotePort, keyPath, cfgPath); cfgErr != nil {
-									fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
+								stopBackgrounds = append(stopBackgrounds, func() { _ = stopManagedSSHForward(alias) })
+								if len(cfg.Spec.Ports) > 0 {
+									fmt.Fprintf(cmd.OutOrStdout(), "Background SSH tunnel + port-forwards active via %s\n", alias)
+								} else {
+									fmt.Fprintf(cmd.OutOrStdout(), "Background SSH tunnel active: ssh %s\n", alias)
 								}
-								fmt.Fprintf(cmd.OutOrStdout(), "Background SSH tunnel active: ssh %s\n", alias)
 							}
 						}
 					}

@@ -50,7 +50,9 @@ func newDownCmd(opts *Options) *cobra.Command {
 					return fmt.Errorf("delete workspace pvc: %w", err)
 				}
 			}
-			_ = removeSSHConfigEntry(sshHostAlias(sn))
+			alias := sshHostAlias(sn)
+			_ = stopManagedSSHForward(alias)
+			_ = removeSSHConfigEntry(alias)
 			fmt.Fprintf(cmd.OutOrStdout(), "Session stopped: %s\n", sn)
 			if !deletePVC && cfg.Spec.Workspace.PVC.ClaimName == "" {
 				fmt.Fprintf(cmd.OutOrStdout(), "Workspace PVC retained: %s (use --delete-pvc to remove)\n", pvcName(cfg, sn))

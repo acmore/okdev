@@ -75,7 +75,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 
 			sshHost := sshHostAlias(sn)
 			cfgPath, _ := config.ResolvePath(opts.ConfigPath)
-			if cfgErr := ensureSSHConfigEntry(sshHost, sn, user, localPort, remotePort, keyPath, cfgPath); cfgErr != nil {
+			if cfgErr := ensureSSHConfigEntry(sshHost, sn, user, localPort, remotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
 			}
 
@@ -176,7 +176,7 @@ func sshHostAlias(sessionName string) string {
 	return "okdev-" + sessionName
 }
 
-func ensureSSHConfigEntry(hostAlias, sessionName, user string, localPort, remotePort int, keyPath, okdevConfigPath string) error {
+func ensureSSHConfigEntry(hostAlias, sessionName, user string, localPort, remotePort int, keyPath, okdevConfigPath string, forwards []config.PortMapping) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -205,8 +205,18 @@ func ensureSSHConfigEntry(hostAlias, sessionName, user string, localPort, remote
 		"  StrictHostKeyChecking no",
 		"  UserKnownHostsFile /dev/null",
 		"  ProxyCommand " + proxyCmd,
-		end,
 	}
+	for _, p := range forwards {
+		if p.Local <= 0 || p.Remote <= 0 {
+			continue
+		}
+		blockLines = append(blockLines, fmt.Sprintf("  LocalForward %d 127.0.0.1:%d", p.Local, p.Remote))
+	}
+	blockLines = append(blockLines,
+		"  ServerAliveInterval 30",
+		"  ServerAliveCountMax 3",
+		end,
+	)
 	block := strings.Join(blockLines, "\n") + "\n"
 	updated := stripManagedSSHBlock(string(existing), begin, end) + "\n" + block
 	updated = strings.TrimSpace(updated) + "\n"
@@ -330,6 +340,58 @@ func waitDialLocal(localPort int, timeout time.Duration) (net.Conn, error) {
 		lastErr = fmt.Errorf("timed out connecting to %s", addr)
 	}
 	return nil, lastErr
+}
+
+func sshControlSocketPath(hostAlias string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".okdev", "ssh")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, hostAlias+".sock"), nil
+}
+
+func startManagedSSHForward(hostAlias string) error {
+	socketPath, err := sshControlSocketPath(hostAlias)
+	if err != nil {
+		return err
+	}
+	check := exec.Command("ssh", "-S", socketPath, "-O", "check", hostAlias)
+	if err := check.Run(); err == nil {
+		return nil
+	}
+	cmd := exec.Command(
+		"ssh",
+		"-fN",
+		"-M",
+		"-S", socketPath,
+		"-o", "ControlPersist=600",
+		"-o", "ExitOnForwardFailure=yes",
+		hostAlias,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("start managed ssh forward: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func stopManagedSSHForward(hostAlias string) error {
+	socketPath, err := sshControlSocketPath(hostAlias)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command("ssh", "-S", socketPath, "-O", "exit", hostAlias)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		msg := strings.ToLower(strings.TrimSpace(string(out)))
+		if strings.Contains(msg, "no such file") || strings.Contains(msg, "control socket connect") || strings.Contains(msg, "master running") {
+			return nil
+		}
+		return fmt.Errorf("stop managed ssh forward: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func startSSHPortForwardWithFallback(k interface {
