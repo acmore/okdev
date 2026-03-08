@@ -17,15 +17,17 @@
 - `okdev validate`
 - `okdev up [--wait-timeout 3m] [--dry-run]`
   - Reconciles Pod/PVC resources, updates SSH config, initializes managed forwarding/sync, then exits.
+  - `--tmux`: enable persistent interactive shells by setting tmux mode on the sidecar.
   - `spec.ports` is materialized as SSH `LocalForward`.
 - `okdev down [--delete-pvc] [--dry-run]`
 - `okdev status [--all] [--all-users]`
 - `okdev list [--all-namespaces] [--all-users]`
 - `okdev use <session>`
 - `okdev connect [--shell /bin/bash] [--cmd "..."] [--no-tty]`
-- `okdev ssh [--setup-key] [--user root] [--cmd "..."]`
+- `okdev ssh [--setup-key] [--user root] [--cmd "..."] [--no-tmux]`
   - Targets merged `okdev-sidecar` (`sshd` + Syncthing).
   - Maintains managed host alias in `~/.ssh/config` as `okdev-<session>`.
+  - `--no-tmux`: bypass tmux for this SSH session when tmux mode is enabled.
 - `okdev ports`
 - `okdev sync [--mode up|down|bi] [--background] [--dry-run]`
 - `okdev prune [--ttl-hours 72] [--all-namespaces] [--all-users] [--include-pvc] [--dry-run]`

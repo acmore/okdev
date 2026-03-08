@@ -44,17 +44,25 @@ Use an explicit session name when running multiple environments for the same rep
 ./bin/okdev up --session serving-main-alice
 ```
 
+Enable persistent interactive shells backed by tmux:
+
+```bash
+./bin/okdev up --tmux
+```
+
 `okdev up` performs one-step setup:
 - ensures Pod/PVC state
 - writes managed `~/.ssh/config` host entry (`okdev-<session>`)
 - starts managed SSH/forwarding bootstrap
 - starts background Syncthing sync when enabled
+- exits after setup (no attach mode)
 
 ## Access and Data Movement
 
 ```bash
 ./bin/okdev connect
 ./bin/okdev ssh --setup-key
+./bin/okdev ssh
 ./bin/okdev sync --mode up
 ./bin/okdev ports
 
@@ -71,6 +79,9 @@ Notes:
 - `spec.sync.exclude` applies local ignore patterns; `spec.sync.remoteExclude` applies remote-only ignores.
 - SSH target is always the merged `okdev-sidecar` container (`sshd` on `22`).
 - `spec.ports` are rendered as SSH `LocalForward` entries.
+- Local runtime state/logs are stored under `~/.okdev/` (not in the project working directory).
+- Use `ssh okdev-<session>` for direct SSH. For tmux-backed interactive sessions, force TTY (`ssh -tt okdev-<session>`).
+- Use `okdev ssh --no-tmux` to bypass tmux for a single connection.
 - SSH keepalive can be tuned with:
   - `spec.ssh.keepAliveIntervalSeconds` (default `10`)
   - `spec.ssh.keepAliveTimeoutSeconds` (default `15`, must be `>= interval`)

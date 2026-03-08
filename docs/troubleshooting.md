@@ -34,6 +34,15 @@
 - If local bind conflicts occur, use `okdev ssh --local-port <port>`.
 - Verify managed entry exists in `~/.ssh/config`:
   - `Host okdev-<session>`
+- For tmux-enabled sessions, use interactive TTY mode:
+  - `okdev ssh` or `ssh -tt okdev-<session>`
+- To bypass tmux for one connection:
+  - `okdev ssh --no-tmux`
 - For unstable links, increase:
   - `spec.ssh.keepAliveIntervalSeconds`
   - `spec.ssh.keepAliveTimeoutSeconds`
+
+## Local State Files
+
+- okdev stores local runtime state in `~/.okdev/` (locks, logs, SSH metadata, sync state).
+- If behavior looks stale after upgrades, inspect and clean targeted files under `~/.okdev/` instead of deleting project files.
