@@ -11,10 +11,16 @@ if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
   ssh-keygen -A
 fi
 
+OKDEV_TMUX_FLAG="${OKDEV_TMUX:-0}"
+OKDEV_WORKSPACE_PATH="${OKDEV_WORKSPACE:-/workspace}"
+
 # Write nsenter wrapper script for SSH sessions.
 # Finds PID 1 of the dev container (first process whose root is not our root).
 cat > /usr/local/bin/nsenter-dev.sh << 'SCRIPT'
 #!/bin/sh
+OKDEV_TMUX_FLAG="__OKDEV_TMUX_FLAG__"
+OKDEV_WORKSPACE_PATH="__OKDEV_WORKSPACE_PATH__"
+
 # Find the dev container's PID 1 by looking for a process with a different root filesystem.
 # In a shared PID namespace, our PID 1 is the pause/sandbox container.
 # We look for the first "sleep infinity" or the init process of the dev container.
@@ -63,8 +69,8 @@ if [ ! -t 0 ]; then
 fi
 
 # Run postAttach script for interactive sessions when present.
-if [ -n "${OKDEV_WORKSPACE:-}" ]; then
-  POST_ATTACH="${OKDEV_WORKSPACE}/.okdev/post-attach.sh"
+if [ -n "${OKDEV_WORKSPACE_PATH:-}" ]; then
+  POST_ATTACH="${OKDEV_WORKSPACE_PATH}/.okdev/post-attach.sh"
   if nsenter --target "$DEV_PID" --mount -- test -x "$POST_ATTACH" 2>/dev/null; then
     nsenter --target "$DEV_PID" --mount --uts --ipc --pid -- "$POST_ATTACH" 2>&1 || \
       echo "warning: postAttach script failed" >&2
@@ -73,7 +79,7 @@ fi
 
 # Interactive login shell in dev container.
 # Wrap in tmux if enabled (OKDEV_TMUX=1) and not opted out (OKDEV_NO_TMUX!=1).
-if [ "${OKDEV_TMUX:-}" = "1" ] && [ "${OKDEV_NO_TMUX:-}" != "1" ] && command -v tmux >/dev/null 2>&1; then
+if [ "${OKDEV_TMUX_FLAG:-}" = "1" ] && [ "${OKDEV_NO_TMUX:-}" != "1" ] && command -v tmux >/dev/null 2>&1; then
   if nsenter --target "$DEV_PID" --mount -- test -x /bin/bash 2>/dev/null; then
     exec tmux new-session -A -s okdev "nsenter --target $DEV_PID --mount --uts --ipc --pid -- /bin/bash -l"
   else
@@ -86,6 +92,12 @@ else
   exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid -- /bin/sh -l
 fi
 SCRIPT
+safe_tmux_flag=$(printf '%s' "$OKDEV_TMUX_FLAG" | sed 's/[\/&]/\\&/g')
+safe_workspace_path=$(printf '%s' "$OKDEV_WORKSPACE_PATH" | sed 's/[\/&]/\\&/g')
+sed -i \
+  -e "s|__OKDEV_TMUX_FLAG__|${safe_tmux_flag}|g" \
+  -e "s|__OKDEV_WORKSPACE_PATH__|${safe_workspace_path}|g" \
+  /usr/local/bin/nsenter-dev.sh
 chmod +x /usr/local/bin/nsenter-dev.sh
 
 # Add ForceCommand to sshd_config dynamically
