@@ -17,6 +17,7 @@ import (
 func newUpCmd(opts *Options) *cobra.Command {
 	var waitTimeout time.Duration
 	var dryRun bool
+	var tmux bool
 
 	cmd := &cobra.Command{
 		Use:   "up",
@@ -67,12 +68,13 @@ func newUpCmd(opts *Options) *cobra.Command {
 				}
 			}
 
+			enableTmux := tmux || cfg.Spec.SSH.PersistentSessionEnabled()
 			preparedSpec, err := kube.PreparePodSpec(
 				cfg.Spec.PodTemplate.Spec,
 				pvc,
 				cfg.Spec.Workspace.MountPath,
 				cfg.Spec.Sidecar.Image,
-				false,
+				enableTmux,
 			)
 			if err != nil {
 				return err
@@ -151,6 +153,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 3*time.Minute, "Wait timeout for pod readiness")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview actions without applying resources")
+	cmd.Flags().BoolVar(&tmux, "tmux", false, "Enable tmux persistent shell sessions in the sidecar")
 	return cmd
 }
 
