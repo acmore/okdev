@@ -10,10 +10,10 @@ import (
 )
 
 const (
-	DefaultSyncthingVersion        = "v1.29.7"
-	DefaultSidecarImageRepository  = "ghcr.io/acmore/okdev"
-	DefaultSidecarImageFallback    = "edge"
-	DefaultWorkspacePVCSize        = "50Gi"
+	DefaultSyncthingVersion       = "v1.29.7"
+	DefaultSidecarImageRepository = "ghcr.io/acmore/okdev"
+	DefaultSidecarImageFallback   = "edge"
+	DefaultWorkspacePVCSize       = "50Gi"
 )
 
 var DefaultSidecarImage = DefaultSidecarImageForBinaryVersion(version.Version)
@@ -93,10 +93,13 @@ type PortMapping struct {
 }
 
 type SSHSpec struct {
-	User             string `yaml:"user"`
-	RemotePort       int    `yaml:"remotePort"`
-	PrivateKeyPath   string `yaml:"privateKeyPath"`
-	AutoDetectPorts  *bool  `yaml:"autoDetectPorts"`
+	User              string `yaml:"user"`
+	RemotePort        int    `yaml:"remotePort"`
+	PrivateKeyPath    string `yaml:"privateKeyPath"`
+	AutoDetectPorts   *bool  `yaml:"autoDetectPorts"`
+	PersistentSession *bool  `yaml:"persistentSession"`
+	KeepAliveInterval int    `yaml:"keepAliveIntervalSeconds"`
+	KeepAliveTimeout  int    `yaml:"keepAliveTimeoutSeconds"`
 }
 
 func (d *DevEnvironment) SetDefaults() {
@@ -128,6 +131,12 @@ func (d *DevEnvironment) SetDefaults() {
 	if d.Spec.SSH.AutoDetectPorts == nil {
 		v := true
 		d.Spec.SSH.AutoDetectPorts = &v
+	}
+	if d.Spec.SSH.KeepAliveInterval == 0 {
+		d.Spec.SSH.KeepAliveInterval = 10
+	}
+	if d.Spec.SSH.KeepAliveTimeout == 0 {
+		d.Spec.SSH.KeepAliveTimeout = 15
 	}
 	if d.Spec.Sidecar.Image == "" {
 		d.Spec.Sidecar.Image = DefaultSidecarImageForBinaryVersion(version.Version)
@@ -177,10 +186,26 @@ func (d *DevEnvironment) Validate() error {
 	if err := validatePortRange("spec.ssh.remotePort", d.Spec.SSH.RemotePort); err != nil {
 		return err
 	}
+	if d.Spec.SSH.KeepAliveInterval <= 0 {
+		return errors.New("spec.ssh.keepAliveIntervalSeconds must be > 0")
+	}
+	if d.Spec.SSH.KeepAliveTimeout <= 0 {
+		return errors.New("spec.ssh.keepAliveTimeoutSeconds must be > 0")
+	}
+	if d.Spec.SSH.KeepAliveTimeout < d.Spec.SSH.KeepAliveInterval {
+		return errors.New("spec.ssh.keepAliveTimeoutSeconds must be >= spec.ssh.keepAliveIntervalSeconds")
+	}
 	if strings.TrimSpace(d.Spec.Sidecar.Image) == "" {
 		return errors.New("spec.sidecar.image is required")
 	}
 	return nil
+}
+
+func (s SSHSpec) PersistentSessionEnabled() bool {
+	if s.PersistentSession == nil {
+		return false
+	}
+	return *s.PersistentSession
 }
 
 func (s SyncthingSpec) AutoInstallEnabled() bool {

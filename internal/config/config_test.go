@@ -45,6 +45,9 @@ func TestSetDefaults(t *testing.T) {
 	if cfg.Spec.SSH.User != "root" || cfg.Spec.SSH.RemotePort != 22 {
 		t.Fatalf("ssh defaults not set: %+v", cfg.Spec.SSH)
 	}
+	if cfg.Spec.SSH.KeepAliveInterval != 10 || cfg.Spec.SSH.KeepAliveTimeout != 15 {
+		t.Fatalf("ssh keepalive defaults not set: %+v", cfg.Spec.SSH)
+	}
 	if cfg.Spec.SSH.AutoDetectPorts == nil || !*cfg.Spec.SSH.AutoDetectPorts {
 		t.Fatal("expected ssh autoDetectPorts default true")
 	}
@@ -71,6 +74,24 @@ func TestSetDefaultsAutoDetectPortsFalse(t *testing.T) {
 
 	if cfg.Spec.SSH.AutoDetectPorts == nil || *cfg.Spec.SSH.AutoDetectPorts {
 		t.Fatal("expected ssh autoDetectPorts to remain false when explicitly set")
+	}
+}
+
+func TestSetDefaultsPersistentSessionNil(t *testing.T) {
+	cfg := validConfig()
+	cfg.SetDefaults()
+	if cfg.Spec.SSH.PersistentSession != nil {
+		t.Fatal("expected persistentSession to remain nil (off by default)")
+	}
+}
+
+func TestSetDefaultsPersistentSessionExplicit(t *testing.T) {
+	cfg := validConfig()
+	v := true
+	cfg.Spec.SSH.PersistentSession = &v
+	cfg.SetDefaults()
+	if cfg.Spec.SSH.PersistentSession == nil || !*cfg.Spec.SSH.PersistentSession {
+		t.Fatal("expected persistentSession to remain true when explicitly set")
 	}
 }
 
@@ -123,6 +144,16 @@ func TestValidateRejectsEmptySidecarImage(t *testing.T) {
 	cfg.Spec.Sidecar.Image = ""
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error for empty sidecar image")
+	}
+}
+
+func TestValidateRejectsInvalidSSHKeepAlive(t *testing.T) {
+	cfg := validConfig()
+	cfg.SetDefaults()
+	cfg.Spec.SSH.KeepAliveInterval = 20
+	cfg.Spec.SSH.KeepAliveTimeout = 10
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for invalid keepalive settings")
 	}
 }
 
