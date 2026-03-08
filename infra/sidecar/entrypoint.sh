@@ -75,9 +75,9 @@ fi
 # Wrap in tmux if enabled (OKDEV_TMUX=1) and not opted out (OKDEV_NO_TMUX!=1).
 if [ "${OKDEV_TMUX:-}" = "1" ] && [ "${OKDEV_NO_TMUX:-}" != "1" ] && command -v tmux >/dev/null 2>&1; then
   if nsenter --target "$DEV_PID" --mount -- test -x /bin/bash 2>/dev/null; then
-    exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid -- tmux new-session -A -s okdev "bash -l"
+    exec tmux new-session -A -s okdev "nsenter --target $DEV_PID --mount --uts --ipc --pid -- /bin/bash -l"
   else
-    exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid -- tmux new-session -A -s okdev "sh -l"
+    exec tmux new-session -A -s okdev "nsenter --target $DEV_PID --mount --uts --ipc --pid -- /bin/sh -l"
   fi
 fi
 if nsenter --target "$DEV_PID" --mount -- test -x /bin/bash 2>/dev/null; then
