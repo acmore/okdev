@@ -27,8 +27,7 @@ import (
 )
 
 const (
-	syncthingContainerName       = "okdev-sidecar"
-	legacySyncthingContainerName = "syncthing"
+	syncthingContainerName = "okdev-sidecar"
 )
 const (
 	syncthingPeerAddrDynamic   = "dynamic"
@@ -317,15 +316,7 @@ func readRemoteSyncthingAPIKey(ctx context.Context, k interface {
 func execInSyncthingContainer(ctx context.Context, k interface {
 	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
 }, namespace, pod, script string) ([]byte, error) {
-	out, err := k.ExecShInContainer(ctx, namespace, pod, syncthingContainerName, script)
-	if err == nil {
-		return out, nil
-	}
-	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "container "+syncthingContainerName+" is not valid") || strings.Contains(msg, "container not found") {
-		return k.ExecShInContainer(ctx, namespace, pod, legacySyncthingContainerName, script)
-	}
-	return nil, err
+	return k.ExecShInContainer(ctx, namespace, pod, syncthingContainerName, script)
 }
 
 func waitSyncthingAPI(ctx context.Context, base, key string, timeout time.Duration) error {

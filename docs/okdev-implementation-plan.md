@@ -115,7 +115,6 @@ internal/cli/
 internal/session/
 internal/kube/
 internal/sync/
-internal/ports/
 internal/connect/
 internal/output/
 docs/

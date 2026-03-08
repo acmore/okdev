@@ -698,7 +698,7 @@ func preferredContainerFromExecErr(err error) string {
 		}
 	}
 	for _, n := range names {
-		if n != "syncthing" && n != "okdev-sidecar" {
+		if n != "okdev-sidecar" {
 			return n
 		}
 	}
