@@ -72,6 +72,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 				pvc,
 				cfg.Spec.Workspace.MountPath,
 				cfg.Spec.Sidecar.Image,
+				false,
 			)
 			if err != nil {
 				return err

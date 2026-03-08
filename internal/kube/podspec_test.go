@@ -7,7 +7,7 @@ import (
 )
 
 func TestPreparePodSpecShareProcessNamespace(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -17,7 +17,7 @@ func TestPreparePodSpecShareProcessNamespace(t *testing.T) {
 }
 
 func TestPreparePodSpecSidecarName(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func TestPreparePodSpecSidecarName(t *testing.T) {
 }
 
 func TestPreparePodSpecSidecarPorts(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestPreparePodSpecSidecarPorts(t *testing.T) {
 }
 
 func TestPreparePodSpecSidecarVolumeMounts(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestPreparePodSpecSidecarVolumeMounts(t *testing.T) {
 }
 
 func TestPreparePodSpecSidecarPrivileged(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestPreparePodSpecSidecarPrivileged(t *testing.T) {
 }
 
 func TestPreparePodSpecContainerCount(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestPreparePodSpecContainerCount(t *testing.T) {
 
 func TestPreparePodSpecSidecarAlwaysAdded(t *testing.T) {
 	// Even with syncthingEnabled=false, sidecar is still added.
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,9 +118,51 @@ func TestPreparePodSpecSidecarAlwaysAdded(t *testing.T) {
 }
 
 func TestPreparePodSpecErrorsOnEmptyImage(t *testing.T) {
-	_, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "")
+	_, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "", false)
 	if err == nil {
 		t.Fatal("expected error for empty sidecar image")
+	}
+}
+
+func TestPreparePodSpecTmuxEnvEnabled(t *testing.T) {
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sidecar corev1.Container
+	for _, c := range spec.Containers {
+		if c.Name == "okdev-sidecar" {
+			sidecar = c
+			break
+		}
+	}
+	found := false
+	for _, e := range sidecar.Env {
+		if e.Name == "OKDEV_TMUX" && e.Value == "1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected OKDEV_TMUX=1 env var on okdev-sidecar when tmux enabled")
+	}
+}
+
+func TestPreparePodSpecTmuxEnvDisabled(t *testing.T) {
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sidecar corev1.Container
+	for _, c := range spec.Containers {
+		if c.Name == "okdev-sidecar" {
+			sidecar = c
+			break
+		}
+	}
+	for _, e := range sidecar.Env {
+		if e.Name == "OKDEV_TMUX" {
+			t.Fatal("expected no OKDEV_TMUX env var on okdev-sidecar when tmux disabled")
+		}
 	}
 }
 

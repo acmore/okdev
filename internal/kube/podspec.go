@@ -10,7 +10,7 @@ import (
 
 var semverTagPattern = regexp.MustCompile(`^v?\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$`)
 
-func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath, sidecarImage string) (corev1.PodSpec, error) {
+func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath, sidecarImage string, tmux bool) (corev1.PodSpec, error) {
 	if strings.TrimSpace(sidecarImage) == "" {
 		return corev1.PodSpec{}, fmt.Errorf("sidecar image cannot be empty")
 	}
@@ -50,7 +50,7 @@ func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath, 
 
 	if !hasContainer(spec.Containers, "okdev-sidecar") {
 		privileged := true
-		spec.Containers = append(spec.Containers, corev1.Container{
+		sidecarContainer := corev1.Container{
 			Name:            "okdev-sidecar",
 			Image:           sidecarImage,
 			ImagePullPolicy: syncthingImagePullPolicy(sidecarImage),
@@ -66,7 +66,14 @@ func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath, 
 				{Name: "workspace", MountPath: workspaceMountPath},
 				{Name: "syncthing-home", MountPath: "/var/syncthing"},
 			},
-		})
+		}
+		if tmux {
+			sidecarContainer.Env = append(sidecarContainer.Env, corev1.EnvVar{
+				Name:  "OKDEV_TMUX",
+				Value: "1",
+			})
+		}
+		spec.Containers = append(spec.Containers, sidecarContainer)
 	}
 
 	return *spec, nil
