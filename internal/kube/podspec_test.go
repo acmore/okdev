@@ -7,7 +7,7 @@ import (
 )
 
 func TestPreparePodSpecShareProcessNamespace(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false)
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -17,7 +17,7 @@ func TestPreparePodSpecShareProcessNamespace(t *testing.T) {
 }
 
 func TestPreparePodSpecSidecarName(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false)
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func TestPreparePodSpecSidecarName(t *testing.T) {
 }
 
 func TestPreparePodSpecSidecarPorts(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false)
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestPreparePodSpecSidecarPorts(t *testing.T) {
 }
 
 func TestPreparePodSpecSidecarVolumeMounts(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false)
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestPreparePodSpecSidecarVolumeMounts(t *testing.T) {
 }
 
 func TestPreparePodSpecSidecarPrivileged(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false)
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestPreparePodSpecSidecarPrivileged(t *testing.T) {
 }
 
 func TestPreparePodSpecContainerCount(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false)
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestPreparePodSpecContainerCount(t *testing.T) {
 
 func TestPreparePodSpecSidecarAlwaysAdded(t *testing.T) {
 	// Even with syncthingEnabled=false, sidecar is still added.
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false)
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,14 +118,14 @@ func TestPreparePodSpecSidecarAlwaysAdded(t *testing.T) {
 }
 
 func TestPreparePodSpecErrorsOnEmptyImage(t *testing.T) {
-	_, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "", false)
+	_, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "", false, "")
 	if err == nil {
 		t.Fatal("expected error for empty sidecar image")
 	}
 }
 
 func TestPreparePodSpecTmuxEnvEnabled(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", true)
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", true, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestPreparePodSpecTmuxEnvEnabled(t *testing.T) {
 }
 
 func TestPreparePodSpecTmuxEnvDisabled(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false)
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,6 +163,37 @@ func TestPreparePodSpecTmuxEnvDisabled(t *testing.T) {
 		if e.Name == "OKDEV_TMUX" {
 			t.Fatal("expected no OKDEV_TMUX env var on okdev-sidecar when tmux disabled")
 		}
+	}
+}
+
+func TestPreparePodSpecPreStopHook(t *testing.T) {
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "make clean")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev := spec.Containers[0]
+	if dev.Lifecycle == nil || dev.Lifecycle.PreStop == nil {
+		t.Fatal("expected preStop lifecycle hook on dev container")
+	}
+	if dev.Lifecycle.PreStop.Exec == nil {
+		t.Fatal("expected exec action in preStop hook")
+	}
+	want := []string{"sh", "-c", "make clean"}
+	for i, w := range want {
+		if i >= len(dev.Lifecycle.PreStop.Exec.Command) || dev.Lifecycle.PreStop.Exec.Command[i] != w {
+			t.Fatalf("expected preStop command %v, got %v", want, dev.Lifecycle.PreStop.Exec.Command)
+		}
+	}
+}
+
+func TestPreparePodSpecNoPreStopHook(t *testing.T) {
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev := spec.Containers[0]
+	if dev.Lifecycle != nil && dev.Lifecycle.PreStop != nil {
+		t.Fatal("expected no preStop lifecycle hook when preStop is empty")
 	}
 }
 

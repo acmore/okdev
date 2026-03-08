@@ -75,6 +75,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 				cfg.Spec.Workspace.MountPath,
 				cfg.Spec.Sidecar.Image,
 				enableTmux,
+				"",
 			)
 			if err != nil {
 				return err

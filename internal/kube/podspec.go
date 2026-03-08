@@ -10,7 +10,7 @@ import (
 
 var semverTagPattern = regexp.MustCompile(`^v?\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$`)
 
-func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath, sidecarImage string, tmux bool) (corev1.PodSpec, error) {
+func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath, sidecarImage string, tmux bool, preStop string) (corev1.PodSpec, error) {
 	if strings.TrimSpace(sidecarImage) == "" {
 		return corev1.PodSpec{}, fmt.Errorf("sidecar image cannot be empty")
 	}
@@ -46,6 +46,17 @@ func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath, 
 			Name:      "workspace",
 			MountPath: workspaceMountPath,
 		})
+	}
+
+	if preStop != "" && len(spec.Containers) > 0 {
+		if spec.Containers[0].Lifecycle == nil {
+			spec.Containers[0].Lifecycle = &corev1.Lifecycle{}
+		}
+		spec.Containers[0].Lifecycle.PreStop = &corev1.LifecycleHandler{
+			Exec: &corev1.ExecAction{
+				Command: []string{"sh", "-c", preStop},
+			},
+		}
 	}
 
 	if !hasContainer(spec.Containers, "okdev-sidecar") {
