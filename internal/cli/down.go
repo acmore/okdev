@@ -76,15 +76,16 @@ func removeSSHConfigEntry(hostAlias string) error {
 		return err
 	}
 	configPath := filepath.Join(home, ".ssh", "config")
-	existing, err := os.ReadFile(configPath)
-	if err != nil {
-		return nil
-	}
 	begin := "# BEGIN OKDEV " + hostAlias
 	end := "# END OKDEV " + hostAlias
-	updated := strings.TrimSpace(stripManagedSSHBlock(string(existing), begin, end))
-	if updated == "" {
-		return os.WriteFile(configPath, []byte(""), 0o600)
+	if _, err := os.Stat(configPath); err != nil {
+		return nil
 	}
-	return os.WriteFile(configPath, []byte(updated+"\n"), 0o600)
+	return updateSSHConfigWithLock(configPath, func(existing string) string {
+		updated := strings.TrimSpace(stripManagedSSHBlock(existing, begin, end))
+		if updated == "" {
+			return ""
+		}
+		return updated + "\n"
+	})
 }

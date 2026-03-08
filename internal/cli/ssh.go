@@ -199,8 +199,6 @@ func ensureSSHConfigEntry(hostAlias, sessionName, namespace, user string, remote
 		return err
 	}
 	sshConfigPath := filepath.Join(sshDir, "config")
-	existing, _ := os.ReadFile(sshConfigPath)
-
 	begin := "# BEGIN OKDEV " + hostAlias
 	end := "# END OKDEV " + hostAlias
 	proxyInner := fmt.Sprintf("okdev --session %s -n %s ssh-proxy --remote-port %d", shellQuote(sessionName), shellQuote(namespace), remotePort)
@@ -233,9 +231,10 @@ func ensureSSHConfigEntry(hostAlias, sessionName, namespace, user string, remote
 		end,
 	)
 	block := strings.Join(blockLines, "\n") + "\n"
-	updated := stripManagedSSHBlock(string(existing), begin, end) + "\n" + block
-	updated = strings.TrimSpace(updated) + "\n"
-	return os.WriteFile(sshConfigPath, []byte(updated), 0o600)
+	return updateSSHConfigWithLock(sshConfigPath, func(existing string) string {
+		updated := stripManagedSSHBlock(existing, begin, end) + "\n" + block
+		return strings.TrimSpace(updated) + "\n"
+	})
 }
 
 func stripManagedSSHBlock(content, begin, end string) string {
@@ -306,6 +305,7 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 			var wg sync.WaitGroup
 			var copyErr error
 			var once sync.Once
+			done := make(chan struct{})
 			setErr := func(err error) {
 				if err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, syscall.EPIPE) || isIgnorableProxyIOError(err) {
 					return
@@ -317,13 +317,20 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				defer wg.Done()
 				_, err := io.Copy(conn, os.Stdin)
 				setErr(err)
+				select {
+				case <-done:
+				default:
+					_ = conn.Close()
+				}
 			}()
 			go func() {
 				defer wg.Done()
 				_, err := io.Copy(os.Stdout, conn)
 				setErr(err)
+				close(done)
+				_ = conn.Close()
 			}()
-			wg.Wait()
+			<-done
 			return copyErr
 		},
 	}
@@ -461,4 +468,23 @@ func reserveEphemeralPort() (int, error) {
 		return 0, fmt.Errorf("unexpected listener address type %T", ln.Addr())
 	}
 	return addr.Port, nil
+}
+
+func updateSSHConfigWithLock(configPath string, mutator func(existing string) string) error {
+	lockPath := configPath + ".okdev.lock"
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer lockFile.Close()
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	}()
+
+	existing, _ := os.ReadFile(configPath)
+	updated := mutator(string(existing))
+	return os.WriteFile(configPath, []byte(updated), 0o600)
 }

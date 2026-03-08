@@ -3,13 +3,16 @@ package ssh
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	xssh "golang.org/x/crypto/ssh"
@@ -61,9 +64,7 @@ func (tm *TunnelManager) Connect(ctx context.Context, host string, port int) err
 
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	if tm.client != nil {
-		_ = tm.client.Close()
-	}
+	tm.closeLocked()
 	tm.client = client
 	tm.ctx, tm.cancel = context.WithCancel(ctx)
 	if tm.listeners == nil {
@@ -79,23 +80,7 @@ func (tm *TunnelManager) Connect(ctx context.Context, host string, port int) err
 func (tm *TunnelManager) Close() error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
-	if tm.autoCancel != nil {
-		tm.autoCancel()
-		tm.autoCancel = nil
-	}
-	if tm.cancel != nil {
-		tm.cancel()
-	}
-	for port, ln := range tm.listeners {
-		_ = ln.Close()
-		delete(tm.listeners, port)
-	}
-	if tm.client == nil {
-		return nil
-	}
-	err := tm.client.Close()
-	tm.client = nil
-	return err
+	return tm.closeLocked()
 }
 
 // ListListeningPorts queries remote TCP listeners.
@@ -175,7 +160,6 @@ func (tm *TunnelManager) IsConnected() bool {
 // AddForward starts a local listener and forwards accepted connections to remotePort.
 func (tm *TunnelManager) AddForward(localPort, remotePort int) error {
 	tm.mu.Lock()
-	client := tm.client
 	if tm.listeners == nil {
 		tm.listeners = map[int]net.Listener{}
 	}
@@ -183,22 +167,21 @@ func (tm *TunnelManager) AddForward(localPort, remotePort int) error {
 		tm.mu.Unlock()
 		return nil
 	}
-	tm.mu.Unlock()
-
-	if client == nil {
+	client := tm.client
+	ctx := tm.ctx
+	if client == nil || ctx == nil {
+		tm.mu.Unlock()
 		return fmt.Errorf("not connected")
 	}
-
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", localPort))
 	if err != nil {
+		tm.mu.Unlock()
 		return fmt.Errorf("listen local port %d: %w", localPort, err)
 	}
-
-	tm.mu.Lock()
 	tm.listeners[localPort] = ln
 	tm.mu.Unlock()
 
-	go tm.serveForward(ln, client, remotePort)
+	go tm.serveForward(ctx, ln, client, remotePort)
 	return nil
 }
 
@@ -270,6 +253,24 @@ func (tm *TunnelManager) OpenShell() error {
 				return fmt.Errorf("request pty: %w", err)
 			}
 		}
+		winch := make(chan os.Signal, 1)
+		done := make(chan struct{})
+		defer close(done)
+		signal.Notify(winch, syscall.SIGWINCH)
+		defer signal.Stop(winch)
+		go func() {
+			for {
+				select {
+				case <-done:
+					return
+				case <-winch:
+					w, h, err := term.GetSize(fd)
+					if err == nil {
+						_ = s.WindowChange(h, w)
+					}
+				}
+			}
+		}()
 	}
 
 	if err := s.Shell(); err != nil {
@@ -297,13 +298,11 @@ func (tm *TunnelManager) keepAlive(ctx context.Context, client *xssh.Client) {
 			select {
 			case err := <-done:
 				if err != nil {
-					// Connection is dead — close client so active sessions
-					// get an immediate error instead of hanging.
-					_ = client.Close()
+					tm.disconnectClient(client)
 					return
 				}
 			case <-time.After(15 * time.Second):
-				_ = client.Close()
+				tm.disconnectClient(client)
 				return
 			case <-ctx.Done():
 				return
@@ -312,36 +311,53 @@ func (tm *TunnelManager) keepAlive(ctx context.Context, client *xssh.Client) {
 	}
 }
 
-func (tm *TunnelManager) serveForward(ln net.Listener, client *xssh.Client, remotePort int) {
+func (tm *TunnelManager) serveForward(ctx context.Context, ln net.Listener, client *xssh.Client, remotePort int) {
+	go func() {
+		<-ctx.Done()
+		_ = ln.Close()
+	}()
 	for {
 		localConn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		go func() {
+		go func(localConn net.Conn) {
 			defer localConn.Close()
 			remoteConn, err := client.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", remotePort))
 			if err != nil {
 				return
 			}
 			defer remoteConn.Close()
-			copyBothWays(localConn, remoteConn)
-		}()
+			copyBothWays(ctx, localConn, remoteConn)
+		}(localConn)
 	}
 }
 
-func copyBothWays(a net.Conn, b net.Conn) {
+func copyBothWays(ctx context.Context, a net.Conn, b net.Conn) {
+	go func() {
+		<-ctx.Done()
+		_ = a.Close()
+		_ = b.Close()
+	}()
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		_, _ = io.Copy(a, b)
+		closeWrite(a)
 	}()
 	go func() {
 		defer wg.Done()
 		_, _ = io.Copy(b, a)
+		closeWrite(b)
 	}()
 	wg.Wait()
+}
+
+func closeWrite(conn net.Conn) {
+	if cw, ok := conn.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	}
 }
 
 func parseSSListeningPorts(raw string) []int {
@@ -374,7 +390,10 @@ func parseProcNetTCPPorts(raw string) []int {
 			continue
 		}
 		fields := strings.Fields(line)
-		if len(fields) < 2 {
+		if len(fields) < 4 {
+			continue
+		}
+		if !strings.EqualFold(fields[3], "0A") { // LISTEN
 			continue
 		}
 		local := fields[1]
@@ -391,6 +410,41 @@ func parseProcNetTCPPorts(raw string) []int {
 		}
 	}
 	return sortedPorts(ports)
+}
+
+func (tm *TunnelManager) disconnectClient(client *xssh.Client) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if tm.client != client {
+		return
+	}
+	_ = tm.closeLocked()
+}
+
+func (tm *TunnelManager) closeLocked() error {
+	if tm.autoCancel != nil {
+		tm.autoCancel()
+		tm.autoCancel = nil
+	}
+	if tm.cancel != nil {
+		tm.cancel()
+		tm.cancel = nil
+	}
+	var closeErr error
+	for port, ln := range tm.listeners {
+		if err := ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) && closeErr == nil {
+			closeErr = err
+		}
+		delete(tm.listeners, port)
+	}
+	if tm.client != nil {
+		if err := tm.client.Close(); err != nil && !errors.Is(err, net.ErrClosed) && closeErr == nil {
+			closeErr = err
+		}
+		tm.client = nil
+	}
+	tm.ctx = nil
+	return closeErr
 }
 
 func parsePortFromAddr(addr string) (int, bool) {
