@@ -32,6 +32,7 @@ type Metadata struct {
 
 type DevEnvSpec struct {
 	Namespace   string         `yaml:"namespace"`
+	KubeContext string         `yaml:"kubeContext"`
 	Session     SessionSpec    `yaml:"session"`
 	Workspace   Workspace      `yaml:"workspace"`
 	Sync        SyncSpec       `yaml:"sync"`

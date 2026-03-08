@@ -123,6 +123,20 @@ func TestLoadWithExplicitPath(t *testing.T) {
 	assertSameFile(t, cfgPath, resolved)
 }
 
+func TestLoadParsesKubeContext(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, DefaultFile)
+	writeFile(t, cfgPath, "apiVersion: okdev.io/v1alpha1\nkind: DevEnvironment\nmetadata:\n  name: x\nspec:\n  namespace: default\n  kubeContext: team-staging\n  workspace:\n    mountPath: /workspace\n")
+
+	cfg, _, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Spec.KubeContext != "team-staging" {
+		t.Fatalf("unexpected kubeContext %q", cfg.Spec.KubeContext)
+	}
+}
+
 func TestLoadValidationError(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, DefaultFile)

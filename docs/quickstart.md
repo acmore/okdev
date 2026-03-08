@@ -32,6 +32,11 @@ Configuration discovery order:
 2. `.okdev.yaml`
 3. `okdev.yaml`
 
+Kubernetes context precedence:
+1. `--context`
+2. `spec.kubeContext` in manifest
+3. active kube context from your kubeconfig
+
 ## Start or Resume Session
 
 ```bash

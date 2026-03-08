@@ -31,6 +31,7 @@ func loadConfigAndNamespace(opts *Options) (*config.DevEnvironment, string, erro
 		return nil, "", err
 	}
 	announceConfigPath(path)
+	applyConfigKubeContext(opts, cfg)
 	ns := cfg.Spec.Namespace
 	if opts.Namespace != "" {
 		ns = opts.Namespace
@@ -39,6 +40,18 @@ func loadConfigAndNamespace(opts *Options) (*config.DevEnvironment, string, erro
 		ns = "default"
 	}
 	return cfg, ns, nil
+}
+
+func applyConfigKubeContext(opts *Options, cfg *config.DevEnvironment) {
+	if opts == nil || cfg == nil {
+		return
+	}
+	if strings.TrimSpace(opts.Context) != "" {
+		return
+	}
+	if ctx := strings.TrimSpace(cfg.Spec.KubeContext); ctx != "" {
+		opts.Context = ctx
+	}
 }
 
 func announceConfigPath(path string) {

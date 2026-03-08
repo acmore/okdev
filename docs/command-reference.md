@@ -7,6 +7,7 @@
 - `--owner`: owner label override (default: `OKDEV_OWNER` or local `USER`)
 - `-n, --namespace`: namespace override
 - `--context`: kubeconfig context override
+  - when omitted, `spec.kubeContext` is used if set; otherwise kubeconfig current-context is used
 - `--output text|json`: output format (`list`, `status`)
 - `--verbose`: debug logging
 

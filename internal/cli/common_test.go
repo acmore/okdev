@@ -68,3 +68,27 @@ func TestEnsureCommandMissing(t *testing.T) {
 		t.Fatal("expected missing command error")
 	}
 }
+
+func TestApplyConfigKubeContextFromConfigWhenFlagUnset(t *testing.T) {
+	opts := &Options{}
+	cfg := &config.DevEnvironment{}
+	cfg.Spec.KubeContext = "dev-cluster"
+
+	applyConfigKubeContext(opts, cfg)
+
+	if opts.Context != "dev-cluster" {
+		t.Fatalf("expected context from config, got %q", opts.Context)
+	}
+}
+
+func TestApplyConfigKubeContextFlagWins(t *testing.T) {
+	opts := &Options{Context: "flag-context"}
+	cfg := &config.DevEnvironment{}
+	cfg.Spec.KubeContext = "config-context"
+
+	applyConfigKubeContext(opts, cfg)
+
+	if opts.Context != "flag-context" {
+		t.Fatalf("expected flag context to win, got %q", opts.Context)
+	}
+}

@@ -26,6 +26,7 @@ spec: {}
 ### `spec`
 
 - `spec.namespace` (`string`, default: `default`)
+- `spec.kubeContext` (`string`, optional): kubeconfig context used by okdev commands.
 - `spec.session` (`object`)
 - `spec.workspace` (`object`, required)
 - `spec.sync` (`object`)
@@ -45,6 +46,11 @@ spec: {}
 Validation:
 - `ttlHours >= 0`
 - `idleTimeoutMinutes >= 0`
+
+Context precedence:
+- `--context` CLI flag (highest)
+- `spec.kubeContext` from manifest
+- active kubeconfig current-context (default client behavior)
 
 ## `spec.workspace`
 

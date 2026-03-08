@@ -28,6 +28,10 @@ func newListCmd(opts *Options) *cobra.Command {
 				if cfg, path, err := config.Load(opts.ConfigPath); err == nil && cfg.Spec.Namespace != "" {
 					ns = cfg.Spec.Namespace
 					announceConfigPath(path)
+					applyConfigKubeContext(opts, cfg)
+				} else if err == nil {
+					announceConfigPath(path)
+					applyConfigKubeContext(opts, cfg)
 				}
 			}
 			if ns == "" {
