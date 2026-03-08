@@ -87,6 +87,7 @@ Notes:
 - Local runtime state/logs are stored under `~/.okdev/` (not in the project working directory).
 - Use `ssh okdev-<session>` for direct SSH. For tmux-backed interactive sessions, force TTY (`ssh -tt okdev-<session>`).
 - Use `okdev ssh --no-tmux` to bypass tmux for a single connection.
+- Tmux uses a built-in okdev profile (history/mouse/vi-copy/status) and keeps the default command prefix (`Ctrl-b`).
 - SSH keepalive can be tuned with:
   - `spec.ssh.keepAliveIntervalSeconds` (default `10`)
   - `spec.ssh.keepAliveTimeoutSeconds` (default `15`, must be `>= interval`)

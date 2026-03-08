@@ -25,6 +25,7 @@ RUN arch="$(uname -m)" \
     && rm -rf /tmp/syncthing* /tmp/sha256sum.txt
 
 COPY sshd_config /etc/ssh/sshd_config
+COPY tmux.conf /root/.tmux.conf
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
