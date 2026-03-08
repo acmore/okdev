@@ -26,11 +26,24 @@ type Forward struct {
 	Auto       bool
 }
 
+type ConnectionState string
+
+const (
+	StateDisconnected ConnectionState = "disconnected"
+	StateReconnecting ConnectionState = "reconnecting"
+	StateConnected    ConnectionState = "connected"
+)
+
+var ErrLocalPortInUse = errors.New("local port already in use")
+
 // TunnelManager manages one SSH client connection and a set of local forwards.
 type TunnelManager struct {
-	SSHUser    string
-	SSHKeyPath string
-	RemotePort int
+	SSHUser           string
+	SSHKeyPath        string
+	RemotePort        int
+	Env               map[string]string
+	KeepAliveInterval time.Duration
+	KeepAliveTimeout  time.Duration
 
 	mu        sync.Mutex
 	client    *xssh.Client
@@ -39,17 +52,49 @@ type TunnelManager struct {
 	cancel    context.CancelFunc
 
 	autoCancel context.CancelFunc
+
+	lastHost string
+	lastPort int
+
+	keepAliveOnce     sync.Once
+	reconnecting      bool
+	stateCallback     func(ConnectionState)
+	reconnectTargetFn func(context.Context) (string, int, error)
+	rttCallback       func(time.Duration)
 }
 
 // Connect establishes an SSH connection to host:port.
 func (tm *TunnelManager) Connect(ctx context.Context, host string, port int) error {
+	client, err := tm.dialSSH(host, port)
+	if err != nil {
+		return err
+	}
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if tm.ctx == nil {
+		tm.ctx, tm.cancel = context.WithCancel(ctx)
+	}
+	if tm.listeners == nil {
+		tm.listeners = map[int]net.Listener{}
+	}
+	tm.closeClientLocked()
+	tm.client = client
+	tm.lastHost = host
+	tm.lastPort = port
+	tm.reconnecting = false
+	tm.keepAliveOnce.Do(func() { go tm.keepAliveLoop() })
+	tm.emitStateLocked(StateConnected)
+	return nil
+}
+
+func (tm *TunnelManager) dialSSH(host string, port int) (*xssh.Client, error) {
 	keyBytes, err := os.ReadFile(tm.SSHKeyPath)
 	if err != nil {
-		return fmt.Errorf("read ssh key: %w", err)
+		return nil, fmt.Errorf("read ssh key: %w", err)
 	}
 	signer, err := xssh.ParsePrivateKey(keyBytes)
 	if err != nil {
-		return fmt.Errorf("parse ssh key: %w", err)
+		return nil, fmt.Errorf("parse ssh key: %w", err)
 	}
 	cfg := &xssh.ClientConfig{
 		User:            tm.SSHUser,
@@ -59,21 +104,33 @@ func (tm *TunnelManager) Connect(ctx context.Context, host string, port int) err
 	}
 	client, err := xssh.Dial("tcp", fmt.Sprintf("%s:%d", host, port), cfg)
 	if err != nil {
-		return fmt.Errorf("ssh dial: %w", err)
+		return nil, fmt.Errorf("ssh dial: %w", err)
 	}
+	return client, nil
+}
 
+func (tm *TunnelManager) SetConnectionStateCallback(cb func(ConnectionState)) {
 	tm.mu.Lock()
-	defer tm.mu.Unlock()
-	tm.closeLocked()
-	tm.client = client
-	tm.ctx, tm.cancel = context.WithCancel(ctx)
-	if tm.listeners == nil {
-		tm.listeners = map[int]net.Listener{}
+	tm.stateCallback = cb
+	tm.mu.Unlock()
+}
+
+func (tm *TunnelManager) SetReconnectTargetProvider(fn func(context.Context) (string, int, error)) {
+	tm.mu.Lock()
+	tm.reconnectTargetFn = fn
+	tm.mu.Unlock()
+}
+
+func (tm *TunnelManager) SetKeepAliveRTTCallback(cb func(time.Duration)) {
+	tm.mu.Lock()
+	tm.rttCallback = cb
+	tm.mu.Unlock()
+}
+
+func (tm *TunnelManager) emitStateLocked(state ConnectionState) {
+	if tm.stateCallback != nil {
+		go tm.stateCallback(state)
 	}
-
-	go tm.keepAlive(tm.ctx, client)
-
-	return nil
 }
 
 // Close tears down all listeners and the SSH connection.
@@ -85,10 +142,12 @@ func (tm *TunnelManager) Close() error {
 
 // ListListeningPorts queries remote TCP listeners.
 func (tm *TunnelManager) ListListeningPorts() ([]int, error) {
-	out, err := tm.Exec("ss -H -ltn")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := tm.ExecContext(ctx, "ss -H -ltn")
 	if err != nil {
 		// Fallback for minimal images without `ss`.
-		out, err = tm.Exec("cat /proc/net/tcp /proc/net/tcp6")
+		out, err = tm.ExecContext(ctx, "cat /proc/net/tcp /proc/net/tcp6")
 		if err != nil {
 			return nil, err
 		}
@@ -167,21 +226,24 @@ func (tm *TunnelManager) AddForward(localPort, remotePort int) error {
 		tm.mu.Unlock()
 		return nil
 	}
-	client := tm.client
 	ctx := tm.ctx
-	if client == nil || ctx == nil {
+	if tm.client == nil || ctx == nil {
 		tm.mu.Unlock()
 		return fmt.Errorf("not connected")
 	}
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", localPort))
 	if err != nil {
+		if isAddrInUse(err) {
+			tm.mu.Unlock()
+			return fmt.Errorf("%w: %v", ErrLocalPortInUse, err)
+		}
 		tm.mu.Unlock()
 		return fmt.Errorf("listen local port %d: %w", localPort, err)
 	}
 	tm.listeners[localPort] = ln
 	tm.mu.Unlock()
 
-	go tm.serveForward(ctx, ln, client, remotePort)
+	go tm.serveForward(ctx, ln, remotePort)
 	return nil
 }
 
@@ -197,6 +259,10 @@ func (tm *TunnelManager) RemoveForward(localPort int) {
 
 // Exec runs a remote command on the connected SSH client.
 func (tm *TunnelManager) Exec(cmd string) ([]byte, error) {
+	return tm.ExecContext(context.Background(), cmd)
+}
+
+func (tm *TunnelManager) ExecContext(ctx context.Context, cmd string) ([]byte, error) {
 	tm.mu.Lock()
 	client := tm.client
 	tm.mu.Unlock()
@@ -208,11 +274,25 @@ func (tm *TunnelManager) Exec(cmd string) ([]byte, error) {
 		return nil, fmt.Errorf("new ssh session: %w", err)
 	}
 	defer s.Close()
-	out, err := s.CombinedOutput(cmd)
-	if err != nil {
-		return out, fmt.Errorf("exec command: %w", err)
+	type execResult struct {
+		out []byte
+		err error
 	}
-	return out, nil
+	done := make(chan execResult, 1)
+	go func() {
+		out, err := s.CombinedOutput(cmd)
+		done <- execResult{out: out, err: err}
+	}()
+	select {
+	case <-ctx.Done():
+		_ = s.Close()
+		return nil, ctx.Err()
+	case r := <-done:
+		if r.err != nil {
+			return r.out, fmt.Errorf("exec command: %w", r.err)
+		}
+		return r.out, nil
+	}
 }
 
 // OpenShell opens an interactive shell over the current SSH client.
@@ -228,6 +308,10 @@ func (tm *TunnelManager) OpenShell() error {
 		return fmt.Errorf("new ssh session: %w", err)
 	}
 	defer s.Close()
+
+	for k, v := range tm.Env {
+		_ = s.Setenv(k, v)
+	}
 
 	s.Stdin = os.Stdin
 	s.Stdout = os.Stdout
@@ -282,36 +366,63 @@ func (tm *TunnelManager) OpenShell() error {
 	return nil
 }
 
-func (tm *TunnelManager) keepAlive(ctx context.Context, client *xssh.Client) {
-	ticker := time.NewTicker(10 * time.Second)
+func (tm *TunnelManager) keepAliveLoop() {
+	interval := tm.KeepAliveInterval
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	timeout := tm.KeepAliveTimeout
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	if timeout < interval {
+		timeout = interval
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-tm.contextDone():
 			return
 		case <-ticker.C:
-			done := make(chan error, 1)
-			go func() {
-				_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
-				done <- err
-			}()
-			select {
-			case err := <-done:
-				if err != nil {
-					tm.disconnectClient(client)
-					return
-				}
-			case <-time.After(15 * time.Second):
-				tm.disconnectClient(client)
-				return
-			case <-ctx.Done():
-				return
+			tm.mu.Lock()
+			client := tm.client
+			connected := client != nil
+			rttCB := tm.rttCallback
+			tm.mu.Unlock()
+			if !connected {
+				continue
+			}
+			rtt, err := tm.sendKeepAlive(client, timeout)
+			if err != nil {
+				tm.handleConnectionLoss(client)
+				continue
+			}
+			if rttCB != nil {
+				go rttCB(rtt)
 			}
 		}
 	}
 }
 
-func (tm *TunnelManager) serveForward(ctx context.Context, ln net.Listener, client *xssh.Client, remotePort int) {
+func (tm *TunnelManager) sendKeepAlive(client *xssh.Client, timeout time.Duration) (time.Duration, error) {
+	start := time.Now()
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		return time.Since(start), err
+	case <-time.After(timeout):
+		return 0, fmt.Errorf("keepalive timeout")
+	case <-tm.contextDone():
+		return 0, context.Canceled
+	}
+}
+
+func (tm *TunnelManager) serveForward(ctx context.Context, ln net.Listener, remotePort int) {
 	go func() {
 		<-ctx.Done()
 		_ = ln.Close()
@@ -323,6 +434,12 @@ func (tm *TunnelManager) serveForward(ctx context.Context, ln net.Listener, clie
 		}
 		go func(localConn net.Conn) {
 			defer localConn.Close()
+			tm.mu.Lock()
+			client := tm.client
+			tm.mu.Unlock()
+			if client == nil {
+				return
+			}
 			remoteConn, err := client.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", remotePort))
 			if err != nil {
 				return
@@ -331,6 +448,17 @@ func (tm *TunnelManager) serveForward(ctx context.Context, ln net.Listener, clie
 			copyBothWays(ctx, localConn, remoteConn)
 		}(localConn)
 	}
+}
+
+func (tm *TunnelManager) contextDone() <-chan struct{} {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if tm.ctx == nil {
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	}
+	return tm.ctx.Done()
 }
 
 func copyBothWays(ctx context.Context, a net.Conn, b net.Conn) {
@@ -418,7 +546,8 @@ func (tm *TunnelManager) disconnectClient(client *xssh.Client) {
 	if tm.client != client {
 		return
 	}
-	_ = tm.closeLocked()
+	tm.closeClientLocked()
+	tm.emitStateLocked(StateDisconnected)
 }
 
 func (tm *TunnelManager) closeLocked() error {
@@ -437,14 +566,128 @@ func (tm *TunnelManager) closeLocked() error {
 		}
 		delete(tm.listeners, port)
 	}
+	err := tm.closeClientLocked()
+	if closeErr == nil {
+		closeErr = err
+	}
+	tm.ctx = nil
+	tm.reconnecting = false
+	tm.emitStateLocked(StateDisconnected)
+	return closeErr
+}
+
+func (tm *TunnelManager) closeClientLocked() error {
+	var closeErr error
 	if tm.client != nil {
 		if err := tm.client.Close(); err != nil && !errors.Is(err, net.ErrClosed) && closeErr == nil {
 			closeErr = err
 		}
 		tm.client = nil
 	}
-	tm.ctx = nil
 	return closeErr
+}
+
+func (tm *TunnelManager) handleConnectionLoss(client *xssh.Client) {
+	tm.mu.Lock()
+	if tm.client != client || tm.reconnecting {
+		tm.mu.Unlock()
+		return
+	}
+	tm.reconnecting = true
+	tm.closeClientLocked()
+	tm.emitStateLocked(StateReconnecting)
+	tm.mu.Unlock()
+
+	ctx := tm.managerContext()
+	err := reconnectWithBackoff(ctx, func() error {
+		host, port, err := tm.resolveReconnectTarget(ctx)
+		if err != nil {
+			return err
+		}
+		nextClient, err := tm.dialSSH(host, port)
+		if err != nil {
+			return err
+		}
+		tm.mu.Lock()
+		tm.client = nextClient
+		tm.lastHost = host
+		tm.lastPort = port
+		tm.reconnecting = false
+		tm.emitStateLocked(StateConnected)
+		tm.mu.Unlock()
+		return nil
+	}, 0, 1*time.Second, 30*time.Second)
+	if err != nil {
+		tm.mu.Lock()
+		tm.reconnecting = false
+		tm.emitStateLocked(StateDisconnected)
+		tm.mu.Unlock()
+	}
+}
+
+func (tm *TunnelManager) managerContext() context.Context {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if tm.ctx == nil {
+		return context.Background()
+	}
+	return tm.ctx
+}
+
+func (tm *TunnelManager) resolveReconnectTarget(ctx context.Context) (string, int, error) {
+	tm.mu.Lock()
+	fn := tm.reconnectTargetFn
+	host := tm.lastHost
+	port := tm.lastPort
+	tm.mu.Unlock()
+	if fn == nil {
+		if host == "" || port <= 0 {
+			return "", 0, fmt.Errorf("reconnect target unavailable")
+		}
+		return host, port, nil
+	}
+	return fn(ctx)
+}
+
+func reconnectWithBackoff(ctx context.Context, connectFn func() error, maxRetries int, initialBackoff, maxBackoff time.Duration) error {
+	if initialBackoff <= 0 {
+		initialBackoff = time.Second
+	}
+	if maxBackoff < initialBackoff {
+		maxBackoff = initialBackoff
+	}
+	backoff := initialBackoff
+	for attempt := 0; maxRetries == 0 || attempt < maxRetries; attempt++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if err := connectFn(); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+	return fmt.Errorf("reconnect failed after %d attempts", maxRetries)
+}
+
+func isAddrInUse(err error) bool {
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		var sysErr *os.SyscallError
+		if errors.As(opErr.Err, &sysErr) {
+			return errors.Is(sysErr.Err, syscall.EADDRINUSE)
+		}
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "address already in use")
 }
 
 func parsePortFromAddr(addr string) (int, bool) {

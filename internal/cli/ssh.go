@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -27,6 +28,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 	var keyPath string
 	var setupKey bool
 	var cmdStr string
+	var noTmux bool
 
 	cmd := &cobra.Command{
 		Use:   "ssh",
@@ -73,7 +75,15 @@ func newSSHCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer cancelPF()
+			var pfMu sync.Mutex
+			currentCancelPF := cancelPF
+			defer func() {
+				pfMu.Lock()
+				defer pfMu.Unlock()
+				if currentCancelPF != nil {
+					currentCancelPF()
+				}
+			}()
 
 			sshHost := sshHostAlias(sn)
 			cfgPath, _ := config.ResolvePath(opts.ConfigPath)
@@ -82,14 +92,96 @@ func newSSHCmd(opts *Options) *cobra.Command {
 			}
 
 			tm := &okssh.TunnelManager{
-				SSHUser:    user,
-				SSHKeyPath: keyPath,
-				RemotePort: remotePort,
+				SSHUser:           user,
+				SSHKeyPath:        keyPath,
+				RemotePort:        remotePort,
+				KeepAliveInterval: time.Duration(cfg.Spec.SSH.KeepAliveInterval) * time.Second,
+				KeepAliveTimeout:  time.Duration(cfg.Spec.SSH.KeepAliveTimeout) * time.Second,
 			}
+			if noTmux {
+				tm.Env = map[string]string{"OKDEV_NO_TMUX": "1"}
+			}
+			var hadReconnect atomic.Bool
+			tm.SetConnectionStateCallback(func(state okssh.ConnectionState) {
+				switch state {
+				case okssh.StateReconnecting:
+					hadReconnect.Store(true)
+					fmt.Fprintln(cmd.ErrOrStderr(), "SSH connection lost, reconnecting...")
+				case okssh.StateConnected:
+					if hadReconnect.Swap(false) {
+						fmt.Fprintln(cmd.ErrOrStderr(), "SSH connection restored.")
+					}
+				}
+			})
+			tm.SetReconnectTargetProvider(func(_ context.Context) (string, int, error) {
+				pfMu.Lock()
+				defer pfMu.Unlock()
+				if currentCancelPF != nil {
+					currentCancelPF()
+					currentCancelPF = nil
+				}
+				cancel, lp, err := startSSHPortForwardWithFallback(newKubeClient(opts), ns, podName(sn), localPort, remotePort)
+				if err != nil {
+					return "", 0, err
+				}
+				currentCancelPF = cancel
+				return "127.0.0.1", lp, nil
+			})
+			var lastRTTWarnNanos atomic.Int64
+			tm.SetKeepAliveRTTCallback(func(rtt time.Duration) {
+				if rtt < 2*time.Second {
+					return
+				}
+				now := time.Now().UnixNano()
+				prev := lastRTTWarnNanos.Load()
+				if prev != 0 && now-prev < int64(30*time.Second) {
+					return
+				}
+				if lastRTTWarnNanos.CompareAndSwap(prev, now) {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: ssh keepalive RTT is high: %s\n", rtt.Round(10*time.Millisecond))
+				}
+			})
 			if err := tm.Connect(cmd.Context(), "127.0.0.1", usedLocalPort); err != nil {
 				return fmt.Errorf("connect ssh tunnel: %w", err)
 			}
 			defer tm.Close()
+
+			for _, p := range cfg.Spec.Ports {
+				if p.Local <= 0 || p.Remote <= 0 {
+					continue
+				}
+				if err := tm.AddForward(p.Local, p.Remote); err != nil {
+					if errors.Is(err, okssh.ErrLocalPortInUse) {
+						fmt.Fprintf(cmd.ErrOrStderr(), "warning: local port %d already in use; skip forward %d->%d\n", p.Local, p.Local, p.Remote)
+						continue
+					}
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to add forward %d->%d: %v\n", p.Local, p.Remote, err)
+				}
+			}
+			if cfg.Spec.SSH.AutoDetectPorts == nil || *cfg.Spec.SSH.AutoDetectPorts {
+				configured := map[int]struct{}{}
+				for _, p := range cfg.Spec.Ports {
+					if p.Remote > 0 {
+						configured[p.Remote] = struct{}{}
+					}
+				}
+				exclude := map[int]struct{}{
+					cfg.Spec.SSH.RemotePort: {},
+					8384:                    {}, // syncthing gui
+					22000:                   {}, // syncthing sync
+				}
+				tm.StartAutoDetect(5*time.Second, configured, exclude, func(port int) {
+					if err := tm.AddForward(port, port); err != nil {
+						if errors.Is(err, okssh.ErrLocalPortInUse) {
+							fmt.Fprintf(cmd.ErrOrStderr(), "warning: detected remote port %d but local %d is already in use; skipping auto-forward\n", port, port)
+							return
+						}
+						fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to auto-forward port %d: %v\n", port, err)
+					}
+				}, func(port int) {
+					tm.RemoveForward(port)
+				})
+			}
 
 			if cmdStr != "" {
 				out, err := tm.Exec(cmdStr)
@@ -102,6 +194,10 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				return nil
 			}
 			if err := tm.OpenShell(); err != nil {
+				if !tm.IsConnected() || isIgnorableProxyIOError(err) {
+					fmt.Fprintln(cmd.ErrOrStderr(), "Connection lost. Session ended.")
+					return nil
+				}
 				return fmt.Errorf("ssh shell failed: %w", err)
 			}
 			return nil
@@ -114,6 +210,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&keyPath, "key", "", "Private key path")
 	cmd.Flags().BoolVar(&setupKey, "setup-key", false, "Generate local key if needed and install its public key in pod")
 	cmd.Flags().StringVar(&cmdStr, "cmd", "", "Run a command over SSH")
+	cmd.Flags().BoolVar(&noTmux, "no-tmux", false, "Disable tmux for this SSH session even if enabled on the pod")
 	return cmd
 }
 
