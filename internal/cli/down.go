@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/acmore/okdev/internal/session"
 	"github.com/spf13/cobra"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 func newDownCmd(opts *Options) *cobra.Command {
@@ -21,7 +23,7 @@ func newDownCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sn, err := resolveSessionName(opts, cfg)
+			sn, err := resolveSessionNameForUpDown(opts, cfg, ns)
 			if err != nil {
 				return err
 			}
@@ -42,17 +44,20 @@ func newDownCmd(opts *Options) *cobra.Command {
 				return nil
 			}
 
-			if err := k.Delete(ctx, ns, "pod", podName(sn), true); err != nil {
+			if err := k.Delete(ctx, ns, "pod", podName(sn), true); err != nil && !apierrors.IsNotFound(err) {
 				return fmt.Errorf("delete session pod: %w", err)
 			}
 			if deletePVC && cfg.Spec.Workspace.PVC.ClaimName == "" {
-				if err := k.Delete(ctx, ns, "pvc", pvcName(cfg, sn), true); err != nil {
+				if err := k.Delete(ctx, ns, "pvc", pvcName(cfg, sn), true); err != nil && !apierrors.IsNotFound(err) {
 					return fmt.Errorf("delete workspace pvc: %w", err)
 				}
 			}
 			alias := sshHostAlias(sn)
 			_ = stopManagedSSHForward(alias)
 			_ = removeSSHConfigEntry(alias)
+			if active, err := session.LoadActiveSession(); err == nil && active == sn {
+				_ = session.ClearActiveSession()
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Session stopped: %s\n", sn)
 			if !deletePVC && cfg.Spec.Workspace.PVC.ClaimName == "" {
 				fmt.Fprintf(cmd.OutOrStdout(), "Workspace PVC retained: %s (use --delete-pvc to remove)\n", pvcName(cfg, sn))

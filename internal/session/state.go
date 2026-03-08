@@ -73,3 +73,14 @@ func SaveActiveSession(name string) error {
 	}
 	return nil
 }
+
+func ClearActiveSession() error {
+	p, err := ActiveSessionPath()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("clear active session: %w", err)
+	}
+	return nil
+}

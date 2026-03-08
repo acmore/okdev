@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
@@ -98,7 +99,7 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName string) (string
 		return "", false, err
 	}
 	if pid, ok := readSyncthingPID(pidPath); ok {
-		if processAlive(pid) {
+		if processAlive(pid) && processLooksLikeSyncthingSync(pid) {
 			return logPath, false, nil
 		}
 		_ = os.Remove(pidPath)
@@ -131,6 +132,7 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName string) (string
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Stdin = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
 		return "", false, err
@@ -138,6 +140,12 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName string) (string
 	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)+"\n"), 0o644); err != nil {
 		_ = logFile.Close()
 		return "", false, err
+	}
+	// Guard against immediate child exit (common when sync init fails).
+	time.Sleep(300 * time.Millisecond)
+	if !processAlive(cmd.Process.Pid) || !processLooksLikeSyncthingSync(cmd.Process.Pid) {
+		_ = logFile.Close()
+		return "", false, fmt.Errorf("syncthing background process exited early; check logs: %s", logPath)
 	}
 	_ = cmd.Process.Release()
 	_ = logFile.Close()
@@ -173,10 +181,31 @@ func readSyncthingPID(path string) (int, bool) {
 }
 
 func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	if statOut, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "stat=").CombinedOutput(); err == nil {
+		stat := strings.TrimSpace(string(statOut))
+		if stat == "" || strings.Contains(stat, "Z") {
+			return false
+		}
+	}
 	p, err := os.FindProcess(pid)
 	if err != nil {
 		return false
 	}
 	err = p.Signal(syscall.Signal(0))
 	return err == nil
+}
+
+func processLooksLikeSyncthingSync(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").CombinedOutput()
+	if err != nil {
+		return false
+	}
+	cmdline := string(out)
+	return strings.Contains(cmdline, "okdev") && strings.Contains(cmdline, "sync")
 }

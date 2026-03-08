@@ -2,8 +2,10 @@ package cli
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/acmore/okdev/internal/config"
+	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/output"
 	"github.com/acmore/okdev/internal/session"
 	"github.com/spf13/cobra"
@@ -55,7 +57,7 @@ func newListCmd(opts *Options) *cobra.Command {
 				}
 				rows := make([]listRow, 0, len(pods))
 				for _, p := range pods {
-					sn := p.Labels["okdev.io/session"]
+					sn := sessionNameFromPodSummary(p)
 					rows = append(rows, listRow{
 						Namespace: p.Namespace,
 						Session:   sn,
@@ -69,7 +71,7 @@ func newListCmd(opts *Options) *cobra.Command {
 			}
 			rows := make([][]string, 0, len(pods))
 			for _, p := range pods {
-				sn := p.Labels["okdev.io/session"]
+				sn := sessionNameFromPodSummary(p)
 				if sn != "" && sn == activeSession {
 					sn = "*" + sn
 				}
@@ -89,4 +91,17 @@ func newListCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&allNamespaces, "all-namespaces", false, "List sessions across all namespaces")
 	cmd.Flags().BoolVar(&allUsers, "all-users", false, "List sessions for all owners")
 	return cmd
+}
+
+func sessionNameFromPodSummary(p kube.PodSummary) string {
+	if p.Labels != nil {
+		if sn := strings.TrimSpace(p.Labels["okdev.io/session"]); sn != "" {
+			return sn
+		}
+	}
+	name := strings.TrimSpace(p.Name)
+	if strings.HasPrefix(name, "okdev-") {
+		return strings.TrimPrefix(name, "okdev-")
+	}
+	return name
 }

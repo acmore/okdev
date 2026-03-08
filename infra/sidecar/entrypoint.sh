@@ -37,7 +37,37 @@ if [ -z "$DEV_PID" ]; then
   exit 1
 fi
 
-exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid -- /bin/sh -l
+# Ensure current GID exists in /etc/group inside the target to suppress
+# "groups: cannot find name for group ID ..." warnings from login shells.
+CURRENT_GID="$(id -g 2>/dev/null || true)"
+if [ -n "$CURRENT_GID" ]; then
+  nsenter --target "$DEV_PID" --mount -- sh -c "
+    grep -q \":${CURRENT_GID}:\" /etc/group 2>/dev/null || \
+    echo \"okdev:x:${CURRENT_GID}:\" >> /etc/group 2>/dev/null || true
+  "
+fi
+
+# If a remote command was requested, execute it inside the dev container.
+if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
+  if nsenter --target "$DEV_PID" --mount -- test -x /bin/bash 2>/dev/null; then
+    exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid -- /bin/bash -lc "$SSH_ORIGINAL_COMMAND"
+  else
+    exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid -- /bin/sh -lc "$SSH_ORIGINAL_COMMAND"
+  fi
+fi
+
+# If there is no TTY and no remote command (e.g. SSH master/control session),
+# keep the connection open so forwarding channels stay alive.
+if [ ! -t 0 ]; then
+  exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid -- /bin/sh -lc "while :; do sleep 3600; done"
+fi
+
+# Interactive login shell in dev container.
+if nsenter --target "$DEV_PID" --mount -- test -x /bin/bash 2>/dev/null; then
+  exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid -- /bin/bash -l
+else
+  exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid -- /bin/sh -l
+fi
 SCRIPT
 chmod +x /usr/local/bin/nsenter-dev.sh
 

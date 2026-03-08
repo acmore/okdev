@@ -69,6 +69,9 @@ func (tm *TunnelManager) Connect(ctx context.Context, host string, port int) err
 	if tm.listeners == nil {
 		tm.listeners = map[int]net.Listener{}
 	}
+
+	go tm.keepAlive(tm.ctx, client)
+
 	return nil
 }
 
@@ -276,6 +279,37 @@ func (tm *TunnelManager) OpenShell() error {
 		return fmt.Errorf("wait shell: %w", err)
 	}
 	return nil
+}
+
+func (tm *TunnelManager) keepAlive(ctx context.Context, client *xssh.Client) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			done := make(chan error, 1)
+			go func() {
+				_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err != nil {
+					// Connection is dead — close client so active sessions
+					// get an immediate error instead of hanging.
+					_ = client.Close()
+					return
+				}
+			case <-time.After(15 * time.Second):
+				_ = client.Close()
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
 }
 
 func (tm *TunnelManager) serveForward(ln net.Listener, client *xssh.Client, remotePort int) {

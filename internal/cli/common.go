@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -52,6 +53,68 @@ func announceConfigPath(path string) {
 
 func resolveSessionName(opts *Options, cfg *config.DevEnvironment) (string, error) {
 	return session.Resolve(opts.Session, cfg.Spec.Session.DefaultNameTemplate)
+}
+
+func resolveSessionNameForUpDown(opts *Options, cfg *config.DevEnvironment, namespace string) (string, error) {
+	if strings.TrimSpace(opts.Session) != "" {
+		return resolveSessionName(opts, cfg)
+	}
+	active, err := session.LoadActiveSession()
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(active) != "" {
+		return session.Resolve(active, cfg.Spec.Session.DefaultNameTemplate)
+	}
+	inferred, err := inferExistingSessionForRepo(opts, cfg, namespace)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(inferred) != "" {
+		return inferred, nil
+	}
+	return session.Resolve("", cfg.Spec.Session.DefaultNameTemplate)
+}
+
+func inferExistingSessionForRepo(opts *Options, cfg *config.DevEnvironment, namespace string) (string, error) {
+	root, err := session.RepoRoot()
+	if err != nil || strings.TrimSpace(root) == "" {
+		return "", nil
+	}
+	repo := filepath.Base(root)
+	if strings.TrimSpace(repo) == "" {
+		return "", nil
+	}
+	label := []string{
+		"okdev.io/managed=true",
+		ownerLabelSelector(opts),
+		"okdev.io/repo=" + repo,
+	}
+	if strings.TrimSpace(cfg.Metadata.Name) != "" {
+		label = append(label, "okdev.io/name="+cfg.Metadata.Name)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	pods, err := newKubeClient(opts).ListPods(ctx, namespace, false, strings.Join(label, ","))
+	if err != nil {
+		return "", err
+	}
+	if len(pods) == 0 {
+		return "", nil
+	}
+	sort.Slice(pods, func(i, j int) bool {
+		return pods[i].CreatedAt.After(pods[j].CreatedAt)
+	})
+	for _, p := range pods {
+		sn := strings.TrimSpace(p.Labels["okdev.io/session"])
+		if sn != "" {
+			return sn, nil
+		}
+		if strings.HasPrefix(p.Name, "okdev-") {
+			return strings.TrimPrefix(p.Name, "okdev-"), nil
+		}
+	}
+	return "", nil
 }
 
 func labelsForSession(opts *Options, cfg *config.DevEnvironment, sessionName string) map[string]string {

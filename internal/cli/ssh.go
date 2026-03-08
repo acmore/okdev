@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
@@ -228,6 +229,7 @@ func ensureSSHConfigEntry(hostAlias, sessionName, namespace, user string, remote
 		"  ServerAliveInterval 30",
 		"  ServerAliveCountMax 10",
 		"  TCPKeepAlive yes",
+		"  LogLevel ERROR",
 		end,
 	)
 	block := strings.Join(blockLines, "\n") + "\n"
@@ -305,7 +307,7 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 			var copyErr error
 			var once sync.Once
 			setErr := func(err error) {
-				if err == nil || errors.Is(err, io.EOF) {
+				if err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, syscall.EPIPE) || isIgnorableProxyIOError(err) {
 					return
 				}
 				once.Do(func() { copyErr = err })
@@ -315,9 +317,6 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				defer wg.Done()
 				_, err := io.Copy(conn, os.Stdin)
 				setErr(err)
-				if cw, ok := conn.(interface{ CloseWrite() error }); ok {
-					_ = cw.CloseWrite()
-				}
 			}()
 			go func() {
 				defer wg.Done()
@@ -330,6 +329,16 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 	}
 	cmd.Flags().IntVar(&remotePort, "remote-port", 0, "Remote SSH port in pod")
 	return cmd
+}
+
+func isIgnorableProxyIOError(err error) bool {
+	if err == nil {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "connection reset by peer")
 }
 
 func waitDialLocal(localPort int, timeout time.Duration) (net.Conn, error) {
@@ -377,10 +386,11 @@ func startManagedSSHForward(hostAlias string) error {
 		"-M",
 		"-S", socketPath,
 		"-o", "ControlPersist=600",
-		"-o", "ExitOnForwardFailure=yes",
+		"-o", "ExitOnForwardFailure=no",
 		"-o", "ServerAliveInterval=30",
 		"-o", "ServerAliveCountMax=10",
 		"-o", "TCPKeepAlive=yes",
+		"-o", "LogLevel=ERROR",
 		hostAlias,
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {

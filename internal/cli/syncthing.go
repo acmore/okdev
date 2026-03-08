@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -30,10 +31,6 @@ const (
 	legacySyncthingContainerName = "syncthing"
 )
 const (
-	syncthingLocalGUIAddr      = "127.0.0.1:8385"
-	syncthingLocalAPIBase      = "http://127.0.0.1:8385"
-	syncthingRemoteAPIBase     = "http://127.0.0.1:18384"
-	syncthingPeerAddrTunnel    = "tcp://127.0.0.1:22000"
 	syncthingPeerAddrDynamic   = "dynamic"
 	syncthingAPIReadyTimeout   = 30 * time.Second
 	syncthingLocalLogPath      = "/tmp/okdev-syncthing-local.log"
@@ -82,11 +79,15 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	if err != nil {
 		return err
 	}
-	if err := startLocalSyncthing(localBinary, localHome); err != nil {
+	localGUIAddr, localAPIBase, err := allocateLocalSyncthingAPIEndpoint()
+	if err != nil {
+		return err
+	}
+	if err := startLocalSyncthing(localBinary, localHome, localGUIAddr); err != nil {
 		return err
 	}
 
-	cancelPF, err := startSyncthingPortForward(opts, namespace, pod)
+	cancelPF, localRemoteAPIBase, localRemotePeerAddr, err := startSyncthingPortForward(opts, namespace, pod)
 	if err != nil {
 		return err
 	}
@@ -101,8 +102,8 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		return err
 	}
 
-	localBase := syncthingLocalAPIBase
-	remoteBase := syncthingRemoteAPIBase
+	localBase := localAPIBase
+	remoteBase := localRemoteAPIBase
 	if err := waitSyncthingAPI(ctx, localBase, localKey, syncthingAPIReadyTimeout); err != nil {
 		return fmt.Errorf("local syncthing not ready: %w", err)
 	}
@@ -122,7 +123,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	folderTypeLocal, folderTypeRemote := folderTypesForMode(mode)
 	folderID := "okdev-" + sessionName
 
-	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, syncthingPeerAddrTunnel, folderID, absLocal, folderTypeLocal); err != nil {
+	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal); err != nil {
 		return fmt.Errorf("configure local syncthing: %w", err)
 	}
 	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, syncthingPeerAddrDynamic, folderID, pair.Remote, folderTypeRemote); err != nil {
@@ -205,7 +206,7 @@ func localSyncthingHome(session string) (string, error) {
 	return p, nil
 }
 
-func startLocalSyncthing(binary, home string) error {
+func startLocalSyncthing(binary, home, localGUIAddr string) error {
 	genOut, genErr := exec.Command(binary, "generate", "--home", home).CombinedOutput()
 	if genErr != nil {
 		legacyOut, legacyErr := exec.Command(binary, "-home", home, "generate").CombinedOutput()
@@ -217,11 +218,26 @@ func startLocalSyncthing(binary, home string) error {
 	pattern := syncengine.ShellEscape(binary + " serve --home " + home)
 	binaryQ := syncengine.ShellEscape(binary)
 	homeQ := syncengine.ShellEscape(home)
-	cmd := exec.Command("sh", "-lc", fmt.Sprintf("pkill -f %s >/dev/null 2>&1 || true; nohup %s serve --home %s --no-browser --gui-address=http://%s --no-restart --skip-port-probing >%s 2>&1 &", pattern, binaryQ, homeQ, syncengine.ShellEscape(syncthingLocalGUIAddr), syncengine.ShellEscape(syncthingLocalLogPath)))
+	cmd := exec.Command("sh", "-lc", fmt.Sprintf("pkill -f %s >/dev/null 2>&1 || true; nohup %s serve --home %s --no-browser --gui-address=http://%s --no-restart --skip-port-probing >%s 2>&1 &", pattern, binaryQ, homeQ, syncengine.ShellEscape(localGUIAddr), syncengine.ShellEscape(syncthingLocalLogPath)))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("start local syncthing: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func allocateLocalSyncthingAPIEndpoint() (guiAddr, apiBase string, err error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", "", fmt.Errorf("allocate local syncthing API port: %w", err)
+	}
+	defer ln.Close()
+	tcpAddr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		return "", "", fmt.Errorf("unexpected local listener addr type %T", ln.Addr())
+	}
+	guiAddr = fmt.Sprintf("127.0.0.1:%d", tcpAddr.Port)
+	apiBase = "http://" + guiAddr
+	return guiAddr, apiBase, nil
 }
 
 func stopLocalSyncthing(binary, home string) error {
@@ -233,8 +249,27 @@ func stopLocalSyncthing(binary, home string) error {
 	return nil
 }
 
-func startSyncthingPortForward(opts *Options, namespace, pod string) (context.CancelFunc, error) {
-	return startManagedPortForward(opts, namespace, pod, []string{"18384:8384", "22000:22000"})
+func startSyncthingPortForward(opts *Options, namespace, pod string) (context.CancelFunc, string, string, error) {
+	lastErr := error(nil)
+	for i := 0; i < 5; i++ {
+		localAPI, err := reserveEphemeralPort()
+		if err != nil {
+			return nil, "", "", err
+		}
+		localSync, err := reserveEphemeralPort()
+		if err != nil {
+			return nil, "", "", err
+		}
+		cancelPF, err := startManagedPortForward(opts, namespace, pod, []string{
+			fmt.Sprintf("%d:8384", localAPI),
+			fmt.Sprintf("%d:22000", localSync),
+		})
+		if err == nil {
+			return cancelPF, fmt.Sprintf("http://127.0.0.1:%d", localAPI), fmt.Sprintf("tcp://127.0.0.1:%d", localSync), nil
+		}
+		lastErr = err
+	}
+	return nil, "", "", lastErr
 }
 
 type syncthingConfigXML struct {

@@ -27,7 +27,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			k := newKubeClient(opts)
-			sn, err := resolveSessionName(opts, cfg)
+			sn, err := resolveSessionNameForUpDown(opts, cfg, ns)
 			if err != nil {
 				return err
 			}
