@@ -70,6 +70,9 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					return err
 				}
 			}
+			if err := waitForSSHDReady(opts, cfg, ns, podName(sn), 20*time.Second); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: sshd not ready yet: %v\n", err)
+			}
 
 			cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(newKubeClient(opts), ns, podName(sn), localPort, remotePort)
 			if err != nil {
@@ -256,6 +259,30 @@ func ensureSSHKeyOnPod(opts *Options, cfg *config.DevEnvironment, namespace, pod
 		time.Sleep(time.Duration(i+1) * 500 * time.Millisecond)
 	}
 	return fmt.Errorf("install ssh key in pod: %w", lastErr)
+}
+
+func waitForSSHDReady(opts *Options, cfg *config.DevEnvironment, namespace, pod string, timeout time.Duration) error {
+	k := newKubeClient(opts)
+	container := sshTargetContainer(cfg)
+	if container == "" {
+		return nil
+	}
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err := k.ExecShInContainer(ctx, namespace, pod, container, "ps | grep '[s]shd' >/dev/null 2>&1")
+		cancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		time.Sleep(300 * time.Millisecond)
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("timeout waiting for sshd")
+	}
+	return fmt.Errorf("wait for sshd ready: %w", lastErr)
 }
 
 func defaultSSHKeyPath(cfg *config.DevEnvironment) (string, error) {

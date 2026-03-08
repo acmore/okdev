@@ -120,6 +120,9 @@ func newUpCmd(opts *Options) *cobra.Command {
 					if err := ensureSSHKeyOnPod(opts, cfg, ns, pod, keyPath); err != nil {
 						fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to setup SSH key in pod: %v\n", err)
 					}
+					if err := waitForSSHDReady(opts, cfg, ns, pod, 20*time.Second); err != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "warning: sshd not ready yet: %v\n", err)
+					}
 					alias := sshHostAlias(sn)
 					if cfgErr := ensureSSHConfigEntry(alias, sn, ns, cfg.Spec.SSH.User, cfg.Spec.SSH.RemotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
 						fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
