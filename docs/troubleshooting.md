@@ -1,32 +1,39 @@
 # Troubleshooting
 
-## Pod stuck Pending
+## Pod Stuck In `Pending`
 
-- Run `okdev up`; if readiness fails, inspect embedded pod diagnostics in the error.
-- Common causes: GPU resource unavailable, node selectors too strict, quota limits.
+- Run `okdev up` and inspect the readiness diagnostics emitted by the CLI.
+- Typical causes: unschedulable GPU requests, restrictive node selectors/affinity, resource quota limits.
 
-## Permission denied from Kubernetes
+## Kubernetes Permission Errors
 
 - Validate current kube context: `kubectl config current-context`
-- Check namespace RBAC for Pod/PVC operations.
+- Confirm namespace RBAC allows Pod/PVC create/update/delete and Pod exec/port-forward.
 
-## Sync failures
+## Sync Failures
 
-- Ensure `tar` is available locally and inside container image.
-- Verify mount path exists and is writable in the container.
-- Start with one-way sync (`--mode up` or `--mode down`) to isolate direction issues.
-- `okdev` auto-installs local Syncthing; ensure the syncthing sidecar is enabled in pod spec (`sync.engine=syncthing`).
-- Current syncthing mode supports one `local:remote` mapping.
-- If pod events show `ErrImagePull` with GHCR `403 Forbidden`, the image package is not publicly pullable. Set `spec.sync.syncthing.image` to a public image, or make the GHCR package public.
+- Validate workspace path exists and is writable in the container.
+- Isolate directionality with one-way runs:
+  - `okdev sync --mode up`
+  - `okdev sync --mode down`
+- `sync.engine=syncthing` requires:
+  - local Syncthing bootstrap (handled by `okdev`)
+  - sidecar image pull success
+- Current Syncthing implementation supports a single `local:remote` mapping.
+- If you see `ErrImagePull` / GHCR `403`, use a publicly pullable `spec.sidecar.image` or adjust registry permissions.
 
-## Port-forward disconnects
+## Port Forward Disconnects
 
-- Re-run `okdev ports`; transient network drops can interrupt tunnels.
-- Confirm container process is listening on target remote port.
+- Re-run `okdev ports` (or `okdev up`) to re-establish forwarding.
+- Confirm target process is listening on the configured remote port inside the dev container/session.
 
-## SSH connect issues
+## SSH Connection Errors
 
-- Ensure the merged `okdev-sidecar` container is running (`sshd` listens on port 22).
-- Use `okdev ssh --setup-key` once to install your public key in the pod.
-- If port `2222` is busy locally, pass `okdev ssh --local-port <port>`.
-- Check managed SSH alias in `~/.ssh/config` (`Host okdev-<session>`).
+- Ensure `okdev-sidecar` is healthy and listening on `22`.
+- Run `okdev ssh --setup-key` at least once per key pair.
+- If local bind conflicts occur, use `okdev ssh --local-port <port>`.
+- Verify managed entry exists in `~/.ssh/config`:
+  - `Host okdev-<session>`
+- For unstable links, increase:
+  - `spec.ssh.keepAliveIntervalSeconds`
+  - `spec.ssh.keepAliveTimeoutSeconds`

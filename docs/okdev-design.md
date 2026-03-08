@@ -2,20 +2,21 @@
 
 ## 1. Overview
 
-`okdev` is a lightweight, Kubernetes-native development environment tool for AI/LLM infra engineers.
+`okdev` is a Kubernetes-native CLI for development session orchestration, designed for AI/LLM infrastructure workflows.
 
 It intentionally avoids:
-- Okteto-style platform coupling and heavy cloud assumptions
-- DevPod-style UI dependency and single-machine-bound workflows
+- platform-coupled hosted control planes
+- UI-dependent workflows
+- machine-local session state as source of truth
 
-It centers on one idea:
-- **A Kubernetes PodSpec (with minimal okdev metadata) defines the full dev environment**
+Core model:
+- **A PodSpec plus minimal `okdev` metadata defines the development environment.**
 
 Design goals:
-- Simple CLI + Kubernetes API integration
-- Shareable dev sessions across machines and teammates
-- Works with existing clusters, namespaces, RBAC, and admission policies
-- Reproducible LLM infra dev stacks (GPU, model caches, large datasets, sidecars)
+- deterministic CLI behavior over Kubernetes APIs
+- cross-machine session reattachment
+- compatibility with existing namespace/RBAC/admission policy constraints
+- reproducible AI infra stacks (GPU, cache volumes, large data paths, sidecars)
 
 ---
 
@@ -57,22 +58,22 @@ Needs:
 ## 4. Product Principles
 
 1. **PodSpec-first**: no custom DSL required for core environment definition.
-2. **Stateless client**: source of truth lives in Git + cluster objects, not local hidden state.
+2. **Stateless control path**: source of truth is Git + cluster objects, not a proprietary control plane.
 3. **Kubernetes-native identity**: contexts, kubeconfig, namespaces, service accounts.
 4. **Explicit over implicit**: predictable commands and clear object ownership.
-5. **Low cognitive load**: a small command set that covers 80% of daily dev.
+5. **Operational simplicity**: small command surface with clear failure modes.
 
 ---
 
 ## 5. UX Summary
 
-Core flow:
+Execution flow:
 1. Developer adds `.okdev.yaml` to repo, embedding or referencing PodSpec.
 2. `okdev up` creates/resumes a dev session in a namespace.
-3. `okdev connect` opens terminal/SSH and optionally starts port forwards.
+3. `okdev up` configures SSH aliasing, managed forwards, and sync bootstrap.
 4. `okdev sync` mirrors local repo <-> pod workspace.
-5. Developer can leave and later reconnect from another machine via `okdev up`.
-6. `okdev down` stops session (or deletes, based on policy).
+5. Developer reconnects later from any machine with kube access via `okdev up` / `okdev ssh`.
+6. `okdev down` tears down runtime resources; PVC cleanup is explicit.
 
 ---
 
@@ -192,8 +193,8 @@ Notes:
 
 Avoiding a custom operator keeps setup simple and portable:
 - lower operational overhead
-- easier to adopt in locked-down enterprise clusters
-- fewer cluster-wide permissions
+- easier adoption in restricted enterprise clusters
+- avoids cluster-wide CRD/controller requirements
 
 A controller/operator can be added later for advanced fleet features.
 

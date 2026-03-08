@@ -12,22 +12,22 @@ Tag format:
 
 - `vX.Y.Z` (example: `v0.2.1`)
 
-## Release process
+## Release Workflow
 
 1. Merge to `main`.
-2. Create and push a tag:
+2. Create and push a release tag:
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-3. GitHub Actions `Release` workflow builds archives for:
+3. GitHub Actions `Release` workflow builds binaries for:
    - `linux/amd64`
    - `linux/arm64`
    - `darwin/amd64`
    - `darwin/arm64`
-4. Workflow publishes:
+4. Workflow publishes assets:
    - `okdev_<os>_<arch>.tar.gz`
    - `checksums.txt`
 
@@ -40,9 +40,9 @@ Sidecar image tags are aligned with the `okdev` release tag:
 - dev/main pushes publish:
   - `ghcr.io/acmore/okdev:edge`
 
-`okdev` resolves default sidecar images from its own binary version, with `edge` fallback for dev builds.
+Default sidecar image resolution uses the running `okdev` binary version, with `edge` fallback for dev builds.
 
-## Install from release
+## Install From Release
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/acmore/okdev/main/scripts/install.sh | sh

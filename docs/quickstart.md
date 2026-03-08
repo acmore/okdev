@@ -4,47 +4,53 @@
 
 - Go 1.21+
 - `kubectl` configured to a cluster
-- Namespace with permissions to create Pod/PVC
+- Namespace permissions for Pod/PVC create/update/delete
 
-## Build
+## Build From Source
 
 ```bash
 go build -o bin/okdev ./cmd/okdev
 ```
 
-## Install prebuilt binary
+## Install Prebuilt Binary
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/acmore/okdev/main/scripts/install.sh | sh
 okdev version
 ```
 
-## Initialize config
+## Initialize Configuration
 
 ```bash
 ./bin/okdev init
-# or GPU/LLM-oriented template
+# Optional: GPU/LLM-focused scaffold
 ./bin/okdev init --template gpu
 ```
 
-Config discovery order:
+Configuration discovery order:
 1. `-c, --config <path>`
 2. `.okdev.yaml`
 3. `okdev.yaml`
 
-## Start a session
+## Start or Resume Session
 
 ```bash
 ./bin/okdev up
 ```
 
-For a named session:
+Use an explicit session name when running multiple environments for the same repo:
 
 ```bash
 ./bin/okdev up --session serving-main-alice
 ```
 
-## Connect, sync, ports
+`okdev up` performs one-step setup:
+- ensures Pod/PVC state
+- writes managed `~/.ssh/config` host entry (`okdev-<session>`)
+- starts managed SSH/forwarding bootstrap
+- starts background Syncthing sync when enabled
+
+## Access and Data Movement
 
 ```bash
 ./bin/okdev connect
@@ -52,24 +58,24 @@ For a named session:
 ./bin/okdev sync --mode up
 ./bin/okdev ports
 
-# one-step setup flow (sync + app ports + ssh tunnel), then exit
-./bin/okdev up
-
-# continuous sync (syncthing)
+# Foreground continuous sync (Syncthing engine)
 ./bin/okdev sync
 
-# detached syncthing mode
+# Detached sync process
 ./bin/okdev sync --background
 ```
 
-`okdev` auto-installs local Syncthing and auto-injects a pod sidecar when `sync.engine=syncthing`.
-Default sidecar image tag follows the running `okdev` binary version (`ghcr.io/<repo-owner>/okdev:<okdev-version>`). For dev builds, fallback is `ghcr.io/<repo-owner>/okdev:edge`. Update `spec.sidecar.image` only if you publish to a different registry/repository.
-Use `spec.sync.exclude` for local ignore patterns and `spec.sync.remoteExclude` for remote-only ignore patterns.
-SSH always uses the merged `okdev-sidecar` container on remote port `22`; no `spec.ssh.mode` switch is required.
-`okdev ssh` and `okdev up` manage `~/.ssh/config` entries as `okdev-<session>`.
-Configured `spec.ports` are written as SSH `LocalForward` rules and auto-start with `okdev up`.
+Notes:
+- Local Syncthing is auto-installed when `sync.engine=syncthing`.
+- Default sidecar image follows binary version: `ghcr.io/<owner>/okdev:<okdev-version>` (`edge` for dev builds).
+- `spec.sync.exclude` applies local ignore patterns; `spec.sync.remoteExclude` applies remote-only ignores.
+- SSH target is always the merged `okdev-sidecar` container (`sshd` on `22`).
+- `spec.ports` are rendered as SSH `LocalForward` entries.
+- SSH keepalive can be tuned with:
+  - `spec.ssh.keepAliveIntervalSeconds` (default `10`)
+  - `spec.ssh.keepAliveTimeoutSeconds` (default `15`, must be `>= interval`)
 
-Preview-only mode (no cluster changes):
+## Preview Mode (No Cluster Mutations)
 
 ```bash
 ./bin/okdev up --dry-run
@@ -77,7 +83,7 @@ Preview-only mode (no cluster changes):
 ./bin/okdev down --dry-run
 ```
 
-## Multi-session
+## Multi-session Operations
 
 ```bash
 ./bin/okdev list
@@ -87,7 +93,7 @@ Preview-only mode (no cluster changes):
 ./bin/okdev list --all-users
 ```
 
-## Stop and cleanup
+## Teardown and Cleanup
 
 ```bash
 ./bin/okdev down

@@ -2,9 +2,12 @@ package ssh
 
 import (
 	"context"
+	"errors"
 	"net"
 	"reflect"
 	"testing"
+
+	xssh "golang.org/x/crypto/ssh"
 )
 
 func TestTunnelManagerConnectFailsWithBadKeyPath(t *testing.T) {
@@ -22,6 +25,29 @@ func TestTunnelManagerAddForwardRequiresConnection(t *testing.T) {
 	tm := &TunnelManager{}
 	if err := tm.AddForward(18080, 8080); err == nil {
 		t.Fatal("expected add forward to fail when disconnected")
+	}
+}
+
+func TestTunnelManagerAddForwardReportsLocalPortInUse(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen failed: %v", err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tm := &TunnelManager{
+		listeners: map[int]net.Listener{},
+		ctx:       ctx,
+		client:    &xssh.Client{},
+	}
+	err = tm.AddForward(port, 8080)
+	if err == nil {
+		t.Fatal("expected add forward to fail on occupied local port")
+	}
+	if !errors.Is(err, ErrLocalPortInUse) {
+		t.Fatalf("expected ErrLocalPortInUse, got %v", err)
 	}
 }
 

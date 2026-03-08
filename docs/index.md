@@ -1,20 +1,21 @@
 # okdev
 
-Lightweight Kubernetes-native dev environments for AI infra engineering.
+`okdev` is a CRD-less CLI for Kubernetes development sessions.
+It provisions and operates dev environments from `.okdev.yaml` using standard Pod/PVC resources.
 
-## What You Get
+## Core Capabilities
 
-- PodSpec-first config via `.okdev.yaml`
-- Multi-session support per repo/branch/user
-- Shell/SSH access, sync, and port forwarding
-- Cross-machine reattach with cluster-native session identity
-- Syncthing-based sync engine
+- PodSpec-driven environment definition
+- Multi-session workflow per repo/branch/user
+- Session setup via `okdev up` (SSH config, managed forwards, sync bootstrap)
+- Syncthing-based workspace synchronization
+- Reattach from any machine with kube access
 
-## Read the Docs
+## Documentation
 
 - [Quickstart](quickstart.md)
 - [Command Reference](command-reference.md)
+- [Troubleshooting](troubleshooting.md)
 - [Design](okdev-design.md)
 - [Implementation Plan](okdev-implementation-plan.md)
 - [Release & Versioning](release.md)
-- [Troubleshooting](troubleshooting.md)

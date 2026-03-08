@@ -36,6 +36,8 @@ spec:
   ssh:
     user: root
     remotePort: 22
+    keepAliveIntervalSeconds: 10
+    keepAliveTimeoutSeconds: 15
   sidecar:
     image: %s
 `, DefaultWorkspacePVCSize, DefaultSyncthingVersion, DefaultSidecarImage)
@@ -80,6 +82,8 @@ spec:
   ssh:
     user: root
     remotePort: 22
+    keepAliveIntervalSeconds: 10
+    keepAliveTimeoutSeconds: 15
   sidecar:
     image: %s
   podTemplate:
@@ -149,6 +153,8 @@ spec:
   ssh:
     user: root
     remotePort: 22
+    keepAliveIntervalSeconds: 10
+    keepAliveTimeoutSeconds: 15
   sidecar:
     image: %s
   podTemplate:
