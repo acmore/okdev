@@ -80,6 +80,11 @@ fi
 # Interactive login shell in dev container.
 # Wrap in tmux if enabled (OKDEV_TMUX=1) and not opted out (OKDEV_NO_TMUX!=1).
 if [ "${OKDEV_TMUX_FLAG:-}" = "1" ] && [ "${OKDEV_NO_TMUX:-}" != "1" ] && command -v tmux >/dev/null 2>&1; then
+  # Some modern terminals (for example Ghostty) may not exist in the sidecar
+  # terminfo database. Use a widely available fallback for tmux startup.
+  if [ "${TERM:-}" = "xterm-ghostty" ]; then
+    export TERM="xterm-256color"
+  fi
   if nsenter --target "$DEV_PID" --mount -- test -x /bin/bash 2>/dev/null; then
     exec tmux new-session -A -s okdev "nsenter --target $DEV_PID --mount --uts --ipc --pid -- /bin/bash -l"
   else

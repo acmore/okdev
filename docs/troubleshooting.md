@@ -41,6 +41,7 @@
 - For unstable links, increase:
   - `spec.ssh.keepAliveIntervalSeconds`
   - `spec.ssh.keepAliveTimeoutSeconds`
+- If tmux login fails with `missing or unsuitable terminal` (for example `xterm-ghostty`), upgrade to a sidecar image that includes terminal fallback handling, then recreate the pod with `okdev down && okdev up`.
 
 ## Local State Files
 
