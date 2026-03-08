@@ -165,6 +165,33 @@ func TestValidateAcceptsValidConfig(t *testing.T) {
 	}
 }
 
+func TestLifecycleSpecParsed(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Lifecycle.PostCreate = "make setup"
+	cfg.Spec.Lifecycle.PreStop = "make clean"
+	cfg.SetDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+	if cfg.Spec.Lifecycle.PostCreate != "make setup" {
+		t.Fatalf("expected postCreate 'make setup', got %q", cfg.Spec.Lifecycle.PostCreate)
+	}
+	if cfg.Spec.Lifecycle.PreStop != "make clean" {
+		t.Fatalf("expected preStop 'make clean', got %q", cfg.Spec.Lifecycle.PreStop)
+	}
+}
+
+func TestLifecycleSpecEmpty(t *testing.T) {
+	cfg := validConfig()
+	cfg.SetDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+	if cfg.Spec.Lifecycle.PostCreate != "" || cfg.Spec.Lifecycle.PreStop != "" {
+		t.Fatal("expected empty lifecycle spec by default")
+	}
+}
+
 func TestDefaultSidecarImageForBinaryVersion(t *testing.T) {
 	if got := DefaultSidecarImageForBinaryVersion("v0.2.1"); got != "ghcr.io/acmore/okdev:v0.2.1" {
 		t.Fatalf("unexpected image for release version: %s", got)

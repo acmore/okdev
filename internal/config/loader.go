@@ -11,6 +11,7 @@ import (
 
 const (
 	DefaultFile = ".okdev.yaml"
+	FolderFile  = ".okdev/okdev.yaml"
 	LegacyFile  = "okdev.yaml"
 )
 
@@ -55,7 +56,7 @@ func ResolvePath(configPath string) (string, error) {
 	}
 
 	gitRoot, _ := findGitRoot(wd)
-	p, err := discoverInParents(wd, gitRoot, DefaultFile, LegacyFile)
+	p, err := discoverInParents(wd, gitRoot, FolderFile, DefaultFile, LegacyFile)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("no config found; create %s or pass -c/--config", DefaultFile)

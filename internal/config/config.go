@@ -37,6 +37,7 @@ type DevEnvSpec struct {
 	Sync        SyncSpec       `yaml:"sync"`
 	Ports       []PortMapping  `yaml:"ports"`
 	SSH         SSHSpec        `yaml:"ssh"`
+	Lifecycle   LifecycleSpec  `yaml:"lifecycle"`
 	Sidecar     SidecarSpec    `yaml:"sidecar"`
 	PodTemplate PodTemplateRef `yaml:"podTemplate"`
 }
@@ -90,6 +91,11 @@ type PortMapping struct {
 	Name   string `yaml:"name"`
 	Local  int    `yaml:"local"`
 	Remote int    `yaml:"remote"`
+}
+
+type LifecycleSpec struct {
+	PostCreate string `yaml:"postCreate"`
+	PreStop    string `yaml:"preStop"`
 }
 
 type SSHSpec struct {

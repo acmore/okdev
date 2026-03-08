@@ -43,6 +43,49 @@ func assertSameFile(t *testing.T, want, got string) {
 	}
 }
 
+func TestResolvePathPrefersFolderConfig(t *testing.T) {
+	tmp := t.TempDir()
+	okdevDir := filepath.Join(tmp, ".okdev")
+	if err := os.MkdirAll(okdevDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	folderCfg := filepath.Join(okdevDir, "okdev.yaml")
+	rootCfg := filepath.Join(tmp, DefaultFile)
+
+	writeFile(t, folderCfg, validConfigYAML("folder"))
+	writeFile(t, rootCfg, validConfigYAML("root"))
+
+	oldwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := ResolvePath("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSameFile(t, folderCfg, p)
+}
+
+func TestResolvePathFallsBackToRootConfig(t *testing.T) {
+	tmp := t.TempDir()
+	rootCfg := filepath.Join(tmp, DefaultFile)
+	writeFile(t, rootCfg, validConfigYAML("root"))
+
+	oldwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := ResolvePath("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSameFile(t, rootCfg, p)
+}
+
 func TestResolvePathFindsParent(t *testing.T) {
 	tmp := t.TempDir()
 	child := filepath.Join(tmp, "a", "b")
