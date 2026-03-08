@@ -30,5 +30,9 @@
   - Maintains managed host alias in `~/.ssh/config` as `okdev-<session>`.
   - `--no-tmux`: bypass tmux for this SSH session when tmux mode is enabled.
 - `okdev ports`
+  - Advanced/recovery command. Rebuilds managed SSH `LocalForward` state from `spec.ports` after disconnects or local port changes.
+  - No-op when managed forwards are already healthy and config is unchanged.
 - `okdev sync [--mode up|down|bi] [--background] [--dry-run]`
+  - Advanced command. Use for foreground sync debugging, or explicit one-way sync (`up`/`down`).
+  - For default `--mode bi`, no-op when background sync is already active for the session.
 - `okdev prune [--ttl-hours 72] [--all-namespaces] [--all-users] [--include-pvc] [--dry-run]`

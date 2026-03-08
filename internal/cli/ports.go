@@ -2,25 +2,27 @@ package cli
 
 import (
 	"fmt"
-	"log/slog"
-	"os"
-	"strconv"
+	"strings"
 	"time"
 
-	portsrunner "github.com/acmore/okdev/internal/ports"
+	"github.com/acmore/okdev/internal/config"
 	"github.com/spf13/cobra"
 )
 
 func newPortsCmd(opts *Options) *cobra.Command {
 	return &cobra.Command{
 		Use:   "ports",
-		Short: "Start port-forwarding for configured ports",
+		Short: "Reconcile managed SSH port forwards for configured ports",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, ns, err := loadConfigAndNamespace(opts)
 			if err != nil {
 				return err
 			}
-			sn, err := resolveSessionName(opts, cfg)
+			cfgPath, err := config.ResolvePath(opts.ConfigPath)
+			if err != nil {
+				return err
+			}
+			sn, err := resolveSessionNameForUpDown(opts, cfg, ns)
 			if err != nil {
 				return err
 			}
@@ -33,23 +35,52 @@ func newPortsCmd(opts *Options) *cobra.Command {
 			if len(cfg.Spec.Ports) == 0 {
 				return fmt.Errorf("no ports configured in config")
 			}
-
-			forwards := make([]string, 0, len(cfg.Spec.Ports))
+			validForwards := make([]string, 0, len(cfg.Spec.Ports))
 			for _, p := range cfg.Spec.Ports {
 				if p.Local <= 0 || p.Remote <= 0 {
 					continue
 				}
-				forwards = append(forwards, strconv.Itoa(p.Local)+":"+strconv.Itoa(p.Remote))
+				validForwards = append(validForwards, fmt.Sprintf("%d:%d", p.Local, p.Remote))
 			}
-			if len(forwards) == 0 {
+			if len(validForwards) == 0 {
 				return fmt.Errorf("no valid ports configured")
 			}
 
-			ctx, cancel := interactiveContext()
-			defer cancel()
-			fmt.Fprintf(cmd.OutOrStdout(), "Forwarding %v from session %s\n", forwards, sn)
-			slog.Debug("ports start", "namespace", ns, "session", sn, "forwards", forwards)
-			return portsrunner.ForwardWithRetry(ctx, k, ns, podName(sn), forwards, os.Stdout, cmd.ErrOrStderr(), 30*time.Second)
+			keyPath, err := defaultSSHKeyPath(cfg)
+			if err != nil {
+				return fmt.Errorf("resolve SSH key path: %w", err)
+			}
+			if err := ensureSSHKeyOnPod(opts, cfg, ns, podName(sn), keyPath); err != nil {
+				return fmt.Errorf("setup SSH key in pod: %w", err)
+			}
+			if err := waitForSSHDReady(opts, cfg, ns, podName(sn), 20*time.Second); err != nil {
+				return fmt.Errorf("wait for sshd ready: %w", err)
+			}
+			alias := sshHostAlias(sn)
+			changed, err := ensureSSHConfigEntry(alias, sn, ns, cfg.Spec.SSH.User, cfg.Spec.SSH.RemotePort, keyPath, cfgPath, cfg.Spec.Ports)
+			if err != nil {
+				return fmt.Errorf("update ~/.ssh/config for managed forwards: %w", err)
+			}
+			running, runErr := isManagedSSHForwardRunning(alias)
+			if runErr != nil {
+				return fmt.Errorf("check managed SSH forward state: %w", runErr)
+			}
+			if running && !changed {
+				fmt.Fprintf(cmd.OutOrStdout(), "Managed forwards already active for %s: %s\n", alias, strings.Join(validForwards, ", "))
+				return nil
+			}
+			if running {
+				_ = stopManagedSSHForward(alias)
+			}
+			if err := startManagedSSHForward(alias); err != nil {
+				return fmt.Errorf("start managed SSH forwards: %w", err)
+			}
+			if changed {
+				fmt.Fprintf(cmd.OutOrStdout(), "Managed forwards updated for %s: %s\n", alias, strings.Join(validForwards, ", "))
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "Managed forwards started for %s: %s\n", alias, strings.Join(validForwards, ", "))
+			}
+			return nil
 		},
 	}
 }

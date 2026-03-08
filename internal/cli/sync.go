@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/acmore/okdev/internal/config"
 	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
 )
@@ -27,7 +28,11 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sn, err := resolveSessionName(opts, cfg)
+			cfgPath, err := config.ResolvePath(opts.ConfigPath)
+			if err != nil {
+				return err
+			}
+			sn, err := resolveSessionNameForUpDown(opts, cfg, ns)
 			if err != nil {
 				return err
 			}
@@ -57,8 +62,17 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), false, true)
 			defer stopMaintenance()
 
+			if !background && mode == "bi" && os.Getenv("OKDEV_SYNCTHING_BACKGROUND_CHILD") != "1" {
+				if pidPath, err := syncthingPIDPath(sn); err == nil {
+					if pid, ok := readSyncthingPID(pidPath); ok && processAlive(pid) && processLooksLikeSyncthingSync(pid) {
+						fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync already active in background for session %s\n", sn)
+						return nil
+					}
+				}
+			}
+
 			if background && os.Getenv("OKDEV_SYNCTHING_BACKGROUND_CHILD") != "1" {
-				logPath, started, err := startDetachedSyncthingSync(opts, mode, sn)
+				logPath, started, err := startDetachedSyncthingSync(opts, mode, sn, ns, cfgPath)
 				if err != nil {
 					return err
 				}
@@ -80,7 +94,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 	return cmd
 }
 
-func startDetachedSyncthingSync(opts *Options, mode, sessionName string) (string, bool, error) {
+func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfgPath string) (string, bool, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", false, err
@@ -110,14 +124,14 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName string) (string
 	}
 
 	args := make([]string, 0, 16)
-	if opts.ConfigPath != "" {
-		args = append(args, "--config", opts.ConfigPath)
+	if cfgPath != "" {
+		args = append(args, "--config", cfgPath)
 	}
-	if opts.Session != "" {
-		args = append(args, "--session", opts.Session)
+	if sessionName != "" {
+		args = append(args, "--session", sessionName)
 	}
-	if opts.Namespace != "" {
-		args = append(args, "--namespace", opts.Namespace)
+	if namespace != "" {
+		args = append(args, "--namespace", namespace)
 	}
 	if opts.Context != "" {
 		args = append(args, "--context", opts.Context)

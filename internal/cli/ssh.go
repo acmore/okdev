@@ -90,7 +90,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 
 			sshHost := sshHostAlias(sn)
 			cfgPath, _ := config.ResolvePath(opts.ConfigPath)
-			if cfgErr := ensureSSHConfigEntry(sshHost, sn, ns, user, remotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
+			if _, cfgErr := ensureSSHConfigEntry(sshHost, sn, ns, user, remotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
 			}
 
@@ -313,14 +313,14 @@ func sshHostAlias(sessionName string) string {
 	return "okdev-" + sessionName
 }
 
-func ensureSSHConfigEntry(hostAlias, sessionName, namespace, user string, remotePort int, keyPath, okdevConfigPath string, forwards []config.PortMapping) error {
+func ensureSSHConfigEntry(hostAlias, sessionName, namespace, user string, remotePort int, keyPath, okdevConfigPath string, forwards []config.PortMapping) (bool, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return err
+		return false, err
 	}
 	sshDir := filepath.Join(home, ".ssh")
 	if err := os.MkdirAll(sshDir, 0o700); err != nil {
-		return err
+		return false, err
 	}
 	sshConfigPath := filepath.Join(sshDir, "config")
 	begin := "# BEGIN OKDEV " + hostAlias
@@ -355,10 +355,41 @@ func ensureSSHConfigEntry(hostAlias, sessionName, namespace, user string, remote
 		end,
 	)
 	block := strings.Join(blockLines, "\n") + "\n"
-	return updateSSHConfigWithLock(sshConfigPath, func(existing string) string {
-		updated := stripManagedSSHBlock(existing, begin, end) + "\n" + block
-		return strings.TrimSpace(updated) + "\n"
-	})
+	lockPath := sshConfigPath + ".okdev.lock"
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return false, err
+	}
+	defer lockFile.Close()
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		return false, err
+	}
+	defer func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	}()
+
+	existingBytes, _ := os.ReadFile(sshConfigPath)
+	existing := string(existingBytes)
+	updated := strings.TrimSpace(stripManagedSSHBlock(existing, begin, end)+"\n"+block) + "\n"
+	if updated == existing {
+		return false, nil
+	}
+	if err := os.WriteFile(sshConfigPath, []byte(updated), 0o600); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func isManagedSSHForwardRunning(hostAlias string) (bool, error) {
+	socketPath, err := sshControlSocketPath(hostAlias)
+	if err != nil {
+		return false, err
+	}
+	check := exec.Command("ssh", "-S", socketPath, "-O", "check", hostAlias)
+	if err := check.Run(); err == nil {
+		return true, nil
+	}
+	return false, nil
 }
 
 func stripManagedSSHBlock(content, begin, end string) string {

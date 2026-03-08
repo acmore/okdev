@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
@@ -23,6 +24,19 @@ func newUpCmd(opts *Options) *cobra.Command {
 		Use:   "up",
 		Short: "Create or resume a dev session",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ui := newUpUI(cmd.OutOrStdout(), cmd.ErrOrStderr())
+			// Keep legacy config-path announce quiet for this command; we render it in staged output.
+			prevQuiet, hadQuiet := os.LookupEnv("OKDEV_QUIET_CONFIG_ANNOUNCE")
+			_ = os.Setenv("OKDEV_QUIET_CONFIG_ANNOUNCE", "1")
+			defer func() {
+				if hadQuiet {
+					_ = os.Setenv("OKDEV_QUIET_CONFIG_ANNOUNCE", prevQuiet)
+				} else {
+					_ = os.Unsetenv("OKDEV_QUIET_CONFIG_ANNOUNCE")
+				}
+			}()
+
+			ui.section("Validate")
 			cfg, ns, err := loadConfigAndNamespace(opts)
 			if err != nil {
 				return err
@@ -31,16 +45,20 @@ func newUpCmd(opts *Options) *cobra.Command {
 			if pathErr != nil {
 				return pathErr
 			}
+			ui.stepDone("config", cfgPath)
 			k := newKubeClient(opts)
 			sn, err := resolveSessionNameForUpDown(opts, cfg, ns)
 			if err != nil {
 				return err
 			}
+			ui.stepDone("session", sn)
+			ui.stepDone("namespace", ns)
 			labels := labelsForSession(opts, cfg, sn)
 			annotations := annotationsForSession(cfg)
 			pvc := pvcName(cfg, sn)
 			pod := podName(sn)
 			if dryRun {
+				ui.section("Dry Run")
 				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: session=%s namespace=%s\n", sn, ns)
 				if cfg.Spec.Workspace.PVC.ClaimName == "" {
 					fmt.Fprintf(cmd.OutOrStdout(), "- would apply pvc/%s\n", pvc)
@@ -53,16 +71,20 @@ func newUpCmd(opts *Options) *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "- would start background sync (when sync.engine=syncthing)")
 				return nil
 			}
+
+			ui.section("Reconcile")
 			if err := ensureSessionOwnership(opts, k, ns, sn, true); err != nil {
 				return err
 			}
-			if warnErr := warnIfConfigNewerThanSession(opts, k, ns, sn, pod, cmd.ErrOrStderr()); warnErr != nil {
+			ui.stepDone("ownership", "ok")
+			if warnErr := warnIfConfigNewerThanSession(opts, k, ns, sn, pod, ui.warnWriter()); warnErr != nil {
 				slog.Debug("skip config drift warning", "error", warnErr)
 			}
 			ctx, cancel := defaultContext()
 			defer cancel()
 
 			if cfg.Spec.Workspace.PVC.ClaimName == "" {
+				ui.stepRun("pvc", pvc)
 				pvcManifest, err := kube.BuildPVCManifest(ns, pvc, cfg.Spec.Workspace.PVC.Size, cfg.Spec.Workspace.PVC.StorageClassName, labels, annotations)
 				if err != nil {
 					return err
@@ -70,6 +92,9 @@ func newUpCmd(opts *Options) *cobra.Command {
 				if err := k.Apply(ctx, ns, pvcManifest); err != nil {
 					return err
 				}
+				ui.stepDone("pvc", "applied")
+			} else {
+				ui.stepDone("pvc", "using "+cfg.Spec.Workspace.PVC.ClaimName)
 			}
 
 			enableTmux := tmux || cfg.Spec.SSH.PersistentSessionEnabled()
@@ -90,11 +115,18 @@ func newUpCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			ui.stepRun("pod", pod)
 			if err := k.Apply(ctx, ns, podManifest); err != nil {
 				return err
 			}
+			ui.stepDone("pod", "applied")
+			ui.section("Wait")
 			progressPrinter := func(p kube.PodReadinessProgress) {
-				fmt.Fprintf(cmd.OutOrStdout(), "Waiting for pod/%s: phase=%s ready=%d/%d reason=%s\n", pod, p.Phase, p.ReadyContainers, p.TotalContainers, p.Reason)
+				reason := strings.TrimSpace(p.Reason)
+				if reason == "" {
+					reason = "-"
+				}
+				ui.stepRun("pod readiness", fmt.Sprintf("%s %d/%d (%s)", p.Phase, p.ReadyContainers, p.TotalContainers, reason))
 			}
 			if err := k.WaitReadyWithProgress(ctx, ns, pod, waitTimeout, progressPrinter); err != nil {
 				hints := fmt.Sprintf("next steps:\n- run `okdev status --session %s`\n- run `kubectl -n %s describe pod %s`", sn, ns, pod)
@@ -106,65 +138,78 @@ func newUpCmd(opts *Options) *cobra.Command {
 				fmt.Fprintln(cmd.ErrOrStderr(), hints)
 				return fmt.Errorf("wait for pod/%s readiness failed: %w", pod, err)
 			}
+			ui.stepDone("pod readiness", "ready")
 
 			if err := session.SaveActiveSession(sn); err != nil {
 				return err
 			}
+			ui.stepDone("active session", sn)
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Session ready: %s (namespace: %s)\n", sn, ns)
+			ui.section("Setup")
+			sshSummary := "disabled"
 			if cfg.Spec.SSH.RemotePort > 0 {
 				keyPath, keyErr := defaultSSHKeyPath(cfg)
 				if keyErr != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to resolve SSH key path: %v\n", keyErr)
+					ui.warnf("failed to resolve SSH key path: %v", keyErr)
+					sshSummary = "degraded (key path error)"
 				} else {
 					if err := ensureSSHKeyOnPod(opts, cfg, ns, pod, keyPath); err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to setup SSH key in pod: %v\n", err)
+						ui.warnf("failed to setup SSH key in pod: %v", err)
+						sshSummary = "degraded (key setup failed)"
 					}
 					if err := waitForSSHDReady(opts, cfg, ns, pod, 20*time.Second); err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "warning: sshd not ready yet: %v\n", err)
+						ui.warnf("sshd not ready yet: %v", err)
+						sshSummary = "degraded (sshd not ready)"
 					}
 					alias := sshHostAlias(sn)
-					if cfgErr := ensureSSHConfigEntry(alias, sn, ns, cfg.Spec.SSH.User, cfg.Spec.SSH.RemotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
+					if _, cfgErr := ensureSSHConfigEntry(alias, sn, ns, cfg.Spec.SSH.User, cfg.Spec.SSH.RemotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
+						ui.warnf("failed to update ~/.ssh/config: %v", cfgErr)
+						sshSummary = "degraded (ssh config update failed)"
 					} else {
 						// Force-refresh managed master so forward rules are always current after `okdev up`.
 						_ = stopManagedSSHForward(alias)
 						if err := startManagedSSHForward(alias); err != nil {
-							fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to start managed SSH/port-forwards: %v\n", err)
+							ui.warnf("failed to start managed SSH/port-forwards: %v", err)
+							sshSummary = "degraded (managed forward failed)"
 						} else {
-							if len(cfg.Spec.Ports) > 0 {
-								fmt.Fprintf(cmd.OutOrStdout(), "SSH ready: ssh %s (managed forwards active)\n", alias)
-							} else {
-								fmt.Fprintf(cmd.OutOrStdout(), "SSH ready: ssh %s\n", alias)
-							}
+							sshSummary = "ssh " + alias
+							ui.stepDone("ssh", sshSummary)
 						}
 					}
 				}
 			}
 
+			syncSummary := "disabled"
 			if cfg.Spec.Sync.Engine == "" || cfg.Spec.Sync.Engine == "syncthing" {
-				logPath, started, err := startDetachedSyncthingSync(opts, "bi", sn)
+				logPath, started, err := startDetachedSyncthingSync(opts, "bi", sn, ns, cfgPath)
 				if err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to start syncthing background sync: %v\n", err)
+					ui.warnf("failed to start syncthing background sync: %v", err)
+					syncSummary = "degraded (start failed)"
 				} else {
 					if started {
-						fmt.Fprintf(cmd.OutOrStdout(), "Background syncthing sync active (mode=bi). Logs: %s\n", logPath)
+						syncSummary = "active (bi)"
+						ui.stepDone("sync", fmt.Sprintf("active (bi), logs: %s", logPath))
 					} else {
-						fmt.Fprintf(cmd.OutOrStdout(), "Background syncthing sync already running (mode=bi). Logs: %s\n", logPath)
+						syncSummary = "already active (bi)"
+						ui.stepDone("sync", fmt.Sprintf("already active (bi), logs: %s", logPath))
 					}
 				}
 			}
 			postCreateCmd := resolvePostCreateCommand(cfg, cfgPath)
 			if postCreateCmd != "" {
-				ran, err := runPostCreateIfNeeded(k, ns, pod, postCreateCmd, cmd.OutOrStdout(), cmd.ErrOrStderr())
+				ran, err := runPostCreateIfNeeded(k, ns, pod, postCreateCmd, cmd.OutOrStdout(), ui.warnWriter())
 				if err != nil {
 					return err
 				}
 				if ran {
-					fmt.Fprintln(cmd.OutOrStdout(), "postCreate completed successfully")
+					ui.stepDone("postCreate", "completed")
+				} else {
+					ui.stepDone("postCreate", "already done")
 				}
 			}
 
+			ui.printWarnings()
+			ui.printReadyCard(sn, ns, pod, sshSummary, syncSummary, cfg.Spec.Ports)
 			return nil
 		},
 	}
@@ -220,4 +265,104 @@ func warnIfConfigNewerThanSession(opts *Options, k *kube.Client, namespace, sess
 		fmt.Fprintf(errOut, "warning: config file is newer than running session pod (%s > %s). Run `okdev down --session %s` then `okdev up --session %s` to apply all changes.\n", cfgInfo.ModTime().UTC().Format(time.RFC3339), podSummary.CreatedAt.UTC().Format(time.RFC3339), sessionName, sessionName)
 	}
 	return nil
+}
+
+type upUI struct {
+	out      io.Writer
+	errOut   io.Writer
+	warnings []string
+}
+
+func newUpUI(out, errOut io.Writer) *upUI {
+	return &upUI{out: out, errOut: errOut}
+}
+
+func (u *upUI) section(name string) {
+	fmt.Fprintf(u.out, "\n== %s ==\n", name)
+}
+
+func (u *upUI) stepRun(step, detail string) {
+	if detail == "" {
+		fmt.Fprintf(u.out, "… %s\n", step)
+		return
+	}
+	fmt.Fprintf(u.out, "… %s: %s\n", step, detail)
+}
+
+func (u *upUI) stepDone(step, detail string) {
+	if detail == "" {
+		fmt.Fprintf(u.out, "✔ %s\n", step)
+		return
+	}
+	fmt.Fprintf(u.out, "✔ %s: %s\n", step, detail)
+}
+
+func (u *upUI) warnf(format string, args ...any) {
+	msg := strings.TrimSpace(fmt.Sprintf(format, args...))
+	if msg == "" {
+		return
+	}
+	u.warnings = append(u.warnings, msg)
+}
+
+func (u *upUI) printWarnings() {
+	if len(u.warnings) == 0 {
+		return
+	}
+	fmt.Fprintln(u.errOut, "\nWarnings:")
+	for _, w := range u.warnings {
+		fmt.Fprintf(u.errOut, "- %s\n", w)
+	}
+}
+
+func (u *upUI) warnWriter() io.Writer {
+	return upWarnSink{ui: u}
+}
+
+func (u *upUI) printReadyCard(sessionName, namespace, pod, sshSummary, syncSummary string, ports []config.PortMapping) {
+	fmt.Fprintln(u.out, "\n== Ready ==")
+	fmt.Fprintf(u.out, "session:   %s\n", sessionName)
+	fmt.Fprintf(u.out, "namespace: %s\n", namespace)
+	fmt.Fprintf(u.out, "pod:       %s\n", pod)
+	fmt.Fprintf(u.out, "ssh:       %s\n", sshSummary)
+	fmt.Fprintf(u.out, "sync:      %s\n", syncSummary)
+	if len(ports) > 0 {
+		fmt.Fprintln(u.out, "forwards:")
+		for _, p := range ports {
+			if p.Local <= 0 || p.Remote <= 0 {
+				continue
+			}
+			name := strings.TrimSpace(p.Name)
+			if name == "" {
+				name = "port"
+			}
+			fmt.Fprintf(u.out, "- %s: localhost:%d -> remote:%d\n", name, p.Local, p.Remote)
+		}
+	}
+	fmt.Fprintln(u.out, "next:")
+	fmt.Fprintf(u.out, "- ssh %s\n", sshHostAlias(sessionName))
+	fmt.Fprintln(u.out, "- okdev status")
+	fmt.Fprintln(u.out, "- okdev down")
+}
+
+type upWarnSink struct {
+	ui *upUI
+}
+
+func (s upWarnSink) Write(p []byte) (int, error) {
+	if s.ui == nil {
+		return len(p), nil
+	}
+	for _, line := range strings.Split(string(p), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		line = strings.TrimPrefix(line, "warning:")
+		line = strings.TrimSpace(line)
+		if line != "" {
+			s.ui.warnf("%s", line)
+		}
+	}
+	return len(p), nil
 }

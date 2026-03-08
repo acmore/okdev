@@ -110,6 +110,17 @@ Notes:
 ./bin/okdev list --all-users
 ```
 
+## Advanced Recovery Commands
+
+```bash
+# Reconcile managed SSH LocalForward rules from spec.ports
+./bin/okdev ports
+
+# Run sync in foreground for troubleshooting or one-way flows
+./bin/okdev sync --mode up
+./bin/okdev sync --mode down
+```
+
 ## Teardown and Cleanup
 
 ```bash

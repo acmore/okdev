@@ -19,7 +19,7 @@ func TestEnsureSSHConfigEntryIncludesNamespaceInProxyCommand(t *testing.T) {
 		_ = os.Setenv("HOME", origHome)
 	}()
 
-	err := ensureSSHConfigEntry(
+	_, err := ensureSSHConfigEntry(
 		"okdev-test",
 		"test-session",
 		"dev-ns",
