@@ -89,8 +89,8 @@ Notes:
 - Use `okdev ssh --no-tmux` to bypass tmux for a single connection.
 - Tmux uses a built-in okdev profile (history/mouse/vi-copy/status) and keeps the default command prefix (`Ctrl-b`).
 - SSH keepalive can be tuned with:
-  - `spec.ssh.keepAliveIntervalSeconds` (default `10`)
-  - `spec.ssh.keepAliveTimeoutSeconds` (default `15`, must be `>= interval`)
+  - `spec.ssh.keepAliveIntervalSeconds` (default `30`)
+  - `spec.ssh.keepAliveTimeoutSeconds` (default `90`, must be `>= interval`)
 
 ## Preview Mode (No Cluster Mutations)
 

@@ -140,10 +140,10 @@ func (d *DevEnvironment) SetDefaults() {
 		d.Spec.SSH.AutoDetectPorts = &v
 	}
 	if d.Spec.SSH.KeepAliveInterval == 0 {
-		d.Spec.SSH.KeepAliveInterval = 10
+		d.Spec.SSH.KeepAliveInterval = 30
 	}
 	if d.Spec.SSH.KeepAliveTimeout == 0 {
-		d.Spec.SSH.KeepAliveTimeout = 15
+		d.Spec.SSH.KeepAliveTimeout = 90
 	}
 	if d.Spec.Sidecar.Image == "" {
 		d.Spec.Sidecar.Image = DefaultSidecarImageForBinaryVersion(version.Version)

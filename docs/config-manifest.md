@@ -95,8 +95,8 @@ Validation:
 - `privateKeyPath` (`string`, optional)
 - `autoDetectPorts` (`bool`, default: `true`)
 - `persistentSession` (`bool`, default: `false`) enables tmux-backed interactive session mode
-- `keepAliveIntervalSeconds` (`int`, default: `10`)
-- `keepAliveTimeoutSeconds` (`int`, default: `15`)
+- `keepAliveIntervalSeconds` (`int`, default: `30`)
+- `keepAliveTimeoutSeconds` (`int`, default: `90`)
 
 Validation:
 - `remotePort` must be `1..65535`
@@ -169,8 +169,8 @@ spec:
     user: root
     remotePort: 22
     persistentSession: true
-    keepAliveIntervalSeconds: 10
-    keepAliveTimeoutSeconds: 15
+    keepAliveIntervalSeconds: 30
+    keepAliveTimeoutSeconds: 90
   sidecar:
     image: ghcr.io/acmore/okdev:v0.2.0
   podTemplate:

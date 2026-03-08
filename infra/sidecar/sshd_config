@@ -10,8 +10,8 @@ ChallengeResponseAuthentication no
 UsePAM no
 PubkeyAuthentication yes
 AuthorizedKeysFile .ssh/authorized_keys
-ClientAliveInterval 30
-ClientAliveCountMax 10
+ClientAliveInterval 60
+ClientAliveCountMax 30
 AcceptEnv OKDEV_NO_TMUX
 PidFile /run/sshd/sshd.pid
 Subsystem sftp internal-sftp
