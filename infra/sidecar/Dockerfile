@@ -3,7 +3,7 @@ FROM alpine:3.21
 ARG SYNCTHING_VERSION=v1.29.7
 
 # Install openssh-server + syncthing dependencies + nsenter (util-linux)
-RUN apk add --no-cache openssh-server ca-certificates curl tar util-linux \
+RUN apk add --no-cache openssh-server ca-certificates curl tar util-linux tmux \
     && mkdir -p /run/sshd /root/.ssh \
     && chmod 700 /root/.ssh
 
