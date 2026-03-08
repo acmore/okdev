@@ -27,6 +27,10 @@ func newUpCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			cfgPath, pathErr := config.ResolvePath(opts.ConfigPath)
+			if pathErr != nil {
+				return pathErr
+			}
 			k := newKubeClient(opts)
 			sn, err := resolveSessionNameForUpDown(opts, cfg, ns)
 			if err != nil {
@@ -69,13 +73,14 @@ func newUpCmd(opts *Options) *cobra.Command {
 			}
 
 			enableTmux := tmux || cfg.Spec.SSH.PersistentSessionEnabled()
+			preStopCmd := resolvePreStopCommand(cfg, cfgPath)
 			preparedSpec, err := kube.PreparePodSpec(
 				cfg.Spec.PodTemplate.Spec,
 				pvc,
 				cfg.Spec.Workspace.MountPath,
 				cfg.Spec.Sidecar.Image,
 				enableTmux,
-				"",
+				preStopCmd,
 			)
 			if err != nil {
 				return err
@@ -116,7 +121,6 @@ func newUpCmd(opts *Options) *cobra.Command {
 						fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to setup SSH key in pod: %v\n", err)
 					}
 					alias := sshHostAlias(sn)
-					cfgPath, _ := config.ResolvePath(opts.ConfigPath)
 					if cfgErr := ensureSSHConfigEntry(alias, sn, ns, cfg.Spec.SSH.User, cfg.Spec.SSH.RemotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
 						fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
 					} else {
@@ -147,6 +151,16 @@ func newUpCmd(opts *Options) *cobra.Command {
 					}
 				}
 			}
+			postCreateCmd := resolvePostCreateCommand(cfg, cfgPath)
+			if postCreateCmd != "" {
+				ran, err := runPostCreateIfNeeded(k, ns, pod, postCreateCmd, cmd.OutOrStdout(), cmd.ErrOrStderr())
+				if err != nil {
+					return err
+				}
+				if ran {
+					fmt.Fprintln(cmd.OutOrStdout(), "postCreate completed successfully")
+				}
+			}
 
 			return nil
 		},
@@ -156,6 +170,32 @@ func newUpCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview actions without applying resources")
 	cmd.Flags().BoolVar(&tmux, "tmux", false, "Enable tmux persistent shell sessions in the sidecar")
 	return cmd
+}
+
+func runPostCreateIfNeeded(k *kube.Client, namespace, pod, command string, out io.Writer, errOut io.Writer) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	annotation, err := k.GetPodAnnotation(ctx, namespace, pod, "okdev.io/post-create-done")
+	cancel()
+	if err != nil {
+		fmt.Fprintf(errOut, "warning: failed to read postCreate annotation: %v\n", err)
+	}
+	if annotation == "true" {
+		return false, nil
+	}
+	fmt.Fprintf(out, "Running postCreate: %s\n", command)
+	runCtx, runCancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	_, runErr := k.ExecShInContainer(runCtx, namespace, pod, "dev", command)
+	runCancel()
+	if runErr != nil {
+		return true, fmt.Errorf("postCreate failed: %w", runErr)
+	}
+	annCtx, annCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	annErr := k.AnnotatePod(annCtx, namespace, pod, "okdev.io/post-create-done", "true")
+	annCancel()
+	if annErr != nil {
+		fmt.Fprintf(errOut, "warning: failed to annotate pod after postCreate: %v\n", annErr)
+	}
+	return true, nil
 }
 
 func warnIfConfigNewerThanSession(opts *Options, k *kube.Client, namespace, sessionName, podName string, errOut io.Writer) error {

@@ -137,13 +137,20 @@ func TestPreparePodSpecTmuxEnvEnabled(t *testing.T) {
 		}
 	}
 	found := false
+	foundWorkspace := false
 	for _, e := range sidecar.Env {
 		if e.Name == "OKDEV_TMUX" && e.Value == "1" {
 			found = true
 		}
+		if e.Name == "OKDEV_WORKSPACE" && e.Value == "/workspace" {
+			foundWorkspace = true
+		}
 	}
 	if !found {
 		t.Fatal("expected OKDEV_TMUX=1 env var on okdev-sidecar when tmux enabled")
+	}
+	if !foundWorkspace {
+		t.Fatal("expected OKDEV_WORKSPACE env var on okdev-sidecar")
 	}
 }
 
@@ -159,10 +166,17 @@ func TestPreparePodSpecTmuxEnvDisabled(t *testing.T) {
 			break
 		}
 	}
+	foundWorkspace := false
 	for _, e := range sidecar.Env {
 		if e.Name == "OKDEV_TMUX" {
 			t.Fatal("expected no OKDEV_TMUX env var on okdev-sidecar when tmux disabled")
 		}
+		if e.Name == "OKDEV_WORKSPACE" && e.Value == "/workspace" {
+			foundWorkspace = true
+		}
+	}
+	if !foundWorkspace {
+		t.Fatal("expected OKDEV_WORKSPACE env var on okdev-sidecar")
 	}
 }
 

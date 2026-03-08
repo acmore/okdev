@@ -62,6 +62,15 @@ if [ ! -t 0 ]; then
   exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid -- /bin/sh -lc "while :; do sleep 3600; done"
 fi
 
+# Run postAttach script for interactive sessions when present.
+if [ -n "${OKDEV_WORKSPACE:-}" ]; then
+  POST_ATTACH="${OKDEV_WORKSPACE}/.okdev/post-attach.sh"
+  if nsenter --target "$DEV_PID" --mount -- test -x "$POST_ATTACH" 2>/dev/null; then
+    nsenter --target "$DEV_PID" --mount --uts --ipc --pid -- "$POST_ATTACH" 2>&1 || \
+      echo "warning: postAttach script failed" >&2
+  fi
+fi
+
 # Interactive login shell in dev container.
 # Wrap in tmux if enabled (OKDEV_TMUX=1) and not opted out (OKDEV_NO_TMUX!=1).
 if [ "${OKDEV_TMUX:-}" = "1" ] && [ "${OKDEV_NO_TMUX:-}" != "1" ] && command -v tmux >/dev/null 2>&1; then

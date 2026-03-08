@@ -77,6 +77,12 @@ func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath, 
 				{Name: "workspace", MountPath: workspaceMountPath},
 				{Name: "syncthing-home", MountPath: "/var/syncthing"},
 			},
+			Env: []corev1.EnvVar{
+				{
+					Name:  "OKDEV_WORKSPACE",
+					Value: workspaceMountPath,
+				},
+			},
 		}
 		if tmux {
 			sidecarContainer.Env = append(sidecarContainer.Env, corev1.EnvVar{
