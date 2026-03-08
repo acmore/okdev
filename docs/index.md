@@ -14,8 +14,8 @@ It provisions and operates dev environments from `.okdev.yaml` using standard Po
 ## Documentation
 
 - [Quickstart](quickstart.md)
+- [Config Manifest](config-manifest.md)
 - [Command Reference](command-reference.md)
 - [Troubleshooting](troubleshooting.md)
-- [Design](okdev-design.md)
-- [Implementation Plan](okdev-implementation-plan.md)
 - [Release & Versioning](release.md)
+- [Repository](https://github.com/acmore/okdev)

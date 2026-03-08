@@ -4,10 +4,21 @@ repo_url: https://github.com/acmore/okdev
 repo_name: acmore/okdev
 theme:
   name: material
+  palette:
+    - scheme: slate
+      primary: black
+      accent: cyan
   features:
     - navigation.sections
     - navigation.expand
     - content.code.copy
+    - navigation.top
+extra_css:
+  - stylesheets/extra.css
+exclude_docs: |
+  okdev-design.md
+  okdev-implementation-plan.md
+  plans/**
 markdown_extensions:
   - admonition
   - tables
@@ -16,8 +27,8 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Quickstart: quickstart.md
+  - Config Manifest: config-manifest.md
   - Command Reference: command-reference.md
-  - Design: okdev-design.md
-  - Implementation Plan: okdev-implementation-plan.md
   - Release: release.md
   - Troubleshooting: troubleshooting.md
+  - Repository: https://github.com/acmore/okdev

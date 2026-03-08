@@ -1,0 +1,39 @@
+:root {
+  --okdev-grid: rgba(0, 255, 255, 0.08);
+  --okdev-edge: rgba(0, 255, 255, 0.2);
+}
+
+.md-typeset,
+.md-header__title,
+.md-nav__title,
+.md-nav__item,
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset code,
+.md-nav,
+.md-tabs {
+  font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+.md-main {
+  background-image:
+    linear-gradient(var(--okdev-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--okdev-grid) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+.md-typeset h1,
+.md-typeset h2 {
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.md-typeset pre > code {
+  border: 1px solid var(--okdev-edge);
+}
+
+.md-header,
+.md-tabs {
+  border-bottom: 1px solid var(--okdev-edge);
+}
