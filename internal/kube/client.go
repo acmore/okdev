@@ -418,6 +418,28 @@ func (c *Client) TouchPodActivity(ctx context.Context, namespace, pod string) er
 	return err
 }
 
+func (c *Client) AnnotatePod(ctx context.Context, namespace, pod, key, value string) error {
+	cs, _, err := c.clientset()
+	if err != nil {
+		return err
+	}
+	patch := []byte(fmt.Sprintf(`{"metadata":{"annotations":{%q:%q}}}`, key, value))
+	_, err = cs.CoreV1().Pods(namespace).Patch(ctx, pod, types.MergePatchType, patch, metav1.PatchOptions{})
+	return err
+}
+
+func (c *Client) GetPodAnnotation(ctx context.Context, namespace, pod, key string) (string, error) {
+	cs, _, err := c.clientset()
+	if err != nil {
+		return "", err
+	}
+	p, err := cs.CoreV1().Pods(namespace).Get(ctx, pod, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	return p.Annotations[key], nil
+}
+
 func (c *Client) ExecInteractive(ctx context.Context, namespace, pod string, tty bool, command []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) error {
 	if len(command) == 0 {
 		return errors.New("exec command cannot be empty")
