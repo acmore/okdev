@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -78,9 +79,12 @@ func newSSHCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			pfKeepAliveCtx, pfKeepAliveCancel := context.WithCancel(cmd.Context())
+			startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, 30*time.Second)
 			var pfMu sync.Mutex
 			currentCancelPF := cancelPF
 			defer func() {
+				pfKeepAliveCancel()
 				pfMu.Lock()
 				defer pfMu.Unlock()
 				if currentCancelPF != nil {
@@ -90,7 +94,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 
 			sshHost := sshHostAlias(sn)
 			cfgPath, _ := config.ResolvePath(opts.ConfigPath)
-			if _, cfgErr := ensureSSHConfigEntry(sshHost, sn, ns, user, remotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
+			if _, cfgErr := ensureSSHConfigEntry(sshHost, sn, ns, user, remotePort, keyPath, cfgPath, cfg.Spec.Ports, cfg.Spec.SSH); cfgErr != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
 			}
 
@@ -100,6 +104,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				RemotePort:        remotePort,
 				KeepAliveInterval: time.Duration(cfg.Spec.SSH.KeepAliveInterval) * time.Second,
 				KeepAliveTimeout:  time.Duration(cfg.Spec.SSH.KeepAliveTimeout) * time.Second,
+				KeepAliveCountMax: cfg.Spec.SSH.KeepAliveCountMax,
 			}
 			if noTmux {
 				tm.Env = map[string]string{"OKDEV_NO_TMUX": "1"}
@@ -123,11 +128,15 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					currentCancelPF()
 					currentCancelPF = nil
 				}
+				pfKeepAliveCancel()
 				cancel, lp, err := startSSHPortForwardWithFallback(newKubeClient(opts), ns, podName(sn), localPort, remotePort)
 				if err != nil {
 					return "", 0, err
 				}
 				currentCancelPF = cancel
+				newCtx, newCancel := context.WithCancel(cmd.Context())
+				pfKeepAliveCancel = newCancel
+				startPortForwardKeepalive(newCtx, lp, 30*time.Second)
 				return "127.0.0.1", lp, nil
 			})
 			var lastRTTWarnNanos atomic.Int64
@@ -196,14 +205,23 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				}
 				return nil
 			}
-			if err := tm.OpenShell(); err != nil {
-				if !tm.IsConnected() || isIgnorableProxyIOError(err) {
-					fmt.Fprintln(cmd.ErrOrStderr(), "Connection lost. Session ended.")
-					return nil
+			// Shell loop: reconnect automatically when the connection drops.
+			for {
+				err := tm.OpenShell()
+				if err == nil {
+					return nil // clean exit (user typed exit/logout)
+				}
+				if isIgnorableProxyIOError(err) || !tm.IsConnected() {
+					fmt.Fprintln(cmd.ErrOrStderr(), "\nConnection lost. Reconnecting...")
+					if !tm.WaitConnected(cmd.Context()) {
+						fmt.Fprintln(cmd.ErrOrStderr(), "Reconnect failed. Session ended.")
+						return nil
+					}
+					fmt.Fprintln(cmd.ErrOrStderr(), "Reconnected.")
+					continue
 				}
 				return fmt.Errorf("ssh shell failed: %w", err)
 			}
-			return nil
 		},
 	}
 
@@ -313,7 +331,7 @@ func sshHostAlias(sessionName string) string {
 	return "okdev-" + sessionName
 }
 
-func ensureSSHConfigEntry(hostAlias, sessionName, namespace, user string, remotePort int, keyPath, okdevConfigPath string, forwards []config.PortMapping) (bool, error) {
+func ensureSSHConfigEntry(hostAlias, sessionName, namespace, user string, remotePort int, keyPath, okdevConfigPath string, forwards []config.PortMapping, sshSpec config.SSHSpec) (bool, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return false, err
@@ -341,15 +359,9 @@ func ensureSSHConfigEntry(hostAlias, sessionName, namespace, user string, remote
 		"  UserKnownHostsFile /dev/null",
 		"  ProxyCommand " + proxyCmd,
 	}
-	for _, p := range forwards {
-		if p.Local <= 0 || p.Remote <= 0 {
-			continue
-		}
-		blockLines = append(blockLines, fmt.Sprintf("  LocalForward %d 127.0.0.1:%d", p.Local, p.Remote))
-	}
 	blockLines = append(blockLines,
-		"  ServerAliveInterval 30",
-		"  ServerAliveCountMax 10",
+		fmt.Sprintf("  ServerAliveInterval %d", sshSpec.KeepAliveInterval),
+		fmt.Sprintf("  ServerAliveCountMax %d", sshSpec.KeepAliveCountMax),
 		"  TCPKeepAlive yes",
 		"  LogLevel ERROR",
 		end,
@@ -449,14 +461,21 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			pfKeepAliveCtx, pfKeepAliveCancel := context.WithCancel(context.Background())
+			startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, 30*time.Second)
+			defer pfKeepAliveCancel()
 			if cancelPF != nil {
 				defer cancelPF()
 			}
+			slog.Debug("ssh-proxy dialing local port-forward", "port", usedLocalPort)
 			conn, err := waitDialLocal(usedLocalPort, 10*time.Second)
 			if err != nil {
+				slog.Debug("ssh-proxy dial failed", "error", err)
 				return err
 			}
 			defer conn.Close()
+			slog.Debug("ssh-proxy connection established", "localAddr", conn.LocalAddr(), "remoteAddr", conn.RemoteAddr())
+
 			var wg sync.WaitGroup
 			var copyErr error
 			var once sync.Once
@@ -465,13 +484,16 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				if err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, syscall.EPIPE) || isIgnorableProxyIOError(err) {
 					return
 				}
+				slog.Debug("ssh-proxy copy error", "error", err)
 				once.Do(func() { copyErr = err })
 			}
 			wg.Add(2)
 			go func() {
 				defer wg.Done()
+				slog.Debug("ssh-proxy starting copy: stdin -> conn")
 				_, err := io.Copy(conn, os.Stdin)
 				setErr(err)
+				slog.Debug("ssh-proxy finished copy: stdin -> conn")
 				select {
 				case <-done:
 				default:
@@ -480,12 +502,15 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 			}()
 			go func() {
 				defer wg.Done()
+				slog.Debug("ssh-proxy starting copy: conn -> stdout")
 				_, err := io.Copy(os.Stdout, conn)
 				setErr(err)
+				slog.Debug("ssh-proxy finished copy: conn -> stdout")
 				close(done)
 				_ = conn.Close()
 			}()
 			<-done
+			slog.Debug("ssh-proxy session finished", "error", copyErr)
 			return copyErr
 		},
 	}
@@ -500,7 +525,8 @@ func isIgnorableProxyIOError(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "broken pipe") ||
 		strings.Contains(msg, "use of closed network connection") ||
-		strings.Contains(msg, "connection reset by peer")
+		strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "remote command exited without exit status")
 }
 
 func waitDialLocal(localPort int, timeout time.Duration) (net.Conn, error) {
@@ -533,7 +559,7 @@ func sshControlSocketPath(hostAlias string) (string, error) {
 	return filepath.Join(dir, hostAlias+".sock"), nil
 }
 
-func startManagedSSHForward(hostAlias string) error {
+func startManagedSSHForward(hostAlias string, sshSpec config.SSHSpec) error {
 	socketPath, err := sshControlSocketPath(hostAlias)
 	if err != nil {
 		return err
@@ -542,19 +568,38 @@ func startManagedSSHForward(hostAlias string) error {
 	if err := check.Run(); err == nil {
 		return nil
 	}
-	cmd := exec.Command(
+	return startManagedSSHForwardWithForwards(hostAlias, nil, sshSpec)
+}
+
+func startManagedSSHForwardWithForwards(hostAlias string, forwards []config.PortMapping, sshSpec config.SSHSpec) error {
+	socketPath, err := sshControlSocketPath(hostAlias)
+	if err != nil {
+		return err
+	}
+	check := exec.Command("ssh", "-S", socketPath, "-O", "check", hostAlias)
+	if err := check.Run(); err == nil {
+		return nil
+	}
+	args := []string{
 		"ssh",
 		"-fN",
 		"-M",
 		"-S", socketPath,
-		"-o", "ControlPersist=600",
+		"-o", "ControlPersist=3600",
 		"-o", "ExitOnForwardFailure=no",
-		"-o", "ServerAliveInterval=30",
-		"-o", "ServerAliveCountMax=10",
+		"-o", fmt.Sprintf("ServerAliveInterval=%d", sshSpec.KeepAliveInterval),
+		"-o", fmt.Sprintf("ServerAliveCountMax=%d", sshSpec.KeepAliveCountMax),
 		"-o", "TCPKeepAlive=yes",
 		"-o", "LogLevel=ERROR",
-		hostAlias,
-	)
+	}
+	for _, p := range forwards {
+		if p.Local <= 0 || p.Remote <= 0 {
+			continue
+		}
+		args = append(args, "-L", fmt.Sprintf("%d:127.0.0.1:%d", p.Local, p.Remote))
+	}
+	args = append(args, hostAlias)
+	cmd := exec.Command(args[0], args[1:]...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("start managed ssh forward: %w (%s)", err, strings.TrimSpace(string(out)))
 	}

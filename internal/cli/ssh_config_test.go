@@ -28,6 +28,7 @@ func TestEnsureSSHConfigEntryIncludesNamespaceInProxyCommand(t *testing.T) {
 		"/tmp/id_ed25519",
 		"/tmp/.okdev.yaml",
 		[]config.PortMapping{{Local: 8080, Remote: 8080}},
+		config.SSHSpec{KeepAliveInterval: 30, KeepAliveCountMax: 10},
 	)
 	if err != nil {
 		t.Fatalf("ensureSSHConfigEntry: %v", err)
@@ -45,7 +46,7 @@ func TestEnsureSSHConfigEntryIncludesNamespaceInProxyCommand(t *testing.T) {
 	if !strings.Contains(text, "--session") || !strings.Contains(text, "test-session") || !strings.Contains(text, " -n ") || !strings.Contains(text, "dev-ns") || !strings.Contains(text, "ssh-proxy --remote-port 22") {
 		t.Fatalf("proxy command missing namespace: %s", text)
 	}
-	if !strings.Contains(text, "LocalForward 8080 127.0.0.1:8080") {
-		t.Fatalf("missing local forward: %s", text)
+	if strings.Contains(text, "LocalForward") {
+		t.Fatalf("interactive ssh host entry must not include LocalForward directives: %s", text)
 	}
 }

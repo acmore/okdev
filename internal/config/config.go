@@ -107,6 +107,7 @@ type SSHSpec struct {
 	PersistentSession *bool  `yaml:"persistentSession"`
 	KeepAliveInterval int    `yaml:"keepAliveIntervalSeconds"`
 	KeepAliveTimeout  int    `yaml:"keepAliveTimeoutSeconds"`
+	KeepAliveCountMax int    `yaml:"keepAliveCountMax"`
 }
 
 func (d *DevEnvironment) SetDefaults() {
@@ -143,7 +144,10 @@ func (d *DevEnvironment) SetDefaults() {
 		d.Spec.SSH.KeepAliveInterval = 30
 	}
 	if d.Spec.SSH.KeepAliveTimeout == 0 {
-		d.Spec.SSH.KeepAliveTimeout = 90
+		d.Spec.SSH.KeepAliveTimeout = 30
+	}
+	if d.Spec.SSH.KeepAliveCountMax == 0 {
+		d.Spec.SSH.KeepAliveCountMax = 10
 	}
 	if d.Spec.Sidecar.Image == "" {
 		d.Spec.Sidecar.Image = DefaultSidecarImageForBinaryVersion(version.Version)
@@ -201,6 +205,9 @@ func (d *DevEnvironment) Validate() error {
 	}
 	if d.Spec.SSH.KeepAliveTimeout < d.Spec.SSH.KeepAliveInterval {
 		return errors.New("spec.ssh.keepAliveTimeoutSeconds must be >= spec.ssh.keepAliveIntervalSeconds")
+	}
+	if d.Spec.SSH.KeepAliveCountMax <= 0 {
+		return errors.New("spec.ssh.keepAliveCountMax must be > 0")
 	}
 	if strings.TrimSpace(d.Spec.Sidecar.Image) == "" {
 		return errors.New("spec.sidecar.image is required")

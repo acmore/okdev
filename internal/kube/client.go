@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -22,6 +23,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/util/httpstream"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
@@ -74,6 +76,7 @@ func (c *Client) restConfig() (*rest.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load kube config: %w", err)
 	}
+	restCfg.Timeout = 0 // Disable default timeout; use context for all operations.
 	return restCfg, nil
 }
 
@@ -460,6 +463,61 @@ func (c *Client) ExecInteractive(ctx context.Context, namespace, pod string, tty
 }
 
 func (c *Client) PortForward(ctx context.Context, namespace, pod string, forwards []string, stdout io.Writer, stderr io.Writer) error {
+	backoff := time.Second
+	const maxBackoff = 30 * time.Second
+	for {
+		start := time.Now()
+		err := c.portForwardOnce(ctx, namespace, pod, forwards, stdout, stderr)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err != nil && !isRetryablePortForwardError(err) {
+			return err
+		}
+		// Reset backoff if the connection was healthy for a while.
+		if time.Since(start) > time.Minute {
+			backoff = time.Second
+		}
+		if err != nil {
+			slog.Debug("port-forward connection lost, reconnecting", "error", err, "backoff", backoff)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
+func isRetryablePortForwardError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	nonRetryable := []string{
+		"unable to listen on any of the requested ports",
+		"address already in use",
+		"forbidden",
+		"unauthorized",
+		"not found",
+		"bad request",
+		"invalid",
+	}
+	for _, s := range nonRetryable {
+		if strings.Contains(msg, s) {
+			return false
+		}
+	}
+	// Default to retryable for unknown errors; the non-retryable list
+	// above already guards against permanent failures.
+	return true
+}
+
+func (c *Client) portForwardOnce(ctx context.Context, namespace, pod string, forwards []string, stdout io.Writer, stderr io.Writer) error {
 	cs, cfg, err := c.clientset()
 	if err != nil {
 		return err
@@ -472,7 +530,11 @@ func (c *Client) PortForward(ctx context.Context, namespace, pod string, forward
 	if err != nil {
 		return err
 	}
-	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, http.MethodPost, reqURL)
+	var dialer httpstream.Dialer = spdy.NewDialer(upgrader, &http.Client{Transport: transport}, http.MethodPost, reqURL)
+	tunnelingDialer, tErr := portforward.NewSPDYOverWebsocketDialer(reqURL, cfg)
+	if tErr == nil {
+		dialer = portforward.NewFallbackDialer(tunnelingDialer, dialer, httpstream.IsUpgradeFailure)
+	}
 
 	stopCh := make(chan struct{})
 	readyCh := make(chan struct{})

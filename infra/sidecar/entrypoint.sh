@@ -23,18 +23,20 @@ OKDEV_WORKSPACE_PATH="__OKDEV_WORKSPACE_PATH__"
 
 # Find the dev container's PID 1 by looking for a process with a different root filesystem.
 # In a shared PID namespace, our PID 1 is the pause/sandbox container.
-# We look for the first "sleep infinity" or the init process of the dev container.
+# We look for the first long-lived process in the dev container.
 DEV_PID=""
-for pid in $(ls /proc | grep -E '^[0-9]+$' | sort -n); do
+for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$' | sort -n); do
   [ "$pid" = "1" ] && continue
   [ "$pid" = "$$" ] && continue
-  # Skip if we can't read the process
-  [ -r "/proc/$pid/root" ] || continue
-  # Check if this process has a different root than us (different container)
-  if ! [ "/proc/$pid/root" -ef "/proc/self/root" ]; then
+  # Use 2>/dev/null to suppress error if process disappears while we're checking.
+  [ -r "/proc/$pid/root" ] 2>/dev/null || continue
+  if ! [ "/proc/$pid/root" -ef "/proc/self/root" ] 2>/dev/null; then
     # Found a process in a different mount namespace — likely the dev container
-    DEV_PID="$pid"
-    break
+    # Verify it still exists before we commit to it.
+    if [ -d "/proc/$pid" ]; then
+      DEV_PID="$pid"
+      break
+    fi
   fi
 done
 
@@ -43,14 +45,16 @@ if [ -z "$DEV_PID" ]; then
   exit 1
 fi
 
-# Ensure current GID exists in /etc/group inside the target to suppress
+# Ensure current GID exists in /etc/group inside BOTH the sidecar and the target to suppress
 # "groups: cannot find name for group ID ..." warnings from login shells.
 CURRENT_GID="$(id -g 2>/dev/null || true)"
 if [ -n "$CURRENT_GID" ]; then
+  grep -q ":${CURRENT_GID}:" /etc/group 2>/dev/null || \
+    echo "okdev:x:${CURRENT_GID}:" >> /etc/group 2>/dev/null || true
   nsenter --target "$DEV_PID" --mount -- sh -c "
     grep -q \":${CURRENT_GID}:\" /etc/group 2>/dev/null || \
     echo \"okdev:x:${CURRENT_GID}:\" >> /etc/group 2>/dev/null || true
-  "
+  " 2>/dev/null || true
 fi
 
 # If a remote command was requested, execute it inside the dev container.
@@ -104,6 +108,18 @@ sed -i \
   -e "s|__OKDEV_WORKSPACE_PATH__|${safe_workspace_path}|g" \
   /usr/local/bin/nsenter-dev.sh
 chmod +x /usr/local/bin/nsenter-dev.sh
+
+# Harden sshd_config for long-lived idle sessions.
+# Server-side keepalive: probe every 30s, tolerate 10 misses (5min of dead connection).
+# This complements the client-side ServerAliveInterval and keeps intermediate
+# connections (kubectl port-forward, load balancers) alive with bidirectional traffic.
+if ! grep -q "ClientAliveInterval" /etc/ssh/sshd_config; then
+  cat >> /etc/ssh/sshd_config << 'SSHD_KEEPALIVE'
+ClientAliveInterval 30
+ClientAliveCountMax 10
+TCPKeepAlive yes
+SSHD_KEEPALIVE
+fi
 
 # Add ForceCommand to sshd_config dynamically
 if ! grep -q "ForceCommand" /etc/ssh/sshd_config; then

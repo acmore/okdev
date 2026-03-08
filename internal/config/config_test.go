@@ -45,7 +45,7 @@ func TestSetDefaults(t *testing.T) {
 	if cfg.Spec.SSH.User != "root" || cfg.Spec.SSH.RemotePort != 22 {
 		t.Fatalf("ssh defaults not set: %+v", cfg.Spec.SSH)
 	}
-	if cfg.Spec.SSH.KeepAliveInterval != 30 || cfg.Spec.SSH.KeepAliveTimeout != 90 {
+	if cfg.Spec.SSH.KeepAliveInterval != 30 || cfg.Spec.SSH.KeepAliveTimeout != 30 || cfg.Spec.SSH.KeepAliveCountMax != 10 {
 		t.Fatalf("ssh keepalive defaults not set: %+v", cfg.Spec.SSH)
 	}
 	if cfg.Spec.SSH.AutoDetectPorts == nil || !*cfg.Spec.SSH.AutoDetectPorts {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
@@ -28,7 +29,14 @@ func startManagedPortForwardWithClient(k interface {
 	doneCh := make(chan struct{})
 	go func() {
 		defer close(doneCh)
-		errCh <- k.PortForward(ctx, namespace, pod, forwards, io.Discard, io.Discard)
+		slog.Debug("starting port-forward worker", "pod", pod, "forwards", forwards)
+		err := k.PortForward(ctx, namespace, pod, forwards, io.Discard, io.Discard)
+		if err != nil {
+			slog.Debug("port-forward worker exited with error", "pod", pod, "error", err)
+		} else {
+			slog.Debug("port-forward worker exited normally", "pod", pod)
+		}
+		errCh <- err
 	}()
 	cancelAndWait := func() {
 		cancel()
@@ -70,7 +78,14 @@ func startManagedPortForwardNoProbeWithClient(k interface {
 	doneCh := make(chan struct{})
 	go func() {
 		defer close(doneCh)
-		errCh <- k.PortForward(ctx, namespace, pod, forwards, io.Discard, io.Discard)
+		slog.Debug("starting port-forward worker (no-probe)", "pod", pod, "forwards", forwards)
+		err := k.PortForward(ctx, namespace, pod, forwards, io.Discard, io.Discard)
+		if err != nil {
+			slog.Debug("port-forward worker (no-probe) exited with error", "pod", pod, "error", err)
+		} else {
+			slog.Debug("port-forward worker (no-probe) exited normally", "pod", pod)
+		}
+		errCh <- err
 	}()
 	cancelAndWait := func() {
 		cancel()
@@ -121,4 +136,30 @@ func allPortsReachable(ports []int) bool {
 		_ = conn.Close()
 	}
 	return true
+}
+
+// startPortForwardKeepalive periodically dials the local port-forward endpoint
+// to create new SPDY streams on the underlying connection. Each TCP connection
+// triggers the port-forward handler to create a fresh stream pair (data+error),
+// which generates SYN/FIN frames visible to all intermediaries (load balancers,
+// API server proxies, WebSocket gateways) — keeping the connection alive even
+// when they don't count data on existing streams as "activity".
+func startPortForwardKeepalive(ctx context.Context, localPort int, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", localPort), 2*time.Second)
+				if err != nil {
+					slog.Debug("port-forward keepalive dial failed", "port", localPort, "error", err)
+					continue
+				}
+				_ = conn.Close()
+			}
+		}
+	}()
 }

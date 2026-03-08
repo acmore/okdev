@@ -57,7 +57,7 @@ func newPortsCmd(opts *Options) *cobra.Command {
 				return fmt.Errorf("wait for sshd ready: %w", err)
 			}
 			alias := sshHostAlias(sn)
-			changed, err := ensureSSHConfigEntry(alias, sn, ns, cfg.Spec.SSH.User, cfg.Spec.SSH.RemotePort, keyPath, cfgPath, cfg.Spec.Ports)
+			changed, err := ensureSSHConfigEntry(alias, sn, ns, cfg.Spec.SSH.User, cfg.Spec.SSH.RemotePort, keyPath, cfgPath, cfg.Spec.Ports, cfg.Spec.SSH)
 			if err != nil {
 				return fmt.Errorf("update ~/.ssh/config for managed forwards: %w", err)
 			}
@@ -72,7 +72,7 @@ func newPortsCmd(opts *Options) *cobra.Command {
 			if running {
 				_ = stopManagedSSHForward(alias)
 			}
-			if err := startManagedSSHForward(alias); err != nil {
+			if err := startManagedSSHForwardWithForwards(alias, cfg.Spec.Ports, cfg.Spec.SSH); err != nil {
 				return fmt.Errorf("start managed SSH forwards: %w", err)
 			}
 			if changed {

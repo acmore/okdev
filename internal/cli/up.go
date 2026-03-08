@@ -162,13 +162,13 @@ func newUpCmd(opts *Options) *cobra.Command {
 						sshSummary = "degraded (sshd not ready)"
 					}
 					alias := sshHostAlias(sn)
-					if _, cfgErr := ensureSSHConfigEntry(alias, sn, ns, cfg.Spec.SSH.User, cfg.Spec.SSH.RemotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
+					if _, cfgErr := ensureSSHConfigEntry(alias, sn, ns, cfg.Spec.SSH.User, cfg.Spec.SSH.RemotePort, keyPath, cfgPath, cfg.Spec.Ports, cfg.Spec.SSH); cfgErr != nil {
 						ui.warnf("failed to update ~/.ssh/config: %v", cfgErr)
 						sshSummary = "degraded (ssh config update failed)"
 					} else {
 						// Force-refresh managed master so forward rules are always current after `okdev up`.
 						_ = stopManagedSSHForward(alias)
-						if err := startManagedSSHForward(alias); err != nil {
+						if err := startManagedSSHForwardWithForwards(alias, cfg.Spec.Ports, cfg.Spec.SSH); err != nil {
 							ui.warnf("failed to start managed SSH/port-forwards: %v", err)
 							sshSummary = "degraded (managed forward failed)"
 						} else {

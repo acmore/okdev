@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -44,6 +45,7 @@ type TunnelManager struct {
 	Env               map[string]string
 	KeepAliveInterval time.Duration
 	KeepAliveTimeout  time.Duration
+	KeepAliveCountMax int
 
 	mu        sync.Mutex
 	client    *xssh.Client
@@ -61,6 +63,7 @@ type TunnelManager struct {
 	stateCallback     func(ConnectionState)
 	reconnectTargetFn func(context.Context) (string, int, error)
 	rttCallback       func(time.Duration)
+	connectedWaiters  []chan struct{}
 }
 
 // Connect establishes an SSH connection to host:port.
@@ -96,17 +99,29 @@ func (tm *TunnelManager) dialSSH(host string, port int) (*xssh.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse ssh key: %w", err)
 	}
-	cfg := &xssh.ClientConfig{
+	clientConfig := &xssh.ClientConfig{
 		User:            tm.SSHUser,
 		Auth:            []xssh.AuthMethod{xssh.PublicKeys(signer)},
 		HostKeyCallback: xssh.InsecureIgnoreHostKey(),
 		Timeout:         10 * time.Second,
 	}
-	client, err := xssh.Dial("tcp", fmt.Sprintf("%s:%d", host, port), cfg)
-	if err != nil {
-		return nil, fmt.Errorf("ssh dial: %w", err)
+
+	dialer := &net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 15 * time.Second,
 	}
-	return client, nil
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	conn, err := dialer.Dial("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("dial tcp: %w", err)
+	}
+
+	sshConn, chans, reqs, err := xssh.NewClientConn(conn, addr, clientConfig)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("ssh new conn: %w", err)
+	}
+	return xssh.NewClient(sshConn, chans, reqs), nil
 }
 
 func (tm *TunnelManager) SetConnectionStateCallback(cb func(ConnectionState)) {
@@ -128,6 +143,12 @@ func (tm *TunnelManager) SetKeepAliveRTTCallback(cb func(time.Duration)) {
 }
 
 func (tm *TunnelManager) emitStateLocked(state ConnectionState) {
+	if state == StateConnected && len(tm.connectedWaiters) > 0 {
+		for _, ch := range tm.connectedWaiters {
+			close(ch)
+		}
+		tm.connectedWaiters = nil
+	}
 	if tm.stateCallback != nil {
 		go tm.stateCallback(state)
 	}
@@ -214,6 +235,25 @@ func (tm *TunnelManager) IsConnected() bool {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 	return tm.client != nil
+}
+
+// WaitConnected blocks until the tunnel is connected or the context is cancelled.
+// Returns false if the tunnel is closed or the context expires.
+func (tm *TunnelManager) WaitConnected(ctx context.Context) bool {
+	tm.mu.Lock()
+	if tm.client != nil {
+		tm.mu.Unlock()
+		return true
+	}
+	ch := make(chan struct{})
+	tm.connectedWaiters = append(tm.connectedWaiters, ch)
+	tm.mu.Unlock()
+	select {
+	case <-ch:
+		return tm.IsConnected()
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // AddForward starts a local listener and forwards accepted connections to remotePort.
@@ -378,8 +418,21 @@ func (tm *TunnelManager) keepAliveLoop() {
 	if timeout < interval {
 		timeout = interval
 	}
+	// Cap timeout so a single keepalive probe does not stall detection
+	// for too long, but still allow some headroom over the interval.
+	maxTimeout := 2 * interval
+	if timeout > maxTimeout {
+		timeout = maxTimeout
+	}
+	countMax := tm.KeepAliveCountMax
+	if countMax <= 0 {
+		countMax = 1 // default to original behavior if not set
+	}
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	consecutiveFailures := 0
+
 	for {
 		select {
 		case <-tm.contextDone():
@@ -390,14 +443,31 @@ func (tm *TunnelManager) keepAliveLoop() {
 			connected := client != nil
 			rttCB := tm.rttCallback
 			tm.mu.Unlock()
+
 			if !connected {
+				consecutiveFailures = 0
 				continue
 			}
+
 			rtt, err := tm.sendKeepAlive(client, timeout)
 			if err != nil {
-				tm.handleConnectionLoss(client)
+				if errors.Is(err, errKeepAliveTimeout) {
+					slog.Debug("keepalive timeout; forcing reconnect")
+					tm.handleConnectionLoss(client)
+					consecutiveFailures = 0
+					continue
+				}
+				consecutiveFailures++
+				slog.Debug("keepalive failed", "consecutive", consecutiveFailures, "max", countMax, "error", err)
+				if consecutiveFailures >= countMax {
+					tm.handleConnectionLoss(client)
+					consecutiveFailures = 0
+				}
 				continue
 			}
+
+			consecutiveFailures = 0
+			slog.Debug("keepalive success", "rtt", rtt)
 			if rttCB != nil {
 				go rttCB(rtt)
 			}
@@ -405,18 +475,25 @@ func (tm *TunnelManager) keepAliveLoop() {
 	}
 }
 
+var errKeepAliveTimeout = errors.New("keepalive timeout")
+
 func (tm *TunnelManager) sendKeepAlive(client *xssh.Client, timeout time.Duration) (time.Duration, error) {
 	start := time.Now()
 	done := make(chan error, 1)
 	go func() {
+		slog.Debug("sending ssh keepalive request")
 		_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
 		done <- err
 	}()
 	select {
 	case err := <-done:
+		if err != nil {
+			slog.Debug("ssh keepalive request error", "error", err)
+		}
 		return time.Since(start), err
 	case <-time.After(timeout):
-		return 0, fmt.Errorf("keepalive timeout")
+		slog.Debug("ssh keepalive request timed out", "timeout", timeout)
+		return 0, errKeepAliveTimeout
 	case <-tm.contextDone():
 		return 0, context.Canceled
 	}
@@ -572,6 +649,11 @@ func (tm *TunnelManager) closeLocked() error {
 	}
 	tm.ctx = nil
 	tm.reconnecting = false
+	// Wake any WaitConnected callers so they don't hang.
+	for _, ch := range tm.connectedWaiters {
+		close(ch)
+	}
+	tm.connectedWaiters = nil
 	tm.emitStateLocked(StateDisconnected)
 	return closeErr
 }
