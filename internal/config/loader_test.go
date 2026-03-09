@@ -147,6 +147,51 @@ func TestLoadValidationError(t *testing.T) {
 	}
 }
 
+func TestLoadParsesQuotedResourceQuantities(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, DefaultFile)
+	writeFile(t, cfgPath, ""+
+		"apiVersion: okdev.io/v1alpha1\n"+
+		"kind: DevEnvironment\n"+
+		"metadata:\n"+
+		"  name: gpu-dev\n"+
+		"spec:\n"+
+		"  namespace: default\n"+
+		"  workspace:\n"+
+		"    mountPath: /workspace\n"+
+		"  podTemplate:\n"+
+		"    spec:\n"+
+		"      containers:\n"+
+		"        - name: dev\n"+
+		"          image: nvidia/cuda:12.4.1-devel-ubuntu22.04\n"+
+		"          resources:\n"+
+		"            requests:\n"+
+		"              cpu: \"32\"\n"+
+		"              memory: \"512Gi\"\n"+
+		"              nvidia.com/gpu: \"4\"\n")
+
+	cfg, _, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("expected quoted quantities to parse, got error: %v", err)
+	}
+	if len(cfg.Spec.PodTemplate.Spec.Containers) != 1 {
+		t.Fatalf("expected 1 container, got %d", len(cfg.Spec.PodTemplate.Spec.Containers))
+	}
+	req := cfg.Spec.PodTemplate.Spec.Containers[0].Resources.Requests
+	cpuQty := req["cpu"]
+	if got := cpuQty.String(); got != "32" {
+		t.Fatalf("unexpected cpu quantity %q", got)
+	}
+	memQty := req["memory"]
+	if got := memQty.String(); got != "512Gi" {
+		t.Fatalf("unexpected memory quantity %q", got)
+	}
+	gpuQty := req["nvidia.com/gpu"]
+	if got := gpuQty.String(); got != "4" {
+		t.Fatalf("unexpected gpu quantity %q", got)
+	}
+}
+
 func TestResolvePathStopsAtGitRoot(t *testing.T) {
 	tmp := t.TempDir()
 	repo := filepath.Join(tmp, "repo")
