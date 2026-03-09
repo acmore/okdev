@@ -200,54 +200,78 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				return nil
 			}
 			// Shell loop: reconnect automatically when the connection drops.
-			rapidFailures := 0
-			var firstRapidFailure time.Time
-			reconnectBackoff := 500 * time.Millisecond
-			for {
-				started := time.Now()
-				err := tm.OpenShell()
-				if err == nil {
-					return nil // clean exit (user typed exit/logout)
-				}
-				if shouldReconnectShell(err, tm.IsConnected()) {
-					// Avoid infinite reconnect loops on immediate remote-side failures,
-					// but allow short bursts of transport churn.
-					if time.Since(started) < 5*time.Second {
-						if rapidFailures == 0 {
-							firstRapidFailure = time.Now()
+				const maxRecoveryDuration = 3 * time.Minute
+				rapidFailures := 0
+				readinessFailures := 0
+				var firstRapidFailure time.Time
+				var recoveryStart time.Time
+				inRecovery := false
+				for {
+					started := time.Now()
+					err := tm.OpenShell()
+					if err == nil {
+						return nil // clean exit (user typed exit/logout)
+					}
+					if shouldReconnectShell(err, tm.IsConnected()) {
+						if !inRecovery {
+							fmt.Fprintln(cmd.ErrOrStderr(), "\nConnection lost. Reconnecting...")
+							inRecovery = true
+							recoveryStart = time.Now()
 						}
-						rapidFailures++
-					} else {
-						rapidFailures = 0
-						firstRapidFailure = time.Time{}
-						reconnectBackoff = 500 * time.Millisecond
-					}
-					// Fail only when many rapid failures happen in a short window.
-					if rapidFailures >= 8 && !firstRapidFailure.IsZero() && time.Since(firstRapidFailure) <= 30*time.Second {
-						return fmt.Errorf("ssh shell failed repeatedly after reconnect: %w", err)
-					}
-					fmt.Fprintln(cmd.ErrOrStderr(), "\nConnection lost. Reconnecting...")
-					if !tm.WaitConnected(cmd.Context()) {
-						fmt.Fprintln(cmd.ErrOrStderr(), "Reconnect failed. Session ended.")
-						return nil
-					}
-					if err := waitForSSHSessionReady(cmd.Context(), tm, 15*time.Second); err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "Reconnect not ready yet: %v\n", err)
-						time.Sleep(reconnectBackoff)
-						if reconnectBackoff < 4*time.Second {
-							reconnectBackoff *= 2
+						if time.Since(recoveryStart) > maxRecoveryDuration {
+							return fmt.Errorf("reconnect timed out after %s: %w", maxRecoveryDuration, err)
 						}
+						// Avoid infinite reconnect loops on immediate remote-side failures,
+						// but allow short bursts of transport churn.
+						if time.Since(started) < 5*time.Second {
+							if rapidFailures == 0 {
+								firstRapidFailure = time.Now()
+							}
+							rapidFailures++
+						} else {
+							rapidFailures = 0
+							readinessFailures = 0
+							firstRapidFailure = time.Time{}
+						}
+						// Fail only when many rapid failures happen in a short window.
+						if rapidFailures >= 20 && !firstRapidFailure.IsZero() && time.Since(firstRapidFailure) <= 60*time.Second {
+							return fmt.Errorf("ssh shell failed repeatedly after reconnect: %w", err)
+						}
+						// Wait for the background reconnect to establish a new SSH
+						// transport. Use a short timeout so we can print progress and
+						// enforce the total recovery deadline.
+						waitCtx, waitCancel := context.WithTimeout(cmd.Context(), 15*time.Second)
+						connected := tm.WaitConnected(waitCtx)
+						waitCancel()
+						if !connected {
+							if cmd.Context().Err() != nil {
+								fmt.Fprintln(cmd.ErrOrStderr(), "Reconnect cancelled. Session ended.")
+								return nil
+							}
+							elapsed := time.Since(recoveryStart).Round(time.Second)
+							fmt.Fprintf(cmd.ErrOrStderr(), "Still reconnecting (%s elapsed)...\n", elapsed)
+							continue
+						}
+						if err := waitForSSHSessionReady(cmd.Context(), tm, 15*time.Second); err != nil {
+							readinessFailures++
+							elapsed := time.Since(recoveryStart).Round(time.Second)
+							if readinessFailures == 1 || readinessFailures%5 == 0 {
+								fmt.Fprintf(cmd.ErrOrStderr(), "Reconnect not ready yet (%s elapsed): %v\n", elapsed, err)
+							}
+							// Transport is alive but sessions are dead (e.g. EOF from
+							// NewSession). Tear down the zombie and let the next
+							// iteration's WaitConnected block until a fresh connection
+							// is fully established.
+							tm.ForceReconnect()
+							continue
+						}
+						readinessFailures = 0
+						fmt.Fprintln(cmd.ErrOrStderr(), "Reconnected.")
+						inRecovery = false
 						continue
 					}
-					time.Sleep(reconnectBackoff)
-					if reconnectBackoff < 4*time.Second {
-						reconnectBackoff *= 2
-					}
-					fmt.Fprintln(cmd.ErrOrStderr(), "Reconnected.")
-					continue
+					return fmt.Errorf("ssh shell failed: %w", err)
 				}
-				return fmt.Errorf("ssh shell failed: %w", err)
-			}
 		},
 	}
 
@@ -573,6 +597,7 @@ func shouldReconnectShell(err error, connected bool) bool {
 func waitForSSHSessionReady(ctx context.Context, tm *okssh.TunnelManager, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
+	consecutiveSuccess := 0
 	for time.Now().Before(deadline) {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -581,8 +606,14 @@ func waitForSSHSessionReady(ctx context.Context, tm *okssh.TunnelManager, timeou
 		_, err := tm.ExecContext(probeCtx, "true")
 		cancel()
 		if err == nil {
-			return nil
+			consecutiveSuccess++
+			if consecutiveSuccess >= 2 {
+				return nil
+			}
+			time.Sleep(150 * time.Millisecond)
+			continue
 		}
+		consecutiveSuccess = 0
 		lastErr = err
 		time.Sleep(250 * time.Millisecond)
 	}

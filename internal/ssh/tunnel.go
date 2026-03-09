@@ -671,6 +671,18 @@ func (tm *TunnelManager) closeClientLocked() error {
 	return closeErr
 }
 
+// ForceReconnect tears down the current SSH client and triggers a background
+// reconnect. Use this when the transport looks alive but sessions are dead
+// (e.g. NewSession returns EOF). Callers should follow up with WaitConnected.
+func (tm *TunnelManager) ForceReconnect() {
+	tm.mu.Lock()
+	client := tm.client
+	tm.mu.Unlock()
+	if client != nil {
+		tm.handleConnectionLoss(client)
+	}
+}
+
 func (tm *TunnelManager) handleConnectionLoss(client *xssh.Client) {
 	tm.mu.Lock()
 	if tm.client != client || tm.reconnecting {

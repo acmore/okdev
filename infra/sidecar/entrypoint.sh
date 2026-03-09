@@ -45,16 +45,23 @@ if [ -z "$DEV_PID" ]; then
   exit 1
 fi
 
-# Ensure current GID exists in /etc/group inside BOTH the sidecar and the target to suppress
-# "groups: cannot find name for group ID ..." warnings from login shells.
-CURRENT_GID="$(id -g 2>/dev/null || true)"
-if [ -n "$CURRENT_GID" ]; then
-  grep -q ":${CURRENT_GID}:" /etc/group 2>/dev/null || \
-    echo "okdev:x:${CURRENT_GID}:" >> /etc/group 2>/dev/null || true
-  nsenter --target "$DEV_PID" --mount -- sh -c "
-    grep -q \":${CURRENT_GID}:\" /etc/group 2>/dev/null || \
-    echo \"okdev:x:${CURRENT_GID}:\" >> /etc/group 2>/dev/null || true
-  " 2>/dev/null || true
+# Ensure all current GIDs exist in /etc/group inside BOTH the sidecar and the
+# target to suppress "groups: cannot find name for group ID ..." warnings.
+ALL_GIDS="$(id -G 2>/dev/null || true)"
+if [ -n "$ALL_GIDS" ]; then
+  for gid in $ALL_GIDS; do
+    case "$gid" in
+      ''|*[!0-9]*)
+        continue
+        ;;
+    esac
+    grep -q ":${gid}:" /etc/group 2>/dev/null || \
+      echo "okdev${gid}:x:${gid}:" >> /etc/group 2>/dev/null || true
+    nsenter --target "$DEV_PID" --mount -- sh -c "
+      grep -q \":${gid}:\" /etc/group 2>/dev/null || \
+      echo \"okdev${gid}:x:${gid}:\" >> /etc/group 2>/dev/null || true
+    " 2>/dev/null || true
+  done
 fi
 
 # If a remote command was requested, execute it inside the dev container.
