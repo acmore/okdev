@@ -109,7 +109,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 			if noTmux {
 				tm.Env = map[string]string{"OKDEV_NO_TMUX": "1"}
 			}
-				tm.SetReconnectTargetProvider(func(_ context.Context) (string, int, error) {
+			tm.SetReconnectTargetProvider(func(_ context.Context) (string, int, error) {
 				pfMu.Lock()
 				defer pfMu.Unlock()
 				if currentCancelPF != nil {
@@ -117,7 +117,13 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					currentCancelPF = nil
 				}
 				pfKeepAliveCancel()
-				cancel, lp, err := startSSHPortForwardWithFallback(newKubeClient(opts), ns, podName(sn), localPort, remotePort)
+				reconnectLocalPort := localPort
+				// Reconnect on a fresh local port to avoid reusing a poisoned
+				// local forward endpoint after stream-level failures.
+				if p, perr := reserveEphemeralPort(); perr == nil {
+					reconnectLocalPort = p
+				}
+				cancel, lp, err := startSSHPortForwardWithFallback(newKubeClient(opts), ns, podName(sn), reconnectLocalPort, remotePort)
 				if err != nil {
 					return "", 0, err
 				}
