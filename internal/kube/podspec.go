@@ -30,12 +30,19 @@ func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath, 
 	shareProcessNamespace := true
 	spec.ShareProcessNamespace = &shareProcessNamespace
 
-	spec.Volumes = ensureVolume(spec.Volumes, corev1.Volume{
-		Name: "workspace",
-		VolumeSource: corev1.VolumeSource{
-			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: workspaceClaim},
-		},
-	})
+	workspaceVolume := corev1.Volume{
+		Name:         "workspace",
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	}
+	if strings.TrimSpace(workspaceClaim) != "" {
+		workspaceVolume = corev1.Volume{
+			Name: "workspace",
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: workspaceClaim},
+			},
+		}
+	}
+	spec.Volumes = ensureVolume(spec.Volumes, workspaceVolume)
 	spec.Volumes = ensureVolume(spec.Volumes, corev1.Volume{
 		Name:         "syncthing-home",
 		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},

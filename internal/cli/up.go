@@ -56,14 +56,17 @@ func newUpCmd(opts *Options) *cobra.Command {
 			labels := labelsForSession(opts, cfg, sn)
 			annotations := annotationsForSession(cfg)
 			pvc := pvcName(cfg, sn)
+			usePVC := usesWorkspacePVC(cfg)
 			pod := podName(sn)
 			if dryRun {
 				ui.section("Dry Run")
 				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: session=%s namespace=%s\n", sn, ns)
-				if cfg.Spec.Workspace.PVC.ClaimName == "" {
+				if usePVC && cfg.Spec.Workspace.PVC.ClaimName == "" {
 					fmt.Fprintf(cmd.OutOrStdout(), "- would apply pvc/%s\n", pvc)
-				} else {
+				} else if usePVC {
 					fmt.Fprintf(cmd.OutOrStdout(), "- using existing pvc/%s\n", pvc)
+				} else {
+					fmt.Fprintln(cmd.OutOrStdout(), "- using ephemeral workspace volume (emptyDir)")
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "- would apply pod/%s\n", pod)
 				fmt.Fprintf(cmd.OutOrStdout(), "- would wait for pod readiness (timeout=%s)\n", waitTimeout)
@@ -83,7 +86,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 			ctx, cancel := defaultContext()
 			defer cancel()
 
-			if cfg.Spec.Workspace.PVC.ClaimName == "" {
+			if usePVC && cfg.Spec.Workspace.PVC.ClaimName == "" {
 				ui.stepRun("pvc", pvc)
 				pvcManifest, err := kube.BuildPVCManifest(ns, pvc, cfg.Spec.Workspace.PVC.Size, cfg.Spec.Workspace.PVC.StorageClassName, labels, annotations)
 				if err != nil {
@@ -93,8 +96,11 @@ func newUpCmd(opts *Options) *cobra.Command {
 					return err
 				}
 				ui.stepDone("pvc", "applied")
-			} else {
+			} else if usePVC {
 				ui.stepDone("pvc", "using "+cfg.Spec.Workspace.PVC.ClaimName)
+			} else {
+				pvc = ""
+				ui.stepDone("pvc", "disabled (workspace uses emptyDir)")
 			}
 
 			enableTmux := tmux || cfg.Spec.SSH.PersistentSessionEnabled()

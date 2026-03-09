@@ -106,6 +106,29 @@ func TestPreparePodSpecContainerCount(t *testing.T) {
 	}
 }
 
+func TestPreparePodSpecWorkspaceEmptyDirWhenNoPVC(t *testing.T) {
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, v := range spec.Volumes {
+		if v.Name != "workspace" {
+			continue
+		}
+		found = true
+		if v.EmptyDir == nil {
+			t.Fatal("expected workspace volume to use emptyDir when no pvc claim is provided")
+		}
+		if v.PersistentVolumeClaim != nil {
+			t.Fatal("did not expect workspace pvc volume when claim is empty")
+		}
+	}
+	if !found {
+		t.Fatal("expected workspace volume")
+	}
+}
+
 func TestPreparePodSpecSidecarAlwaysAdded(t *testing.T) {
 	// Even with syncthingEnabled=false, sidecar is still added.
 	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
