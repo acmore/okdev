@@ -55,19 +55,12 @@ func newUpCmd(opts *Options) *cobra.Command {
 			ui.stepDone("namespace", ns)
 			labels := labelsForSession(opts, cfg, sn)
 			annotations := annotationsForSession(cfg)
-			pvc := pvcName(cfg, sn)
-			usePVC := usesWorkspacePVC(cfg)
+			volumes := cfg.EffectiveVolumes()
 			pod := podName(sn)
 			if dryRun {
 				ui.section("Dry Run")
 				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: session=%s namespace=%s\n", sn, ns)
-				if usePVC && cfg.Spec.Workspace.PVC.ClaimName == "" {
-					fmt.Fprintf(cmd.OutOrStdout(), "- would apply pvc/%s\n", pvc)
-				} else if usePVC {
-					fmt.Fprintf(cmd.OutOrStdout(), "- using existing pvc/%s\n", pvc)
-				} else {
-					fmt.Fprintln(cmd.OutOrStdout(), "- using ephemeral workspace volume (emptyDir)")
-				}
+				fmt.Fprintf(cmd.OutOrStdout(), "- using %d configured volume(s)\n", len(volumes))
 				fmt.Fprintf(cmd.OutOrStdout(), "- would apply pod/%s\n", pod)
 				fmt.Fprintf(cmd.OutOrStdout(), "- would wait for pod readiness (timeout=%s)\n", waitTimeout)
 				fmt.Fprintln(cmd.OutOrStdout(), "- would setup SSH config + managed SSH/port-forwards")
@@ -85,30 +78,14 @@ func newUpCmd(opts *Options) *cobra.Command {
 			}
 			ctx, cancel := defaultContext()
 			defer cancel()
-
-			if usePVC && cfg.Spec.Workspace.PVC.ClaimName == "" {
-				ui.stepRun("pvc", pvc)
-				pvcManifest, err := kube.BuildPVCManifest(ns, pvc, cfg.Spec.Workspace.PVC.Size, cfg.Spec.Workspace.PVC.StorageClassName, labels, annotations)
-				if err != nil {
-					return err
-				}
-				if err := k.Apply(ctx, ns, pvcManifest); err != nil {
-					return err
-				}
-				ui.stepDone("pvc", "applied")
-			} else if usePVC {
-				ui.stepDone("pvc", "using "+cfg.Spec.Workspace.PVC.ClaimName)
-			} else {
-				pvc = ""
-				ui.stepDone("pvc", "disabled (workspace uses emptyDir)")
-			}
+			ui.stepDone("pvc", "not managed (use pre-created PVCs in spec.volumes)")
 
 			enableTmux := tmux || cfg.Spec.SSH.PersistentSessionEnabled()
 			preStopCmd := resolvePreStopCommand(cfg, cfgPath)
 			preparedSpec, err := kube.PreparePodSpec(
 				cfg.Spec.PodTemplate.Spec,
-				pvc,
-				cfg.Spec.Workspace.MountPath,
+				volumes,
+				cfg.WorkspaceMountPath(),
 				cfg.Spec.Sidecar.Image,
 				enableTmux,
 				preStopCmd,

@@ -28,7 +28,7 @@ spec: {}
 - `spec.namespace` (`string`, default: `default`)
 - `spec.kubeContext` (`string`, optional): kubeconfig context used by okdev commands.
 - `spec.session` (`object`)
-- `spec.workspace` (`object`, required)
+- `spec.volumes` (`array`, optional)
 - `spec.sync` (`object`)
 - `spec.ports` (`array`)
 - `spec.ssh` (`object`)
@@ -52,13 +52,21 @@ Context precedence:
 - `spec.kubeContext` from manifest
 - active kubeconfig current-context (default client behavior)
 
-## `spec.workspace`
+## `spec.volumes`
 
-- `mountPath` (`string`, required): workspace mount path in containers.
-- `pvc` (`object`):
-  - `claimName` (`string`, optional): existing PVC to bind.
-  - `size` (`string`, default: `50Gi`): requested PVC size.
-  - `storageClassName` (`string`, optional)
+`spec.volumes` uses native Kubernetes `corev1.Volume` schema.
+
+- Define storage source with standard `VolumeSource` (for example `emptyDir`, `persistentVolumeClaim`, `ephemeral`, `configMap`, `secret`).
+- Mount points are defined with standard Kubernetes `volumeMounts` in `spec.podTemplate.spec.containers[*].volumeMounts`.
+
+Workspace behavior:
+- If a `workspace` volume is not provided, okdev injects:
+  - `name: workspace`
+  - `emptyDir: {}`
+- okdev ensures `workspace` is mounted on:
+  - `dev` container
+  - `okdev-sidecar`
+- Workspace mount path defaults to `/workspace` (or follows `dev` container `volumeMounts` entry for `workspace` if provided in `podTemplate`).
 
 ## `spec.sync`
 
@@ -95,8 +103,8 @@ Validation:
 - `privateKeyPath` (`string`, optional)
 - `autoDetectPorts` (`bool`, default: `true`)
 - `persistentSession` (`bool`, default: `false`) enables tmux-backed interactive session mode
-- `keepAliveIntervalSeconds` (`int`, default: `30`)
-- `keepAliveTimeoutSeconds` (`int`, default: `90`)
+- `keepAliveIntervalSeconds` (`int`, default: `10`)
+- `keepAliveTimeoutSeconds` (`int`, default: `10`)
 
 Validation:
 - `remotePort` must be `1..65535`
@@ -139,11 +147,14 @@ spec:
     ttlHours: 72
     idleTimeoutMinutes: 120
     shareable: true
-  workspace:
-    mountPath: /workspace
-    pvc:
-      size: 200Gi
-      storageClassName: fast-ssd
+  mounts:
+  volumes:
+    - name: workspace
+      persistentVolumeClaim:
+        claimName: team-workspace
+    - name: datasets
+      persistentVolumeClaim:
+        claimName: team-datasets
   sync:
     engine: syncthing
     syncthing:
@@ -179,6 +190,12 @@ spec:
         - name: dev
           image: nvidia/cuda:12.4.1-devel-ubuntu22.04
           command: ["sleep", "infinity"]
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: datasets
+              mountPath: /data
+              readOnly: true
           resources:
             requests:
               cpu: "8"

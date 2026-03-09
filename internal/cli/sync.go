@@ -47,7 +47,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if engine != "syncthing" {
 				return fmt.Errorf("unsupported sync engine %q (only syncthing is supported)", engine)
 			}
-			pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.Spec.Workspace.MountPath)
+			pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.WorkspaceMountPath())
 			if err != nil {
 				return err
 			}

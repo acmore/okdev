@@ -31,16 +31,17 @@ type Metadata struct {
 }
 
 type DevEnvSpec struct {
-	Namespace   string         `yaml:"namespace"`
-	KubeContext string         `yaml:"kubeContext"`
-	Session     SessionSpec    `yaml:"session"`
-	Workspace   Workspace      `yaml:"workspace"`
-	Sync        SyncSpec       `yaml:"sync"`
-	Ports       []PortMapping  `yaml:"ports"`
-	SSH         SSHSpec        `yaml:"ssh"`
-	Lifecycle   LifecycleSpec  `yaml:"lifecycle"`
-	Sidecar     SidecarSpec    `yaml:"sidecar"`
-	PodTemplate PodTemplateRef `yaml:"podTemplate"`
+	Namespace   string           `yaml:"namespace"`
+	KubeContext string           `yaml:"kubeContext"`
+	Session     SessionSpec      `yaml:"session"`
+	Volumes     []corev1.Volume  `yaml:"volumes"`
+	Workspace   *LegacyWorkspace `yaml:"workspace,omitempty"`
+	Sync        SyncSpec         `yaml:"sync"`
+	Ports       []PortMapping    `yaml:"ports"`
+	SSH         SSHSpec          `yaml:"ssh"`
+	Lifecycle   LifecycleSpec    `yaml:"lifecycle"`
+	Sidecar     SidecarSpec      `yaml:"sidecar"`
+	PodTemplate PodTemplateRef   `yaml:"podTemplate"`
 }
 
 type SidecarSpec struct {
@@ -54,15 +55,15 @@ type SessionSpec struct {
 	Shareable           bool   `yaml:"shareable"`
 }
 
-type Workspace struct {
-	MountPath string      `yaml:"mountPath"`
-	PVC       PVCSettings `yaml:"pvc"`
-}
+const (
+	DefaultWorkspacePath = "/workspace"
+	DefaultWorkspaceName = "workspace"
+)
 
-type PVCSettings struct {
-	ClaimName        string `yaml:"claimName"`
-	Size             string `yaml:"size"`
-	StorageClassName string `yaml:"storageClassName"`
+// LegacyWorkspace exists only to produce a clear migration error for removed config.
+type LegacyWorkspace struct {
+	MountPath string            `yaml:"mountPath"`
+	PVC       map[string]string `yaml:"pvc"`
 }
 
 type PodTemplateRef struct {
@@ -173,8 +174,8 @@ func (d *DevEnvironment) Validate() error {
 	if d.Metadata.Name == "" {
 		return errors.New("metadata.name is required")
 	}
-	if d.Spec.Workspace.MountPath == "" {
-		return errors.New("spec.workspace.mountPath is required")
+	if d.Spec.Workspace != nil {
+		return errors.New("spec.workspace is removed; use spec.volumes (k8s Volume) and podTemplate.spec.containers[*].volumeMounts")
 	}
 	if d.Spec.Sync.Engine != "syncthing" {
 		return fmt.Errorf("spec.sync.engine must be syncthing, got %q", d.Spec.Sync.Engine)
@@ -227,6 +228,40 @@ func (s SyncthingSpec) AutoInstallEnabled() bool {
 		return true
 	}
 	return *s.AutoInstall
+}
+
+func (d *DevEnvironment) EffectiveVolumes() []corev1.Volume {
+	out := make([]corev1.Volume, 0, len(d.Spec.Volumes)+1)
+	hasWorkspace := false
+	for _, v := range d.Spec.Volumes {
+		if v.Name == DefaultWorkspaceName {
+			hasWorkspace = true
+		}
+		out = append(out, v)
+	}
+	if !hasWorkspace {
+		out = append(out, corev1.Volume{
+			Name: DefaultWorkspaceName,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		})
+	}
+	return out
+}
+
+func (d *DevEnvironment) WorkspaceMountPath() string {
+	for _, c := range d.Spec.PodTemplate.Spec.Containers {
+		if c.Name != "dev" {
+			continue
+		}
+		for _, vm := range c.VolumeMounts {
+			if vm.Name == DefaultWorkspaceName && strings.TrimSpace(vm.MountPath) != "" {
+				return vm.MountPath
+			}
+		}
+	}
+	return DefaultWorkspacePath
 }
 
 func validateSyncPaths(paths []string) error {

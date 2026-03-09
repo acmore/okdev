@@ -10,9 +10,12 @@ import (
 
 var semverTagPattern = regexp.MustCompile(`^v?\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$`)
 
-func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath, sidecarImage string, tmux bool, preStop string) (corev1.PodSpec, error) {
+func PreparePodSpec(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, tmux bool, preStop string) (corev1.PodSpec, error) {
 	if strings.TrimSpace(sidecarImage) == "" {
 		return corev1.PodSpec{}, fmt.Errorf("sidecar image cannot be empty")
+	}
+	if strings.TrimSpace(workspaceMountPath) == "" {
+		workspaceMountPath = "/workspace"
 	}
 
 	spec := podSpec.DeepCopy()
@@ -30,29 +33,25 @@ func PreparePodSpec(podSpec corev1.PodSpec, workspaceClaim, workspaceMountPath, 
 	shareProcessNamespace := true
 	spec.ShareProcessNamespace = &shareProcessNamespace
 
-	workspaceVolume := corev1.Volume{
+	for _, v := range volumes {
+		spec.Volumes = ensureVolume(spec.Volumes, v)
+	}
+	spec.Volumes = ensureVolume(spec.Volumes, corev1.Volume{
 		Name:         "workspace",
 		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-	}
-	if strings.TrimSpace(workspaceClaim) != "" {
-		workspaceVolume = corev1.Volume{
-			Name: "workspace",
-			VolumeSource: corev1.VolumeSource{
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: workspaceClaim},
-			},
-		}
-	}
-	spec.Volumes = ensureVolume(spec.Volumes, workspaceVolume)
+	})
 	spec.Volumes = ensureVolume(spec.Volumes, corev1.Volume{
 		Name:         "syncthing-home",
 		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 	})
 
 	for i := range spec.Containers {
-		spec.Containers[i].VolumeMounts = ensureVolumeMount(spec.Containers[i].VolumeMounts, corev1.VolumeMount{
-			Name:      "workspace",
-			MountPath: workspaceMountPath,
-		})
+		if spec.Containers[i].Name == "dev" {
+			spec.Containers[i].VolumeMounts = ensureVolumeMount(spec.Containers[i].VolumeMounts, corev1.VolumeMount{
+				Name:      "workspace",
+				MountPath: workspaceMountPath,
+			})
+		}
 	}
 
 	if preStop != "" && len(spec.Containers) > 0 {

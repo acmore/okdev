@@ -174,23 +174,6 @@ func podName(sessionName string) string {
 	return "okdev-" + sessionName
 }
 
-func pvcName(cfg *config.DevEnvironment, sessionName string) string {
-	if cfg.Spec.Workspace.PVC.ClaimName != "" {
-		return cfg.Spec.Workspace.PVC.ClaimName
-	}
-	return "okdev-" + sessionName + "-workspace"
-}
-
-func usesWorkspacePVC(cfg *config.DevEnvironment) bool {
-	if cfg == nil {
-		return false
-	}
-	pvc := cfg.Spec.Workspace.PVC
-	return strings.TrimSpace(pvc.ClaimName) != "" ||
-		strings.TrimSpace(pvc.Size) != "" ||
-		strings.TrimSpace(pvc.StorageClassName) != ""
-}
-
 func newKubeClient(opts *Options) *kube.Client {
 	return &kube.Client{Context: opts.Context}
 }

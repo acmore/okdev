@@ -18,7 +18,7 @@ func resolvePostCreateCommand(cfg *config.DevEnvironment, configPath string) str
 	}
 	script := filepath.Join(root, ".okdev", "post-create.sh")
 	if st, err := os.Stat(script); err == nil && !st.IsDir() {
-		return filepath.Join(cfg.Spec.Workspace.MountPath, ".okdev", "post-create.sh")
+		return filepath.Join(cfg.WorkspaceMountPath(), ".okdev", "post-create.sh")
 	}
 	return ""
 }
@@ -33,7 +33,7 @@ func resolvePreStopCommand(cfg *config.DevEnvironment, configPath string) string
 	}
 	script := filepath.Join(root, ".okdev", "pre-stop.sh")
 	if st, err := os.Stat(script); err == nil && !st.IsDir() {
-		return filepath.Join(cfg.Spec.Workspace.MountPath, ".okdev", "pre-stop.sh")
+		return filepath.Join(cfg.WorkspaceMountPath(), ".okdev", "pre-stop.sh")
 	}
 	return ""
 }

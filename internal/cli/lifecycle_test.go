@@ -11,7 +11,7 @@ import (
 func testLifecycleCfg() *config.DevEnvironment {
 	return &config.DevEnvironment{
 		Spec: config.DevEnvSpec{
-			Workspace: config.Workspace{MountPath: "/workspace"},
+			Volumes: nil,
 		},
 	}
 }

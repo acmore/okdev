@@ -126,7 +126,7 @@ func TestLoadWithExplicitPath(t *testing.T) {
 func TestLoadParsesKubeContext(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, DefaultFile)
-	writeFile(t, cfgPath, "apiVersion: okdev.io/v1alpha1\nkind: DevEnvironment\nmetadata:\n  name: x\nspec:\n  namespace: default\n  kubeContext: team-staging\n  workspace:\n    mountPath: /workspace\n")
+	writeFile(t, cfgPath, "apiVersion: okdev.io/v1alpha1\nkind: DevEnvironment\nmetadata:\n  name: x\nspec:\n  namespace: default\n  kubeContext: team-staging\n")
 
 	cfg, _, err := Load(cfgPath)
 	if err != nil {
@@ -157,8 +157,6 @@ func TestLoadParsesQuotedResourceQuantities(t *testing.T) {
 		"  name: gpu-dev\n"+
 		"spec:\n"+
 		"  namespace: default\n"+
-		"  workspace:\n"+
-		"    mountPath: /workspace\n"+
 		"  podTemplate:\n"+
 		"    spec:\n"+
 		"      containers:\n"+
@@ -228,7 +226,5 @@ func validConfigYAML(name string) string {
 		"kind: DevEnvironment\n" +
 		"metadata:\n  name: " + name + "\n" +
 		"spec:\n" +
-		"  namespace: default\n" +
-		"  workspace:\n" +
-		"    mountPath: /workspace\n"
+		"  namespace: default\n"
 }

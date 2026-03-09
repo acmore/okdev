@@ -26,28 +26,6 @@ func TestNamesAndLabels(t *testing.T) {
 	}
 }
 
-func TestPVCName(t *testing.T) {
-	cfg := &config.DevEnvironment{}
-	if usesWorkspacePVC(cfg) {
-		t.Fatal("expected pvc disabled when workspace.pvc is not configured")
-	}
-	cfg.Spec.Workspace.PVC.Size = "50Gi"
-	if !usesWorkspacePVC(cfg) {
-		t.Fatal("expected pvc enabled when size is configured")
-	}
-	if pvcName(cfg, "s1") != "okdev-s1-workspace" {
-		t.Fatal("unexpected managed pvc name")
-	}
-	cfg.Spec.Workspace.PVC.Size = ""
-	cfg.Spec.Workspace.PVC.ClaimName = "existing"
-	if !usesWorkspacePVC(cfg) {
-		t.Fatal("expected pvc enabled for explicit claim")
-	}
-	if pvcName(cfg, "s1") != "existing" {
-		t.Fatal("expected explicit claim name")
-	}
-}
-
 func TestAnnotationsForSession(t *testing.T) {
 	cfg := &config.DevEnvironment{}
 	cfg.Spec.Session.TTLHours = 72

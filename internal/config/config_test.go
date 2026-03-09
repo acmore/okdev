@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/acmore/okdev/internal/version"
+	corev1 "k8s.io/api/core/v1"
 )
 
 func validConfig() *DevEnvironment {
@@ -12,9 +13,8 @@ func validConfig() *DevEnvironment {
 		Kind:       "DevEnvironment",
 		Metadata:   Metadata{Name: "x"},
 		Spec: DevEnvSpec{
-			Workspace: Workspace{MountPath: "/workspace"},
-			Sync:      SyncSpec{Engine: "syncthing"},
-			Session:   SessionSpec{},
+			Sync:    SyncSpec{Engine: "syncthing"},
+			Session: SessionSpec{},
 		},
 	}
 }
@@ -24,9 +24,7 @@ func TestSetDefaults(t *testing.T) {
 		APIVersion: "okdev.io/v1alpha1",
 		Kind:       "DevEnvironment",
 		Metadata:   Metadata{Name: "x"},
-		Spec: DevEnvSpec{
-			Workspace: Workspace{MountPath: "/workspace"},
-		},
+		Spec:       DevEnvSpec{},
 	}
 	cfg.SetDefaults()
 
@@ -64,9 +62,7 @@ func TestSetDefaultsAutoDetectPortsFalse(t *testing.T) {
 		APIVersion: "okdev.io/v1alpha1",
 		Kind:       "DevEnvironment",
 		Metadata:   Metadata{Name: "x"},
-		Spec: DevEnvSpec{
-			Workspace: Workspace{MountPath: "/workspace"},
-		},
+		Spec:       DevEnvSpec{},
 	}
 	v := false
 	cfg.Spec.SSH.AutoDetectPorts = &v
@@ -144,6 +140,49 @@ func TestValidateRejectsEmptySidecarImage(t *testing.T) {
 	cfg.Spec.Sidecar.Image = ""
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error for empty sidecar image")
+	}
+}
+
+func TestValidateRejectsLegacyWorkspace(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Workspace = &LegacyWorkspace{MountPath: "/workspace"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for legacy spec.workspace")
+	}
+}
+
+func TestEffectiveVolumesAddsImplicitWorkspace(t *testing.T) {
+	cfg := &DevEnvironment{
+		APIVersion: "okdev.io/v1alpha1",
+		Kind:       "DevEnvironment",
+		Metadata:   Metadata{Name: "x"},
+		Spec: DevEnvSpec{
+			Sync: SyncSpec{Engine: "syncthing"},
+		},
+	}
+	cfg.SetDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+	volumes := cfg.EffectiveVolumes()
+	if len(volumes) != 1 {
+		t.Fatalf("expected 1 implicit workspace volume, got %d", len(volumes))
+	}
+	if volumes[0].Name != DefaultWorkspaceName || volumes[0].EmptyDir == nil {
+		t.Fatalf("unexpected implicit workspace volume: %+v", volumes[0])
+	}
+}
+
+func TestWorkspaceMountPathPrefersDevVolumeMount(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.PodTemplate.Spec.Containers = []corev1.Container{{
+		Name: "dev",
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: "workspace", MountPath: "/code"},
+		},
+	}}
+	if got := cfg.WorkspaceMountPath(); got != "/code" {
+		t.Fatalf("expected /code workspace mount path, got %q", got)
 	}
 }
 

@@ -37,7 +37,6 @@ func newDownCmd(opts *Options) *cobra.Command {
 			ui.stepDone("session", sn)
 			ui.stepDone("namespace", ns)
 			k := newKubeClient(opts)
-			usePVC := usesWorkspacePVC(cfg)
 			if err := ensureSessionOwnership(opts, k, ns, sn, false); err != nil {
 				return err
 			}
@@ -48,10 +47,8 @@ func newDownCmd(opts *Options) *cobra.Command {
 				ui.section("Dry Run")
 				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: session=%s namespace=%s\n", sn, ns)
 				fmt.Fprintf(cmd.OutOrStdout(), "- would delete pod/%s\n", podName(sn))
-				if deletePVC && usePVC && cfg.Spec.Workspace.PVC.ClaimName == "" {
-					fmt.Fprintf(cmd.OutOrStdout(), "- would delete pvc/%s\n", pvcName(cfg, sn))
-				} else if !deletePVC && usePVC && cfg.Spec.Workspace.PVC.ClaimName == "" {
-					fmt.Fprintf(cmd.OutOrStdout(), "- would retain pvc/%s\n", pvcName(cfg, sn))
+				if deletePVC {
+					fmt.Fprintln(cmd.OutOrStdout(), "- note: --delete-pvc is ignored (okdev no longer manages PVC lifecycle)")
 				}
 				return nil
 			}
@@ -62,19 +59,10 @@ func newDownCmd(opts *Options) *cobra.Command {
 				return fmt.Errorf("delete session pod: %w", err)
 			}
 			ui.stepDone("pod", "deleted")
-			if deletePVC && usePVC && cfg.Spec.Workspace.PVC.ClaimName == "" {
-				ui.stepRun("pvc", pvcName(cfg, sn))
-				if err := k.Delete(ctx, ns, "pvc", pvcName(cfg, sn), true); err != nil && !apierrors.IsNotFound(err) {
-					return fmt.Errorf("delete workspace pvc: %w", err)
-				}
-				ui.stepDone("pvc", "deleted")
-			} else if usePVC && cfg.Spec.Workspace.PVC.ClaimName == "" {
-				ui.stepDone("pvc", "retained")
-			} else if usePVC {
-				ui.stepDone("pvc", "external claim")
-			} else {
-				ui.stepDone("pvc", "not used")
+			if deletePVC {
+				ui.warnf("--delete-pvc ignored: okdev no longer manages PVC lifecycle; delete PVCs manually if needed")
 			}
+			ui.stepDone("pvc", "not managed")
 			alias := sshHostAlias(sn)
 			ui.section("Cleanup")
 			_ = stopManagedSSHForward(alias)
@@ -93,16 +81,7 @@ func newDownCmd(opts *Options) *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "session:   %s\n", sn)
 			fmt.Fprintf(cmd.OutOrStdout(), "namespace: %s\n", ns)
 			fmt.Fprintln(cmd.OutOrStdout(), "status:    stopped")
-			if !deletePVC && usePVC && cfg.Spec.Workspace.PVC.ClaimName == "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "workspace: retained (%s)\n", pvcName(cfg, sn))
-				fmt.Fprintln(cmd.OutOrStdout(), "note:      use --delete-pvc to remove workspace storage")
-			} else if deletePVC && usePVC && cfg.Spec.Workspace.PVC.ClaimName == "" {
-				fmt.Fprintln(cmd.OutOrStdout(), "workspace: deleted")
-			} else if usePVC {
-				fmt.Fprintf(cmd.OutOrStdout(), "workspace: external claim (%s)\n", cfg.Spec.Workspace.PVC.ClaimName)
-			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), "workspace: ephemeral (emptyDir)")
-			}
+			fmt.Fprintln(cmd.OutOrStdout(), "workspace: pod deleted; volumes/PVCs unchanged")
 			return nil
 		},
 	}

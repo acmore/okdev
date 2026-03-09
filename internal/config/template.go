@@ -13,10 +13,6 @@ spec:
     ttlHours: 72
     idleTimeoutMinutes: 120
     shareable: true
-  workspace:
-    mountPath: /workspace
-    pvc:
-      size: %s
   sync:
     engine: syncthing
     syncthing:
@@ -40,7 +36,7 @@ spec:
     keepAliveTimeoutSeconds: 90
   sidecar:
     image: %s
-`, DefaultWorkspacePVCSize, DefaultSyncthingVersion, DefaultSidecarImage)
+`, DefaultSyncthingVersion, DefaultSidecarImage)
 
 var gpuTemplate = fmt.Sprintf(`apiVersion: okdev.io/v1alpha1
 kind: DevEnvironment
@@ -53,11 +49,6 @@ spec:
     ttlHours: 72
     idleTimeoutMinutes: 120
     shareable: true
-  workspace:
-    mountPath: /workspace
-    pvc:
-      size: 200Gi
-      storageClassName: fast-ssd
   sync:
     engine: syncthing
     syncthing:
@@ -121,11 +112,6 @@ spec:
     ttlHours: 72
     idleTimeoutMinutes: 120
     shareable: true
-  workspace:
-    mountPath: /workspace
-    pvc:
-      size: 200Gi
-      storageClassName: fast-ssd
   sync:
     engine: syncthing
     syncthing:

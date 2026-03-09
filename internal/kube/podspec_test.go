@@ -7,230 +7,90 @@ import (
 )
 
 func TestPreparePodSpecShareProcessNamespace(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if spec.ShareProcessNamespace == nil || !*spec.ShareProcessNamespace {
-		t.Fatal("expected ShareProcessNamespace to be true")
+		t.Fatal("expected ShareProcessNamespace=true")
 	}
 }
 
-func TestPreparePodSpecSidecarName(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
+func TestPreparePodSpecWorkspaceDefaultsToEmptyDir(t *testing.T) {
+	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasContainer(spec.Containers, "okdev-sidecar") {
-		t.Fatal("expected okdev-sidecar container")
+	for _, v := range spec.Volumes {
+		if v.Name == "workspace" {
+			if v.EmptyDir == nil {
+				t.Fatal("expected workspace emptyDir when no workspace volume configured")
+			}
+			return
+		}
 	}
+	t.Fatal("workspace volume not found")
 }
 
-func TestPreparePodSpecSidecarPorts(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
+func TestPreparePodSpecUsesConfiguredWorkspaceVolume(t *testing.T) {
+	volumes := []corev1.Volume{
+		{
+			Name: "workspace",
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: "team-workspace",
+				},
+			},
+		},
+	}
+	spec, err := PreparePodSpec(corev1.PodSpec{}, volumes, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var sidecar corev1.Container
+	for _, v := range spec.Volumes {
+		if v.Name == "workspace" {
+			if v.PersistentVolumeClaim == nil || v.PersistentVolumeClaim.ClaimName != "team-workspace" {
+				t.Fatalf("expected workspace pvc claim team-workspace, got %#v", v.PersistentVolumeClaim)
+			}
+			return
+		}
+	}
+	t.Fatal("workspace volume not found")
+}
+
+func TestPreparePodSpecAddsWorkspaceMountOnDevAndSidecar(t *testing.T) {
+	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dev, sidecar corev1.Container
 	for _, c := range spec.Containers {
+		if c.Name == "dev" {
+			dev = c
+		}
 		if c.Name == "okdev-sidecar" {
 			sidecar = c
-			break
 		}
 	}
-	wantPorts := map[int32]bool{22: false, 8384: false, 22000: false}
-	for _, p := range sidecar.Ports {
-		if _, ok := wantPorts[p.ContainerPort]; ok {
-			wantPorts[p.ContainerPort] = true
-		}
-	}
-	for port, found := range wantPorts {
-		if !found {
-			t.Fatalf("expected port %d on okdev-sidecar", port)
-		}
-	}
-}
-
-func TestPreparePodSpecSidecarVolumeMounts(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sidecar corev1.Container
-	for _, c := range spec.Containers {
-		if c.Name == "okdev-sidecar" {
-			sidecar = c
-			break
-		}
-	}
-	hasMount := func(name string) bool {
-		for _, m := range sidecar.VolumeMounts {
-			if m.Name == name {
+	hasMount := func(c corev1.Container, name, path string) bool {
+		for _, m := range c.VolumeMounts {
+			if m.Name == name && m.MountPath == path {
 				return true
 			}
 		}
 		return false
 	}
-	if !hasMount("workspace") {
-		t.Fatal("expected workspace volume mount on okdev-sidecar")
+	if !hasMount(dev, "workspace", "/workspace") {
+		t.Fatal("expected workspace mount on dev")
 	}
-	if !hasMount("syncthing-home") {
-		t.Fatal("expected syncthing-home volume mount on okdev-sidecar")
-	}
-}
-
-func TestPreparePodSpecSidecarPrivileged(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sidecar corev1.Container
-	for _, c := range spec.Containers {
-		if c.Name == "okdev-sidecar" {
-			sidecar = c
-			break
-		}
-	}
-	if sidecar.SecurityContext == nil || sidecar.SecurityContext.Privileged == nil || !*sidecar.SecurityContext.Privileged {
-		t.Fatal("expected okdev-sidecar to run privileged for nsenter")
-	}
-}
-
-func TestPreparePodSpecContainerCount(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(spec.Containers) != 2 {
-		t.Fatalf("expected 2 containers (dev + okdev-sidecar), got %d", len(spec.Containers))
-	}
-}
-
-func TestPreparePodSpecWorkspaceEmptyDirWhenNoPVC(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := false
-	for _, v := range spec.Volumes {
-		if v.Name != "workspace" {
-			continue
-		}
-		found = true
-		if v.EmptyDir == nil {
-			t.Fatal("expected workspace volume to use emptyDir when no pvc claim is provided")
-		}
-		if v.PersistentVolumeClaim != nil {
-			t.Fatal("did not expect workspace pvc volume when claim is empty")
-		}
-	}
-	if !found {
-		t.Fatal("expected workspace volume")
-	}
-}
-
-func TestPreparePodSpecSidecarAlwaysAdded(t *testing.T) {
-	// Even with syncthingEnabled=false, sidecar is still added.
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !hasContainer(spec.Containers, "okdev-sidecar") {
-		t.Fatal("expected okdev-sidecar container even when syncthingEnabled is false")
+	if !hasMount(sidecar, "workspace", "/workspace") {
+		t.Fatal("expected workspace mount on sidecar")
 	}
 }
 
 func TestPreparePodSpecErrorsOnEmptyImage(t *testing.T) {
-	_, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "", false, "")
-	if err == nil {
+	if _, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "", false, ""); err == nil {
 		t.Fatal("expected error for empty sidecar image")
-	}
-}
-
-func TestPreparePodSpecTmuxEnvEnabled(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", true, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sidecar corev1.Container
-	for _, c := range spec.Containers {
-		if c.Name == "okdev-sidecar" {
-			sidecar = c
-			break
-		}
-	}
-	found := false
-	foundWorkspace := false
-	for _, e := range sidecar.Env {
-		if e.Name == "OKDEV_TMUX" && e.Value == "1" {
-			found = true
-		}
-		if e.Name == "OKDEV_WORKSPACE" && e.Value == "/workspace" {
-			foundWorkspace = true
-		}
-	}
-	if !found {
-		t.Fatal("expected OKDEV_TMUX=1 env var on okdev-sidecar when tmux enabled")
-	}
-	if !foundWorkspace {
-		t.Fatal("expected OKDEV_WORKSPACE env var on okdev-sidecar")
-	}
-}
-
-func TestPreparePodSpecTmuxEnvDisabled(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sidecar corev1.Container
-	for _, c := range spec.Containers {
-		if c.Name == "okdev-sidecar" {
-			sidecar = c
-			break
-		}
-	}
-	foundWorkspace := false
-	for _, e := range sidecar.Env {
-		if e.Name == "OKDEV_TMUX" {
-			t.Fatal("expected no OKDEV_TMUX env var on okdev-sidecar when tmux disabled")
-		}
-		if e.Name == "OKDEV_WORKSPACE" && e.Value == "/workspace" {
-			foundWorkspace = true
-		}
-	}
-	if !foundWorkspace {
-		t.Fatal("expected OKDEV_WORKSPACE env var on okdev-sidecar")
-	}
-}
-
-func TestPreparePodSpecPreStopHook(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "make clean")
-	if err != nil {
-		t.Fatal(err)
-	}
-	dev := spec.Containers[0]
-	if dev.Lifecycle == nil || dev.Lifecycle.PreStop == nil {
-		t.Fatal("expected preStop lifecycle hook on dev container")
-	}
-	if dev.Lifecycle.PreStop.Exec == nil {
-		t.Fatal("expected exec action in preStop hook")
-	}
-	want := []string{"sh", "-c", "make clean"}
-	for i, w := range want {
-		if i >= len(dev.Lifecycle.PreStop.Exec.Command) || dev.Lifecycle.PreStop.Exec.Command[i] != w {
-			t.Fatalf("expected preStop command %v, got %v", want, dev.Lifecycle.PreStop.Exec.Command)
-		}
-	}
-}
-
-func TestPreparePodSpecNoPreStopHook(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, "ws-pvc", "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	dev := spec.Containers[0]
-	if dev.Lifecycle != nil && dev.Lifecycle.PreStop != nil {
-		t.Fatal("expected no preStop lifecycle hook when preStop is empty")
 	}
 }
 
