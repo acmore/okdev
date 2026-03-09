@@ -67,23 +67,23 @@ fi
 # If a remote command was requested, execute it inside the dev container.
 if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
   if nsenter --target "$DEV_PID" --mount -- test -x /bin/bash 2>/dev/null; then
-    exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid -- /bin/bash -lc "$SSH_ORIGINAL_COMMAND"
+    exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid --cgroup -- /bin/bash -lc "$SSH_ORIGINAL_COMMAND"
   else
-    exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid -- /bin/sh -lc "$SSH_ORIGINAL_COMMAND"
+    exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid --cgroup -- /bin/sh -lc "$SSH_ORIGINAL_COMMAND"
   fi
 fi
 
 # If there is no TTY and no remote command (e.g. SSH master/control session),
 # keep the connection open so forwarding channels stay alive.
 if [ ! -t 0 ]; then
-  exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid -- /bin/sh -lc "while :; do sleep 3600; done"
+  exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid --cgroup -- /bin/sh -lc "while :; do sleep 3600; done"
 fi
 
 # Run postAttach script for interactive sessions when present.
 if [ -n "${OKDEV_WORKSPACE_PATH:-}" ]; then
   POST_ATTACH="${OKDEV_WORKSPACE_PATH}/.okdev/post-attach.sh"
   if nsenter --target "$DEV_PID" --mount -- test -x "$POST_ATTACH" 2>/dev/null; then
-    nsenter --target "$DEV_PID" --mount --uts --ipc --pid -- "$POST_ATTACH" 2>&1 || \
+    nsenter --target "$DEV_PID" --mount --uts --ipc --pid --cgroup -- "$POST_ATTACH" 2>&1 || \
       echo "warning: postAttach script failed" >&2
   fi
 fi
@@ -102,17 +102,17 @@ if [ "${OKDEV_TMUX_FLAG:-}" = "1" ] && [ "${OKDEV_NO_TMUX:-}" != "1" ] && comman
   # process is killed by sshd, while the server keeps the session alive.
   if ! tmux has-session -t okdev 2>/dev/null; then
     if nsenter --target "$DEV_PID" --mount -- test -x /bin/bash 2>/dev/null; then
-      tmux new-session -d -s okdev "nsenter --target $DEV_PID --mount --uts --ipc --pid -- /bin/bash -l"
+      tmux new-session -d -s okdev "nsenter --target $DEV_PID --mount --uts --ipc --pid --cgroup -- /bin/bash -l"
     else
-      tmux new-session -d -s okdev "nsenter --target $DEV_PID --mount --uts --ipc --pid -- /bin/sh -l"
+      tmux new-session -d -s okdev "nsenter --target $DEV_PID --mount --uts --ipc --pid --cgroup -- /bin/sh -l"
     fi
   fi
   exec tmux attach-session -t okdev
 fi
 if nsenter --target "$DEV_PID" --mount -- test -x /bin/bash 2>/dev/null; then
-  exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid -- /bin/bash -l
+  exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid --cgroup -- /bin/bash -l
 else
-  exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid -- /bin/sh -l
+  exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid --cgroup -- /bin/sh -l
 fi
 SCRIPT
 safe_tmux_flag=$(printf '%s' "$OKDEV_TMUX_FLAG" | sed 's/[\/&]/\\&/g')
