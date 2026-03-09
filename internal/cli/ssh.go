@@ -109,19 +109,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 			if noTmux {
 				tm.Env = map[string]string{"OKDEV_NO_TMUX": "1"}
 			}
-			var hadReconnect atomic.Bool
-			tm.SetConnectionStateCallback(func(state okssh.ConnectionState) {
-				switch state {
-				case okssh.StateReconnecting:
-					hadReconnect.Store(true)
-					fmt.Fprintln(cmd.ErrOrStderr(), "SSH connection lost, reconnecting...")
-				case okssh.StateConnected:
-					if hadReconnect.Swap(false) {
-						fmt.Fprintln(cmd.ErrOrStderr(), "SSH connection restored.")
-					}
-				}
-			})
-			tm.SetReconnectTargetProvider(func(_ context.Context) (string, int, error) {
+				tm.SetReconnectTargetProvider(func(_ context.Context) (string, int, error) {
 				pfMu.Lock()
 				defer pfMu.Unlock()
 				if currentCancelPF != nil {
@@ -206,16 +194,48 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				return nil
 			}
 			// Shell loop: reconnect automatically when the connection drops.
+			rapidFailures := 0
+			var firstRapidFailure time.Time
+			reconnectBackoff := 500 * time.Millisecond
 			for {
+				started := time.Now()
 				err := tm.OpenShell()
 				if err == nil {
 					return nil // clean exit (user typed exit/logout)
 				}
-				if isIgnorableProxyIOError(err) || !tm.IsConnected() {
+				if shouldReconnectShell(err, tm.IsConnected()) {
+					// Avoid infinite reconnect loops on immediate remote-side failures,
+					// but allow short bursts of transport churn.
+					if time.Since(started) < 5*time.Second {
+						if rapidFailures == 0 {
+							firstRapidFailure = time.Now()
+						}
+						rapidFailures++
+					} else {
+						rapidFailures = 0
+						firstRapidFailure = time.Time{}
+						reconnectBackoff = 500 * time.Millisecond
+					}
+					// Fail only when many rapid failures happen in a short window.
+					if rapidFailures >= 8 && !firstRapidFailure.IsZero() && time.Since(firstRapidFailure) <= 30*time.Second {
+						return fmt.Errorf("ssh shell failed repeatedly after reconnect: %w", err)
+					}
 					fmt.Fprintln(cmd.ErrOrStderr(), "\nConnection lost. Reconnecting...")
 					if !tm.WaitConnected(cmd.Context()) {
 						fmt.Fprintln(cmd.ErrOrStderr(), "Reconnect failed. Session ended.")
 						return nil
+					}
+					if err := waitForSSHSessionReady(cmd.Context(), tm, 15*time.Second); err != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "Reconnect not ready yet: %v\n", err)
+						time.Sleep(reconnectBackoff)
+						if reconnectBackoff < 4*time.Second {
+							reconnectBackoff *= 2
+						}
+						continue
+					}
+					time.Sleep(reconnectBackoff)
+					if reconnectBackoff < 4*time.Second {
+						reconnectBackoff *= 2
 					}
 					fmt.Fprintln(cmd.ErrOrStderr(), "Reconnected.")
 					continue
@@ -529,6 +549,43 @@ func isIgnorableProxyIOError(err error) bool {
 		strings.Contains(msg, "remote command exited without exit status")
 }
 
+func shouldReconnectShell(err error, connected bool) bool {
+	if err == nil {
+		return false
+	}
+	if !connected || isIgnorableProxyIOError(err) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "eof") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "closed by remote host") ||
+		strings.Contains(msg, "connection closed") ||
+		strings.Contains(msg, "i/o timeout")
+}
+
+func waitForSSHSessionReady(ctx context.Context, tm *okssh.TunnelManager, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		_, err := tm.ExecContext(probeCtx, "true")
+		cancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		time.Sleep(250 * time.Millisecond)
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("timeout waiting for ssh session readiness")
+	}
+	return lastErr
+}
+
 func waitDialLocal(localPort int, timeout time.Duration) (net.Conn, error) {
 	deadline := time.Now().Add(timeout)
 	addr := fmt.Sprintf("127.0.0.1:%d", localPort)
@@ -633,7 +690,7 @@ func startSSHPortForwardWithFallback(k interface {
 	}
 	var lastErr error
 	for _, lp := range tryPorts {
-		cancel, err := startManagedPortForwardNoProbeWithClient(k, namespace, pod, []string{fmt.Sprintf("%d:%d", lp, remotePort)})
+		cancel, err := startManagedPortForwardWithClient(k, namespace, pod, []string{fmt.Sprintf("%d:%d", lp, remotePort)})
 		if err == nil {
 			return cancel, lp, nil
 		}

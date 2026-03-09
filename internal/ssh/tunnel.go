@@ -359,6 +359,19 @@ func (tm *TunnelManager) OpenShell() error {
 
 	fd := int(os.Stdin.Fd())
 	if term.IsTerminal(fd) {
+		w, h, err := term.GetSize(fd)
+		if err != nil || w <= 0 || h <= 0 {
+			// Some terminals can briefly fail size discovery; request a PTY anyway.
+			w, h = 80, 24
+		}
+		if err := s.RequestPty("xterm-256color", h, w, xssh.TerminalModes{
+			xssh.ECHO:          1,
+			xssh.TTY_OP_ISPEED: 14400,
+			xssh.TTY_OP_OSPEED: 14400,
+		}); err != nil {
+			return fmt.Errorf("request pty: %w", err)
+		}
+
 		oldState, err := term.MakeRaw(fd)
 		if err != nil {
 			return fmt.Errorf("set terminal raw mode: %w", err)
@@ -366,17 +379,6 @@ func (tm *TunnelManager) OpenShell() error {
 		defer func() {
 			_ = term.Restore(fd, oldState)
 		}()
-
-		w, h, err := term.GetSize(fd)
-		if err == nil {
-			if err := s.RequestPty("xterm-256color", h, w, xssh.TerminalModes{
-				xssh.ECHO:          1,
-				xssh.TTY_OP_ISPEED: 14400,
-				xssh.TTY_OP_OSPEED: 14400,
-			}); err != nil {
-				return fmt.Errorf("request pty: %w", err)
-			}
-		}
 		winch := make(chan os.Signal, 1)
 		done := make(chan struct{})
 		defer close(done)

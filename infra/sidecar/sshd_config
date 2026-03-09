@@ -7,7 +7,6 @@ PermitRootLogin prohibit-password
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 ChallengeResponseAuthentication no
-UsePAM no
 PubkeyAuthentication yes
 AuthorizedKeysFile .ssh/authorized_keys
 ClientAliveInterval 60
