@@ -96,11 +96,18 @@ if [ "${OKDEV_TMUX_FLAG:-}" = "1" ] && [ "${OKDEV_NO_TMUX:-}" != "1" ] && comman
   if [ "${TERM:-}" = "xterm-ghostty" ]; then
     export TERM="xterm-256color"
   fi
-  if nsenter --target "$DEV_PID" --mount -- test -x /bin/bash 2>/dev/null; then
-    exec tmux new-session -A -s okdev "nsenter --target $DEV_PID --mount --uts --ipc --pid -- /bin/bash -l"
-  else
-    exec tmux new-session -A -s okdev "nsenter --target $DEV_PID --mount --uts --ipc --pid -- /bin/sh -l"
+  # Create the session in detached mode first so the tmux server fully
+  # daemonises before we attach a client. This ensures the server (and
+  # any running commands) survive SSH disconnects — only the client
+  # process is killed by sshd, while the server keeps the session alive.
+  if ! tmux has-session -t okdev 2>/dev/null; then
+    if nsenter --target "$DEV_PID" --mount -- test -x /bin/bash 2>/dev/null; then
+      tmux new-session -d -s okdev "nsenter --target $DEV_PID --mount --uts --ipc --pid -- /bin/bash -l"
+    else
+      tmux new-session -d -s okdev "nsenter --target $DEV_PID --mount --uts --ipc --pid -- /bin/sh -l"
+    fi
   fi
+  exec tmux attach-session -t okdev
 fi
 if nsenter --target "$DEV_PID" --mount -- test -x /bin/bash 2>/dev/null; then
   exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid -- /bin/bash -l
