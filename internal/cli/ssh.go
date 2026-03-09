@@ -80,7 +80,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			pfKeepAliveCtx, pfKeepAliveCancel := context.WithCancel(cmd.Context())
-			startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, 30*time.Second)
+			startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, 10*time.Second)
 			var pfMu sync.Mutex
 			currentCancelPF := cancelPF
 			defer func() {
@@ -130,7 +130,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				currentCancelPF = cancel
 				newCtx, newCancel := context.WithCancel(cmd.Context())
 				pfKeepAliveCancel = newCancel
-				startPortForwardKeepalive(newCtx, lp, 30*time.Second)
+				startPortForwardKeepalive(newCtx, lp, 10*time.Second)
 				return "127.0.0.1", lp, nil
 			})
 			var lastRTTWarnNanos atomic.Int64
@@ -475,7 +475,7 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			pfKeepAliveCtx, pfKeepAliveCancel := context.WithCancel(context.Background())
-			startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, 30*time.Second)
+			startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, 10*time.Second)
 			defer pfKeepAliveCancel()
 			if cancelPF != nil {
 				defer cancelPF()
@@ -593,6 +593,10 @@ func waitDialLocal(localPort int, timeout time.Duration) (net.Conn, error) {
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", addr, 750*time.Millisecond)
 		if err == nil {
+			if tc, ok := conn.(*net.TCPConn); ok {
+				_ = tc.SetKeepAlive(true)
+				_ = tc.SetKeepAlivePeriod(10 * time.Second)
+			}
 			return conn, nil
 		}
 		lastErr = err

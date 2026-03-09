@@ -124,13 +124,13 @@ sed -i \
 chmod +x /usr/local/bin/nsenter-dev.sh
 
 # Harden sshd_config for long-lived idle sessions.
-# Server-side keepalive: probe every 30s, tolerate 10 misses (5min of dead connection).
+# Server-side keepalive: probe every 10s, tolerate 30 misses (~5min of dead connection).
 # This complements the client-side ServerAliveInterval and keeps intermediate
 # connections (kubectl port-forward, load balancers) alive with bidirectional traffic.
 if ! grep -q "ClientAliveInterval" /etc/ssh/sshd_config; then
   cat >> /etc/ssh/sshd_config << 'SSHD_KEEPALIVE'
-ClientAliveInterval 30
-ClientAliveCountMax 10
+ClientAliveInterval 10
+ClientAliveCountMax 30
 TCPKeepAlive yes
 SSHD_KEEPALIVE
 fi

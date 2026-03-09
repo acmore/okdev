@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -77,6 +78,10 @@ func (c *Client) restConfig() (*rest.Config, error) {
 		return nil, fmt.Errorf("load kube config: %w", err)
 	}
 	restCfg.Timeout = 0 // Disable default timeout; use context for all operations.
+	restCfg.Dial = (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 10 * time.Second,
+	}).DialContext
 	return restCfg, nil
 }
 

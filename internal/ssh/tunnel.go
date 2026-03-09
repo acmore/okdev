@@ -108,7 +108,7 @@ func (tm *TunnelManager) dialSSH(host string, port int) (*xssh.Client, error) {
 
 	dialer := &net.Dialer{
 		Timeout:   10 * time.Second,
-		KeepAlive: 15 * time.Second,
+		KeepAlive: 10 * time.Second,
 	}
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	conn, err := dialer.Dial("tcp", addr)
