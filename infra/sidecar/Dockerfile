@@ -1,3 +1,10 @@
+FROM golang:1.25-alpine AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /okdev-sshd ./cmd/okdev-sshd/
+
 FROM alpine:3.21
 
 ARG SYNCTHING_VERSION=v1.29.7
@@ -24,11 +31,13 @@ RUN arch="$(uname -m)" \
     && install -m 0755 "/tmp/syncthing-${os}-${syncthing_arch}-${SYNCTHING_VERSION}/syncthing" /usr/local/bin/syncthing \
     && rm -rf /tmp/syncthing* /tmp/sha256sum.txt
 
+COPY --from=builder /okdev-sshd /usr/local/bin/okdev-sshd
+
 COPY sshd_config /etc/ssh/sshd_config
 COPY tmux.conf /root/.tmux.conf
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 22 8384 22000
+EXPOSE 22 2222 8384 22000
 
 ENTRYPOINT ["/entrypoint.sh"]
