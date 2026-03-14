@@ -5,3 +5,4 @@
 .stignore
 .okdev.yaml
 .stfolder
+.worktrees/
