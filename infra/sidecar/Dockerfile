@@ -33,9 +33,9 @@ RUN arch="$(uname -m)" \
 
 COPY --from=builder /okdev-sshd /usr/local/bin/okdev-sshd
 
-COPY sshd_config /etc/ssh/sshd_config
-COPY tmux.conf /root/.tmux.conf
-COPY entrypoint.sh /entrypoint.sh
+COPY infra/sidecar/sshd_config /etc/ssh/sshd_config
+COPY infra/sidecar/tmux.conf /root/.tmux.conf
+COPY infra/sidecar/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 EXPOSE 22 2222 8384 22000
