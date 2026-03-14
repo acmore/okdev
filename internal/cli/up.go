@@ -59,6 +59,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 			ui.stepDone("namespace", ns)
 			labels := labelsForSession(opts, cfg, sn)
 			annotations := annotationsForSession(cfg)
+			annotations["okdev.io/ssh-mode"] = normalizeSSHMode(sshMode)
 			volumes := cfg.EffectiveVolumes()
 			pod := podName(sn)
 			if dryRun {
@@ -135,22 +136,23 @@ func newUpCmd(opts *Options) *cobra.Command {
 
 			ui.section("Setup")
 			sshSummary := "disabled"
-			if cfg.Spec.SSH.RemotePort > 0 {
+			effectiveSSHPort := sshRemotePortForMode(cfg, sshMode)
+			if effectiveSSHPort > 0 {
 				keyPath, keyErr := defaultSSHKeyPath(cfg)
 				if keyErr != nil {
 					ui.warnf("failed to resolve SSH key path: %v", keyErr)
 					sshSummary = "degraded (key path error)"
 				} else {
-					if err := ensureSSHKeyOnPod(opts, cfg, ns, pod, keyPath); err != nil {
+					if err := ensureSSHKeyOnPod(opts, cfg, ns, pod, keyPath, sshMode); err != nil {
 						ui.warnf("failed to setup SSH key in pod: %v", err)
 						sshSummary = "degraded (key setup failed)"
 					}
-					if err := waitForSSHDReady(opts, cfg, ns, pod, 20*time.Second); err != nil {
+					if err := waitForSSHDReady(opts, cfg, ns, pod, sshMode, 20*time.Second); err != nil {
 						ui.warnf("sshd not ready yet: %v", err)
 						sshSummary = "degraded (sshd not ready)"
 					}
 					alias := sshHostAlias(sn)
-					if _, cfgErr := ensureSSHConfigEntry(alias, sn, ns, cfg.Spec.SSH.User, cfg.Spec.SSH.RemotePort, keyPath, cfgPath, cfg.Spec.Ports, cfg.Spec.SSH); cfgErr != nil {
+					if _, cfgErr := ensureSSHConfigEntry(alias, sn, ns, cfg.Spec.SSH.User, effectiveSSHPort, keyPath, cfgPath, cfg.Spec.Ports, cfg.Spec.SSH); cfgErr != nil {
 						ui.warnf("failed to update ~/.ssh/config: %v", cfgErr)
 						sshSummary = "degraded (ssh config update failed)"
 					} else {

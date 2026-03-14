@@ -47,6 +47,10 @@ func newSSHCmd(opts *Options) *cobra.Command {
 			if err := ensureSessionOwnership(opts, k, ns, sn, true); err != nil {
 				return err
 			}
+			sshMode, modeErr := detectSessionSSHMode(opts, ns, sn)
+			if modeErr != nil {
+				return fmt.Errorf("detect ssh mode: %w", modeErr)
+			}
 			stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), true, true)
 			defer stopMaintenance()
 
@@ -54,7 +58,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				user = cfg.Spec.SSH.User
 			}
 			if remotePort == 0 {
-				remotePort = cfg.Spec.SSH.RemotePort
+				remotePort = sshRemotePortForMode(cfg, sshMode)
 			}
 			if localPort == 0 {
 				localPort = 2222
@@ -67,11 +71,11 @@ func newSSHCmd(opts *Options) *cobra.Command {
 			}
 
 			if setupKey {
-				if err := ensureSSHKeyOnPod(opts, cfg, ns, podName(sn), keyPath); err != nil {
+				if err := ensureSSHKeyOnPod(opts, cfg, ns, podName(sn), keyPath, sshMode); err != nil {
 					return err
 				}
 			}
-			if err := waitForSSHDReady(opts, cfg, ns, podName(sn), 20*time.Second); err != nil {
+			if err := waitForSSHDReady(opts, cfg, ns, podName(sn), sshMode, 20*time.Second); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: sshd not ready yet: %v\n", err)
 			}
 
@@ -248,7 +252,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 	return cmd
 }
 
-func ensureSSHKeyOnPod(opts *Options, cfg *config.DevEnvironment, namespace, pod, keyPath string) error {
+func ensureSSHKeyOnPod(opts *Options, cfg *config.DevEnvironment, namespace, pod, keyPath, sshMode string) error {
 	if err := ensureCommand("ssh-keygen"); err != nil {
 		return err
 	}
@@ -275,6 +279,7 @@ func ensureSSHKeyOnPod(opts *Options, cfg *config.DevEnvironment, namespace, pod
 	k := newKubeClient(opts)
 	container := sshTargetContainer(cfg)
 	var lastErr error
+	installed := false
 	for i := 0; i < 3; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		if container == "" {
@@ -284,25 +289,58 @@ func ensureSSHKeyOnPod(opts *Options, cfg *config.DevEnvironment, namespace, pod
 		}
 		cancel()
 		if err == nil {
-			return nil
+			installed = true
+			break
 		}
 		lastErr = err
 		time.Sleep(time.Duration(i+1) * 500 * time.Millisecond)
 	}
-	return fmt.Errorf("install ssh key in pod: %w", lastErr)
+	if !installed {
+		return fmt.Errorf("install ssh key in pod: %w", lastErr)
+	}
+
+	if normalizeSSHMode(sshMode) == sshModeEmbedded {
+		copyScript := `set -eu
+DEV_PID=""
+for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$' | sort -n); do
+  [ "$pid" = "1" ] && continue
+  [ "$pid" = "$$" ] && continue
+  [ -r "/proc/$pid/root" ] 2>/dev/null || continue
+  if ! [ "/proc/$pid/root" -ef "/proc/self/root" ] 2>/dev/null; then
+    if [ -d "/proc/$pid" ]; then
+      DEV_PID="$pid"
+      break
+    fi
+  fi
+done
+[ -n "$DEV_PID" ]
+nsenter --target "$DEV_PID" --mount -- mkdir -p /var/okdev
+cat /root/.ssh/authorized_keys | nsenter --target "$DEV_PID" --mount -- sh -c "cat > /var/okdev/authorized_keys && chmod 600 /var/okdev/authorized_keys"`
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_, err := k.ExecShInContainer(ctx, namespace, pod, "okdev-sidecar", copyScript)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("sync embedded ssh authorized_keys: %w", err)
+		}
+	}
+	return nil
 }
 
-func waitForSSHDReady(opts *Options, cfg *config.DevEnvironment, namespace, pod string, timeout time.Duration) error {
+func waitForSSHDReady(opts *Options, cfg *config.DevEnvironment, namespace, pod, sshMode string, timeout time.Duration) error {
 	k := newKubeClient(opts)
 	container := sshTargetContainer(cfg)
 	if container == "" {
 		return nil
 	}
+	probeCmd := "ps | grep '[s]shd' >/dev/null 2>&1"
+	if normalizeSSHMode(sshMode) == sshModeEmbedded {
+		probeCmd = "ps | grep '[o]kdev-sshd' >/dev/null 2>&1"
+	}
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, err := k.ExecShInContainer(ctx, namespace, pod, container, "ps | grep '[s]shd' >/dev/null 2>&1")
+		_, err := k.ExecShInContainer(ctx, namespace, pod, container, probeCmd)
 		cancel()
 		if err == nil {
 			return nil
