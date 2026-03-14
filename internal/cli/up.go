@@ -19,11 +19,15 @@ func newUpCmd(opts *Options) *cobra.Command {
 	var waitTimeout time.Duration
 	var dryRun bool
 	var tmux bool
+	var sshMode string
 
 	cmd := &cobra.Command{
 		Use:   "up",
 		Short: "Create or resume a dev session",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if sshMode != "sidecar" && sshMode != "embedded" {
+				return fmt.Errorf("invalid --ssh-mode %q: must be \"sidecar\" or \"embedded\"", sshMode)
+			}
 			ui := newUpUI(cmd.OutOrStdout(), cmd.ErrOrStderr())
 			// Keep legacy config-path announce quiet for this command; we render it in staged output.
 			prevQuiet, hadQuiet := os.LookupEnv("OKDEV_QUIET_CONFIG_ANNOUNCE")
@@ -88,6 +92,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 				cfg.WorkspaceMountPath(),
 				cfg.Spec.Sidecar.Image,
 				enableTmux,
+				sshMode == "embedded",
 				preStopCmd,
 			)
 			if err != nil {
@@ -200,6 +205,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 3*time.Minute, "Wait timeout for pod readiness")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview actions without applying resources")
 	cmd.Flags().BoolVar(&tmux, "tmux", false, "Enable tmux persistent shell sessions in the sidecar")
+	cmd.Flags().StringVar(&sshMode, "ssh-mode", "sidecar", "SSH server mode: sidecar (default) or embedded")
 	return cmd
 }
 

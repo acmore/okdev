@@ -10,7 +10,7 @@ import (
 
 var semverTagPattern = regexp.MustCompile(`^v?\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$`)
 
-func PreparePodSpec(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, tmux bool, preStop string) (corev1.PodSpec, error) {
+func PreparePodSpec(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, tmux bool, embeddedSSH bool, preStop string) (corev1.PodSpec, error) {
 	if strings.TrimSpace(sidecarImage) == "" {
 		return corev1.PodSpec{}, fmt.Errorf("sidecar image cannot be empty")
 	}
@@ -94,6 +94,16 @@ func PreparePodSpec(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMo
 			sidecarContainer.Env = append(sidecarContainer.Env, corev1.EnvVar{
 				Name:  "OKDEV_TMUX",
 				Value: "1",
+			})
+		}
+		if embeddedSSH {
+			sidecarContainer.Env = append(sidecarContainer.Env, corev1.EnvVar{
+				Name:  "OKDEV_SSH_MODE",
+				Value: "embedded",
+			})
+			sidecarContainer.Ports = append(sidecarContainer.Ports, corev1.ContainerPort{
+				ContainerPort: 2222,
+				Name:          "embedded-ssh",
 			})
 		}
 		spec.Containers = append(spec.Containers, sidecarContainer)
