@@ -178,6 +178,39 @@ func syncthingPIDPath(sessionName string) (string, error) {
 	return filepath.Join(dir, "sync.pid"), nil
 }
 
+func stopDetachedSyncthingSync(sessionName string) error {
+	pidPath, err := syncthingPIDPath(sessionName)
+	if err != nil {
+		return err
+	}
+	pid, ok := readSyncthingPID(pidPath)
+	if !ok {
+		if err := os.Remove(pidPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if processAlive(pid) && processLooksLikeSyncthingSync(pid) {
+		p, err := os.FindProcess(pid)
+		if err == nil {
+			_ = p.Signal(syscall.SIGTERM)
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for processAlive(pid) && time.Now().Before(deadline) {
+			time.Sleep(100 * time.Millisecond)
+		}
+		if processAlive(pid) {
+			if p, err := os.FindProcess(pid); err == nil {
+				_ = p.Signal(syscall.SIGKILL)
+			}
+		}
+	}
+	if err := os.Remove(pidPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func readSyncthingPID(path string) (int, bool) {
 	b, err := os.ReadFile(path)
 	if err != nil {

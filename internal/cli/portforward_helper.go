@@ -138,28 +138,47 @@ func allPortsReachable(ports []int) bool {
 	return true
 }
 
-// startPortForwardKeepalive periodically dials the local port-forward endpoint
-// to create new SPDY streams on the underlying connection. Each TCP connection
-// triggers the port-forward handler to create a fresh stream pair (data+error),
-// which generates SYN/FIN frames visible to all intermediaries (load balancers,
-// API server proxies, WebSocket gateways) — keeping the connection alive even
-// when they don't count data on existing streams as "activity".
-func startPortForwardKeepalive(ctx context.Context, localPort int, interval time.Duration) {
+// startPortForwardKeepalive periodically creates a short-lived TCP connection
+// against the local port-forward endpoint. This creates a fresh forwarded
+// stream pair, which keeps the underlying SPDY/WebSocket session active
+// without aggressively interacting with the remote protocol.
+//
+// If the local endpoint itself becomes unreachable repeatedly, the optional
+// onDegraded callback is invoked to trigger reconnection.
+func startPortForwardKeepalive(ctx context.Context, localPort int, interval time.Duration, onDegraded func()) {
+	const maxConsecutiveFailures = 3
+
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		consecutiveFailures := 0
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", localPort), 2*time.Second)
-				if err != nil {
-					slog.Debug("port-forward keepalive dial failed", "port", localPort, "error", err)
-					continue
+				if probePortForward(localPort) {
+					consecutiveFailures = 0
+				} else {
+					consecutiveFailures++
+					slog.Debug("port-forward keepalive probe failed", "port", localPort, "consecutive", consecutiveFailures)
+					if consecutiveFailures >= maxConsecutiveFailures && onDegraded != nil {
+						slog.Debug("port-forward degraded, triggering reconnect", "port", localPort, "failures", consecutiveFailures)
+						onDegraded()
+						consecutiveFailures = 0
+					}
 				}
-				_ = conn.Close()
 			}
 		}
 	}()
+}
+
+func probePortForward(localPort int) bool {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", localPort), 2*time.Second)
+	if err != nil {
+		slog.Debug("port-forward keepalive dial failed", "port", localPort, "error", err)
+		return false
+	}
+	defer conn.Close()
+	return true
 }
