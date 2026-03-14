@@ -133,6 +133,9 @@ func newUpCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			ui.stepDone("active session", sn)
+			if err := session.ClearShutdownRequest(sn); err != nil {
+				ui.warnf("failed to clear prior shutdown request: %v", err)
+			}
 
 			ui.section("Setup")
 			sshSummary := "disabled"

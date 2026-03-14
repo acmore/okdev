@@ -9,8 +9,9 @@ KbdInteractiveAuthentication no
 ChallengeResponseAuthentication no
 PubkeyAuthentication yes
 AuthorizedKeysFile .ssh/authorized_keys
-ClientAliveInterval 60
+ClientAliveInterval 10
 ClientAliveCountMax 30
+TCPKeepAlive yes
 AcceptEnv OKDEV_NO_TMUX
 PidFile /run/sshd/sshd.pid
 Subsystem sftp internal-sftp

@@ -248,6 +248,23 @@ func stopLocalSyncthing(binary, home string) error {
 	return nil
 }
 
+// stopLocalSyncthingForSession kills any local syncthing process associated
+// with the given session. This is used by `okdev down` as a safety net to
+// clean up orphaned syncthing processes that may survive if the detached
+// `okdev sync` child is SIGKILL'd before it can run its own cleanup.
+func stopLocalSyncthingForSession(sessionName string) error {
+	home, err := localSyncthingHome(sessionName)
+	if err != nil {
+		return err
+	}
+	pattern := syncengine.ShellEscape("serve --home " + home)
+	cmd := exec.Command("sh", "-lc", fmt.Sprintf("pkill -f %s >/dev/null 2>&1 || true", pattern))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("stop local syncthing for session %s: %w (%s)", sessionName, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 func startSyncthingPortForward(opts *Options, namespace, pod string) (context.CancelFunc, string, string, error) {
 	lastErr := error(nil)
 	for i := 0; i < 5; i++ {
@@ -475,6 +492,7 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 		if asString(fm["id"]) == folderID {
 			fm["path"] = folderPath
 			fm["type"] = folderType
+			fm["markerName"] = "."
 			fm["devices"] = []any{
 				map[string]any{"deviceID": selfID},
 				map[string]any{"deviceID": peerID},
@@ -486,10 +504,11 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 	}
 	if !foundFolder {
 		folders = append(folders, map[string]any{
-			"id":    folderID,
-			"label": folderID,
-			"path":  folderPath,
-			"type":  folderType,
+			"id":         folderID,
+			"label":      folderID,
+			"path":       folderPath,
+			"type":       folderType,
+			"markerName": ".",
 			"devices": []any{
 				map[string]any{"deviceID": selfID},
 				map[string]any{"deviceID": peerID},

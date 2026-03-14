@@ -65,6 +65,21 @@ func newDownCmd(opts *Options) *cobra.Command {
 			ui.stepDone("pvc", "not managed")
 			alias := sshHostAlias(sn)
 			ui.section("Cleanup")
+			if err := session.RequestShutdown(sn); err != nil {
+				ui.warnf("failed to request shutdown for local clients: %v", err)
+			} else {
+				ui.stepDone("local clients", "shutdown requested")
+			}
+			if err := stopDetachedSyncthingSync(sn); err != nil {
+				ui.warnf("failed to stop background sync: %v", err)
+			} else {
+				ui.stepDone("sync", "stopped")
+			}
+			if err := stopLocalSyncthingForSession(sn); err != nil {
+				ui.warnf("failed to stop local syncthing: %v", err)
+			} else {
+				ui.stepDone("syncthing", "stopped")
+			}
 			_ = stopManagedSSHForward(alias)
 			ui.stepDone("ssh forward", "stopped")
 			if err := removeSSHConfigEntry(alias); err != nil {
