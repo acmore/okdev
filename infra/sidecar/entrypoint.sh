@@ -14,6 +14,33 @@ fi
 OKDEV_TMUX_FLAG="${OKDEV_TMUX:-0}"
 OKDEV_WORKSPACE_PATH="${OKDEV_WORKSPACE:-/workspace}"
 
+# Write helper to mirror current group IDs into the sidecar and dev container.
+cat > /usr/local/bin/sync-gids.sh << 'SCRIPT'
+#!/bin/sh
+set -eu
+
+DEV_PID="$1"
+ALL_GIDS="$(id -G 2>/dev/null || true)"
+if [ -z "$ALL_GIDS" ]; then
+  exit 0
+fi
+
+for gid in $ALL_GIDS; do
+  case "$gid" in
+    ''|*[!0-9]*)
+      continue
+      ;;
+  esac
+  grep -q ":${gid}:" /etc/group 2>/dev/null || \
+    echo "okdev${gid}:x:${gid}:" >> /etc/group 2>/dev/null || true
+  nsenter --target "$DEV_PID" --mount -- sh -c "
+    grep -q \":${gid}:\" /etc/group 2>/dev/null || \
+    echo \"okdev${gid}:x:${gid}:\" >> /etc/group 2>/dev/null || true
+  " 2>/dev/null || true
+done
+SCRIPT
+chmod +x /usr/local/bin/sync-gids.sh
+
 # Write nsenter wrapper script for SSH sessions.
 # Finds PID 1 of the dev container (first process whose root is not our root).
 cat > /usr/local/bin/nsenter-dev.sh << 'SCRIPT'
@@ -47,22 +74,7 @@ fi
 
 # Ensure all current GIDs exist in /etc/group inside BOTH the sidecar and the
 # target to suppress "groups: cannot find name for group ID ..." warnings.
-ALL_GIDS="$(id -G 2>/dev/null || true)"
-if [ -n "$ALL_GIDS" ]; then
-  for gid in $ALL_GIDS; do
-    case "$gid" in
-      ''|*[!0-9]*)
-        continue
-        ;;
-    esac
-    grep -q ":${gid}:" /etc/group 2>/dev/null || \
-      echo "okdev${gid}:x:${gid}:" >> /etc/group 2>/dev/null || true
-    nsenter --target "$DEV_PID" --mount -- sh -c "
-      grep -q \":${gid}:\" /etc/group 2>/dev/null || \
-      echo \"okdev${gid}:x:${gid}:\" >> /etc/group 2>/dev/null || true
-    " 2>/dev/null || true
-  done
-fi
+/usr/local/bin/sync-gids.sh "$DEV_PID"
 
 # If a remote command was requested, execute it inside the dev container.
 if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
@@ -123,18 +135,6 @@ sed -i \
   /usr/local/bin/nsenter-dev.sh
 chmod +x /usr/local/bin/nsenter-dev.sh
 
-# Harden sshd_config for long-lived idle sessions.
-# Server-side keepalive: probe every 10s, tolerate 30 misses (~5min of dead connection).
-# This complements the client-side ServerAliveInterval and keeps intermediate
-# connections (kubectl port-forward, load balancers) alive with bidirectional traffic.
-if ! grep -q "ClientAliveInterval" /etc/ssh/sshd_config; then
-  cat >> /etc/ssh/sshd_config << 'SSHD_KEEPALIVE'
-ClientAliveInterval 10
-ClientAliveCountMax 30
-TCPKeepAlive yes
-SSHD_KEEPALIVE
-fi
-
 # Add ForceCommand to sshd_config dynamically
 if ! grep -q "ForceCommand" /etc/ssh/sshd_config; then
   echo "ForceCommand /usr/local/bin/nsenter-dev.sh" >> /etc/ssh/sshd_config
@@ -165,6 +165,7 @@ if [ "$OKDEV_SSH_MODE" = "embedded" ]; then
   done
 
   if [ -n "$DEV_PID" ]; then
+    /usr/local/bin/sync-gids.sh "$DEV_PID"
     nsenter --target "$DEV_PID" --mount -- mkdir -p /var/okdev
     cat /usr/local/bin/okdev-sshd | nsenter --target "$DEV_PID" --mount -- sh -c "cat > /var/okdev/okdev-sshd && chmod +x /var/okdev/okdev-sshd"
     cat /root/.ssh/authorized_keys | nsenter --target "$DEV_PID" --mount -- sh -c "cat > /var/okdev/authorized_keys && chmod 600 /var/okdev/authorized_keys"

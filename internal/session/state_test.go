@@ -74,3 +74,54 @@ func TestLoadActiveSessionFallsBackToLegacyPath(t *testing.T) {
 		t.Fatalf("unexpected session: got %q want %q", got, "legacy-session")
 	}
 }
+
+func TestShutdownRequestLifecycle(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	repo := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	origWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+	if err := os.Chdir(repo); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	resetRepoRootCache()
+
+	requested, err := ShutdownRequested("test-session")
+	if err != nil {
+		t.Fatalf("ShutdownRequested before request error: %v", err)
+	}
+	if requested {
+		t.Fatal("expected no shutdown request initially")
+	}
+
+	if err := RequestShutdown("test-session"); err != nil {
+		t.Fatalf("RequestShutdown error: %v", err)
+	}
+
+	requested, err = ShutdownRequested("test-session")
+	if err != nil {
+		t.Fatalf("ShutdownRequested after request error: %v", err)
+	}
+	if !requested {
+		t.Fatal("expected shutdown request to exist")
+	}
+
+	if err := ClearShutdownRequest("test-session"); err != nil {
+		t.Fatalf("ClearShutdownRequest error: %v", err)
+	}
+
+	requested, err = ShutdownRequested("test-session")
+	if err != nil {
+		t.Fatalf("ShutdownRequested after clear error: %v", err)
+	}
+	if requested {
+		t.Fatal("expected shutdown request to be cleared")
+	}
+}

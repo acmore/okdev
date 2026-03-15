@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -111,12 +112,53 @@ func sessionHandler(shell string) ssh.Handler {
 func buildCmd(s ssh.Session, shell string) *exec.Cmd {
 	var cmd *exec.Cmd
 	if len(s.RawCommand()) == 0 {
-		cmd = exec.Command(shell, "-l")
+		if script := interactiveLoginScript(s, shell); script != "" {
+			cmd = exec.Command(shell, "-lc", script)
+		} else {
+			cmd = exec.Command(shell, "-l")
+		}
 	} else {
 		cmd = exec.Command(shell, "-lc", s.RawCommand())
 	}
 	cmd.Env = append(os.Environ(), s.Environ()...)
 	return cmd
+}
+
+func interactiveLoginScript(s ssh.Session, shell string) string {
+	env := sessionEnvMap(s)
+	var parts []string
+
+	if workspace := strings.TrimSpace(os.Getenv("OKDEV_WORKSPACE")); workspace != "" {
+		postAttach := shellQuote(strings.TrimRight(workspace, "/") + "/.okdev/post-attach.sh")
+		parts = append(parts, fmt.Sprintf("if [ -x %s ]; then %s 2>&1 || echo 'warning: postAttach script failed' >&2; fi", postAttach, postAttach))
+	}
+
+	if strings.TrimSpace(os.Getenv("OKDEV_TMUX")) == "1" && env["OKDEV_NO_TMUX"] != "1" {
+		parts = append(parts, "if [ \"${TERM:-}\" = \"xterm-ghostty\" ]; then export TERM=xterm-256color; fi")
+		parts = append(parts, "if command -v tmux >/dev/null 2>&1; then exec tmux new-session -A -s okdev; fi")
+	}
+
+	parts = append(parts, "exec "+shellQuote(shell)+" -l")
+	return strings.Join(parts, "; ")
+}
+
+func sessionEnvMap(s ssh.Session) map[string]string {
+	env := map[string]string{}
+	for _, item := range s.Environ() {
+		key, value, ok := strings.Cut(item, "=")
+		if !ok {
+			continue
+		}
+		env[key] = value
+	}
+	return env
+}
+
+func shellQuote(v string) string {
+	if v == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(v, "'", `'"'"'`) + "'"
 }
 
 func handlePTY(cmd *exec.Cmd, s ssh.Session, ptyReq ssh.Pty, winCh <-chan ssh.Window) error {
