@@ -15,6 +15,7 @@ import (
 const stateDirName = ".okdev"
 const sessionsDirName = "sessions"
 const sessionFileName = "active_session"
+const shutdownRequestDirName = "shutdown_requests"
 
 var (
 	repoRootOnce sync.Once
@@ -134,6 +135,63 @@ func ClearActiveSession() error {
 	if lp, lerr := legacyActiveSessionPath(); lerr == nil {
 		_ = os.Remove(lp)
 		_ = os.Remove(filepath.Dir(lp))
+	}
+	return nil
+}
+
+func ShutdownRequestPath(name string) (string, error) {
+	root, err := activeSessionRootDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, shutdownRequestDirName, sanitize(name)), nil
+}
+
+func RequestShutdown(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return nil
+	}
+	p, err := ShutdownRequestPath(name)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return fmt.Errorf("create shutdown request directory: %w", err)
+	}
+	if err := os.WriteFile(p, []byte("1\n"), 0o644); err != nil {
+		return fmt.Errorf("write shutdown request: %w", err)
+	}
+	return nil
+}
+
+func ShutdownRequested(name string) (bool, error) {
+	if strings.TrimSpace(name) == "" {
+		return false, nil
+	}
+	p, err := ShutdownRequestPath(name)
+	if err != nil {
+		return false, err
+	}
+	_, err = os.Stat(p)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, fmt.Errorf("check shutdown request: %w", err)
+}
+
+func ClearShutdownRequest(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return nil
+	}
+	p, err := ShutdownRequestPath(name)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("clear shutdown request: %w", err)
 	}
 	return nil
 }

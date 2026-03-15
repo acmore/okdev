@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
+	"github.com/acmore/okdev/internal/session"
 	okssh "github.com/acmore/okdev/internal/ssh"
 	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
@@ -84,7 +85,13 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			pfKeepAliveCtx, pfKeepAliveCancel := context.WithCancel(cmd.Context())
-			startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, 10*time.Second)
+			var tmRef atomic.Pointer[okssh.TunnelManager]
+			pfDegraded := func() {
+				if t := tmRef.Load(); t != nil {
+					t.ForceReconnect()
+				}
+			}
+			startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, 10*time.Second, pfDegraded)
 			var pfMu sync.Mutex
 			currentCancelPF := cancelPF
 			defer func() {
@@ -113,6 +120,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 			if noTmux {
 				tm.Env = map[string]string{"OKDEV_NO_TMUX": "1"}
 			}
+			tmRef.Store(tm)
 			tm.SetReconnectTargetProvider(func(_ context.Context) (string, int, error) {
 				pfMu.Lock()
 				defer pfMu.Unlock()
@@ -134,7 +142,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				currentCancelPF = cancel
 				newCtx, newCancel := context.WithCancel(cmd.Context())
 				pfKeepAliveCancel = newCancel
-				startPortForwardKeepalive(newCtx, lp, 10*time.Second)
+				startPortForwardKeepalive(newCtx, lp, 10*time.Second, pfDegraded)
 				return "127.0.0.1", lp, nil
 			})
 			var lastRTTWarnNanos atomic.Int64
@@ -174,12 +182,20 @@ func newSSHCmd(opts *Options) *cobra.Command {
 			var recoveryStart time.Time
 			inRecovery := false
 			for {
+				if requested, reqErr := session.ShutdownRequested(sn); reqErr == nil && requested {
+					fmt.Fprintln(cmd.ErrOrStderr(), "Session shutdown requested. Closing SSH client.")
+					return nil
+				}
 				started := time.Now()
 				err := tm.OpenShell()
 				if err == nil {
 					return nil // clean exit (user typed exit/logout)
 				}
 				if shouldReconnectShell(err, tm.IsConnected()) {
+					if requested, reqErr := session.ShutdownRequested(sn); reqErr == nil && requested {
+						fmt.Fprintln(cmd.ErrOrStderr(), "\nSession shutdown requested. Closing SSH client.")
+						return nil
+					}
 					if !inRecovery {
 						fmt.Fprintln(cmd.ErrOrStderr(), "\nConnection lost. Reconnecting...")
 						inRecovery = true
@@ -513,7 +529,7 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			pfKeepAliveCtx, pfKeepAliveCancel := context.WithCancel(context.Background())
-			startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, 10*time.Second)
+			startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, 10*time.Second, nil)
 			defer pfKeepAliveCancel()
 			if cancelPF != nil {
 				defer cancelPF()
