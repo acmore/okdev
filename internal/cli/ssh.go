@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
+	"github.com/acmore/okdev/internal/logx"
 	"github.com/acmore/okdev/internal/session"
 	okssh "github.com/acmore/okdev/internal/ssh"
 	syncengine "github.com/acmore/okdev/internal/sync"
@@ -556,6 +557,7 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				}
 				defer conn.Close()
 				startTime := time.Now()
+				var healthDisconnect atomic.Bool
 
 				// Layer 1: TCP keepalive tuning (5s period, KEEPCNT=2 where supported)
 				setTCPKeepAliveProxyTuning(conn)
@@ -564,9 +566,12 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				pfKeepAliveCtx, pfKeepAliveCancel := context.WithCancel(cmd.Context())
 				defer pfKeepAliveCancel()
 				startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, 10*time.Second, func() {
-					slog.Info("ssh-proxy port-forward degraded, closing connection",
-						"port", usedLocalPort,
-						"uptime", time.Since(startTime).Round(time.Second),
+					healthDisconnect.Store(true)
+					logx.Printf("time=%s source=ssh-proxy msg=%q port=%d uptime=%s\n",
+						time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
+						"port-forward degraded, closing connection",
+						usedLocalPort,
+						time.Since(startTime).Round(time.Second),
 					)
 					_ = conn.Close()
 				})
@@ -584,7 +589,17 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				lastData.Store(time.Now().UnixNano())
 				watchdogCtx, watchdogCancel := context.WithCancel(cmd.Context())
 				defer watchdogCancel()
-				go proxyDataFlowWatchdog(watchdogCtx, conn, &lastData, 5*time.Second, 15*time.Second)
+				go proxyDataFlowWatchdog(watchdogCtx, &lastData, 5*time.Second, 15*time.Second, func(idle time.Duration) {
+					healthDisconnect.Store(true)
+					logx.Printf("time=%s source=ssh-proxy msg=%q idle=%s threshold=%s uptime=%s\n",
+						time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
+						"data flow watchdog idle timeout",
+						idle.Round(time.Millisecond),
+						(15 * time.Second),
+						time.Since(startTime).Round(time.Second),
+					)
+					_ = conn.Close()
+				})
 
 				var copyErr error
 				var once sync.Once
@@ -617,12 +632,26 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				}()
 				<-done
 				watchdogCancel()
-				slog.Info("ssh-proxy session finished",
-					"error", copyErr,
-					"uptime", time.Since(startTime).Round(time.Second),
-				)
+				if healthDisconnect.Load() {
+					logx.Printf("time=%s source=ssh-proxy msg=%q err=%q uptime=%s\n",
+						time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
+						"session finished after health-triggered disconnect",
+						copyErr,
+						time.Since(startTime).Round(time.Second),
+					)
+					if copyErr != nil {
+						return fmt.Errorf("%w: %v", ErrProxyHealthDisconnect, copyErr)
+					}
+					return ErrProxyHealthDisconnect
+				}
 				if copyErr != nil {
-					return fmt.Errorf("%w: %v", ErrProxyHealthDisconnect, copyErr)
+					logx.Printf("time=%s source=ssh-proxy msg=%q err=%q uptime=%s\n",
+						time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
+						"session finished with proxy copy error",
+						copyErr,
+						time.Since(startTime).Round(time.Second),
+					)
+					return copyErr
 				}
 				return nil
 			})

@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/acmore/okdev/internal/logx"
 )
 
 // ErrProxyHealthDisconnect is a sentinel error returned when the proxy
@@ -39,9 +41,9 @@ func monitoredCopy(dst io.Writer, src io.Reader, lastData *atomic.Int64) (int64,
 }
 
 // proxyDataFlowWatchdog checks lastData every checkInterval. If no data
-// has flowed for idleThreshold, it closes conn and returns.
+// has flowed for idleThreshold, it invokes onIdle and returns.
 // It also returns when ctx is cancelled.
-func proxyDataFlowWatchdog(ctx context.Context, conn net.Conn, lastData *atomic.Int64, checkInterval, idleThreshold time.Duration) {
+func proxyDataFlowWatchdog(ctx context.Context, lastData *atomic.Int64, checkInterval, idleThreshold time.Duration, onIdle func(idle time.Duration)) {
 	ticker := time.NewTicker(checkInterval)
 	defer ticker.Stop()
 	for {
@@ -55,11 +57,9 @@ func proxyDataFlowWatchdog(ctx context.Context, conn net.Conn, lastData *atomic.
 			}
 			idle := time.Since(time.Unix(0, last))
 			if idle >= idleThreshold {
-				slog.Info("ssh-proxy data flow watchdog: idle timeout",
-					"idle", idle.Round(time.Millisecond),
-					"threshold", idleThreshold,
-				)
-				_ = conn.Close()
+				if onIdle != nil {
+					onIdle(idle)
+				}
 				return
 			}
 		}
@@ -79,6 +79,7 @@ func setTCPKeepAliveProxyTuning(conn net.Conn) {
 	// Try to set TCP_KEEPCNT=2 via syscall. This is best-effort.
 	raw, err := tc.SyscallConn()
 	if err != nil {
+		logx.Printf("time=%s source=ssh-proxy msg=%q err=%q\n", time.Now().Format("2006-01-02T15:04:05.000Z07:00"), "failed to get syscall conn for TCP_KEEPCNT", err)
 		slog.Debug("ssh-proxy: failed to get syscall conn for TCP_KEEPCNT", "error", err)
 		return
 	}
@@ -87,6 +88,7 @@ func setTCPKeepAliveProxyTuning(conn net.Conn) {
 		sysErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_KEEPCNT, 2)
 	})
 	if err != nil || sysErr != nil {
+		logx.Printf("time=%s source=ssh-proxy msg=%q controlErr=%q sysErr=%q\n", time.Now().Format("2006-01-02T15:04:05.000Z07:00"), "TCP_KEEPCNT not set", err, sysErr)
 		slog.Debug("ssh-proxy: TCP_KEEPCNT not set (unsupported or failed)",
 			"controlErr", err, "sysErr", sysErr)
 	}
