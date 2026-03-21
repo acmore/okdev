@@ -541,12 +541,10 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				pfKeepAliveCtx, pfKeepAliveCancel := context.WithCancel(context.Background())
-				startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, 10*time.Second, nil)
-				defer pfKeepAliveCancel()
 				if cancelPF != nil {
 					defer cancelPF()
 				}
+
 				slog.Debug("ssh-proxy dialing local port-forward", "port", usedLocalPort)
 				conn, err := waitDialLocal(usedLocalPort, 10*time.Second)
 				if err != nil {
@@ -554,9 +552,37 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 					return err
 				}
 				defer conn.Close()
+				startTime := time.Now()
+
+				// Layer 1: TCP keepalive tuning (5s period, KEEPCNT=2 where supported)
+				setTCPKeepAliveProxyTuning(conn)
+
+				// Layer 3: Port-forward keepalive probe with onDegraded wired up
+				pfKeepAliveCtx, pfKeepAliveCancel := context.WithCancel(cmd.Context())
+				defer pfKeepAliveCancel()
+				startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, 10*time.Second, func() {
+					slog.Info("ssh-proxy port-forward degraded, closing connection",
+						"port", usedLocalPort,
+						"uptime", time.Since(startTime).Round(time.Second),
+					)
+					_ = conn.Close()
+				})
+
 				slog.Debug("ssh-proxy connection established", "localAddr", conn.LocalAddr(), "remoteAddr", conn.RemoteAddr())
 
-				var wg sync.WaitGroup
+				// Close conn on context cancellation (SIGINT/SIGTERM) to unblock io.Copy goroutines
+				go func() {
+					<-cmd.Context().Done()
+					_ = conn.Close()
+				}()
+
+				// Layer 2: Data flow monitor
+				var lastData atomic.Int64
+				lastData.Store(time.Now().UnixNano())
+				watchdogCtx, watchdogCancel := context.WithCancel(cmd.Context())
+				defer watchdogCancel()
+				go proxyDataFlowWatchdog(watchdogCtx, conn, &lastData, 5*time.Second, 15*time.Second)
+
 				var copyErr error
 				var once sync.Once
 				done := make(chan struct{})
@@ -567,11 +593,9 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 					slog.Debug("ssh-proxy copy error", "error", err)
 					once.Do(func() { copyErr = err })
 				}
-				wg.Add(2)
 				go func() {
-					defer wg.Done()
 					slog.Debug("ssh-proxy starting copy: stdin -> conn")
-					_, err := io.Copy(conn, os.Stdin)
+					_, err := monitoredCopy(conn, os.Stdin, &lastData)
 					setErr(err)
 					slog.Debug("ssh-proxy finished copy: stdin -> conn")
 					select {
@@ -581,17 +605,23 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 					}
 				}()
 				go func() {
-					defer wg.Done()
 					slog.Debug("ssh-proxy starting copy: conn -> stdout")
-					_, err := io.Copy(os.Stdout, conn)
+					_, err := monitoredCopy(os.Stdout, conn, &lastData)
 					setErr(err)
 					slog.Debug("ssh-proxy finished copy: conn -> stdout")
 					close(done)
 					_ = conn.Close()
 				}()
 				<-done
-				slog.Debug("ssh-proxy session finished", "error", copyErr)
-				return copyErr
+				watchdogCancel()
+				slog.Info("ssh-proxy session finished",
+					"error", copyErr,
+					"uptime", time.Since(startTime).Round(time.Second),
+				)
+				if copyErr != nil {
+					return fmt.Errorf("%w: %v", ErrProxyHealthDisconnect, copyErr)
+				}
+				return nil
 			})
 		},
 	}
