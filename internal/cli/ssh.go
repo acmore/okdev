@@ -438,9 +438,12 @@ func ensureSSHConfigEntry(hostAlias, sessionName, namespace, user string, remote
 		"  UserKnownHostsFile /dev/null",
 		"  ProxyCommand " + proxyCmd,
 	}
+	// Hardcoded keepalive values for the proxy path — sshSpec values are
+	// intentionally ignored here because the proxy needs tighter detection
+	// than the general SSH config defaults provide.
 	blockLines = append(blockLines,
-		fmt.Sprintf("  ServerAliveInterval %d", sshSpec.KeepAliveInterval),
-		fmt.Sprintf("  ServerAliveCountMax %d", sshSpec.KeepAliveCountMax),
+		"  ServerAliveInterval 5",
+		"  ServerAliveCountMax 10",
 		"  TCPKeepAlive yes",
 		"  LogLevel ERROR",
 		end,
