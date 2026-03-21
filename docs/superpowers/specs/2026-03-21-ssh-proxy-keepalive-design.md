@@ -14,12 +14,12 @@ When `okdev ssh-proxy` (the ProxyCommand used by external `ssh` clients) becomes
 
 ### Layer 1: TCP Keepalive
 
-Set via socket options on the data connection returned by `waitDialLocal()`.
+Modify the existing TCP keepalive in `waitDialLocal()` (currently 10s period via `SetKeepAlivePeriod`).
 
-- Interval: 5 seconds
-- Probe count: 2
+- Reduce keepalive period from 10s to 5s via `SetKeepAlivePeriod(5 * time.Second)`
+- Set `TCP_KEEPCNT` to 2 via platform-specific syscall (`syscall.SetsockoptInt` on the raw fd). On macOS/Darwin this is `syscall.TCP_KEEPCNT`; on Linux it is `syscall.TCP_KEEPCNT`. Go 1.24+ sets `TCP_KEEPIDLE` and `TCP_KEEPINTVL` via `SetKeepAlivePeriod`, so we only need the explicit syscall for the probe count.
 - Detects: dead peer, network partition, crashed port-forward process
-- Detection time: ~15 seconds
+- Detection time: ~15 seconds (5s idle + 5s * 2 probes). Note: Go's `SetKeepAlivePeriod` sets both `TCP_KEEPIDLE` and `TCP_KEEPINTVL` to the same value on Go 1.24+.
 
 ### Layer 2: Data Flow Monitor
 
@@ -28,22 +28,25 @@ A wrapper around `io.Copy` that tracks data flow timestamps.
 - `monitoredCopy` updates an atomic `lastDataTime` on every successful read/write
 - A watchdog goroutine checks `lastDataTime` every 5 seconds
 - If no data flows in either direction for 15 seconds, close the connection and exit
+- The watchdog only triggers when both copy directions are still active (neither has exited normally). A normal stdin EOF from the SSH client disconnecting is not a failure.
 - Detects: application-level stalls, hung connections where TCP stays alive
 - Detection time: 15-20 seconds
+- Note: SSH keepalive packets (`ServerAliveInterval`) flow through the proxied TCP stream, so `monitoredCopy` sees them as data. With `ServerAliveInterval 5`, traffic flows at least every 5s, preventing false idle detection on legitimately quiet sessions.
 
 ### Layer 3: Port-Forward Keepalive Probe
 
 The existing `startPortForwardKeepalive` probe, with the `onDegraded` callback wired up.
 
 - Interval: 10 seconds (existing)
-- Failure threshold: 2 consecutive probe failures (reduced from 3)
+- Failure threshold: 3 consecutive probe failures (existing, unchanged — changing this would require modifying `portforward_helper.go` which is out of scope)
 - `onDegraded` callback closes the data connection, triggering exit
+- Sequencing constraint: `startPortForwardKeepalive` is currently called before `waitDialLocal` creates `conn`. Move the keepalive start to after the dial, or use an atomic pointer to `conn` so the callback can reference it once set.
 - Detects: kubectl port-forward process death, SPDY/WebSocket channel stall
-- Detection time: ~20 seconds
+- Detection time: ~30 seconds
 
 ### Combined Detection
 
-Any single layer detecting a problem triggers exit. Worst-case detection time: ~20 seconds.
+Any single layer detecting a problem triggers exit. Multiple layers may detect failure simultaneously; concurrent `conn.Close()` calls are safe because the existing code uses a `sync.Once` for error capture and the `done` channel pattern for completion signaling. Worst-case detection time: ~30 seconds.
 
 ## Exit Behavior
 
@@ -51,42 +54,46 @@ On detection of any failure:
 
 1. Log detailed diagnostics to okdev log file (which layer detected, error details, connection duration, timestamps)
 2. Close the data connection — unblocks both `io.Copy` goroutines
-3. Exit with non-zero exit code (exit 1)
+3. Return a non-nil error from `RunE` (cobra translates this to exit 1; avoids calling `os.Exit` directly which would skip deferred cleanup)
 4. No output to stderr — the `ssh` client reports the disconnect naturally
 
 No reconnection attempt. Re-establishing the port-forward cannot save the in-flight SSH session because SSH protocol state (encryption keys, sequence numbers, channel state) is tied to the original TCP stream.
 
 ### Signal Handling
 
-Register SIGINT/SIGTERM handler for clean shutdown: close connections, cancel port-forward keepalive, stop kubectl port-forward process. Prevents orphaned goroutines and processes.
+Register SIGINT/SIGTERM handler for clean shutdown:
+- Close the data connection
+- Cancel `pfKeepAliveCtx` (stops the port-forward keepalive goroutine)
+- Cancel port-forward via `cancelPF()` (stops the kubectl port-forward process)
+
+Use `cmd.Context()` instead of `context.Background()` for the keepalive context so cobra's built-in signal handling integrates cleanly. The signal handler and health watchdog both converge on the same action: close the connection and exit.
 
 ## SSH Client Config Changes
 
-The okdev-managed `Host` block in `~/.ssh/config` gets tighter keepalive values:
+The okdev-managed `Host` block in `~/.ssh/config` gets tighter keepalive values. These are hardcoded in the SSH config writing code in `ssh.go`, independent of `config.go` defaults (which remain unchanged for the `okdev ssh` direct path).
 
 | Setting | Old | New |
 |---------|-----|-----|
-| `ServerAliveInterval` | 10 | 5 |
-| `ServerAliveCountMax` | 30 | 10 |
+| `ServerAliveInterval` | 10 (from config default) | 5 (hardcoded for proxy path) |
+| `ServerAliveCountMax` | 30 (from config default) | 10 (hardcoded for proxy path) |
 | `TCPKeepAlive` | yes | yes (unchanged) |
 
-This gives the SSH client its own independent detection at ~55 seconds. The proxy-side detection (~15-20s) is the fast path; the SSH client config is a fallback safety net.
+This gives the SSH client its own independent detection at ~55 seconds. The proxy-side detection (~15-30s) is the fast path; the SSH client config is a fallback safety net.
 
 ## Implementation Scope
 
 ### Files to Modify
 
 **`internal/cli/ssh.go` — `newSSHProxyCmd`:**
-- Set TCP keepalive options on the data connection (5s interval, 2 probes)
+- Reduce TCP keepalive period to 5s and set `TCP_KEEPCNT=2` via syscall on the data connection
 - Replace raw `io.Copy` with `monitoredCopy` that tracks data flow timestamps
 - Add watchdog goroutine (5s check interval, 15s idle threshold)
 - Wire `onDegraded` callback in `startPortForwardKeepalive` to close connection
-- Add signal handler (SIGINT/SIGTERM) for clean shutdown
+- Use `cmd.Context()` instead of `context.Background()` for keepalive context
 - Add structured logging on exit (layer that detected, duration, error)
 
 **`internal/cli/ssh.go` — SSH config writing:**
-- Change `ServerAliveInterval` to 5
-- Change `ServerAliveCountMax` to 10
+- Hardcode `ServerAliveInterval 5` and `ServerAliveCountMax 10` for the proxy path
 
 **`internal/cli/common.go` or new file — `monitoredCopy` helper:**
 - Wraps `io.Copy` with atomic timestamp updates
@@ -95,8 +102,8 @@ This gives the SSH client its own independent detection at ~55 seconds. The prox
 ### Files NOT Modified
 
 - `tunnel.go` — the proxy does not use the tunnel manager
-- `config.go` — no new config fields; values are hardcoded for the proxy path
-- `portforward_helper.go` — existing probe logic is sufficient
+- `config.go` — no new config fields; proxy values are hardcoded separately
+- `portforward_helper.go` — existing probe logic and thresholds are sufficient
 
 ## Testing
 
@@ -107,6 +114,6 @@ This gives the SSH client its own independent detection at ~55 seconds. The prox
 
 ### Integration Tests (Manual)
 
-- Kill kubectl port-forward mid-session: verify proxy exits within ~20 seconds
+- Kill kubectl port-forward mid-session: verify proxy exits within ~30 seconds
 - Suspend the pod (simulate network stall): verify data flow monitor catches it
 - Normal idle session with SSH keepalives: verify no false positive disconnects
