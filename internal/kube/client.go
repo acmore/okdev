@@ -416,6 +416,21 @@ func (c *Client) GetPodSummary(ctx context.Context, namespace, name string) (*Po
 	return &s, nil
 }
 
+func (c *Client) PersistentVolumeClaimExists(ctx context.Context, namespace, name string) (bool, error) {
+	cs, _, err := c.clientset()
+	if err != nil {
+		return false, err
+	}
+	_, err = cs.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (c *Client) TouchPodActivity(ctx context.Context, namespace, pod string) error {
 	cs, _, err := c.clientset()
 	if err != nil {
