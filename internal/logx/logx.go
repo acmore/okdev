@@ -80,6 +80,10 @@ func OpenRotatingLog(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 }
 
+func Printf(format string, args ...any) {
+	_, _ = fmt.Fprintf(okdevLogWriter(), format, args...)
+}
+
 func rotateLogIfNeeded(path string, maxSize int64, maxBackups int) error {
 	if maxSize <= 0 || maxBackups <= 0 {
 		return nil

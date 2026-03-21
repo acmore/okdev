@@ -40,79 +40,38 @@ func TestProxyDataFlowWatchdogClosesOnIdle(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-
-	var serverConn net.Conn
-	accepted := make(chan struct{})
-	go func() {
-		c, err := ln.Accept()
-		if err == nil {
-			serverConn = c
-		}
-		close(accepted)
-	}()
-
-	conn, err := net.Dial("tcp", ln.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-	<-accepted
-	defer serverConn.Close()
-
 	var lastData atomic.Int64
 	lastData.Store(time.Now().Add(-20 * time.Second).UnixNano())
 
-	closed := make(chan struct{})
+	idleDetected := make(chan time.Duration, 1)
 	go func() {
-		proxyDataFlowWatchdog(ctx, conn, &lastData, 100*time.Millisecond, 500*time.Millisecond)
-		close(closed)
+		proxyDataFlowWatchdog(ctx, &lastData, 100*time.Millisecond, 500*time.Millisecond, func(idle time.Duration) {
+			idleDetected <- idle
+		})
 	}()
 
 	select {
-	case <-closed:
-		_, err := conn.Write([]byte("test"))
-		if err == nil {
-			t.Fatal("expected conn to be closed")
+	case idle := <-idleDetected:
+		if idle < 500*time.Millisecond {
+			t.Fatalf("expected idle callback at or above threshold, got %s", idle)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("watchdog did not close connection within timeout")
+		t.Fatal("watchdog did not trigger idle callback within timeout")
 	}
 }
 
 func TestProxyDataFlowWatchdogDoesNotCloseActiveConn(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-
-	accepted := make(chan net.Conn, 1)
-	go func() {
-		c, _ := ln.Accept()
-		accepted <- c
-	}()
-
-	conn, err := net.Dial("tcp", ln.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-	serverConn := <-accepted
-	defer serverConn.Close()
-
 	var lastData atomic.Int64
 	lastData.Store(time.Now().UnixNano())
 
+	idleDetected := make(chan struct{}, 1)
 	watchdogDone := make(chan struct{})
 	go func() {
-		proxyDataFlowWatchdog(ctx, conn, &lastData, 100*time.Millisecond, 500*time.Millisecond)
+		proxyDataFlowWatchdog(ctx, &lastData, 100*time.Millisecond, 500*time.Millisecond, func(time.Duration) {
+			idleDetected <- struct{}{}
+		})
 		close(watchdogDone)
 	}()
 
@@ -121,9 +80,10 @@ func TestProxyDataFlowWatchdogDoesNotCloseActiveConn(t *testing.T) {
 
 	<-watchdogDone
 
-	_, err = conn.Write([]byte("test"))
-	if err != nil {
-		t.Fatalf("expected conn to still be open, got: %v", err)
+	select {
+	case <-idleDetected:
+		t.Fatal("watchdog should not have reported idle on active connection")
+	default:
 	}
 }
 
