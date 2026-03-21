@@ -152,7 +152,12 @@ func TestSetTCPKeepAliveProxyTuningSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	go func() { c, _ := ln.Accept(); _ = c.Close() }()
+	go func() {
+		c, err := ln.Accept()
+		if err == nil {
+			_ = c.Close()
+		}
+	}()
 
 	conn, err := net.Dial("tcp", ln.Addr().String())
 	if err != nil {
