@@ -13,6 +13,7 @@ import (
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
 	"github.com/spf13/cobra"
+	corev1 "k8s.io/api/core/v1"
 )
 
 func newUpCmd(opts *Options) *cobra.Command {
@@ -20,6 +21,9 @@ func newUpCmd(opts *Options) *cobra.Command {
 	var dryRun bool
 	var tmux bool
 	var sshMode string
+	var createMissingPVC bool
+	var missingPVCSize string
+	var missingPVCStorageClass string
 
 	cmd := &cobra.Command{
 		Use:   "up",
@@ -66,6 +70,9 @@ func newUpCmd(opts *Options) *cobra.Command {
 				ui.section("Dry Run")
 				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: session=%s namespace=%s\n", sn, ns)
 				fmt.Fprintf(cmd.OutOrStdout(), "- using %d configured volume(s)\n", len(volumes))
+				if createMissingPVC {
+					fmt.Fprintf(cmd.OutOrStdout(), "- would create missing PVC references (size=%s storageClass=%q)\n", missingPVCSize, missingPVCStorageClass)
+				}
 				fmt.Fprintf(cmd.OutOrStdout(), "- would apply pod/%s\n", pod)
 				fmt.Fprintf(cmd.OutOrStdout(), "- would wait for pod readiness (timeout=%s)\n", waitTimeout)
 				fmt.Fprintln(cmd.OutOrStdout(), "- would setup SSH config + managed SSH/port-forwards")
@@ -83,7 +90,19 @@ func newUpCmd(opts *Options) *cobra.Command {
 			}
 			ctx, cancel := defaultContext()
 			defer cancel()
-			ui.stepDone("pvc", "not managed (use pre-created PVCs in spec.volumes)")
+			if createMissingPVC {
+				createdPVCs, err := reconcileMissingPVCs(ctx, k, ns, volumes, missingPVCSize, missingPVCStorageClass, labels, annotations)
+				if err != nil {
+					return err
+				}
+				if len(createdPVCs) == 0 {
+					ui.stepDone("pvc", "all referenced claims already exist")
+				} else {
+					ui.stepDone("pvc", "created: "+strings.Join(createdPVCs, ", "))
+				}
+			} else {
+				ui.stepDone("pvc", "not managed (use pre-created PVCs in spec.volumes)")
+			}
 
 			enableTmux := tmux || cfg.Spec.SSH.PersistentSessionEnabled()
 			preStopCmd := resolvePreStopCommand(cfg, cfgPath)
@@ -211,7 +230,47 @@ func newUpCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview actions without applying resources")
 	cmd.Flags().BoolVar(&tmux, "tmux", false, "Enable tmux persistent shell sessions in the sidecar")
 	cmd.Flags().StringVar(&sshMode, "ssh-mode", "sidecar", "SSH server mode: sidecar (default) or embedded")
+	cmd.Flags().BoolVar(&createMissingPVC, "create-missing-pvc", false, "Create missing PVCs referenced by spec.volumes")
+	cmd.Flags().StringVar(&missingPVCSize, "missing-pvc-size", config.DefaultWorkspacePVCSize, "Size to use when creating a missing PVC")
+	cmd.Flags().StringVar(&missingPVCStorageClass, "missing-pvc-storage-class", "", "StorageClass to use when creating a missing PVC")
 	return cmd
+}
+
+func reconcileMissingPVCs(ctx context.Context, k interface {
+	PersistentVolumeClaimExists(context.Context, string, string) (bool, error)
+	Apply(context.Context, string, []byte) error
+}, namespace string, volumes []corev1.Volume, size, storageClass string, labels, annotations map[string]string) ([]string, error) {
+	seen := map[string]struct{}{}
+	var created []string
+	for _, v := range volumes {
+		claim := ""
+		if v.PersistentVolumeClaim != nil {
+			claim = strings.TrimSpace(v.PersistentVolumeClaim.ClaimName)
+		}
+		if claim == "" {
+			continue
+		}
+		if _, ok := seen[claim]; ok {
+			continue
+		}
+		seen[claim] = struct{}{}
+		exists, err := k.PersistentVolumeClaimExists(ctx, namespace, claim)
+		if err != nil {
+			return nil, fmt.Errorf("check pvc/%s: %w", claim, err)
+		}
+		if exists {
+			continue
+		}
+		manifest, err := kube.BuildPVCManifest(namespace, claim, size, storageClass, labels, annotations)
+		if err != nil {
+			return nil, fmt.Errorf("build pvc/%s manifest: %w", claim, err)
+		}
+		if err := k.Apply(ctx, namespace, manifest); err != nil {
+			return nil, fmt.Errorf("create pvc/%s: %w", claim, err)
+		}
+		created = append(created, claim)
+	}
+	return created, nil
 }
 
 func runPostCreateIfNeeded(k *kube.Client, namespace, pod, command string, out io.Writer, errOut io.Writer) (bool, error) {
