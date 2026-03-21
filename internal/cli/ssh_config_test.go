@@ -50,3 +50,43 @@ func TestEnsureSSHConfigEntryIncludesNamespaceInProxyCommand(t *testing.T) {
 		t.Fatalf("interactive ssh host entry must not include LocalForward directives: %s", text)
 	}
 }
+
+func TestEnsureSSHConfigEntryUsesProxyKeepaliveValues(t *testing.T) {
+	home := t.TempDir()
+	origHome := os.Getenv("HOME")
+	if err := os.Setenv("HOME", home); err != nil {
+		t.Fatalf("set HOME: %v", err)
+	}
+	defer func() {
+		_ = os.Setenv("HOME", origHome)
+	}()
+
+	// Pass config defaults (10/30) — the written config should still use 5/10
+	_, err := ensureSSHConfigEntry(
+		"okdev-test2",
+		"test-session2",
+		"dev-ns",
+		"root",
+		22,
+		"/tmp/id_ed25519",
+		"/tmp/.okdev.yaml",
+		nil,
+		config.SSHSpec{KeepAliveInterval: 10, KeepAliveCountMax: 30},
+	)
+	if err != nil {
+		t.Fatalf("ensureSSHConfigEntry: %v", err)
+	}
+
+	cfgPath := filepath.Join(home, ".ssh", "config")
+	b, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read ssh config: %v", err)
+	}
+	text := string(b)
+	if !strings.Contains(text, "ServerAliveInterval 5") {
+		t.Fatalf("expected ServerAliveInterval 5, got: %s", text)
+	}
+	if !strings.Contains(text, "ServerAliveCountMax 10") {
+		t.Fatalf("expected ServerAliveCountMax 10, got: %s", text)
+	}
+}
