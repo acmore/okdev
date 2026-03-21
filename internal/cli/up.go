@@ -174,7 +174,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 						sshSummary = "degraded (sshd not ready)"
 					}
 					alias := sshHostAlias(sn)
-					if _, cfgErr := ensureSSHConfigEntry(alias, sn, ns, cfg.Spec.SSH.User, effectiveSSHPort, keyPath, cfgPath, cfg.Spec.Ports, cfg.Spec.SSH); cfgErr != nil {
+					if _, cfgErr := ensureSSHConfigEntry(alias, sn, ns, cfg.Spec.SSH.User, effectiveSSHPort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
 						ui.warnf("failed to update ~/.ssh/config: %v", cfgErr)
 						sshSummary = "degraded (ssh config update failed)"
 					} else {

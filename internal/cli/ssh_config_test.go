@@ -28,7 +28,6 @@ func TestEnsureSSHConfigEntryIncludesNamespaceInProxyCommand(t *testing.T) {
 		"/tmp/id_ed25519",
 		"/tmp/.okdev.yaml",
 		[]config.PortMapping{{Local: 8080, Remote: 8080}},
-		config.SSHSpec{KeepAliveInterval: 30, KeepAliveCountMax: 10},
 	)
 	if err != nil {
 		t.Fatalf("ensureSSHConfigEntry: %v", err)
@@ -61,7 +60,7 @@ func TestEnsureSSHConfigEntryUsesProxyKeepaliveValues(t *testing.T) {
 		_ = os.Setenv("HOME", origHome)
 	}()
 
-	// Pass config defaults (10/30) — the written config should still use 5/10
+	// Keepalive values are hardcoded — verify they're 5/10 regardless of config defaults
 	_, err := ensureSSHConfigEntry(
 		"okdev-test2",
 		"test-session2",
@@ -71,7 +70,6 @@ func TestEnsureSSHConfigEntryUsesProxyKeepaliveValues(t *testing.T) {
 		"/tmp/id_ed25519",
 		"/tmp/.okdev.yaml",
 		nil,
-		config.SSHSpec{KeepAliveInterval: 10, KeepAliveCountMax: 30},
 	)
 	if err != nil {
 		t.Fatalf("ensureSSHConfigEntry: %v", err)
