@@ -12,12 +12,14 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/connect"
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
+	"golang.org/x/term"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
@@ -31,11 +33,16 @@ const (
 var invalidOwnerChars = regexp.MustCompile(`[^a-z0-9._-]`)
 
 func loadConfigAndNamespace(opts *Options) (*config.DevEnvironment, string, error) {
-	cfg, path, err := config.Load(opts.ConfigPath)
+	path, err := config.ResolvePath(opts.ConfigPath)
 	if err != nil {
 		return nil, "", err
 	}
-	announceConfigPath(path)
+	done := announceConfigPath(path)
+	cfg, path, err := config.Load(path)
+	done(err == nil)
+	if err != nil {
+		return nil, "", err
+	}
 	applyConfigKubeContext(opts, cfg)
 	ns := cfg.Spec.Namespace
 	if opts.Namespace != "" {
@@ -45,6 +52,19 @@ func loadConfigAndNamespace(opts *Options) (*config.DevEnvironment, string, erro
 		ns = "default"
 	}
 	return cfg, ns, nil
+}
+
+func withQuietConfigAnnounce(fn func() error) error {
+	prevQuiet, hadQuiet := os.LookupEnv("OKDEV_QUIET_CONFIG_ANNOUNCE")
+	_ = os.Setenv("OKDEV_QUIET_CONFIG_ANNOUNCE", "1")
+	defer func() {
+		if hadQuiet {
+			_ = os.Setenv("OKDEV_QUIET_CONFIG_ANNOUNCE", prevQuiet)
+		} else {
+			_ = os.Unsetenv("OKDEV_QUIET_CONFIG_ANNOUNCE")
+		}
+	}()
+	return fn()
 }
 
 func applyConfigKubeContext(opts *Options, cfg *config.DevEnvironment) {
@@ -59,14 +79,112 @@ func applyConfigKubeContext(opts *Options, cfg *config.DevEnvironment) {
 	}
 }
 
-func announceConfigPath(path string) {
+func announceConfigPath(path string) func(success bool) {
+	return announceConfigPathWithWriter(os.Stderr, path, isTerminalWriter(os.Stderr))
+}
+
+func announceConfigPathWithWriter(w io.Writer, path string, interactive bool) func(success bool) {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("OKDEV_QUIET_CONFIG_ANNOUNCE")), "1") {
-		return
+		return func(bool) {}
 	}
 	if strings.TrimSpace(path) == "" {
+		return func(bool) {}
+	}
+	if status := newTransientStatusWithMode(w, "Loading config "+path, interactive); status.enabled {
+		return func(bool) {
+			status.stop()
+		}
+	}
+	return func(success bool) {
+		if success {
+			fmt.Fprintf(w, "Using config: %s\n", path)
+		}
+	}
+}
+
+type transientStatus struct {
+	w       io.Writer
+	message string
+	enabled bool
+	stopCh  chan struct{}
+	doneCh  chan struct{}
+	mu      sync.Mutex
+}
+
+func newTransientStatus(w io.Writer, message string) *transientStatus {
+	return newTransientStatusWithMode(w, message, isTerminalWriter(w))
+}
+
+func startTransientStatus(w io.Writer, message string) func() {
+	status := newTransientStatus(w, message)
+	if !status.enabled {
+		return func() {}
+	}
+	return func() {
+		status.stop()
+	}
+}
+
+func newTransientStatusWithMode(w io.Writer, message string, interactive bool) *transientStatus {
+	s := &transientStatus{
+		w:       w,
+		message: strings.TrimSpace(message),
+	}
+	if s.message == "" || !interactive {
+		return s
+	}
+	s.enabled = true
+	s.stopCh = make(chan struct{})
+	s.doneCh = make(chan struct{})
+	go s.run(120 * time.Millisecond)
+	return s
+}
+
+func (s *transientStatus) run(interval time.Duration) {
+	defer close(s.doneCh)
+	frames := []string{"|", "/", "-", `\`}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	frame := 0
+	s.render(frames[frame])
+	for {
+		select {
+		case <-ticker.C:
+			frame = (frame + 1) % len(frames)
+			s.render(frames[frame])
+		case <-s.stopCh:
+			s.clear()
+			return
+		}
+	}
+}
+
+func (s *transientStatus) render(frame string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fmt.Fprintf(s.w, "\r%s %s\033[K", frame, s.message)
+}
+
+func (s *transientStatus) clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fmt.Fprint(s.w, "\r\033[K")
+}
+
+func (s *transientStatus) stop() {
+	if !s.enabled {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "Using config: %s\n", path)
+	close(s.stopCh)
+	<-s.doneCh
+}
+
+func isTerminalWriter(w io.Writer) bool {
+	f, ok := w.(interface{ Fd() uintptr })
+	if !ok {
+		return false
+	}
+	return term.IsTerminal(int(f.Fd()))
 }
 
 func resolveSessionName(opts *Options, cfg *config.DevEnvironment) (string, error) {

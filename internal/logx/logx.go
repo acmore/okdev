@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -17,6 +18,11 @@ import (
 var (
 	logWriterMu sync.Mutex
 	logWriter   io.Writer
+)
+
+const (
+	maxLogSizeBytes = 10 * 1024 * 1024
+	maxLogBackups   = 5
 )
 
 func Configure(verbose bool) {
@@ -55,13 +61,54 @@ func okdevLogWriter() io.Writer {
 		logWriter = io.Discard
 		return logWriter
 	}
-	f, err := os.OpenFile(filepath.Join(logDir, "okdev.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := OpenRotatingLog(filepath.Join(logDir, "okdev.log"))
 	if err != nil {
 		logWriter = io.Discard
 		return logWriter
 	}
 	logWriter = f
 	return logWriter
+}
+
+func OpenRotatingLog(path string) (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	if err := rotateLogIfNeeded(path, maxLogSizeBytes, maxLogBackups); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+}
+
+func rotateLogIfNeeded(path string, maxSize int64, maxBackups int) error {
+	if maxSize <= 0 || maxBackups <= 0 {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.Size() < maxSize {
+		return nil
+	}
+	oldest := path + "." + strconv.Itoa(maxBackups)
+	if err := os.Remove(oldest); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for i := maxBackups - 1; i >= 1; i-- {
+		src := path + "." + strconv.Itoa(i)
+		dst := path + "." + strconv.Itoa(i+1)
+		if err := os.Rename(src, dst); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if err := os.Rename(path, path+".1"); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func configureKubernetesRuntimeErrorLogging(w io.Writer) {
