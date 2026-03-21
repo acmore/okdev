@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bytes"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,5 +81,38 @@ func TestApplyConfigKubeContextFlagWins(t *testing.T) {
 
 	if opts.Context != "flag-context" {
 		t.Fatalf("expected flag context to win, got %q", opts.Context)
+	}
+}
+
+func TestTransientStatusRendersAndClears(t *testing.T) {
+	var out bytes.Buffer
+	status := &transientStatus{
+		w:       &out,
+		message: "Loading config /tmp/.okdev.yaml",
+		enabled: true,
+		stopCh:  make(chan struct{}),
+		doneCh:  make(chan struct{}),
+	}
+
+	go status.run(5 * time.Millisecond)
+	time.Sleep(12 * time.Millisecond)
+	status.stop()
+
+	got := out.String()
+	if !strings.Contains(got, "Loading config /tmp/.okdev.yaml") {
+		t.Fatalf("expected status message in output, got %q", got)
+	}
+	if !strings.Contains(got, "\r\033[K") {
+		t.Fatalf("expected clear-line sequence in output, got %q", got)
+	}
+}
+
+func TestAnnounceConfigPathFallsBackToStaticOutput(t *testing.T) {
+	var out bytes.Buffer
+	done := announceConfigPathWithWriter(&out, "/tmp/.okdev.yaml", false)
+	done(true)
+
+	if got := out.String(); got != "Using config: /tmp/.okdev.yaml\n" {
+		t.Fatalf("unexpected static output %q", got)
 	}
 }

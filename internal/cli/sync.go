@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
+	"github.com/acmore/okdev/internal/logx"
 	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
 )
@@ -118,7 +119,7 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 		}
 		_ = os.Remove(pidPath)
 	}
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logFile, err := logx.OpenRotatingLog(logPath)
 	if err != nil {
 		return "", false, err
 	}
