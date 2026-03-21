@@ -123,7 +123,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				sshHost := sshHostAlias(sn)
 				cfgPath, _ := config.ResolvePath(opts.ConfigPath)
 				stopSSHConfig := startTransientStatus(errOut, "Preparing SSH config")
-				if _, cfgErr := ensureSSHConfigEntry(sshHost, sn, ns, user, remotePort, keyPath, cfgPath, cfg.Spec.Ports, cfg.Spec.SSH); cfgErr != nil {
+				if _, cfgErr := ensureSSHConfigEntry(sshHost, sn, ns, user, remotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
 					stopSSHConfig()
 					fmt.Fprintf(errOut, "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
 				} else {
@@ -410,7 +410,7 @@ func sshHostAlias(sessionName string) string {
 	return "okdev-" + sessionName
 }
 
-func ensureSSHConfigEntry(hostAlias, sessionName, namespace, user string, remotePort int, keyPath, okdevConfigPath string, forwards []config.PortMapping, sshSpec config.SSHSpec) (bool, error) {
+func ensureSSHConfigEntry(hostAlias, sessionName, namespace, user string, remotePort int, keyPath, okdevConfigPath string, forwards []config.PortMapping) (bool, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return false, err
