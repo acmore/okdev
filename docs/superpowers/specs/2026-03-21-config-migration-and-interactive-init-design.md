@@ -56,7 +56,13 @@ Use `gopkg.in/yaml.v3` node API for the migrate command specifically. This prese
 - Key ordering
 - Formatting/indentation
 
-The rest of the codebase continues using struct-based parsing.
+The rest of the codebase continues using struct-based parsing via `sigs.k8s.io/yaml`.
+
+**Round-trip safety:** Since `sigs.k8s.io/yaml` (used for loading) and `gopkg.in/yaml.v3` (used for migration) have subtly different serialization behaviors (whitespace, quoting, null handling), the migrated output must be integration-tested to confirm it round-trips cleanly through `sigs.k8s.io/yaml` unmarshaling. Migration tests should load the migrated YAML back through the standard `config.Load()` path and validate the result.
+
+### Idempotency
+
+All migrations must be idempotent. Running `okdev migrate` twice on the same file must produce the same output. This is enforced by the `Applies()` check -- once a migration has transformed the config, `Applies()` should return false on subsequent runs. No version tracking marker is needed; the structure of the YAML itself is the version indicator.
 
 ### Ambiguity Handling
 
@@ -80,7 +86,15 @@ Wrote migrated config to .okdev.yaml (backup: .okdev.yaml.bak)
 
 One migration to start:
 
-- **workspace-to-volumes**: Transforms `spec.workspace` (with `mountPath`, `pvc.claimName`, `pvc.size`, `pvc.storageClassName`) into `spec.volumes` + `spec.podTemplate.spec.containers[*].volumeMounts`.
+- **workspace-to-volumes**: Transforms `spec.workspace` into `spec.volumes` + `spec.podTemplate.spec.containers[*].volumeMounts`.
+
+  Expected `workspace` sub-keys:
+  - `mountPath` (string) → becomes `volumeMounts[0].mountPath`
+  - `pvc.claimName` (string) → becomes `volumes[0].persistentVolumeClaim.claimName`
+  - `pvc.size` (string) → becomes `volumes[0].persistentVolumeClaim.resources.requests.storage`
+  - `pvc.storageClassName` (string) → becomes `volumes[0].persistentVolumeClaim.storageClassName`
+
+  Since `pvc` is `map[string]string`, unexpected keys are preserved as YAML comments with a warning (e.g., `# TODO: unknown workspace.pvc key "foo" = "bar" -- review manually`).
 
 New migrations are added by appending to the registry as the schema evolves.
 
@@ -96,7 +110,7 @@ New migrations are added by appending to the registry as the schema evolves.
 2. **Local path**: `--template ./my-template.yaml` reads from disk
 3. **URL**: `--template https://example.com/template.yaml` fetches remotely
 
-Resolution order: check if it's a built-in name, then check if it's a file path, then treat as URL.
+Resolution order: if the value contains a path separator (`/`) or file extension (`.yaml`, `.yml`, `.tmpl`), check as file path first; otherwise check if it's a built-in name. If neither matches, treat as URL. This avoids the footgun where a local file named `basic` is shadowed by the built-in.
 
 ### Template Format
 
@@ -111,6 +125,8 @@ spec:
   namespace: {{ .Namespace | default "default" }}
   sidecar:
     image: {{ .SidecarImage }}
+  session:
+    defaultNameTemplate: '{{`{{ .Repo }}-{{ .Branch }}-{{ .User }}`}}'
   sync:
     engine: syncthing
     paths:
@@ -127,14 +143,17 @@ spec:
   {{- end }}
 ```
 
+**Template escaping:** The existing `session.defaultNameTemplate` field uses `{{ .Repo }}`, `{{ .Branch }}`, `{{ .User }}` syntax that is resolved at session runtime, not at init time. In `.yaml.tmpl` files, these must be escaped using Go's backtick-raw syntax: `` {{` + "`" + `{{ .Repo }}` + "`" + `}} `` so they pass through `text/template` rendering as literal strings.
+
 ### Built-in Templates
 
-The current three templates (`basic`, `gpu`, `llm-stack`) are converted from hardcoded `fmt.Sprintf` strings to embedded `.yaml.tmpl` files under `internal/config/templates/`. This makes them readable examples for users authoring custom templates.
+The current three templates (`basic`, `gpu`, `llm-stack`) are converted from hardcoded `fmt.Sprintf` strings to embedded `.yaml.tmpl` files under `internal/config/templates/`, using `//go:embed` directives. This makes them readable examples for users authoring custom templates.
 
 ### Template Variables
 
 ```go
 type TemplateVars struct {
+    // Common (all templates)
     Name          string   // metadata.name (default: repo basename)
     Namespace     string   // default: "default"
     SidecarImage  string   // default: version-derived
@@ -142,8 +161,19 @@ type TemplateVars struct {
     SyncRemote    string   // default: "/workspace"
     SSHUser       string   // default: "root"
     Ports         []PortVar
+
+    // GPU template
+    BaseImage     string   // podTemplate container image (default: "nvidia/cuda:12.4.1-devel-ubuntu22.04")
+    GPUCount      string   // nvidia.com/gpu resource limit (default: "1")
+
+    // Session
+    TTLHours      int      // session.ttlHours (default: 0, meaning no TTL)
 }
 ```
+
+Template-specific variables are only prompted when the selected template references them. Built-in templates define which variables they use. For user-provided templates, unused variables are rendered as their zero values -- the template author controls what variables appear via standard Go template syntax.
+
+The prompt system does not auto-discover variables from custom templates. Custom template authors are expected to render the template with `--yes` (defaults) or provide values via flags. Interactive prompts are limited to the known `TemplateVars` fields.
 
 ---
 
@@ -210,8 +240,11 @@ The existing `Validate()` error message for deprecated fields is updated to sugg
 
 ```
 Error: spec.workspace is no longer supported.
-Run "okdev migrate" to automatically update your config.
+Use spec.volumes (k8s Volume) and podTemplate.spec.containers[*].volumeMounts instead,
+or run "okdev migrate" to automatically update your config.
 ```
+
+The existing manual-fix guidance is preserved, with the `okdev migrate` suggestion appended.
 
 ### Package Layout
 
@@ -223,19 +256,22 @@ internal/config/
   migrate_test.go    # (new)
   template.go        # TemplateVars, rendering, resolution (rewritten)
   template_test.go   # (rewritten)
-  prompt.go          # Interactive prompts for init (new)
-  prompt_test.go     # (new)
   templates/
-    basic.yaml.tmpl
-    gpu.yaml.tmpl
-    llm-stack.yaml.tmpl
+    basic.yaml.tmpl      # //go:embed
+    gpu.yaml.tmpl        # //go:embed
+    llm-stack.yaml.tmpl  # //go:embed
 
 internal/cli/
   init.go            # Updated to use new template + prompt system
+  prompt.go          # Interactive prompts for init (new)
+  prompt_test.go     # (new)
   migrate.go         # New subcommand wiring (new)
 ```
+
+Prompt logic lives in `internal/cli/` (not `internal/config/`) to keep the config package free of terminal/tty dependencies.
 
 ### Dependencies
 
 - Interactive prompts: `github.com/AlecAivazis/survey/v2` or `github.com/charmbracelet/huh`
 - YAML node manipulation: `gopkg.in/yaml.v3` (already available)
+- URL template fetching: HTTP GET with 30s timeout, fail on non-200, no caching, TLS verification enabled
