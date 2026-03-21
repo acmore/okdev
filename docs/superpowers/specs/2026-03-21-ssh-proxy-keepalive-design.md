@@ -17,9 +17,10 @@ When `okdev ssh-proxy` (the ProxyCommand used by external `ssh` clients) becomes
 Modify the existing TCP keepalive in `waitDialLocal()` (currently 10s period via `SetKeepAlivePeriod`).
 
 - Reduce keepalive period from 10s to 5s via `SetKeepAlivePeriod(5 * time.Second)`
-- Set `TCP_KEEPCNT` to 2 via platform-specific syscall (`syscall.SetsockoptInt` on the raw fd). On macOS/Darwin this is `syscall.TCP_KEEPCNT`; on Linux it is `syscall.TCP_KEEPCNT`. Go 1.24+ sets `TCP_KEEPIDLE` and `TCP_KEEPINTVL` via `SetKeepAlivePeriod`, so we only need the explicit syscall for the probe count.
-- Detects: dead peer, network partition, crashed port-forward process
-- Detection time: ~15 seconds (5s idle + 5s * 2 probes). Note: Go's `SetKeepAlivePeriod` sets both `TCP_KEEPIDLE` and `TCP_KEEPINTVL` to the same value on Go 1.24+.
+- Optionally set `TCP_KEEPCNT` to 2 via platform-specific syscall (`syscall.SetsockoptInt` on the raw fd) when supported. This is an optimization, not a correctness dependency; if unavailable or unsupported on a target platform, log at debug level and continue with the standard Go keepalive settings. Go 1.24+ sets `TCP_KEEPIDLE` and `TCP_KEEPINTVL` via `SetKeepAlivePeriod`.
+- Detects: local loopback socket failure between `ssh-proxy` and the local `kubectl port-forward` process, including crashed port-forward process or dead local peer
+- Does not independently detect: remote cluster-side network partitions or pod-side stalls, because this socket is `127.0.0.1:<localPort>`
+- Detection time: implementation-dependent by OS; with `SetKeepAlivePeriod(5s)` and `TCP_KEEPCNT=2` where supported, expected detection is roughly ~15 seconds
 
 ### Layer 2: Data Flow Monitor
 
@@ -54,8 +55,9 @@ On detection of any failure:
 
 1. Log detailed diagnostics to okdev log file (which layer detected, error details, connection duration, timestamps)
 2. Close the data connection — unblocks both `io.Copy` goroutines
-3. Return a non-nil error from `RunE` (cobra translates this to exit 1; avoids calling `os.Exit` directly which would skip deferred cleanup)
-4. No output to stderr — the `ssh` client reports the disconnect naturally
+3. Return a proxy-specific sentinel error from `RunE`
+4. Suppress that sentinel error in `cmd/okdev/main.go` so the process still exits non-zero without writing to stderr
+5. No output to stderr for expected proxy health-triggered disconnects — the `ssh` client reports the disconnect naturally
 
 No reconnection attempt. Re-establishing the port-forward cannot save the in-flight SSH session because SSH protocol state (encryption keys, sequence numbers, channel state) is tied to the original TCP stream.
 
@@ -85,12 +87,15 @@ This gives the SSH client its own independent detection at ~55 seconds. The prox
 ### Files to Modify
 
 **`internal/cli/ssh.go` — `newSSHProxyCmd`:**
-- Reduce TCP keepalive period to 5s and set `TCP_KEEPCNT=2` via syscall on the data connection
+- Reduce TCP keepalive period to 5s and optionally set `TCP_KEEPCNT=2` via syscall on the data connection where supported
 - Replace raw `io.Copy` with `monitoredCopy` that tracks data flow timestamps
 - Add watchdog goroutine (5s check interval, 15s idle threshold)
 - Wire `onDegraded` callback in `startPortForwardKeepalive` to close connection
 - Use `cmd.Context()` instead of `context.Background()` for keepalive context
 - Add structured logging on exit (layer that detected, duration, error)
+
+**`cmd/okdev/main.go`:**
+- Suppress the proxy sentinel error from stderr while still exiting with status 1
 
 **`internal/cli/ssh.go` — SSH config writing:**
 - Hardcode `ServerAliveInterval 5` and `ServerAliveCountMax 10` for the proxy path
