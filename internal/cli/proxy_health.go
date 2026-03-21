@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/acmore/okdev/internal/logx"
@@ -83,13 +82,8 @@ func setTCPKeepAliveProxyTuning(conn net.Conn) {
 		slog.Debug("ssh-proxy: failed to get syscall conn for TCP_KEEPCNT", "error", err)
 		return
 	}
-	var sysErr error
-	err = raw.Control(func(fd uintptr) {
-		sysErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_KEEPCNT, 2)
-	})
-	if err != nil || sysErr != nil {
-		logx.Printf("time=%s source=ssh-proxy msg=%q controlErr=%q sysErr=%q\n", time.Now().Format("2006-01-02T15:04:05.000Z07:00"), "TCP_KEEPCNT not set", err, sysErr)
-		slog.Debug("ssh-proxy: TCP_KEEPCNT not set (unsupported or failed)",
-			"controlErr", err, "sysErr", sysErr)
+	if err := setTCPKeepCnt(raw, 2); err != nil {
+		logx.Printf("time=%s source=ssh-proxy msg=%q err=%q\n", time.Now().Format("2006-01-02T15:04:05.000Z07:00"), "TCP_KEEPCNT not set", err)
+		slog.Debug("ssh-proxy: TCP_KEEPCNT not set (unsupported or failed)", "error", err)
 	}
 }
