@@ -41,6 +41,8 @@
 - For unstable links, increase:
   - `spec.ssh.keepAliveIntervalSeconds`
   - `spec.ssh.keepAliveTimeoutSeconds`
+- If `ssh okdev-<session>` exits after a long stall, inspect `~/.okdev/logs/okdev.log` for proxy health events such as port-forward degradation or idle watchdog disconnects.
+- Managed proxy sessions are designed to fail closed and return control to the local terminal rather than hang indefinitely on a dead port-forward.
 - If tmux login fails with `missing or unsuitable terminal` (for example `xterm-ghostty`), upgrade to a sidecar image that includes terminal fallback handling, then recreate the pod with `okdev down && okdev up`.
 
 ## Local State Files
