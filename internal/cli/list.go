@@ -25,12 +25,10 @@ func newListCmd(opts *Options) *cobra.Command {
 				return activeErr
 			}
 			if ns == "" {
-				if cfg, path, err := config.Load(opts.ConfigPath); err == nil && cfg.Spec.Namespace != "" {
+				if cfg, err := loadOptionalConfigForList(opts, announceConfigPath); err == nil && cfg.Spec.Namespace != "" {
 					ns = cfg.Spec.Namespace
-					announceConfigPath(path)
 					applyConfigKubeContext(opts, cfg)
 				} else if err == nil {
-					announceConfigPath(path)
 					applyConfigKubeContext(opts, cfg)
 				}
 			}
@@ -108,4 +106,18 @@ func sessionNameFromPodSummary(p kube.PodSummary) string {
 		return strings.TrimPrefix(name, "okdev-")
 	}
 	return name
+}
+
+func loadOptionalConfigForList(opts *Options, announce func(string) func(bool)) (*config.DevEnvironment, error) {
+	path, err := config.ResolvePath(opts.ConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	done := announce(path)
+	cfg, _, err := config.Load(path)
+	done(err == nil)
+	if err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
