@@ -9,6 +9,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
+// MigrationEligibleError wraps validation errors that can be fixed by okdev migrate.
+type MigrationEligibleError struct {
+	Err error
+}
+
+func (e *MigrationEligibleError) Error() string { return e.Err.Error() }
+func (e *MigrationEligibleError) Unwrap() error { return e.Err }
+
 const (
 	DefaultSyncthingVersion       = "v1.29.7"
 	DefaultSidecarImageRepository = "ghcr.io/acmore/okdev"
@@ -175,7 +183,7 @@ func (d *DevEnvironment) Validate() error {
 		return errors.New("metadata.name is required")
 	}
 	if d.Spec.Workspace != nil {
-		return errors.New("spec.workspace is removed; use spec.volumes (k8s Volume) and podTemplate.spec.containers[*].volumeMounts")
+		return &MigrationEligibleError{Err: errors.New("spec.workspace is removed; use spec.volumes (k8s Volume) and podTemplate.spec.containers[*].volumeMounts, or run \"okdev migrate\" to automatically update your config")}
 	}
 	if d.Spec.Sync.Engine != "syncthing" {
 		return fmt.Errorf("spec.sync.engine must be syncthing, got %q", d.Spec.Sync.Engine)
