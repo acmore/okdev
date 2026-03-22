@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -41,6 +42,10 @@ func loadConfigAndNamespace(opts *Options) (*config.DevEnvironment, string, erro
 	cfg, path, err := config.Load(path)
 	done(err == nil)
 	if err != nil {
+		var migErr *config.MigrationEligibleError
+		if errors.As(err, &migErr) {
+			fmt.Fprintf(os.Stderr, "\nHint: run \"okdev migrate\" to automatically fix this.\n")
+		}
 		return nil, "", err
 	}
 	applyConfigKubeContext(opts, cfg)
@@ -180,7 +185,15 @@ func (s *transientStatus) stop() {
 }
 
 func isTerminalWriter(w io.Writer) bool {
-	f, ok := w.(interface{ Fd() uintptr })
+	return isTerminalFD(w)
+}
+
+func isTerminalReader(r io.Reader) bool {
+	return isTerminalFD(r)
+}
+
+func isTerminalFD(v any) bool {
+	f, ok := v.(interface{ Fd() uintptr })
 	if !ok {
 		return false
 	}
