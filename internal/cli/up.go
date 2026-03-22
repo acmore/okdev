@@ -20,6 +20,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 	var waitTimeout time.Duration
 	var dryRun bool
 	var tmux bool
+	var noTmux bool
 	var sshMode string
 	var createMissingPVC bool
 	var missingPVCSize string
@@ -104,7 +105,16 @@ func newUpCmd(opts *Options) *cobra.Command {
 				ui.stepDone("pvc", "not managed (use pre-created PVCs in spec.volumes)")
 			}
 
-			enableTmux := tmux || cfg.Spec.SSH.PersistentSessionEnabled()
+			if cmd.Flags().Changed("tmux") && cmd.Flags().Changed("no-tmux") {
+				return fmt.Errorf("--tmux and --no-tmux cannot be used together")
+			}
+			enableTmux := cfg.Spec.SSH.PersistentSessionEnabled()
+			if cmd.Flags().Changed("tmux") {
+				enableTmux = tmux
+			}
+			if noTmux {
+				enableTmux = false
+			}
 			preStopCmd := resolvePreStopCommand(cfg, cfgPath)
 			preparedSpec, err := kube.PreparePodSpec(
 				cfg.Spec.PodTemplate.Spec,
@@ -229,6 +239,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 3*time.Minute, "Wait timeout for pod readiness")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview actions without applying resources")
 	cmd.Flags().BoolVar(&tmux, "tmux", false, "Enable tmux persistent shell sessions in the sidecar")
+	cmd.Flags().BoolVar(&noTmux, "no-tmux", false, "Disable tmux persistent shell sessions for this pod")
 	cmd.Flags().StringVar(&sshMode, "ssh-mode", "sidecar", "SSH server mode: sidecar (default) or embedded")
 	cmd.Flags().BoolVar(&createMissingPVC, "create-missing-pvc", false, "Create missing PVCs referenced by spec.volumes")
 	cmd.Flags().StringVar(&missingPVCSize, "missing-pvc-size", config.DefaultWorkspacePVCSize, "Size to use when creating a missing PVC")

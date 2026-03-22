@@ -102,7 +102,7 @@ Validation:
 - `remotePort` (`int`, default: `22`)
 - `privateKeyPath` (`string`, optional)
 - `autoDetectPorts` (`bool`, default: `true`)
-- `persistentSession` (`bool`, default: `false`) enables tmux-backed interactive session mode
+- `persistentSession` (`bool`, default: `true`) enables tmux-backed interactive session mode
 - `keepAliveIntervalSeconds` (`int`, default: `10`)
 - `keepAliveTimeoutSeconds` (`int`, default: `10`)
 

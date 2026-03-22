@@ -218,7 +218,7 @@ func (d *DevEnvironment) Validate() error {
 
 func (s SSHSpec) PersistentSessionEnabled() bool {
 	if s.PersistentSession == nil {
-		return false
+		return true
 	}
 	return *s.PersistentSession
 }

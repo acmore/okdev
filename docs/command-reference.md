@@ -18,7 +18,9 @@
 - `okdev validate`
 - `okdev up [--wait-timeout 3m] [--dry-run]`
   - Reconciles Pod/PVC resources, updates SSH config, initializes managed forwarding/sync, then exits.
-  - `--tmux`: enable persistent interactive shells by setting tmux mode on the sidecar.
+  - tmux-backed persistent interactive shells are enabled by default.
+  - `--tmux`: explicitly enable tmux mode on the sidecar.
+  - `--no-tmux`: disable tmux mode for this pod.
   - `spec.ports` is materialized as SSH `LocalForward`.
 - `okdev down [--delete-pvc] [--dry-run]`
 - `okdev status [--all] [--all-users]`
