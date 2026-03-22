@@ -35,24 +35,12 @@ func newInitCmd(opts *Options) *cobra.Command {
 			}
 
 			vars := config.NewTemplateVars()
-			if nameOverride != "" {
-				vars.Name = nameOverride
-			}
-			if nsOverride != "" {
-				vars.Namespace = nsOverride
-			}
-			if vars.Name == "" {
-				wd, _ := os.Getwd()
-				if wd != "" {
-					vars.Name = filepath.Base(wd)
-				} else {
-					vars.Name = "my-project"
-				}
-			}
+			overrides := InitOverrides{Name: nameOverride, Namespace: nsOverride}
+			applyOverrides(vars, overrides)
 
-			// TODO: interactive prompts will be added in Task 8/9
-			// For now, non-interactive only (--yes is implicit until prompts are wired)
-			_ = yes
+			if err := promptInteractive(vars, yes); err != nil {
+				return err
+			}
 
 			rendered, err := config.RenderTemplate(templateRef, vars)
 			if err != nil {
