@@ -51,6 +51,10 @@ func PreparePodSpec(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMo
 				Name:      "workspace",
 				MountPath: workspaceMountPath,
 			})
+			spec.Containers[i].Env = ensureEnvVar(spec.Containers[i].Env, corev1.EnvVar{
+				Name:  "OKDEV_CONTAINER_ROLE",
+				Value: "dev",
+			})
 		}
 	}
 
@@ -87,6 +91,10 @@ func PreparePodSpec(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMo
 				{
 					Name:  "OKDEV_WORKSPACE",
 					Value: workspaceMountPath,
+				},
+				{
+					Name:  "OKDEV_CONTAINER_ROLE",
+					Value: "sidecar",
 				},
 			},
 		}
@@ -154,6 +162,18 @@ func ensureVolumeMount(mounts []corev1.VolumeMount, vm corev1.VolumeMount) []cor
 		}
 	}
 	return append(mounts, vm)
+}
+
+func ensureEnvVar(envs []corev1.EnvVar, env corev1.EnvVar) []corev1.EnvVar {
+	for i := range envs {
+		if envs[i].Name == env.Name {
+			if strings.TrimSpace(envs[i].Value) == "" {
+				envs[i].Value = env.Value
+			}
+			return envs
+		}
+	}
+	return append(envs, env)
 }
 
 func hasContainer(containers []corev1.Container, name string) bool {

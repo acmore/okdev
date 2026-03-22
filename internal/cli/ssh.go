@@ -334,12 +334,10 @@ DEV_PID=""
 for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$' | sort -n); do
   [ "$pid" = "1" ] && continue
   [ "$pid" = "$$" ] && continue
-  [ -r "/proc/$pid/root" ] 2>/dev/null || continue
-  if ! [ "/proc/$pid/root" -ef "/proc/self/root" ] 2>/dev/null; then
-    if [ -d "/proc/$pid" ]; then
-      DEV_PID="$pid"
-      break
-    fi
+  [ -r "/proc/$pid/environ" ] 2>/dev/null || continue
+  if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qx 'OKDEV_CONTAINER_ROLE=dev'; then
+    DEV_PID="$pid"
+    break
   fi
 done
 [ -n "$DEV_PID" ]
