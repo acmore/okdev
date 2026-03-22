@@ -11,7 +11,10 @@ import (
 
 func newInitCmd(opts *Options) *cobra.Command {
 	var force bool
-	var templateName string
+	var templateRef string
+	var yes bool
+	var nameOverride string
+	var nsOverride string
 
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -31,23 +34,47 @@ func newInitCmd(opts *Options) *cobra.Command {
 				return fmt.Errorf("config already exists at %q (use --force to overwrite)", abs)
 			}
 
-			if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-				return fmt.Errorf("create parent directory: %w", err)
+			vars := config.NewTemplateVars()
+			if nameOverride != "" {
+				vars.Name = nameOverride
 			}
-			tpl, err := config.TemplateByName(templateName)
+			if nsOverride != "" {
+				vars.Namespace = nsOverride
+			}
+			if vars.Name == "" {
+				wd, _ := os.Getwd()
+				if wd != "" {
+					vars.Name = filepath.Base(wd)
+				} else {
+					vars.Name = "my-project"
+				}
+			}
+
+			// TODO: interactive prompts will be added in Task 8/9
+			// For now, non-interactive only (--yes is implicit until prompts are wired)
+			_ = yes
+
+			rendered, err := config.RenderTemplate(templateRef, vars)
 			if err != nil {
 				return err
 			}
-			if err := os.WriteFile(abs, []byte(tpl), 0o644); err != nil {
+
+			if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+				return fmt.Errorf("create parent directory: %w", err)
+			}
+			if err := os.WriteFile(abs, []byte(rendered), 0o644); err != nil {
 				return fmt.Errorf("write config %q: %w", abs, err)
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Created %s\n", abs)
+			fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", abs)
 			return nil
 		},
 	}
 
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing config file")
-	cmd.Flags().StringVar(&templateName, "template", "basic", "Template to use (basic|gpu|llm-stack)")
+	cmd.Flags().StringVar(&templateRef, "template", "basic", "Template: built-in name, file path, or URL")
+	cmd.Flags().BoolVar(&yes, "yes", false, "Non-interactive mode, accept all defaults")
+	cmd.Flags().StringVar(&nameOverride, "name", "", "Environment name")
+	cmd.Flags().StringVar(&nsOverride, "namespace", "", "Namespace")
 	return cmd
 }

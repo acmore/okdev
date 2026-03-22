@@ -1,197 +1,144 @@
 package config
 
-import "fmt"
+import (
+	"bytes"
+	"embed"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+	"text/template"
+	"time"
+)
 
-var basicTemplate = fmt.Sprintf(`apiVersion: okdev.io/v1alpha1
-kind: DevEnvironment
-metadata:
-  name: my-project
-spec:
-  namespace: default
-  session:
-    defaultNameTemplate: "{{ .Repo }}-{{ .Branch }}-{{ .User }}"
-    ttlHours: 72
-    idleTimeoutMinutes: 120
-    shareable: true
-  sync:
-    engine: syncthing
-    syncthing:
-      version: %s
-      autoInstall: true
-    paths:
-      - .:/workspace
-    exclude:
-      - .git/
-      - .venv/
-      - node_modules/
-    remoteExclude: []
-  ports:
-    - name: app
-      local: 8080
-      remote: 8080
-  ssh:
-    user: root
-    remotePort: 22
-    keepAliveIntervalSeconds: 30
-    keepAliveTimeoutSeconds: 90
-  sidecar:
-    image: %s
-`, DefaultSyncthingVersion, DefaultSidecarImage)
+//go:embed templates/*.yaml.tmpl
+var embeddedTemplates embed.FS
 
-var gpuTemplate = fmt.Sprintf(`apiVersion: okdev.io/v1alpha1
-kind: DevEnvironment
-metadata:
-  name: llm-project
-spec:
-  namespace: ai-dev
-  session:
-    defaultNameTemplate: "{{ .Repo }}-{{ .Branch }}-{{ .User }}"
-    ttlHours: 72
-    idleTimeoutMinutes: 120
-    shareable: true
-  sync:
-    engine: syncthing
-    syncthing:
-      version: %s
-      autoInstall: true
-    paths:
-      - .:/workspace
-    exclude:
-      - .git/
-      - .venv/
-      - node_modules/
-      - checkpoints/
-      - data/
-    remoteExclude: []
-  ports:
-    - name: api
-      local: 8080
-      remote: 8080
-    - name: tensorboard
-      local: 6006
-      remote: 6006
-  ssh:
-    user: root
-    remotePort: 22
-    keepAliveIntervalSeconds: 30
-    keepAliveTimeoutSeconds: 90
-  sidecar:
-    image: %s
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: nvidia/cuda:12.4.1-devel-ubuntu22.04
-          command: ["sleep", "infinity"]
-          resources:
-            requests:
-              cpu: "8"
-              memory: 32Gi
-              nvidia.com/gpu: "1"
-            limits:
-              cpu: "16"
-              memory: 64Gi
-              nvidia.com/gpu: "1"
-          volumeMounts:
-            - name: workspace
-              mountPath: /workspace
-      volumes:
-        - name: workspace
-          persistentVolumeClaim:
-            claimName: okdev-workspace
-`, DefaultSyncthingVersion, DefaultSidecarImage)
+// builtinNames maps template names to their embedded file paths.
+var builtinNames = map[string]string{
+	"basic":           "templates/basic.yaml.tmpl",
+	"gpu":             "templates/gpu.yaml.tmpl",
+	"llm-gpu":         "templates/gpu.yaml.tmpl",
+	"llm-stack":       "templates/llm-stack.yaml.tmpl",
+	"multi-container": "templates/llm-stack.yaml.tmpl",
+}
 
-var llmStackTemplate = fmt.Sprintf(`apiVersion: okdev.io/v1alpha1
-kind: DevEnvironment
-metadata:
-  name: llm-stack
-spec:
-  namespace: ai-dev
-  session:
-    defaultNameTemplate: "{{ .Repo }}-{{ .Branch }}-{{ .User }}"
-    ttlHours: 72
-    idleTimeoutMinutes: 120
-    shareable: true
-  sync:
-    engine: syncthing
-    syncthing:
-      version: %s
-      autoInstall: true
-    paths:
-      - .:/workspace
-    exclude:
-      - .git/
-      - .venv/
-      - node_modules/
-      - checkpoints/
-      - data/
-    remoteExclude: []
-  ports:
-    - name: app
-      local: 8080
-      remote: 8080
-    - name: redis
-      local: 6379
-      remote: 6379
-    - name: qdrant
-      local: 6333
-      remote: 6333
-  ssh:
-    user: root
-    remotePort: 22
-    keepAliveIntervalSeconds: 30
-    keepAliveTimeoutSeconds: 90
-  sidecar:
-    image: %s
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: nvidia/cuda:12.4.1-devel-ubuntu22.04
-          command: ["sleep", "infinity"]
-          env:
-            - name: REDIS_URL
-              value: redis://127.0.0.1:6379
-            - name: QDRANT_URL
-              value: http://127.0.0.1:6333
-          resources:
-            requests:
-              cpu: "8"
-              memory: 32Gi
-              nvidia.com/gpu: "1"
-            limits:
-              cpu: "16"
-              memory: 64Gi
-              nvidia.com/gpu: "1"
-          volumeMounts:
-            - name: workspace
-              mountPath: /workspace
-        - name: redis
-          image: redis:7-alpine
-          args: ["--save", "", "--appendonly", "no"]
-          ports:
-            - containerPort: 6379
-        - name: qdrant
-          image: qdrant/qdrant:v1.13.2
-          ports:
-            - containerPort: 6333
-      volumes:
-        - name: workspace
-          persistentVolumeClaim:
-            claimName: okdev-workspace
-`, DefaultSyncthingVersion, DefaultSidecarImage)
+// TemplateVars holds all variables available to templates.
+type TemplateVars struct {
+	Name             string
+	Namespace        string
+	SidecarImage     string
+	SyncthingVersion string
+	SyncLocal        string
+	SyncRemote       string
+	SSHUser          string
+	Ports            []PortVar
+	BaseImage        string
+	GPUCount         string
+	TTLHours         int
+}
 
-var DefaultTemplate = basicTemplate
+type PortVar struct {
+	Name   string
+	Local  int
+	Remote int
+}
 
-func TemplateByName(name string) (string, error) {
-	switch name {
-	case "", "basic":
-		return basicTemplate, nil
-	case "gpu", "llm-gpu":
-		return gpuTemplate, nil
-	case "llm-stack", "multi-container":
-		return llmStackTemplate, nil
-	default:
-		return "", fmt.Errorf("unknown template %q (supported: basic, gpu, llm-stack)", name)
+// NewTemplateVars returns TemplateVars with sensible defaults.
+func NewTemplateVars() *TemplateVars {
+	return &TemplateVars{
+		Name:             "",
+		Namespace:        "default",
+		SidecarImage:     DefaultSidecarImage,
+		SyncthingVersion: DefaultSyncthingVersion,
+		SyncLocal:        ".",
+		SyncRemote:       "/workspace",
+		SSHUser:          "root",
+		BaseImage:        "nvidia/cuda:12.4.1-devel-ubuntu22.04",
+		GPUCount:         "1",
+		TTLHours:         72,
 	}
+}
+
+// ResolveTemplate loads raw template content from a built-in name, file path, or URL.
+func ResolveTemplate(ref string) (string, error) {
+	hasPathIndicator := strings.Contains(ref, "/") ||
+		strings.HasSuffix(ref, ".yaml") ||
+		strings.HasSuffix(ref, ".yml") ||
+		strings.HasSuffix(ref, ".tmpl")
+
+	if hasPathIndicator {
+		if content, err := os.ReadFile(ref); err == nil {
+			return string(content), nil
+		}
+	}
+
+	// Check built-in
+	if path, ok := builtinNames[ref]; ok {
+		content, err := embeddedTemplates.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("read embedded template %q: %w", ref, err)
+		}
+		return string(content), nil
+	}
+
+	if !hasPathIndicator {
+		// Try as file anyway
+		if content, err := os.ReadFile(ref); err == nil {
+			return string(content), nil
+		}
+	}
+
+	// Treat as URL
+	return fetchTemplateURL(ref)
+}
+
+func fetchTemplateURL(url string) (string, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(url) //nolint:gosec // user-provided URL is intentional
+	if err != nil {
+		return "", fmt.Errorf("fetch template from %q: %w", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("fetch template from %q: HTTP %d", url, resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB limit
+	if err != nil {
+		return "", fmt.Errorf("read template from %q: %w", url, err)
+	}
+	return string(body), nil
+}
+
+// RenderTemplate resolves a template by ref and renders it with the given vars.
+func RenderTemplate(ref string, vars *TemplateVars) (string, error) {
+	raw, err := ResolveTemplate(ref)
+	if err != nil {
+		return "", err
+	}
+
+	tmpl, err := template.New("okdev").Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("parse template: %w", err)
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, vars); err != nil {
+		return "", fmt.Errorf("render template: %w", err)
+	}
+	return buf.String(), nil
+}
+
+// BuiltinTemplateNames returns the list of available built-in template names.
+func BuiltinTemplateNames() []string {
+	seen := map[string]bool{}
+	var names []string
+	for name := range builtinNames {
+		if !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	return names
 }
