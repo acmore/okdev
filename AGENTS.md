@@ -5,6 +5,7 @@ This file is the canonical repository guidance for coding agents working in `okd
 ## Workflow
 
 - Prefer targeted, repo-relevant tests before committing.
+- Clean up resources created by ad-hoc e2e tests before finishing the task.
 - Prefer `rg` and `rg --files` for search.
 - Keep changes narrow and preserve existing patterns unless the task requires a broader refactor.
 - Update user-facing docs when behavior changes.
@@ -31,9 +32,16 @@ This file is the canonical repository guidance for coding agents working in `okd
 - When asked to update a local install to a release, prefer the published release asset over a workspace build.
 - For release follow-ups, verify the actual published artifact or image rather than assuming the workflow succeeded.
 
+## E2E Testing Rules
+
+- Prefer the smallest realistic end-to-end check that validates the changed behavior.
+- Reuse existing local installs, release binaries, and published sidecar images when they are sufficient for the test.
+- If an e2e test creates cluster resources, local background processes, SSH config entries, port-forwards, or temporary files, clean them up before finishing unless the user explicitly asks to keep them.
+- For `okdev` session tests, prefer tearing down with `okdev down` after verification when the session was created only for the test.
+- If cleanup cannot be completed, say exactly what was left behind and where.
+
 ## Repo-Specific Expectations
 
 - Keep sidecar, SSH, tmux, and Syncthing behavior aligned; changes in one often require checking the others.
 - Be careful with config-loading output paths because many commands share the same helper logic.
 - When changing pod or sidecar behavior, consider both local installs and sidecar image rebuild/publish steps.
-

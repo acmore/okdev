@@ -6,15 +6,19 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
+	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 )
+
+const upDefaultSyncMode = "bi"
 
 func newUpCmd(opts *Options) *cobra.Command {
 	var waitTimeout time.Duration
@@ -66,6 +70,10 @@ func newUpCmd(opts *Options) *cobra.Command {
 			annotations := annotationsForSession(cfg)
 			annotations["okdev.io/ssh-mode"] = normalizeSSHMode(sshMode)
 			volumes := cfg.EffectiveVolumes()
+			syncPairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.WorkspaceMountPath())
+			if err != nil {
+				return err
+			}
 			pod := podName(sn)
 			if dryRun {
 				ui.section("Dry Run")
@@ -77,6 +85,9 @@ func newUpCmd(opts *Options) *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(), "- would apply pod/%s\n", pod)
 				fmt.Fprintf(cmd.OutOrStdout(), "- would wait for pod readiness (timeout=%s)\n", waitTimeout)
 				fmt.Fprintln(cmd.OutOrStdout(), "- would setup SSH config + managed SSH/port-forwards")
+				for _, pair := range syncPairs {
+					fmt.Fprintf(cmd.OutOrStdout(), "- would sync %s -> %s\n", displayLocalSyncPath(pair.Local), pair.Remote)
+				}
 				fmt.Fprintln(cmd.OutOrStdout(), "- would start background sync (when sync.engine=syncthing)")
 				return nil
 			}
@@ -202,18 +213,21 @@ func newUpCmd(opts *Options) *cobra.Command {
 			}
 
 			syncSummary := "disabled"
+			syncModeSymbol := ""
 			if cfg.Spec.Sync.Engine == "" || cfg.Spec.Sync.Engine == "syncthing" {
-				logPath, started, err := startDetachedSyncthingSync(opts, "bi", sn, ns, cfgPath)
+				logPath, started, err := startDetachedSyncthingSync(opts, upDefaultSyncMode, sn, ns, cfgPath)
 				if err != nil {
 					ui.warnf("failed to start syncthing background sync: %v", err)
 					syncSummary = "degraded (start failed)"
 				} else {
+					syncModeSymbol = modeSymbol(upDefaultSyncMode)
+					syncPathSummary := syncPairsSummary(syncPairs, syncModeSymbol)
 					if started {
-						syncSummary = "active (bi)"
-						ui.stepDone("sync", fmt.Sprintf("active (bi), logs: %s", logPath))
+						syncSummary = "active (" + syncModeSymbol + ")"
+						ui.stepDone("sync", fmt.Sprintf("active (%s), %s, logs: %s", syncModeSymbol, syncPathSummary, logPath))
 					} else {
-						syncSummary = "already active (bi)"
-						ui.stepDone("sync", fmt.Sprintf("already active (bi), logs: %s", logPath))
+						syncSummary = "already active (" + syncModeSymbol + ")"
+						ui.stepDone("sync", fmt.Sprintf("already active (%s), %s, logs: %s", syncModeSymbol, syncPathSummary, logPath))
 					}
 				}
 			}
@@ -231,7 +245,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 			}
 
 			ui.printWarnings()
-			ui.printReadyCard(sn, ns, pod, sshSummary, syncSummary, cfg.Spec.Ports)
+			ui.printReadyCard(sn, ns, pod, sshSummary, syncSummary, cfg.Spec.Ports, syncPairs, syncModeSymbol)
 			return nil
 		},
 	}
@@ -383,13 +397,19 @@ func (u *upUI) warnWriter() io.Writer {
 	return upWarnSink{ui: u}
 }
 
-func (u *upUI) printReadyCard(sessionName, namespace, pod, sshSummary, syncSummary string, ports []config.PortMapping) {
+func (u *upUI) printReadyCard(sessionName, namespace, pod, sshSummary, syncSummary string, ports []config.PortMapping, syncPairs []syncengine.Pair, syncModeSymbol string) {
 	fmt.Fprintln(u.out, "\n== Ready ==")
 	fmt.Fprintf(u.out, "session:   %s\n", sessionName)
 	fmt.Fprintf(u.out, "namespace: %s\n", namespace)
 	fmt.Fprintf(u.out, "pod:       %s\n", pod)
 	fmt.Fprintf(u.out, "ssh:       %s\n", sshSummary)
 	fmt.Fprintf(u.out, "sync:      %s\n", syncSummary)
+	if len(syncPairs) > 0 {
+		fmt.Fprintln(u.out, "sync paths:")
+		for _, pair := range syncPairs {
+			fmt.Fprintf(u.out, "- %s %s %s\n", displayLocalSyncPath(pair.Local), syncArrow(syncModeSymbol), pair.Remote)
+		}
+	}
 	if len(ports) > 0 {
 		fmt.Fprintln(u.out, "forwards:")
 		for _, p := range ports {
@@ -407,6 +427,47 @@ func (u *upUI) printReadyCard(sessionName, namespace, pod, sshSummary, syncSumma
 	fmt.Fprintf(u.out, "- ssh %s\n", sshHostAlias(sessionName))
 	fmt.Fprintln(u.out, "- okdev status")
 	fmt.Fprintln(u.out, "- okdev down")
+}
+
+func syncPairsSummary(pairs []syncengine.Pair, syncModeSymbol string) string {
+	if len(pairs) == 0 {
+		return "no paths"
+	}
+	if len(pairs) == 1 {
+		pair := pairs[0]
+		return fmt.Sprintf("%s %s %s", displayLocalSyncPath(pair.Local), syncArrow(syncModeSymbol), pair.Remote)
+	}
+	return fmt.Sprintf("%d paths", len(pairs))
+}
+
+func displayLocalSyncPath(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return path
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return path
+}
+
+func syncArrow(syncModeSymbol string) string {
+	if strings.TrimSpace(syncModeSymbol) == "" {
+		return "->"
+	}
+	return syncModeSymbol
+}
+
+func modeSymbol(mode string) string {
+	switch strings.TrimSpace(mode) {
+	case "up":
+		return "->"
+	case "down":
+		return "<-"
+	case "bi":
+		return "<->"
+	default:
+		return "->"
+	}
 }
 
 type upWarnSink struct {

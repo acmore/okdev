@@ -59,7 +59,7 @@ Tmux-backed persistent shells are enabled by default. Disable them for a pod wit
 - ensures Pod/PVC state
 - writes managed `~/.ssh/config` host entry (`okdev-<session>`)
 - starts managed SSH/forwarding bootstrap
-- starts background Syncthing sync when enabled
+- starts background Syncthing sync in bidirectional mode when enabled
 - exits after setup (no attach mode)
 
 ## Access and Data Movement
@@ -80,6 +80,7 @@ Tmux-backed persistent shells are enabled by default. Disable them for a pod wit
 
 Notes:
 - Local Syncthing is auto-installed when `sync.engine=syncthing`.
+- `okdev up` starts background sync in bidirectional mode by default.
 - Default sidecar image follows binary version: `ghcr.io/<owner>/okdev:<okdev-version>` (`edge` for dev builds).
 - `spec.sync.exclude` applies local ignore patterns; `spec.sync.remoteExclude` applies remote-only ignores.
 - SSH target is always the merged `okdev-sidecar` container (`sshd` on `22`).
