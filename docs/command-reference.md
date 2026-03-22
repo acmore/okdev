@@ -21,6 +21,7 @@
   - tmux-backed persistent interactive shells are enabled by default.
   - `--tmux`: explicitly enable tmux mode on the sidecar.
   - `--no-tmux`: disable tmux mode for this pod.
+  - When `sync.engine=syncthing`, `okdev up` starts background sync in bidirectional mode by default.
   - `spec.ports` is materialized as SSH `LocalForward`.
 - `okdev down [--delete-pvc] [--dry-run]`
 - `okdev status [--all] [--all-users]`
