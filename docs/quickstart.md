@@ -49,10 +49,10 @@ Use an explicit session name when running multiple environments for the same rep
 ./bin/okdev up --session serving-main-alice
 ```
 
-Enable persistent interactive shells backed by tmux:
+Tmux-backed persistent shells are enabled by default. Disable them for a pod with:
 
 ```bash
-./bin/okdev up --tmux
+./bin/okdev up --no-tmux
 ```
 
 `okdev up` performs one-step setup:
@@ -87,6 +87,7 @@ Notes:
 - Local runtime state/logs are stored under `~/.okdev/` (not in the project working directory).
 - Use `ssh okdev-<session>` for direct SSH. For tmux-backed interactive sessions, force TTY (`ssh -tt okdev-<session>`).
 - Use `okdev ssh --no-tmux` to bypass tmux for a single connection.
+- Use `spec.ssh.persistentSession: false` or `okdev up --no-tmux` if you want non-tmux pod sessions by default.
 - The managed SSH host entry uses tighter proxy keepalive settings than the general CLI defaults so hung `ssh okdev-<session>` sessions fail fast instead of freezing indefinitely.
 - Proxy health diagnostics are written to `~/.okdev/logs/okdev.log`, not printed into the SSH client session.
 - Tmux uses a built-in okdev profile (history/mouse/vi-copy/status) and keeps the default command prefix (`Ctrl-b`).
