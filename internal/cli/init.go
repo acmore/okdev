@@ -15,6 +15,10 @@ func newInitCmd(opts *Options) *cobra.Command {
 	var yes bool
 	var nameOverride string
 	var nsOverride string
+	var sidecarImageOverride string
+	var syncLocalOverride string
+	var syncRemoteOverride string
+	var sshUserOverride string
 
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -35,10 +39,17 @@ func newInitCmd(opts *Options) *cobra.Command {
 			}
 
 			vars := config.NewTemplateVars()
-			overrides := InitOverrides{Name: nameOverride, Namespace: nsOverride}
+			overrides := InitOverrides{
+				Name:         nameOverride,
+				Namespace:    nsOverride,
+				SidecarImage: sidecarImageOverride,
+				SyncLocal:    syncLocalOverride,
+				SyncRemote:   syncRemoteOverride,
+				SSHUser:      sshUserOverride,
+			}
 			applyOverrides(vars, overrides)
 
-			if err := promptInteractive(vars, yes); err != nil {
+			if err := promptInteractive(vars, overrides, cmd.InOrStdin(), cmd.OutOrStdout(), yes, isTerminalReader(cmd.InOrStdin())); err != nil {
 				return err
 			}
 
@@ -64,5 +75,9 @@ func newInitCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&yes, "yes", false, "Non-interactive mode, accept all defaults")
 	cmd.Flags().StringVar(&nameOverride, "name", "", "Environment name")
 	cmd.Flags().StringVar(&nsOverride, "namespace", "", "Namespace")
+	cmd.Flags().StringVar(&sidecarImageOverride, "sidecar-image", "", "Sidecar image")
+	cmd.Flags().StringVar(&syncLocalOverride, "sync-local", "", "Local sync path")
+	cmd.Flags().StringVar(&syncRemoteOverride, "sync-remote", "", "Remote sync path")
+	cmd.Flags().StringVar(&sshUserOverride, "ssh-user", "", "SSH user")
 	return cmd
 }
