@@ -97,6 +97,22 @@ func setKey(mapping *yaml.Node, key string, value *yaml.Node) {
 	)
 }
 
+func findNamedSequenceItem(seq *yaml.Node, name string) *yaml.Node {
+	if seq == nil || seq.Kind != yaml.SequenceNode {
+		return nil
+	}
+	for _, item := range seq.Content {
+		if item == nil || item.Kind != yaml.MappingNode {
+			continue
+		}
+		_, value := findKey(item, "name")
+		if value != nil && value.Value == name {
+			return item
+		}
+	}
+	return nil
+}
+
 // DefaultMigrations is the ordered list of all config migrations.
 var DefaultMigrations = []Migration{
 	workspaceToVolumesMigration(),
@@ -193,7 +209,9 @@ func workspaceToVolumesMigration() Migration {
 			// Merge with existing volumes if present
 			_, existingVolumes := findKey(spec, "volumes")
 			if existingVolumes != nil && existingVolumes.Kind == yaml.SequenceNode {
-				existingVolumes.Content = append(existingVolumes.Content, volumeMapping)
+				if findNamedSequenceItem(existingVolumes, "workspace") == nil {
+					existingVolumes.Content = append(existingVolumes.Content, volumeMapping)
+				}
 			} else {
 				setKey(spec, "volumes", volumesSeq)
 			}
@@ -210,7 +228,14 @@ func workspaceToVolumesMigration() Migration {
 							if c.Kind == yaml.MappingNode {
 								_, nameNode := findKey(c, "name")
 								if nameNode != nil && nameNode.Value == "dev" {
-									setKey(c, "volumeMounts", vmSeq)
+									_, existingMounts := findKey(c, "volumeMounts")
+									if existingMounts != nil && existingMounts.Kind == yaml.SequenceNode {
+										if findNamedSequenceItem(existingMounts, "workspace") == nil {
+											existingMounts.Content = append(existingMounts.Content, vmMapping)
+										}
+									} else {
+										setKey(c, "volumeMounts", vmSeq)
+									}
 									goto podTemplateDone
 								}
 							}

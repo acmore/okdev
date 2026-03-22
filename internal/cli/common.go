@@ -185,7 +185,15 @@ func (s *transientStatus) stop() {
 }
 
 func isTerminalWriter(w io.Writer) bool {
-	f, ok := w.(interface{ Fd() uintptr })
+	return isTerminalFD(w)
+}
+
+func isTerminalReader(r io.Reader) bool {
+	return isTerminalFD(r)
+}
+
+func isTerminalFD(v any) bool {
+	f, ok := v.(interface{ Fd() uintptr })
 	if !ok {
 		return false
 	}

@@ -168,3 +168,82 @@ spec:
 		t.Fatalf("expected warning about unknownKey, got %v", result.Warnings)
 	}
 }
+
+func TestWorkspaceToVolumesMigrationPreservesExistingDevMounts(t *testing.T) {
+	input := `apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: test
+spec:
+  workspace:
+    mountPath: /code
+    pvc:
+      claimName: my-pvc
+  podTemplate:
+    spec:
+      containers:
+        - name: dev
+          volumeMounts:
+            - name: cache
+              mountPath: /cache
+`
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(input), &doc); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := RunMigrations(&doc, DefaultMigrations); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered := string(out)
+	if !strings.Contains(rendered, "name: cache") || !strings.Contains(rendered, "mountPath: /cache") {
+		t.Fatalf("expected existing cache mount to be preserved, got:\n%s", rendered)
+	}
+	if strings.Count(rendered, "name: workspace") != 2 {
+		t.Fatalf("expected one workspace volume and one workspace mount, got:\n%s", rendered)
+	}
+}
+
+func TestWorkspaceToVolumesMigrationAvoidsDuplicateWorkspaceVolume(t *testing.T) {
+	input := `apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: test
+spec:
+  workspace:
+    mountPath: /code
+    pvc:
+      claimName: migrated-pvc
+  volumes:
+    - name: workspace
+      persistentVolumeClaim:
+        claimName: existing-pvc
+`
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(input), &doc); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := RunMigrations(&doc, DefaultMigrations); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered := string(out)
+	if got := strings.Count(rendered, "name: workspace"); got != 2 {
+		t.Fatalf("expected one workspace volume and one workspace mount, got %d occurrences:\n%s", got, rendered)
+	}
+	if strings.Contains(rendered, "claimName: migrated-pvc") {
+		t.Fatalf("expected existing workspace volume to be preserved without duplicate claim, got:\n%s", rendered)
+	}
+}
