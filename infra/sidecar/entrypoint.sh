@@ -41,36 +41,74 @@ done
 SCRIPT
 chmod +x /usr/local/bin/sync-gids.sh
 
-# Write nsenter wrapper script for SSH sessions.
-# Finds PID 1 of the dev container (first process whose root is not our root).
-cat > /usr/local/bin/nsenter-dev.sh << 'SCRIPT'
+# Find the dev container process by explicit role marker in its environment.
+cat > /usr/local/bin/find-dev-pid.sh << 'SCRIPT'
 #!/bin/sh
-OKDEV_TMUX_FLAG="__OKDEV_TMUX_FLAG__"
-OKDEV_WORKSPACE_PATH="__OKDEV_WORKSPACE_PATH__"
+set -eu
 
-# Find the dev container's PID 1 by looking for a process with a different root filesystem.
-# In a shared PID namespace, our PID 1 is the pause/sandbox container.
-# We look for the first long-lived process in the dev container.
-DEV_PID=""
 for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$' | sort -n); do
   [ "$pid" = "1" ] && continue
   [ "$pid" = "$$" ] && continue
-  # Use 2>/dev/null to suppress error if process disappears while we're checking.
-  [ -r "/proc/$pid/root" ] 2>/dev/null || continue
-  if ! [ "/proc/$pid/root" -ef "/proc/self/root" ] 2>/dev/null; then
-    # Found a process in a different mount namespace — likely the dev container
-    # Verify it still exists before we commit to it.
-    if [ -d "/proc/$pid" ]; then
-      DEV_PID="$pid"
-      break
-    fi
+  [ -r "/proc/$pid/environ" ] 2>/dev/null || continue
+  if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qx 'OKDEV_CONTAINER_ROLE=dev'; then
+    printf '%s\n' "$pid"
+    exit 0
   fi
 done
+
+exit 1
+SCRIPT
+chmod +x /usr/local/bin/find-dev-pid.sh
+
+# Write lightweight shell wrapper for tmux windows/panes.
+# Reads the cached dev PID and nsenter's directly — no SSH/tmux logic.
+cat > /usr/local/bin/dev-shell.sh << 'SCRIPT'
+#!/bin/sh
+OKDEV_WORKSPACE_PATH="__OKDEV_WORKSPACE_PATH__"
+
+DEV_PID="$(cat /var/run/okdev-dev.pid 2>/dev/null || true)"
+if [ -n "$DEV_PID" ] && ! [ -d "/proc/$DEV_PID" ]; then
+  DEV_PID=""
+fi
+if [ -z "$DEV_PID" ]; then
+  DEV_PID="$(/usr/local/bin/find-dev-pid.sh 2>/dev/null || true)"
+  if [ -n "$DEV_PID" ]; then
+    echo "$DEV_PID" > /var/run/okdev-dev.pid
+  fi
+fi
 
 if [ -z "$DEV_PID" ]; then
   echo "ERROR: could not find dev container PID" >&2
   exit 1
 fi
+
+if nsenter --target "$DEV_PID" --mount -- test -x /bin/bash 2>/dev/null; then
+  exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid --cgroup -- /bin/bash -lc "if [ -d \"$OKDEV_WORKSPACE_PATH\" ]; then cd \"$OKDEV_WORKSPACE_PATH\"; fi; exec /bin/bash -l"
+else
+  exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid --cgroup -- /bin/sh -lc "if [ -d \"$OKDEV_WORKSPACE_PATH\" ]; then cd \"$OKDEV_WORKSPACE_PATH\"; fi; exec /bin/sh -l"
+fi
+SCRIPT
+
+# Write nsenter wrapper script for SSH sessions.
+cat > /usr/local/bin/nsenter-dev.sh << 'SCRIPT'
+#!/bin/sh
+OKDEV_TMUX_FLAG="__OKDEV_TMUX_FLAG__"
+OKDEV_WORKSPACE_PATH="__OKDEV_WORKSPACE_PATH__"
+
+DEV_PID="$(cat /var/run/okdev-dev.pid 2>/dev/null || true)"
+if [ -n "$DEV_PID" ] && ! [ -d "/proc/$DEV_PID" ]; then
+  DEV_PID=""
+fi
+if [ -z "$DEV_PID" ]; then
+  DEV_PID="$(/usr/local/bin/find-dev-pid.sh 2>/dev/null || true)"
+fi
+
+if [ -z "$DEV_PID" ]; then
+  echo "ERROR: could not find dev container PID" >&2
+  exit 1
+fi
+
+echo "$DEV_PID" > /var/run/okdev-dev.pid
 
 # Ensure all current GIDs exist in /etc/group inside BOTH the sidecar and the
 # target to suppress "groups: cannot find name for group ID ..." warnings.
@@ -113,18 +151,15 @@ if [ "${OKDEV_TMUX_FLAG:-}" = "1" ] && [ "${OKDEV_NO_TMUX:-}" != "1" ] && comman
   # any running commands) survive SSH disconnects — only the client
   # process is killed by sshd, while the server keeps the session alive.
   if ! tmux has-session -t okdev 2>/dev/null; then
-    if nsenter --target "$DEV_PID" --mount -- test -x /bin/bash 2>/dev/null; then
-      tmux new-session -d -s okdev "nsenter --target $DEV_PID --mount --uts --ipc --pid --cgroup -- /bin/bash -l"
-    else
-      tmux new-session -d -s okdev "nsenter --target $DEV_PID --mount --uts --ipc --pid --cgroup -- /bin/sh -l"
-    fi
+    tmux new-session -d -s okdev "/usr/local/bin/dev-shell.sh"
+    tmux set-option -t okdev default-command "/usr/local/bin/dev-shell.sh"
   fi
   exec tmux attach-session -t okdev
 fi
 if nsenter --target "$DEV_PID" --mount -- test -x /bin/bash 2>/dev/null; then
-  exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid --cgroup -- /bin/bash -l
+  exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid --cgroup -- /bin/bash -lc "if [ -d \"$OKDEV_WORKSPACE_PATH\" ]; then cd \"$OKDEV_WORKSPACE_PATH\"; fi; exec /bin/bash -l"
 else
-  exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid --cgroup -- /bin/sh -l
+  exec nsenter --target "$DEV_PID" --mount --uts --ipc --pid --cgroup -- /bin/sh -lc "if [ -d \"$OKDEV_WORKSPACE_PATH\" ]; then cd \"$OKDEV_WORKSPACE_PATH\"; fi; exec /bin/sh -l"
 fi
 SCRIPT
 safe_tmux_flag=$(printf '%s' "$OKDEV_TMUX_FLAG" | sed 's/[\/&]/\\&/g')
@@ -134,6 +169,10 @@ sed -i \
   -e "s|__OKDEV_WORKSPACE_PATH__|${safe_workspace_path}|g" \
   /usr/local/bin/nsenter-dev.sh
 chmod +x /usr/local/bin/nsenter-dev.sh
+sed -i \
+  -e "s|__OKDEV_WORKSPACE_PATH__|${safe_workspace_path}|g" \
+  /usr/local/bin/dev-shell.sh
+chmod +x /usr/local/bin/dev-shell.sh
 
 # Add ForceCommand to sshd_config dynamically
 if ! grep -q "ForceCommand" /etc/ssh/sshd_config; then
@@ -147,17 +186,7 @@ if [ "$OKDEV_SSH_MODE" = "embedded" ]; then
   DEV_PID=""
   tries=0
   while [ -z "$DEV_PID" ] && [ "$tries" -lt 60 ]; do
-    for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$' | sort -n); do
-      [ "$pid" = "1" ] && continue
-      [ "$pid" = "$$" ] && continue
-      [ -r "/proc/$pid/root" ] 2>/dev/null || continue
-      if ! [ "/proc/$pid/root" -ef "/proc/self/root" ] 2>/dev/null; then
-        if [ -d "/proc/$pid" ]; then
-          DEV_PID="$pid"
-          break
-        fi
-      fi
-    done
+    DEV_PID="$(/usr/local/bin/find-dev-pid.sh 2>/dev/null || true)"
     if [ -z "$DEV_PID" ]; then
       sleep 0.5
       tries=$((tries + 1))
