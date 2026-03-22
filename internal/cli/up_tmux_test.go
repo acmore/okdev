@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 )
@@ -31,33 +32,85 @@ func (f *fakeDevShellExecutor) ExecShInContainer(_ context.Context, _, _ string,
 	return out, err
 }
 
-func TestEnsureEmbeddedTmux(t *testing.T) {
+func (f *fakeDevShellExecutor) StreamShInContainer(_ context.Context, _, _ string, container, script string, stdout, stderr io.Writer) error {
+	f.container = container
+	f.lastScript = script
+	idx := f.calls
+	f.calls++
+	if idx < len(f.outputs) && stdout != nil {
+		_, _ = stdout.Write(f.outputs[idx])
+	}
+	if idx < len(f.errors) {
+		return f.errors[idx]
+	}
+	return nil
+}
+
+func TestDetectEmbeddedTmux(t *testing.T) {
 	tests := []struct {
 		name          string
 		fake          *fakeDevShellExecutor
-		wantInstalled bool
+		wantStatus    string
+		wantInstaller string
 		wantErr       string
-		wantCalls     int
 	}{
-		{name: "present", fake: newFakeDevShellExecutor([]string{"present:none"}, nil), wantCalls: 1},
-		{name: "installed", fake: newFakeDevShellExecutor([]string{"install:apt-get", "installed:apt-get"}, nil), wantInstalled: true, wantCalls: 2},
-		{name: "no-root detect", fake: newFakeDevShellExecutor([]string{"no-root:none"}, nil), wantErr: "not running as root", wantCalls: 1},
-		{name: "no-root install", fake: newFakeDevShellExecutor([]string{"install:apt-get", "no-root:none"}, nil), wantErr: "not running as root", wantCalls: 2},
-		{name: "unavailable", fake: newFakeDevShellExecutor([]string{"install:apk", "unavailable:apk"}, nil), wantErr: "unavailable after best-effort", wantCalls: 2},
-		{name: "unexpected", fake: newFakeDevShellExecutor([]string{"mystery"}, nil), wantErr: "unexpected tmux prepare result", wantCalls: 1},
-		{name: "exec error", fake: newFakeDevShellExecutor(nil, []error{errors.New("boom")}), wantErr: "boom", wantCalls: 1},
+		{name: "present", fake: newFakeDevShellExecutor([]string{"present:none"}, nil), wantStatus: "present", wantInstaller: "none"},
+		{name: "install apt-get", fake: newFakeDevShellExecutor([]string{"install:apt-get"}, nil), wantStatus: "install", wantInstaller: "apt-get"},
+		{name: "no-root", fake: newFakeDevShellExecutor([]string{"no-root:none"}, nil), wantStatus: "no-root", wantInstaller: "none"},
+		{name: "unavailable", fake: newFakeDevShellExecutor([]string{"unavailable:none"}, nil), wantStatus: "unavailable", wantInstaller: "none"},
+		{name: "exec error", fake: newFakeDevShellExecutor(nil, []error{errors.New("boom")}), wantErr: "boom"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotInstalled, _, err := ensureEmbeddedTmux(context.Background(), tt.fake, "default", "okdev-test", nil)
-			if tt.wantErr == "" && err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			status, installer, err := detectEmbeddedTmux(context.Background(), tt.fake, "default", "okdev-test")
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
 				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if status != tt.wantStatus {
+				t.Fatalf("expected status %q, got %q", tt.wantStatus, status)
+			}
+			if installer != tt.wantInstaller {
+				t.Fatalf("expected installer %q, got %q", tt.wantInstaller, installer)
+			}
+			if tt.fake.container != "dev" {
+				t.Fatalf("expected dev container, got %q", tt.fake.container)
+			}
+		})
+	}
+}
+
+func TestInstallEmbeddedTmux(t *testing.T) {
+	tests := []struct {
+		name          string
+		fake          *fakeDevShellExecutor
+		installer     string
+		wantInstalled bool
+		wantErr       string
+	}{
+		{name: "installed", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=installed:apt-get"}, nil), installer: "apt-get", wantInstalled: true},
+		{name: "no-root", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=no-root:none"}, nil), installer: "apt-get", wantErr: "not running as root"},
+		{name: "unavailable", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=unavailable:apk"}, nil), installer: "apk", wantErr: embeddedTmuxLogPath},
+		{name: "exec error", fake: newFakeDevShellExecutor(nil, []error{errors.New("boom")}), installer: "apt-get", wantErr: "boom"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotInstalled, _, err := installEmbeddedTmux(context.Background(), tt.fake, "default", "okdev-test", tt.installer, nil)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
 			}
 			if gotInstalled != tt.wantInstalled {
 				t.Fatalf("expected installed=%v, got %v", tt.wantInstalled, gotInstalled)
@@ -65,27 +118,24 @@ func TestEnsureEmbeddedTmux(t *testing.T) {
 			if tt.fake.container != "dev" {
 				t.Fatalf("expected dev container, got %q", tt.fake.container)
 			}
-			if tt.fake.calls != tt.wantCalls {
-				t.Fatalf("expected %d exec calls, got %d", tt.wantCalls, tt.fake.calls)
-			}
 		})
 	}
 }
 
-func TestEnsureEmbeddedTmuxDetails(t *testing.T) {
+func TestInstallEmbeddedTmuxDetails(t *testing.T) {
 	tests := []struct {
 		name       string
 		fake       *fakeDevShellExecutor
+		installer  string
 		wantDetail string
 	}{
-		{name: "present", fake: newFakeDevShellExecutor([]string{"present:none"}, nil), wantDetail: "ready in dev container"},
-		{name: "installed with installer", fake: newFakeDevShellExecutor([]string{"install:apt-get", "installed:apt-get"}, nil), wantDetail: "installed in dev container via apt-get"},
-		{name: "installed no installer", fake: newFakeDevShellExecutor([]string{"install:none", "installed:none"}, nil), wantDetail: "installed in dev container"},
+		{name: "installed with installer", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=installed:apt-get"}, nil), installer: "apt-get", wantDetail: "installed in dev container via apt-get"},
+		{name: "installed no installer", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=installed:none"}, nil), installer: "none", wantDetail: "installed in dev container"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, gotDetail, err := ensureEmbeddedTmux(context.Background(), tt.fake, "default", "okdev-test", nil)
+			_, gotDetail, err := installEmbeddedTmux(context.Background(), tt.fake, "default", "okdev-test", tt.installer, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -96,17 +146,43 @@ func TestEnsureEmbeddedTmuxDetails(t *testing.T) {
 	}
 }
 
-func TestEnsureEmbeddedTmuxProgress(t *testing.T) {
-	fake := newFakeDevShellExecutor([]string{"install:apt-get", "installed:apt-get"}, nil)
-	var phases []string
-	_, _, err := ensureEmbeddedTmux(context.Background(), fake, "default", "okdev-test", func(phase string) {
-		phases = append(phases, phase)
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestInterpretTmuxStatus(t *testing.T) {
+	tests := []struct {
+		name          string
+		status        string
+		installer     string
+		wantInstalled bool
+		wantDetail    string
+		wantErr       string
+	}{
+		{name: "present", status: "present", installer: "none", wantDetail: "ready in dev container"},
+		{name: "installed with installer", status: "installed", installer: "apt-get", wantInstalled: true, wantDetail: "installed in dev container via apt-get"},
+		{name: "installed no installer", status: "installed", installer: "none", wantInstalled: true, wantDetail: "installed in dev container"},
+		{name: "no-root", status: "no-root", installer: "none", wantErr: "not running as root"},
+		{name: "unavailable with installer", status: "unavailable", installer: "apk", wantErr: embeddedTmuxLogPath},
+		{name: "unavailable no pkg mgr", status: "unavailable", installer: "none", wantErr: "no supported package manager found"},
+		{name: "unexpected", status: "mystery", installer: "none", wantErr: "unexpected tmux prepare result"},
 	}
-	if len(phases) != 1 || phases[0] != "installing via apt-get" {
-		t.Fatalf("unexpected phases: %v", phases)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotInstalled, gotDetail, err := interpretTmuxStatus(tt.status, tt.installer, tt.status+":"+tt.installer)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if gotInstalled != tt.wantInstalled {
+				t.Fatalf("expected installed=%v, got %v", tt.wantInstalled, gotInstalled)
+			}
+			if gotDetail != tt.wantDetail {
+				t.Fatalf("expected detail %q, got %q", tt.wantDetail, gotDetail)
+			}
+		})
 	}
 }
 
@@ -120,6 +196,7 @@ func TestEmbeddedTmuxScriptsIncludeKnownPackageManagers(t *testing.T) {
 		"microdnf install -y tmux",
 		"yum install -y tmux",
 		"/var/okdev/.tmux-install-attempted",
+		embeddedTmuxLogPath,
 	} {
 		if !strings.Contains(embeddedTmuxDetectScript+"\n"+embeddedTmuxInstallScript, want) {
 			t.Fatalf("expected scripts to contain %q", want)
