@@ -246,6 +246,14 @@ or run "okdev migrate" to automatically update your config.
 
 The existing manual-fix guidance is preserved, with the `okdev migrate` suggestion appended.
 
+Additionally, `loadConfigAndNamespace()` in `internal/cli/common.go` (the shared config-loading path for all commands like `up`, `ssh`, `sync`, `ports`) detects migration-eligible validation errors and prints a visible hint to stderr:
+
+```
+Hint: run "okdev migrate" to automatically fix this.
+```
+
+This uses a `MigrationEligibleError` sentinel type in the config package so the CLI layer can distinguish migration-fixable errors from other validation failures.
+
 ### Package Layout
 
 ```

@@ -585,6 +585,84 @@ git commit -m "fix(config): suggest okdev migrate in workspace validation error"
 
 ---
 
+### Task 3b: Add Migration Hint to loadConfigAndNamespace
+
+**Files:**
+- Modify: `internal/cli/common.go:35-45`
+
+All commands that load config (`up`, `ssh`, `sync`, `ports`, etc.) go through `loadConfigAndNamespace()` in `common.go`. When `config.Load()` fails with a validation error related to deprecated fields, we should print a visible hint.
+
+- [ ] **Step 1: Add migration hint wrapper**
+
+In `internal/config/config.go`, add a sentinel error type to identify migration-eligible errors:
+
+```go
+// MigrationEligibleError wraps validation errors that can be fixed by okdev migrate.
+type MigrationEligibleError struct {
+	Err error
+}
+
+func (e *MigrationEligibleError) Error() string { return e.Err.Error() }
+func (e *MigrationEligibleError) Unwrap() error { return e.Err }
+```
+
+Update the workspace validation in `Validate()` to return this type:
+
+```go
+if d.Spec.Workspace != nil {
+	return &MigrationEligibleError{Err: errors.New("spec.workspace is removed; use spec.volumes (k8s Volume) and podTemplate.spec.containers[*].volumeMounts, or run \"okdev migrate\" to automatically update your config")}
+}
+```
+
+- [ ] **Step 2: Add hint in loadConfigAndNamespace**
+
+In `internal/cli/common.go`, update `loadConfigAndNamespace` to detect the error type:
+
+```go
+func loadConfigAndNamespace(opts *Options) (*config.DevEnvironment, string, error) {
+	path, err := config.ResolvePath(opts.ConfigPath)
+	if err != nil {
+		return nil, "", err
+	}
+	done := announceConfigPath(path)
+	cfg, path, err := config.Load(path)
+	done(err == nil)
+	if err != nil {
+		var migErr *config.MigrationEligibleError
+		if errors.As(err, &migErr) {
+			fmt.Fprintf(os.Stderr, "\nHint: run \"okdev migrate\" to automatically fix this.\n")
+		}
+		return nil, "", err
+	}
+	applyConfigKubeContext(opts, cfg)
+	ns := cfg.Spec.Namespace
+	if opts.Namespace != "" {
+		ns = opts.Namespace
+	}
+	if strings.TrimSpace(ns) == "" {
+		ns = "default"
+	}
+	return cfg, ns, nil
+}
+```
+
+Add `"errors"` to the import block if not already present.
+
+- [ ] **Step 3: Run tests**
+
+Run: `cd /Users/acmore/workspace/okdev/.worktrees/migrate-and-init && go test ./... -v`
+Expected: All PASS
+
+- [ ] **Step 4: Commit**
+
+```bash
+cd /Users/acmore/workspace/okdev/.worktrees/migrate-and-init
+git add internal/config/config.go internal/cli/common.go
+git commit -m "feat(cli): add visible migration hint when config load fails due to deprecated fields"
+```
+
+---
+
 ### Task 4: `okdev migrate` CLI Command
 
 **Files:**
