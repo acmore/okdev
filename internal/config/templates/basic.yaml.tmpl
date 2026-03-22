@@ -1,0 +1,34 @@
+apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: {{ .Name }}
+spec:
+  namespace: {{ .Namespace }}
+  session:
+    defaultNameTemplate: '{{`{{ .Repo }}-{{ .Branch }}-{{ .User }}`}}'
+    ttlHours: {{ .TTLHours }}
+    idleTimeoutMinutes: 120
+    shareable: true
+  sync:
+    engine: syncthing
+    syncthing:
+      version: {{ .SyncthingVersion }}
+      autoInstall: true
+    paths:
+      - "{{ .SyncLocal }}:{{ .SyncRemote }}"
+    exclude:
+      - .git/
+      - .venv/
+      - node_modules/
+    remoteExclude: []
+  ports:
+    - name: app
+      local: 8080
+      remote: 8080
+  ssh:
+    user: {{ .SSHUser }}
+    remotePort: 22
+    keepAliveIntervalSeconds: 30
+    keepAliveTimeoutSeconds: 90
+  sidecar:
+    image: {{ .SidecarImage }}
