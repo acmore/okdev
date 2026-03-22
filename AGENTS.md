@@ -28,6 +28,7 @@ This file is the canonical repository guidance for coding agents working in `okd
 ## Build And Release Rules
 
 - `edge` images must always be built and pushed explicitly as `linux/amd64`.
+- If the user asks to rebuild `edge`, treat that as build-and-push by default unless they explicitly say local-only.
 - Do not rely on the local Docker default platform when publishing `edge`.
 - When asked to update a local install to a release, prefer the published release asset over a workspace build.
 - For release follow-ups, verify the actual published artifact or image rather than assuming the workflow succeeded.

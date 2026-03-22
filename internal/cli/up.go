@@ -243,6 +243,21 @@ func newUpCmd(opts *Options) *cobra.Command {
 					ui.stepDone("postCreate", "already done")
 				}
 			}
+			if enableTmux && sshMode == "embedded" {
+				ui.stepRun("tmux", "checking dev container")
+				installed, detail, err := ensureEmbeddedTmux(cmd.Context(), k, ns, pod, func(phase string) {
+					if strings.TrimSpace(phase) != "" {
+						ui.stepRun("tmux", phase)
+					}
+				})
+				if err != nil {
+					ui.warnf("failed to prepare tmux in dev container: %v", err)
+				} else if installed {
+					ui.stepDone("tmux", detail)
+				} else {
+					ui.stepDone("tmux", detail)
+				}
+			}
 
 			ui.printWarnings()
 			ui.printReadyCard(sn, ns, pod, sshSummary, syncSummary, cfg.Spec.Ports, syncPairs, syncModeSymbol)
@@ -322,6 +337,128 @@ func runPostCreateIfNeeded(k *kube.Client, namespace, pod, command string, out i
 		fmt.Fprintf(errOut, "warning: failed to annotate pod after postCreate: %v\n", annErr)
 	}
 	return true, nil
+}
+
+const embeddedTmuxDetectScript = `set -eu
+if command -v tmux >/dev/null 2>&1; then
+  echo present:none
+  exit 0
+fi
+if [ "$(id -u)" != "0" ]; then
+  echo no-root:none
+  exit 0
+fi
+mkdir -p /var/okdev >/dev/null 2>&1 || true
+if [ -f /var/okdev/.tmux-install-attempted ]; then
+  echo unavailable:none
+  exit 0
+fi
+if command -v apk >/dev/null 2>&1; then
+  echo install:apk
+elif command -v apt-get >/dev/null 2>&1; then
+  echo install:apt-get
+elif command -v dnf >/dev/null 2>&1; then
+  echo install:dnf
+elif command -v microdnf >/dev/null 2>&1; then
+  echo install:microdnf
+elif command -v yum >/dev/null 2>&1; then
+  echo install:yum
+else
+  echo unavailable:none
+fi
+`
+
+const embeddedTmuxInstallScript = `set -eu
+installer="${OKDEV_TMUX_INSTALLER:-none}"
+mkdir -p /var/okdev >/dev/null 2>&1 || true
+touch /var/okdev/.tmux-install-attempted >/dev/null 2>&1 || true
+if command -v tmux >/dev/null 2>&1; then
+  echo "installed:${installer}"
+  exit 0
+fi
+if [ "$(id -u)" != "0" ]; then
+  echo no-root:none
+  exit 0
+fi
+if [ "$installer" = "apk" ]; then
+  apk add --no-cache tmux >/dev/null 2>&1 || true
+elif [ "$installer" = "apt-get" ]; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get -o DPkg::Lock::Timeout=10 update >/dev/null 2>&1 && apt-get -o DPkg::Lock::Timeout=10 install -y --no-install-recommends tmux >/dev/null 2>&1 || true
+elif [ "$installer" = "dnf" ]; then
+  dnf install -y tmux >/dev/null 2>&1 || true
+elif [ "$installer" = "microdnf" ]; then
+  microdnf install -y tmux >/dev/null 2>&1 || true
+elif [ "$installer" = "yum" ]; then
+  yum install -y tmux >/dev/null 2>&1 || true
+fi
+if command -v tmux >/dev/null 2>&1; then
+  echo "installed:${installer}"
+  exit 0
+fi
+echo "unavailable:${installer}"
+`
+
+type devShellExecutor interface {
+	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+}
+
+func ensureEmbeddedTmux(ctx context.Context, k devShellExecutor, namespace, pod string, progress func(string)) (bool, string, error) {
+	detectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	out, err := k.ExecShInContainer(detectCtx, namespace, pod, "dev", embeddedTmuxDetectScript)
+	if err != nil {
+		return false, "", err
+	}
+	status, installer, _ := strings.Cut(strings.TrimSpace(string(out)), ":")
+	installer = strings.TrimSpace(installer)
+	switch status {
+	case "present":
+		return false, "ready in dev container", nil
+	case "install":
+		if progress != nil && installer != "" && installer != "none" {
+			progress(fmt.Sprintf("installing via %s", installer))
+		}
+		installCtx, installCancel := context.WithTimeout(ctx, 45*time.Second)
+		defer installCancel()
+		script := "export OKDEV_TMUX_INSTALLER=" + shellQuote(installer) + "; " + embeddedTmuxInstallScript
+		out, err = k.ExecShInContainer(installCtx, namespace, pod, "dev", script)
+		if err != nil {
+			return false, "", err
+		}
+		status, installer, _ = strings.Cut(strings.TrimSpace(string(out)), ":")
+		installer = strings.TrimSpace(installer)
+		switch status {
+		case "installed":
+			if installer != "" && installer != "none" {
+				return true, fmt.Sprintf("installed in dev container via %s", installer), nil
+			}
+			return true, "installed in dev container", nil
+		case "no-root":
+			return false, "", fmt.Errorf("dev container is not running as root")
+		case "unavailable":
+			if installer != "" && installer != "none" {
+				return false, "", fmt.Errorf("tmux unavailable after best-effort install attempt via %s", installer)
+			}
+			return false, "", fmt.Errorf("tmux unavailable after best-effort install attempt")
+		default:
+			return false, "", fmt.Errorf("unexpected tmux prepare result %q", strings.TrimSpace(string(out)))
+		}
+	case "installed":
+		if installer != "" && installer != "none" {
+			return true, fmt.Sprintf("installed in dev container via %s", installer), nil
+		}
+		return true, "installed in dev container", nil
+	case "no-root":
+		return false, "", fmt.Errorf("dev container is not running as root")
+	case "unavailable":
+		if installer != "" && installer != "none" {
+			return false, "", fmt.Errorf("tmux unavailable after best-effort install attempt via %s", installer)
+		}
+		return false, "", fmt.Errorf("tmux unavailable after best-effort install attempt")
+	default:
+		return false, "", fmt.Errorf("unexpected tmux prepare result %q", strings.TrimSpace(string(out)))
+	}
 }
 
 func warnIfConfigNewerThanSession(opts *Options, k *kube.Client, namespace, sessionName, podName string, errOut io.Writer) error {
