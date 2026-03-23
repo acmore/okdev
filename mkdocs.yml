@@ -23,8 +23,6 @@ theme:
   icon:
     repo: fontawesome/brands/github
   features:
-    - navigation.sections
-    - navigation.expand
     - navigation.top
     - navigation.instant
     - navigation.tracking

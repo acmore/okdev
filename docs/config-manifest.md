@@ -112,9 +112,9 @@ spec:
 - `exclude` (`[]string`): local ignore patterns.
 - `remoteExclude` (`[]string`): remote-only ignore patterns (written to remote `.stignore`).
 - `syncthing` (`object`):
-  - `version` (`string`, default: `v1.29.7`)
+  - `version` (`string`, default: `v1.29.7`) for the local auto-installed Syncthing client
   - `autoInstall` (`bool`, default: `true`)
-  - `image` (`string`, default: `ghcr.io/acmore/okdev:<okdev-version>` with `edge` fallback)
+  - `image` (`string`, default: `ghcr.io/acmore/okdev:<okdev-version>` with `edge` fallback) for the sidecar runtime image
 
 ### Example
 
@@ -140,6 +140,11 @@ spec:
 - `engine` must be `syncthing`
 - each `paths[]` entry must be `local:remote`
 - currently at most one `paths[]` entry
+
+### Version Behavior
+
+- `spec.sync.syncthing.version` controls the local Syncthing binary that `okdev` installs or reuses on your machine.
+- The Syncthing binary inside the pod sidecar comes from `spec.sidecar.image`, not from `spec.sync.syncthing.version`.
 
 ## `spec.ports`
 
