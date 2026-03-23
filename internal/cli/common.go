@@ -25,11 +25,7 @@ import (
 )
 
 const sessionHeartbeatInterval = 5 * time.Minute
-const (
-	sshModeSidecar  = "sidecar"
-	sshModeEmbedded = "embedded"
-	embeddedSSHPort = 2222
-)
+const sshPort = 2222
 
 var invalidOwnerChars = regexp.MustCompile(`[^a-z0-9._-]`)
 
@@ -316,38 +312,6 @@ func annotationsForSession(cfg *config.DevEnvironment) map[string]string {
 		out["okdev.io/idle-timeout-minutes"] = fmt.Sprintf("%d", cfg.Spec.Session.IdleTimeoutMinutes)
 	}
 	return out
-}
-
-func normalizeSSHMode(mode string) string {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case sshModeEmbedded:
-		return sshModeEmbedded
-	default:
-		return sshModeSidecar
-	}
-}
-
-func sshRemotePortForMode(cfg *config.DevEnvironment, mode string) int {
-	if normalizeSSHMode(mode) == sshModeEmbedded {
-		return embeddedSSHPort
-	}
-	if cfg != nil && cfg.Spec.SSH.RemotePort > 0 {
-		return cfg.Spec.SSH.RemotePort
-	}
-	return 22
-}
-
-func detectSessionSSHMode(opts *Options, namespace, sessionName string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	mode, err := newKubeClient(opts).GetPodAnnotation(ctx, namespace, podName(sessionName), "okdev.io/ssh-mode")
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return sshModeSidecar, nil
-		}
-		return "", err
-	}
-	return normalizeSSHMode(mode), nil
 }
 
 func podName(sessionName string) string {

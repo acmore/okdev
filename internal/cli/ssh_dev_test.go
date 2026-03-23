@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-func TestEnsureEmbeddedSSHDRunning(t *testing.T) {
+func TestEnsureDevSSHDRunning(t *testing.T) {
 	fake := newFakeDevShellExecutor([]string{""}, nil)
 
-	if err := ensureEmbeddedSSHDRunning(context.Background(), fake, "default", "okdev-test"); err != nil {
+	if err := ensureDevSSHDRunning(context.Background(), fake, "default", "okdev-test"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if fake.container != "dev" {
@@ -24,15 +24,15 @@ func TestEnsureEmbeddedSSHDRunning(t *testing.T) {
 		"nohup /var/okdev/okdev-sshd",
 	} {
 		if !strings.Contains(fake.lastScript, want) {
-			t.Fatalf("expected embedded ssh start script to contain %q, got %q", want, fake.lastScript)
+			t.Fatalf("expected dev ssh start script to contain %q, got %q", want, fake.lastScript)
 		}
 	}
 }
 
-func TestEnsureEmbeddedSSHDRunningError(t *testing.T) {
+func TestEnsureDevSSHDRunningError(t *testing.T) {
 	fake := newFakeDevShellExecutor(nil, []error{errors.New("boom")})
 
-	err := ensureEmbeddedSSHDRunning(context.Background(), fake, "default", "okdev-test")
+	err := ensureDevSSHDRunning(context.Background(), fake, "default", "okdev-test")
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("expected error containing boom, got %v", err)
 	}

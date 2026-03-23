@@ -1,39 +1,222 @@
+/* ── okdev dark theme ──────────────────────────────────────────────── */
+
 :root {
-  --okdev-grid: rgba(0, 255, 255, 0.08);
-  --okdev-edge: rgba(0, 255, 255, 0.2);
+  --ok-cyan: #00e5ff;
+  --ok-cyan-dim: rgba(0, 229, 255, 0.15);
+  --ok-cyan-faint: rgba(0, 229, 255, 0.06);
+  --ok-border: rgba(0, 229, 255, 0.12);
+  --ok-surface: #0d1117;
+  --ok-surface-raised: #161b22;
 }
 
-.md-typeset,
-.md-header__title,
-.md-nav__title,
-.md-nav__item,
-.md-typeset h1,
-.md-typeset h2,
-.md-typeset h3,
-.md-typeset code,
-.md-nav,
-.md-tabs {
-  font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+/* ── Slate palette overrides ──────────────────────────────────────── */
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #0d1117;
+  --md-primary-bg-color: var(--ok-cyan);
+  --md-accent-fg-color: var(--ok-cyan);
+  --md-default-bg-color: var(--ok-surface);
+  --md-code-bg-color: var(--ok-surface-raised);
 }
 
-.md-main {
-  background-image:
-    linear-gradient(var(--okdev-grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--okdev-grid) 1px, transparent 1px);
-  background-size: 28px 28px;
+/* ── Typography ───────────────────────────────────────────────────── */
+
+.md-typeset {
+  font-size: 0.82rem;
+  line-height: 1.7;
 }
 
-.md-typeset h1,
+.md-typeset h1 {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #e6edf3;
+}
+
 .md-typeset h2 {
-  letter-spacing: 0.02em;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: #c9d1d9;
+  border-bottom: 1px solid var(--ok-border);
+  padding-bottom: 0.4em;
+  margin-top: 2em;
+}
+
+.md-typeset h3 {
+  color: #b1bac4;
+}
+
+/* ── Inline code ──────────────────────────────────────────────────── */
+
+.md-typeset code {
+  font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 0.82em;
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+}
+
+[data-md-color-scheme="slate"] .md-typeset code {
+  background: var(--ok-surface-raised);
+  border: 1px solid var(--ok-border);
+  color: var(--ok-cyan);
+}
+
+/* ── Code blocks ──────────────────────────────────────────────────── */
+
+.md-typeset pre {
+  border-radius: 8px;
+  border: 1px solid var(--ok-border);
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre > code {
+  background: var(--ok-surface-raised);
+  border: none;
+  color: #e6edf3;
+}
+
+/* ── Header ───────────────────────────────────────────────────────── */
+
+[data-md-color-scheme="slate"] .md-header {
+  background: var(--ok-surface);
+  border-bottom: 1px solid var(--ok-border);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+[data-md-color-scheme="slate"] .md-header__title {
+  font-family: "JetBrains Mono", monospace;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+/* ── Navigation ───────────────────────────────────────────────────── */
+
+[data-md-color-scheme="slate"] .md-nav__link--active,
+[data-md-color-scheme="slate"] .md-nav__link:hover {
+  color: var(--ok-cyan);
+}
+
+[data-md-color-scheme="slate"] .md-tabs {
+  background: var(--ok-surface);
+  border-bottom: 1px solid var(--ok-border);
+}
+
+[data-md-color-scheme="slate"] .md-tabs__link--active,
+[data-md-color-scheme="slate"] .md-tabs__link:hover {
+  color: var(--ok-cyan);
+}
+
+/* ── Tables ───────────────────────────────────────────────────────── */
+
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) {
+  border: 1px solid var(--ok-border);
+  border-radius: 8px;
+  overflow: hidden;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) th {
+  background: var(--ok-surface-raised);
+  color: var(--ok-cyan);
+  font-weight: 600;
+  font-size: 0.78rem;
   text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--ok-border);
 }
 
-.md-typeset pre > code {
-  border: 1px solid var(--okdev-edge);
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) td {
+  border-bottom: 1px solid var(--ok-border);
 }
 
-.md-header,
-.md-tabs {
-  border-bottom: 1px solid var(--okdev-edge);
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) tr:last-child td {
+  border-bottom: none;
+}
+
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) tr:hover td {
+  background: var(--ok-cyan-faint);
+}
+
+/* ── Admonitions ──────────────────────────────────────────────────── */
+
+[data-md-color-scheme="slate"] .md-typeset .admonition,
+[data-md-color-scheme="slate"] .md-typeset details {
+  background: var(--ok-surface-raised);
+  border: 1px solid var(--ok-border);
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+/* ── Links ────────────────────────────────────────────────────────── */
+
+[data-md-color-scheme="slate"] .md-typeset a {
+  color: var(--ok-cyan);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.15s ease;
+}
+
+[data-md-color-scheme="slate"] .md-typeset a:hover {
+  border-bottom-color: var(--ok-cyan);
+}
+
+/* ── Horizontal rules ─────────────────────────────────────────────── */
+
+.md-typeset hr {
+  border: none;
+  border-top: 1px solid var(--ok-border);
+  margin: 2em 0;
+}
+
+/* ── Scrollbar (webkit) ───────────────────────────────────────────── */
+
+[data-md-color-scheme="slate"] ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+[data-md-color-scheme="slate"] ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+[data-md-color-scheme="slate"] ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+[data-md-color-scheme="slate"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* ── Footer ───────────────────────────────────────────────────────── */
+
+[data-md-color-scheme="slate"] .md-footer {
+  background: var(--ok-surface);
+  border-top: 1px solid var(--ok-border);
+}
+
+/* ── Search ───────────────────────────────────────────────────────── */
+
+[data-md-color-scheme="slate"] .md-search__input {
+  background: var(--ok-surface-raised);
+  border: 1px solid var(--ok-border);
+  border-radius: 6px;
+}
+
+/* ── Copy button ──────────────────────────────────────────────────── */
+
+.md-clipboard {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.md-clipboard:hover {
+  color: var(--ok-cyan);
+}
+
+/* ── Subtle grid background for main content ──────────────────────── */
+
+[data-md-color-scheme="slate"] .md-main {
+  background-image:
+    linear-gradient(var(--ok-cyan-faint) 1px, transparent 1px),
+    linear-gradient(90deg, var(--ok-cyan-faint) 1px, transparent 1px);
+  background-size: 40px 40px;
 }

@@ -29,7 +29,7 @@
 
 ## SSH Connection Errors
 
-- Ensure `okdev-sidecar` is healthy and listening on `22`.
+- Ensure `okdev-sshd` is running in the dev container on port `2222`.
 - Run `okdev ssh --setup-key` at least once per key pair.
 - If local bind conflicts occur, use `okdev ssh --local-port <port>`.
 - Verify managed entry exists in `~/.ssh/config`:

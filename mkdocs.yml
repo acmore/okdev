@@ -1,34 +1,60 @@
 site_name: okdev
-site_description: Lightweight Kubernetes-native dev environments for AI infra engineering
+site_description: CRD-less Kubernetes dev environments from a single manifest
 repo_url: https://github.com/acmore/okdev
 repo_name: acmore/okdev
 theme:
   name: material
   palette:
     - scheme: slate
+      primary: custom
+      accent: cyan
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
       primary: black
       accent: cyan
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
   features:
     - navigation.sections
     - navigation.expand
-    - content.code.copy
     - navigation.top
+    - navigation.instant
+    - navigation.tracking
+    - content.code.copy
+    - content.code.annotate
+    - search.suggest
+    - search.highlight
+    - toc.follow
 extra_css:
   - stylesheets/extra.css
-exclude_docs: |
-  okdev-design.md
-  okdev-implementation-plan.md
-  plans/**
 markdown_extensions:
   - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
   - tables
+  - attr_list
+  - md_in_html
   - toc:
-      permalink: true
+      permalink: "#"
 nav:
   - Home: index.md
   - Quickstart: quickstart.md
   - Config Manifest: config-manifest.md
   - Command Reference: command-reference.md
-  - Release: release.md
   - Troubleshooting: troubleshooting.md
-  - Repository: https://github.com/acmore/okdev
+  - Release: release.md

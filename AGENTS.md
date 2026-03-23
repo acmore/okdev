@@ -22,7 +22,7 @@ This file is the canonical repository guidance for coding agents working in `okd
 
 - Interactive transient status output must clear cleanly and must not pollute table or machine-readable output.
 - `okdev ssh-proxy` must stay silent by default; diagnostics should only appear behind explicit debug or verbose behavior.
-- `okdev ssh` and tmux-backed sessions must land in the dev container, not the sidecar.
+- `okdev ssh` and tmux-backed sessions run inside the dev container via `okdev-sshd`.
 - Tmux behavior should preserve the normal shell experience and avoid exposing wrapper implementation details unless intentionally designed.
 
 ## Build And Release Rules
@@ -45,6 +45,6 @@ This file is the canonical repository guidance for coding agents working in `okd
 
 ## Repo-Specific Expectations
 
-- Keep sidecar, SSH, tmux, and Syncthing behavior aligned; changes in one often require checking the others.
+- Keep sidecar (syncthing), SSH (`okdev-sshd`), tmux, and Syncthing behavior aligned; changes in one often require checking the others.
 - Be careful with config-loading output paths because many commands share the same helper logic.
 - When changing pod or sidecar behavior, consider both local installs and sidecar image rebuild/publish steps.
