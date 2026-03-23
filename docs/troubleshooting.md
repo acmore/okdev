@@ -13,12 +13,8 @@
 ## Sync Failures
 
 - Validate workspace path exists and is writable in the container.
-- Isolate directionality with one-way runs:
-  - `okdev sync --mode up`
-  - `okdev sync --mode down`
-- `sync.engine=syncthing` requires:
-  - local Syncthing bootstrap (handled by `okdev`)
-  - sidecar image pull success
+- Isolate directionality with one-way runs: `okdev sync --mode up`, `okdev sync --mode down`.
+- `sync.engine=syncthing` requires local Syncthing bootstrap (handled by `okdev`) and sidecar image pull success.
 - Current Syncthing implementation supports a single `local:remote` mapping.
 - If you see `ErrImagePull` / GHCR `403`, use a publicly pullable `spec.sidecar.image` or adjust registry permissions.
 
@@ -32,15 +28,10 @@
 - Ensure `okdev-sshd` is running in the dev container on port `2222`.
 - Run `okdev ssh --setup-key` at least once per key pair.
 - If local bind conflicts occur, use `okdev ssh --local-port <port>`.
-- Verify managed entry exists in `~/.ssh/config`:
-  - `Host okdev-<session>`
-- For tmux-enabled sessions, use interactive TTY mode:
-  - `okdev ssh` or `ssh -tt okdev-<session>`
-- To bypass tmux for one connection:
-  - `okdev ssh --no-tmux`
-- For unstable links, increase:
-  - `spec.ssh.keepAliveIntervalSeconds`
-  - `spec.ssh.keepAliveTimeoutSeconds`
+- Verify the managed entry exists in `~/.ssh/config`: `Host okdev-<session>`.
+- For tmux-enabled sessions, use interactive TTY mode: `okdev ssh` or `ssh -tt okdev-<session>`.
+- To bypass tmux for one connection, use `okdev ssh --no-tmux`.
+- For unstable links, increase `spec.ssh.keepAliveIntervalSeconds` and `spec.ssh.keepAliveTimeoutSeconds`.
 - If `ssh okdev-<session>` exits after a long stall, inspect `~/.okdev/logs/okdev.log` for proxy health events such as port-forward degradation or idle watchdog disconnects.
 - Managed proxy sessions are designed to fail closed and return control to the local terminal rather than hang indefinitely on a dead port-forward.
 - If tmux login fails with `missing or unsuitable terminal` (for example `xterm-ghostty`), upgrade to a sidecar image that includes terminal fallback handling, then recreate the pod with `okdev down && okdev up`.
