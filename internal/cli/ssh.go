@@ -167,7 +167,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				})
 				var lastRTTWarnNanos atomic.Int64
 				tm.SetKeepAliveRTTCallback(func(rtt time.Duration) {
-					if rtt < 2*time.Second {
+					if rtt < 5*time.Second {
 						return
 					}
 					now := time.Now().UnixNano()
@@ -176,7 +176,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 						return
 					}
 					if lastRTTWarnNanos.CompareAndSwap(prev, now) {
-						fmt.Fprintf(cmd.ErrOrStderr(), "warning: ssh keepalive RTT is high: %s\n", rtt.Round(10*time.Millisecond))
+						fmt.Fprintf(cmd.ErrOrStderr(), "warning: ssh keepalive RTT is very high: %s\n", rtt.Round(10*time.Millisecond))
 					}
 				})
 				stopConnect := startTransientStatus(errOut, "Connecting to session")
