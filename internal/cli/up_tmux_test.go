@@ -95,9 +95,11 @@ func TestInstallEmbeddedTmux(t *testing.T) {
 		wantErr       string
 	}{
 		{name: "installed", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=installed:apt-get"}, nil), installer: "apt-get", wantInstalled: true},
+		{name: "installed via fallback detect", fake: newFakeDevShellExecutor([]string{"", "present:none"}, nil), installer: "apt-get"},
 		{name: "no-root", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=no-root:none"}, nil), installer: "apt-get", wantErr: "not running as root"},
 		{name: "unavailable", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=unavailable:apk"}, nil), installer: "apk", wantErr: embeddedTmuxLogPath},
 		{name: "exec error", fake: newFakeDevShellExecutor(nil, []error{errors.New("boom")}), installer: "apt-get", wantErr: "boom"},
+		{name: "empty output fallback error", fake: newFakeDevShellExecutor([]string{"", ""}, []error{nil, errors.New("detect boom")}), installer: "apt-get", wantErr: embeddedTmuxLogPath},
 	}
 
 	for _, tt := range tests {
@@ -131,6 +133,7 @@ func TestInstallEmbeddedTmuxDetails(t *testing.T) {
 	}{
 		{name: "installed with installer", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=installed:apt-get"}, nil), installer: "apt-get", wantDetail: "installed in dev container via apt-get"},
 		{name: "installed no installer", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=installed:none"}, nil), installer: "none", wantDetail: "installed in dev container"},
+		{name: "present via fallback detect", fake: newFakeDevShellExecutor([]string{"", "present:none"}, nil), installer: "apt-get", wantDetail: "ready in dev container"},
 	}
 
 	for _, tt := range tests {
@@ -184,6 +187,26 @@ func TestInterpretTmuxStatus(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEmbeddedTmuxDetailIfReady(t *testing.T) {
+	t.Run("ready", func(t *testing.T) {
+		fake := newFakeDevShellExecutor([]string{"present:none"}, nil)
+		detail, ok := embeddedTmuxDetailIfReady(context.Background(), fake, "default", "okdev-test")
+		if !ok {
+			t.Fatal("expected ready detail")
+		}
+		if detail != "ready in dev container" {
+			t.Fatalf("unexpected detail %q", detail)
+		}
+	})
+
+	t.Run("not ready", func(t *testing.T) {
+		fake := newFakeDevShellExecutor([]string{"unavailable:none"}, nil)
+		if detail, ok := embeddedTmuxDetailIfReady(context.Background(), fake, "default", "okdev-test"); ok || detail != "" {
+			t.Fatalf("expected no ready detail, got %q ok=%v", detail, ok)
+		}
+	})
 }
 
 func TestEmbeddedTmuxScriptsIncludeKnownPackageManagers(t *testing.T) {

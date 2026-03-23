@@ -236,41 +236,31 @@ func newUpCmd(opts *Options) *cobra.Command {
 				}
 			}
 			if enableTmux && sshMode == "embedded" {
-				spinner := newTransientStatus(cmd.OutOrStdout(), "Checking tmux in dev container")
-				if !spinner.enabled {
-					ui.stepRun("tmux", "checking dev container")
-				}
+				ui.stepRun("tmux", "checking dev container")
 				status, installer, err := detectEmbeddedTmux(cmd.Context(), k, ns, pod)
 				if err != nil {
-					spinner.stop()
 					ui.warnf("failed to check tmux in dev container: %v", err)
 				} else if status == "install" {
-					if spinner.enabled {
-						spinner.update(fmt.Sprintf("Installing tmux via %s", installer))
-					} else {
-						ui.stepRun("tmux", fmt.Sprintf("installing via %s", installer))
-					}
-					installed, detail, err := installEmbeddedTmux(cmd.Context(), k, ns, pod, installer, func(phase string) {
-						if spinner.enabled {
-							spinner.update(strings.TrimSpace(phase))
-							return
-						}
+					ui.stepRun("tmux", fmt.Sprintf("installing via %s", installer))
+					_, detail, err := installEmbeddedTmux(cmd.Context(), k, ns, pod, installer, func(phase string) {
 						if strings.TrimSpace(phase) != "" {
 							ui.stepRun("tmux", phase)
 						}
 					})
-					spinner.stop()
 					if err != nil {
-						ui.warnf("failed to install tmux in dev container: %v", err)
-					} else if installed {
+						if recoveredDetail, ok := embeddedTmuxDetailIfReady(cmd.Context(), k, ns, pod); ok {
+							ui.stepDone("tmux", recoveredDetail)
+						} else {
+							ui.warnf("tmux not ready in dev container: %v", err)
+						}
+					} else if strings.TrimSpace(detail) != "" {
 						ui.stepDone("tmux", detail)
 					}
 				} else {
-					spinner.stop()
 					_, detail, err := interpretTmuxStatus(status, installer, "")
 					if err != nil {
-						ui.warnf("failed to prepare tmux in dev container: %v", err)
-					} else {
+						ui.warnf("tmux not ready in dev container: %v", err)
+					} else if strings.TrimSpace(detail) != "" {
 						ui.stepDone("tmux", detail)
 					}
 				}
@@ -475,7 +465,15 @@ func installEmbeddedTmux(ctx context.Context, k devShellExecutor, namespace, pod
 	}
 	s, inst, rawLine := parseTmuxStatus(raw.String())
 	if s == "" {
-		return false, "", fmt.Errorf("unexpected tmux prepare result %q", strings.TrimSpace(raw.String()))
+		detectStatus, detectInstaller, detectErr := detectEmbeddedTmux(ctx, k, namespace, pod)
+		if detectErr == nil {
+			return interpretTmuxStatus(detectStatus, detectInstaller, raw.String())
+		}
+		trimmed := strings.TrimSpace(raw.String())
+		if trimmed == "" {
+			return false, "", fmt.Errorf("unexpected tmux prepare result with no status marker; inspect %s in the dev container", embeddedTmuxLogPath)
+		}
+		return false, "", fmt.Errorf("unexpected tmux prepare result %q; inspect %s in the dev container", trimmed, embeddedTmuxLogPath)
 	}
 	inst = strings.TrimSpace(inst)
 	return interpretTmuxStatus(s, inst, rawLine)
@@ -517,6 +515,18 @@ func parseTmuxStatus(raw string) (status, installer, line string) {
 	return status, installer, line
 }
 
+func embeddedTmuxDetailIfReady(ctx context.Context, k devShellExecutor, namespace, pod string) (string, bool) {
+	status, installer, err := detectEmbeddedTmux(ctx, k, namespace, pod)
+	if err != nil {
+		return "", false
+	}
+	_, detail, err := interpretTmuxStatus(status, installer, "")
+	if err != nil || strings.TrimSpace(detail) == "" {
+		return "", false
+	}
+	return detail, true
+}
+
 func warnIfConfigNewerThanSession(opts *Options, k *kube.Client, namespace, sessionName, podName string, errOut io.Writer) error {
 	cfgPath, err := config.ResolvePath(opts.ConfigPath)
 	if err != nil {
@@ -539,20 +549,45 @@ func warnIfConfigNewerThanSession(opts *Options, k *kube.Client, namespace, sess
 }
 
 type upUI struct {
-	out      io.Writer
-	errOut   io.Writer
-	warnings []string
+	out         io.Writer
+	errOut      io.Writer
+	warnings    []string
+	interactive bool
+	activeStep  string
+	active      *transientStatus
 }
 
 func newUpUI(out, errOut io.Writer) *upUI {
-	return &upUI{out: out, errOut: errOut}
+	return &upUI{
+		out:         out,
+		errOut:      errOut,
+		interactive: isTerminalWriter(out),
+	}
 }
 
 func (u *upUI) section(name string) {
+	u.stopActive()
 	fmt.Fprintf(u.out, "\n== %s ==\n", name)
 }
 
 func (u *upUI) stepRun(step, detail string) {
+	if u.interactive {
+		message := u.stepMessage(step, detail)
+		if u.active != nil && u.active.enabled {
+			if u.activeStep == step {
+				u.active.update(message)
+				return
+			}
+			u.stopActive()
+		}
+		u.activeStep = step
+		u.active = newTransientStatusWithMode(u.out, message, true)
+		if u.active.enabled {
+			return
+		}
+		u.active = nil
+		u.activeStep = ""
+	}
 	if detail == "" {
 		fmt.Fprintf(u.out, "… %s\n", step)
 		return
@@ -561,11 +596,29 @@ func (u *upUI) stepRun(step, detail string) {
 }
 
 func (u *upUI) stepDone(step, detail string) {
+	if u.activeStep == step {
+		u.stopActive()
+	}
 	if detail == "" {
 		fmt.Fprintf(u.out, "✔ %s\n", step)
 		return
 	}
 	fmt.Fprintf(u.out, "✔ %s: %s\n", step, detail)
+}
+
+func (u *upUI) stepMessage(step, detail string) string {
+	if strings.TrimSpace(detail) == "" {
+		return step
+	}
+	return step + ": " + detail
+}
+
+func (u *upUI) stopActive() {
+	if u.active != nil {
+		u.active.stop()
+		u.active = nil
+	}
+	u.activeStep = ""
 }
 
 func (u *upUI) warnf(format string, args ...any) {
@@ -577,6 +630,7 @@ func (u *upUI) warnf(format string, args ...any) {
 }
 
 func (u *upUI) printWarnings() {
+	u.stopActive()
 	if len(u.warnings) == 0 {
 		return
 	}
@@ -591,6 +645,7 @@ func (u *upUI) warnWriter() io.Writer {
 }
 
 func (u *upUI) printReadyCard(sessionName, namespace, pod, sshSummary, syncSummary string, ports []config.PortMapping, syncPairs []syncengine.Pair, syncModeSymbol string) {
+	u.stopActive()
 	fmt.Fprintln(u.out, "\n== Ready ==")
 	fmt.Fprintf(u.out, "session:   %s\n", sessionName)
 	fmt.Fprintf(u.out, "namespace: %s\n", namespace)
