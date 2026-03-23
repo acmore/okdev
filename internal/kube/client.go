@@ -658,6 +658,14 @@ func (c *Client) ExecShInContainer(ctx context.Context, namespace, pod, containe
 	return c.execCapture(ctx, namespace, pod, container, []string{"sh", "-lc", script})
 }
 
+func (c *Client) StreamShInContainer(ctx context.Context, namespace, pod, container, script string, stdout, stderr io.Writer) error {
+	cs, cfg, err := c.clientset()
+	if err != nil {
+		return err
+	}
+	return c.execStream(ctx, cs, cfg, namespace, pod, container, []string{"sh", "-lc", script}, nil, stdout, stderr, false)
+}
+
 func (c *Client) execCapture(ctx context.Context, namespace, pod, container string, command []string) ([]byte, error) {
 	cs, cfg, err := c.clientset()
 	if err != nil {

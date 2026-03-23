@@ -170,6 +170,19 @@ func (s *transientStatus) render(frame string) {
 	fmt.Fprintf(s.w, "\r%s %s\033[K", frame, s.message)
 }
 
+func (s *transientStatus) update(message string) {
+	if !s.enabled {
+		return
+	}
+	trimmed := strings.TrimSpace(message)
+	if trimmed == "" {
+		return
+	}
+	s.mu.Lock()
+	s.message = trimmed
+	s.mu.Unlock()
+}
+
 func (s *transientStatus) clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

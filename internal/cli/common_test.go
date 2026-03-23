@@ -107,6 +107,28 @@ func TestTransientStatusRendersAndClears(t *testing.T) {
 	}
 }
 
+func TestTransientStatusUpdate(t *testing.T) {
+	var out bytes.Buffer
+	status := &transientStatus{
+		w:       &out,
+		message: "Loading config /tmp/.okdev.yaml",
+		enabled: true,
+		stopCh:  make(chan struct{}),
+		doneCh:  make(chan struct{}),
+	}
+
+	go status.run(5 * time.Millisecond)
+	time.Sleep(8 * time.Millisecond)
+	status.update("Installing tmux via apt-get")
+	time.Sleep(8 * time.Millisecond)
+	status.stop()
+
+	got := out.String()
+	if !strings.Contains(got, "Installing tmux via apt-get") {
+		t.Fatalf("expected updated status message in output, got %q", got)
+	}
+}
+
 func TestAnnounceConfigPathFallsBackToStaticOutput(t *testing.T) {
 	var out bytes.Buffer
 	done := announceConfigPathWithWriter(&out, "/tmp/.okdev.yaml", false)
