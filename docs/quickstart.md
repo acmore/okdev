@@ -27,12 +27,14 @@ okdev version
 ./bin/okdev init --template gpu
 ```
 
-Configuration discovery order:
+## Configuration Discovery
+
 1. `-c, --config <path>`
 2. `.okdev.yaml`
 3. `okdev.yaml`
 
-Kubernetes context precedence:
+## Kubernetes Context
+
 1. `--context`
 2. `spec.kubeContext` in manifest
 3. active kube context from your kubeconfig
@@ -43,19 +45,20 @@ Kubernetes context precedence:
 ./bin/okdev up
 ```
 
-Use an explicit session name when running multiple environments for the same repo:
+### Named Sessions
 
 ```bash
 ./bin/okdev up --session serving-main-alice
 ```
 
-Tmux-backed persistent shells are enabled by default. Disable them for a pod with:
+### Disable Tmux
 
 ```bash
 ./bin/okdev up --no-tmux
 ```
 
-`okdev up` performs one-step setup:
+### What `okdev up` Does
+
 - ensures Pod/PVC state
 - writes managed `~/.ssh/config` host entry (`okdev-<session>`)
 - starts managed SSH/forwarding bootstrap
@@ -78,7 +81,8 @@ Tmux-backed persistent shells are enabled by default. Disable them for a pod wit
 ./bin/okdev sync --background
 ```
 
-Notes:
+## Notes
+
 - Local Syncthing is auto-installed when `sync.engine=syncthing`.
 - `okdev up` starts background sync in bidirectional mode by default.
 - Default sidecar image (syncthing + okdev-sshd binary) follows binary version: `ghcr.io/<owner>/okdev:<okdev-version>` (`edge` for dev builds).
@@ -92,9 +96,7 @@ Notes:
 - The managed SSH host entry uses tighter proxy keepalive settings than the general CLI defaults so hung `ssh okdev-<session>` sessions fail fast instead of freezing indefinitely.
 - Proxy health diagnostics are written to `~/.okdev/logs/okdev.log`, not printed into the SSH client session.
 - Tmux uses a built-in okdev profile (history/mouse/vi-copy/status) and keeps the default command prefix (`Ctrl-b`).
-- SSH keepalive can be tuned with:
-  - `spec.ssh.keepAliveIntervalSeconds` (default `30`)
-  - `spec.ssh.keepAliveTimeoutSeconds` (default `90`, must be `>= interval`)
+- SSH keepalive can be tuned with `spec.ssh.keepAliveIntervalSeconds` (default `30`) and `spec.ssh.keepAliveTimeoutSeconds` (default `90`, must be `>= interval`).
 
 ## Preview Mode (No Cluster Mutations)
 
