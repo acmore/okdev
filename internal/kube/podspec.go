@@ -44,12 +44,20 @@ func PreparePodSpec(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMo
 		Name:         "syncthing-home",
 		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 	})
+	spec.Volumes = ensureVolume(spec.Volumes, corev1.Volume{
+		Name:         "okdev-runtime",
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	})
 
 	for i := range spec.Containers {
 		if spec.Containers[i].Name == "dev" {
 			spec.Containers[i].VolumeMounts = ensureVolumeMount(spec.Containers[i].VolumeMounts, corev1.VolumeMount{
 				Name:      "workspace",
 				MountPath: workspaceMountPath,
+			})
+			spec.Containers[i].VolumeMounts = ensureVolumeMount(spec.Containers[i].VolumeMounts, corev1.VolumeMount{
+				Name:      "okdev-runtime",
+				MountPath: "/var/okdev",
 			})
 			spec.Containers[i].Env = ensureEnvVar(spec.Containers[i].Env, corev1.EnvVar{
 				Name:  "OKDEV_CONTAINER_ROLE",
@@ -86,6 +94,7 @@ func PreparePodSpec(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMo
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: "workspace", MountPath: workspaceMountPath},
 				{Name: "syncthing-home", MountPath: "/var/syncthing"},
+				{Name: "okdev-runtime", MountPath: "/var/okdev"},
 			},
 			Env: []corev1.EnvVar{
 				{

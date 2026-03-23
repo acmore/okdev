@@ -86,6 +86,12 @@ func TestPreparePodSpecAddsWorkspaceMountOnDevAndSidecar(t *testing.T) {
 	if !hasMount(sidecar, "workspace", "/workspace") {
 		t.Fatal("expected workspace mount on sidecar")
 	}
+	if !hasMount(dev, "okdev-runtime", "/var/okdev") {
+		t.Fatal("expected okdev runtime mount on dev")
+	}
+	if !hasMount(sidecar, "okdev-runtime", "/var/okdev") {
+		t.Fatal("expected okdev runtime mount on sidecar")
+	}
 }
 
 func TestPreparePodSpecErrorsOnEmptyImage(t *testing.T) {

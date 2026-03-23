@@ -327,29 +327,6 @@ func ensureSSHKeyOnPod(opts *Options, cfg *config.DevEnvironment, namespace, pod
 	if !installed {
 		return fmt.Errorf("install ssh key in pod: %w", lastErr)
 	}
-
-	if normalizeSSHMode(sshMode) == sshModeEmbedded {
-		copyScript := `set -eu
-DEV_PID=""
-for pid in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$' | sort -n); do
-  [ "$pid" = "1" ] && continue
-  [ "$pid" = "$$" ] && continue
-  [ -r "/proc/$pid/environ" ] 2>/dev/null || continue
-  if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qx 'OKDEV_CONTAINER_ROLE=dev'; then
-    DEV_PID="$pid"
-    break
-  fi
-done
-[ -n "$DEV_PID" ]
-nsenter --target "$DEV_PID" --mount -- mkdir -p /var/okdev
-cat /root/.ssh/authorized_keys | nsenter --target "$DEV_PID" --mount -- sh -c "cat > /var/okdev/authorized_keys && chmod 600 /var/okdev/authorized_keys"`
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		_, err := k.ExecShInContainer(ctx, namespace, pod, "okdev-sidecar", copyScript)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("sync embedded ssh authorized_keys: %w", err)
-		}
-	}
 	return nil
 }
 
@@ -361,6 +338,9 @@ func waitForSSHDReady(opts *Options, cfg *config.DevEnvironment, namespace, pod,
 	}
 	probeCmd := "ps | grep '[s]shd' >/dev/null 2>&1"
 	if normalizeSSHMode(sshMode) == sshModeEmbedded {
+		if err := ensureEmbeddedSSHDRunning(context.Background(), k, namespace, pod); err != nil {
+			return fmt.Errorf("start embedded sshd: %w", err)
+		}
 		probeCmd = "ps | grep '[o]kdev-sshd' >/dev/null 2>&1"
 	}
 	deadline := time.Now().Add(timeout)
@@ -379,6 +359,29 @@ func waitForSSHDReady(opts *Options, cfg *config.DevEnvironment, namespace, pod,
 		lastErr = fmt.Errorf("timeout waiting for sshd")
 	}
 	return fmt.Errorf("wait for sshd ready: %w", lastErr)
+}
+
+const embeddedSSHStartScript = `set -eu
+mkdir -p /var/okdev "$HOME/.ssh"
+if [ ! -x /var/okdev/okdev-sshd ]; then
+  echo "missing /var/okdev/okdev-sshd" >&2
+  exit 1
+fi
+if ps | grep '[o]kdev-sshd' >/dev/null 2>&1; then
+  exit 0
+fi
+nohup /var/okdev/okdev-sshd --port 2222 --authorized-keys "$HOME/.ssh/authorized_keys" >/var/okdev/okdev-sshd.log 2>&1 </dev/null &
+`
+
+type embeddedSSHStarter interface {
+	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+}
+
+func ensureEmbeddedSSHDRunning(ctx context.Context, k embeddedSSHStarter, namespace, pod string) error {
+	startCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	_, err := k.ExecShInContainer(startCtx, namespace, pod, "dev", embeddedSSHStartScript)
+	return err
 }
 
 func defaultSSHKeyPath(cfg *config.DevEnvironment) (string, error) {
