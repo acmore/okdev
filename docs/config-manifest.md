@@ -1,8 +1,8 @@
 # Config Manifest
 
-`okdev` is configured by a single manifest (default: `.okdev.yaml`).
+okdev is configured by a single YAML manifest (default: `.okdev.yaml`).
 
-## Top-Level
+## Skeleton
 
 ```yaml
 apiVersion: okdev.io/v1alpha1
@@ -12,38 +12,37 @@ metadata:
 spec: {}
 ```
 
-## Field Reference
-
-### `apiVersion` and `kind`
-
 - `apiVersion`: must be `okdev.io/v1alpha1`
 - `kind`: must be `DevEnvironment`
+- `metadata.name` (`string`, required): logical project/environment name.
 
-### `metadata`
+## `spec` Fields
 
-- `metadata.name` (`string`, required): logical project/env name.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `namespace` | `string` | `default` | Kubernetes namespace |
+| `kubeContext` | `string` | — | Kubeconfig context for okdev commands |
+| `session` | `object` | — | Session naming and lifecycle policy |
+| `volumes` | `array` | — | Kubernetes volume definitions |
+| `sync` | `object` | — | File sync configuration |
+| `ports` | `array` | — | Port forwarding rules |
+| `ssh` | `object` | — | SSH and tmux settings |
+| `lifecycle` | `object` | — | Post-create and pre-stop hooks |
+| `sidecar` | `object` | — | Sidecar container image |
+| `podTemplate` | `object` | — | Full Kubernetes PodSpec overlay |
 
-### `spec`
-
-- `spec.namespace` (`string`, default: `default`)
-- `spec.kubeContext` (`string`, optional): kubeconfig context used by okdev commands.
-- `spec.session` (`object`)
-- `spec.volumes` (`array`, optional)
-- `spec.sync` (`object`)
-- `spec.ports` (`array`)
-- `spec.ssh` (`object`)
-- `spec.lifecycle` (`object`)
-- `spec.sidecar` (`object`)
-- `spec.podTemplate` (`object`)
+---
 
 ## `spec.session`
 
-- `defaultNameTemplate` (`string`): template for inferred session name.
-- `ttlHours` (`int`, default from template): reserved for lifecycle policy.
-- `idleTimeoutMinutes` (`int`, default from template): reserved for lifecycle policy.
-- `shareable` (`bool`): marks intent for team sharing workflows.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `defaultNameTemplate` | `string` | — | Go template for inferred session name |
+| `ttlHours` | `int` | from template | Reserved for lifecycle policy |
+| `idleTimeoutMinutes` | `int` | from template | Reserved for lifecycle policy |
+| `shareable` | `bool` | — | Marks intent for team sharing workflows |
 
-### Example
+**Validation:** `ttlHours >= 0`, `idleTimeoutMinutes >= 0`.
 
 ```yaml
 spec:
@@ -54,25 +53,19 @@ spec:
     shareable: true
 ```
 
-### Validation
-
-- `ttlHours >= 0`
-- `idleTimeoutMinutes >= 0`
-
-### Context Precedence
-
-- `--context` CLI flag (highest)
-- `spec.kubeContext` from manifest
-- active kubeconfig current-context (default client behavior)
+---
 
 ## `spec.volumes`
 
-`spec.volumes` uses native Kubernetes `corev1.Volume` schema.
+Uses native Kubernetes `corev1.Volume` schema. Define volume sources here and mount them via `spec.podTemplate.spec.containers[*].volumeMounts`.
 
-- Define storage source with standard `VolumeSource` (for example `emptyDir`, `persistentVolumeClaim`, `ephemeral`, `configMap`, `secret`).
-- Mount points are defined with standard Kubernetes `volumeMounts` in `spec.podTemplate.spec.containers[*].volumeMounts`.
+### Workspace Behavior
 
-### Example
+- If no volume named `workspace` is provided, okdev injects `emptyDir: {}` automatically.
+- okdev ensures `workspace` is mounted on both the `dev` container and sidecar.
+- Mount path defaults to `/workspace`, or follows the `volumeMounts` entry for `workspace` in `podTemplate`.
+
+### PVC
 
 ```yaml
 spec:
@@ -95,11 +88,7 @@ spec:
               readOnly: true
 ```
 
-### More Examples
-
-#### `emptyDir` Scratch Space
-
-Useful for build caches, temporary outputs, or other pod-lifetime data.
+### emptyDir (Scratch Space)
 
 ```yaml
 spec:
@@ -115,9 +104,7 @@ spec:
               mountPath: /tmp/build-cache
 ```
 
-#### `configMap` and `secret` Mounts
-
-Useful when the dev container needs checked-in config plus cluster-managed credentials.
+### configMap and secret
 
 ```yaml
 spec:
@@ -141,9 +128,9 @@ spec:
               readOnly: true
 ```
 
-#### `ephemeral` Per-Session Persistent Storage
+### Ephemeral (Per-Session PVC)
 
-Useful when each okdev session should get its own PVC-backed storage that is created with the pod and removed with it.
+Created with the pod, removed when it's deleted.
 
 ```yaml
 spec:
@@ -165,21 +152,23 @@ spec:
               mountPath: /models
 ```
 
-### Workspace Behavior
-
-- If a `workspace` volume is not provided, okdev injects a volume with `name: workspace` and `emptyDir: {}`.
-- okdev ensures `workspace` is mounted on the `dev` container and `okdev-sidecar`.
-- Workspace mount path defaults to `/workspace` (or follows `dev` container `volumeMounts` entry for `workspace` if provided in `podTemplate`).
+---
 
 ## `spec.sync`
 
-- `engine` (`string`, required, currently only `syncthing`)
-- `paths` (`[]string`): mappings in `local:remote` format.
-- `exclude` (`[]string`): local ignore patterns.
-- `remoteExclude` (`[]string`): remote-only ignore patterns (written to remote `.stignore`).
-- `syncthing` (`object`): includes `version` (`string`, default: `v1.29.7`) for the local auto-installed Syncthing client, `autoInstall` (`bool`, default: `true`), and `image` (`string`, default: `ghcr.io/acmore/okdev:<okdev-version>` with `edge` fallback) for the sidecar runtime image.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `engine` | `string` | — | Sync engine (currently only `syncthing`) |
+| `paths` | `[]string` | — | Mappings in `local:remote` format (max 1 entry) |
+| `exclude` | `[]string` | — | Local ignore patterns |
+| `remoteExclude` | `[]string` | — | Remote-only ignore patterns (written to `.stignore`) |
+| `syncthing.version` | `string` | `v1.29.7` | Local Syncthing binary version |
+| `syncthing.autoInstall` | `bool` | `true` | Auto-install local Syncthing |
+| `syncthing.image` | `string` | `ghcr.io/acmore/okdev:<version>` | Sidecar image (fallback: `edge`) |
 
-### Example
+**Validation:** `engine` must be `syncthing`; each `paths[]` entry must be `local:remote`.
+
+The `syncthing.version` field controls the local binary on your machine. The Syncthing binary inside the sidecar comes from `spec.sidecar.image`.
 
 ```yaml
 spec:
@@ -198,26 +187,17 @@ spec:
       - ".cache/"
 ```
 
-### Validation
-
-- `engine` must be `syncthing`
-- each `paths[]` entry must be `local:remote`
-- currently at most one `paths[]` entry
-
-### Version Behavior
-
-- `spec.sync.syncthing.version` controls the local Syncthing binary that `okdev` installs or reuses on your machine.
-- The Syncthing binary inside the pod sidecar comes from `spec.sidecar.image`, not from `spec.sync.syncthing.version`.
+---
 
 ## `spec.ports`
 
-### Each Item
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | `string` | no | Label for the port rule |
+| `local` | `int` | yes | Local listening port |
+| `remote` | `int` | yes | Remote target port |
 
-- `name` (`string`, optional)
-- `local` (`int`, required): local listening port
-- `remote` (`int`, required): remote target port in dev environment
-
-### Example
+**Validation:** ports must be `1..65535`; `local` ports must be unique.
 
 ```yaml
 spec:
@@ -230,21 +210,20 @@ spec:
       remote: 6006
 ```
 
-### Validation
-
-- `local` and `remote` must be `1..65535`
-- `local` ports must be unique
+---
 
 ## `spec.ssh`
 
-- `user` (`string`, default: `root`)
-- `privateKeyPath` (`string`, optional)
-- `autoDetectPorts` (`bool`, default: `true`)
-- `persistentSession` (`bool`, default: `true`) enables tmux-backed interactive session mode
-- `keepAliveIntervalSeconds` (`int`, default: `10`)
-- `keepAliveTimeoutSeconds` (`int`, default: `10`)
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `user` | `string` | `root` | SSH user |
+| `privateKeyPath` | `string` | — | Path to SSH private key |
+| `autoDetectPorts` | `bool` | `true` | Auto-detect listening ports in the container |
+| `persistentSession` | `bool` | `true` | Enable tmux-backed interactive sessions |
+| `keepAliveIntervalSeconds` | `int` | `10` | SSH keepalive interval |
+| `keepAliveTimeoutSeconds` | `int` | `10` | SSH keepalive timeout |
 
-### Example
+**Validation:** both keepalive values must be `> 0`; timeout must be `>= interval`.
 
 ```yaml
 spec:
@@ -257,18 +236,14 @@ spec:
     keepAliveTimeoutSeconds: 90
 ```
 
-### Validation
-
-- `keepAliveIntervalSeconds > 0`
-- `keepAliveTimeoutSeconds > 0`
-- `keepAliveTimeoutSeconds >= keepAliveIntervalSeconds`
+---
 
 ## `spec.lifecycle`
 
-- `postCreate` (`string`, optional): command executed once after environment creation.
-- `preStop` (`string`, optional): command executed before pod termination.
-
-### Example
+| Field | Type | Description |
+|-------|------|-------------|
+| `postCreate` | `string` | Command run once after environment creation |
+| `preStop` | `string` | Command run before pod termination |
 
 ```yaml
 spec:
@@ -277,11 +252,13 @@ spec:
     preStop: pkill -f my-dev-server || true
 ```
 
+---
+
 ## `spec.sidecar`
 
-- `image` (`string`, required)
-
-### Example
+| Field | Type | Description |
+|-------|------|-------------|
+| `image` | `string` | Sidecar container image (use release-aligned tag) |
 
 ```yaml
 spec:
@@ -289,20 +266,14 @@ spec:
     image: ghcr.io/acmore/okdev:v0.2.16
 ```
 
-### Recommended
-
-- use release-aligned tag, for example `ghcr.io/acmore/okdev:v0.2.0`
+---
 
 ## `spec.podTemplate`
 
-### Direct PodSpec Overlay
+Full Kubernetes PodSpec overlay. Use this for the dev container image, resources, env vars, scheduling, labels, and extra sidecars.
 
 - `metadata.labels` (`map[string]string`, optional)
-- `spec` (`k8s PodSpec`, optional)
-
-Use this to define the dev container image, resources, extra sidecars, env vars, and scheduling settings.
-
-### Example
+- `spec` (Kubernetes `PodSpec`)
 
 ```yaml
 spec:
@@ -326,11 +297,13 @@ spec:
               nvidia.com/gpu: "1"
 ```
 
-## Examples
+---
 
-### Minimal -- Web app with defaults
+## Full Examples
 
-The simplest useful manifest. Uses an ephemeral workspace (emptyDir), syncs the current directory, and forwards one port.
+### Minimal Web App
+
+The simplest useful manifest. Ephemeral workspace, one synced directory, one forwarded port.
 
 ```yaml
 apiVersion: okdev.io/v1alpha1
@@ -356,9 +329,9 @@ spec:
           command: ["sleep", "infinity"]
 ```
 
-### Persistent workspace with PVC
+### Persistent Workspace (PVC)
 
-Workspace data survives pod restarts. Useful when `npm install` or `pip install` takes a long time and you don't want to redo it on every `okdev up`.
+Workspace survives pod restarts — no need to re-run `npm install` or `pip install` on every `okdev up`.
 
 ```yaml
 apiVersion: okdev.io/v1alpha1
@@ -402,7 +375,7 @@ spec:
 
 ### Python ML with GPU
 
-Single GPU development with a persistent workspace and a dataset volume mounted read-only.
+Single GPU, persistent workspace, read-only dataset volume, auto-install dependencies on create.
 
 ```yaml
 apiVersion: okdev.io/v1alpha1
@@ -468,9 +441,9 @@ spec:
               nvidia.com/gpu: "1"
 ```
 
-### Multi-GPU LLM fine-tuning
+### Multi-GPU LLM Fine-Tuning
 
-Multiple GPUs, large memory, team-shared session naming, and a longer keepalive for stable long-running connections.
+4x GPU, shared session naming, model cache volume, long keepalive for stable training connections.
 
 ```yaml
 apiVersion: okdev.io/v1alpha1
@@ -555,9 +528,9 @@ spec:
           effect: NoSchedule
 ```
 
-### Go microservice with no tmux
+### Go Microservice (No Tmux)
 
-Lightweight setup for a Go service. Disables tmux for a plain SSH shell experience.
+Lightweight setup with tmux disabled for a plain SSH shell.
 
 ```yaml
 apiVersion: okdev.io/v1alpha1
@@ -595,9 +568,9 @@ spec:
               memory: 8Gi
 ```
 
-### Custom kube context and namespace
+### Custom Kube Context and Namespace
 
-Explicit cluster targeting for multi-cluster setups. Useful when your kubeconfig has multiple contexts.
+Explicit cluster targeting for multi-cluster setups with node pool scheduling.
 
 ```yaml
 apiVersion: okdev.io/v1alpha1
