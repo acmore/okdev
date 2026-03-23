@@ -151,6 +151,9 @@ func newUpCmd(opts *Options) *cobra.Command {
 			if err := k.Apply(ctx, ns, podManifest); err != nil {
 				return err
 			}
+			if err := k.AnnotatePod(ctx, ns, pod, "okdev.io/last-attach", time.Now().UTC().Format(time.RFC3339)); err != nil {
+				slog.Debug("failed to set last-attach annotation", "error", err)
+			}
 			ui.stepDone("pod", "applied")
 			ui.section("Wait")
 			progressPrinter := func(p kube.PodReadinessProgress) {

@@ -36,8 +36,8 @@ func TestAnnotationsForSession(t *testing.T) {
 	if a["okdev.io/ttl-hours"] != "72" || a["okdev.io/idle-timeout-minutes"] != "120" {
 		t.Fatalf("unexpected annotations: %+v", a)
 	}
-	if _, err := time.Parse(time.RFC3339, a["okdev.io/last-attach"]); err != nil {
-		t.Fatalf("invalid timestamp: %v", err)
+	if _, ok := a["okdev.io/last-attach"]; ok {
+		t.Fatal("last-attach should not be in manifest annotations (set via AnnotatePod instead)")
 	}
 }
 
