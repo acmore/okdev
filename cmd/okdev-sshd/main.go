@@ -152,7 +152,7 @@ func buildInteractiveLoginScript(sessionEnv map[string]string, shell, workspace,
 func embeddedTmuxBootstrapScript() string {
 	return strings.Join([]string{
 		`if [ "${TERM:-}" = "xterm-ghostty" ]; then export TERM=xterm-256color; fi`,
-		`if command -v tmux >/dev/null 2>&1; then exec tmux new-session -A -s okdev; fi`,
+		`if command -v tmux >/dev/null 2>&1; then if [ -f /var/okdev/embedded.tmux.conf ]; then exec tmux -f /var/okdev/embedded.tmux.conf new-session -A -s okdev; fi; exec tmux new-session -A -s okdev; fi`,
 		`echo 'warning: tmux not available in dev container; continuing without tmux' >&2`,
 	}, "; ")
 }

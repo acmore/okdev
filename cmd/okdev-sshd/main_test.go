@@ -10,6 +10,7 @@ func TestBuildInteractiveLoginScriptIncludesEmbeddedTmuxBootstrap(t *testing.T) 
 
 	for _, want := range []string{
 		"/workspace/.okdev/post-attach.sh",
+		"/var/okdev/embedded.tmux.conf",
 		"exec tmux new-session -A -s okdev",
 	} {
 		if !strings.Contains(script, want) {

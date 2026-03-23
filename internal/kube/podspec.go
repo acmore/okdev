@@ -63,6 +63,12 @@ func PreparePodSpec(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMo
 				Name:  "OKDEV_CONTAINER_ROLE",
 				Value: "dev",
 			})
+			if tmux {
+				spec.Containers[i].Env = ensureEnvVar(spec.Containers[i].Env, corev1.EnvVar{
+					Name:  "OKDEV_TMUX",
+					Value: "1",
+				})
+			}
 		}
 	}
 

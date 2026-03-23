@@ -19,6 +19,8 @@ func TestEnsureEmbeddedSSHDRunning(t *testing.T) {
 	for _, want := range []string{
 		"/var/okdev/okdev-sshd",
 		"$HOME/.ssh/authorized_keys",
+		`export OKDEV_TMUX="${OKDEV_TMUX:-0}"`,
+		`export OKDEV_WORKSPACE="${OKDEV_WORKSPACE:-/workspace}"`,
 		"nohup /var/okdev/okdev-sshd",
 	} {
 		if !strings.Contains(fake.lastScript, want) {

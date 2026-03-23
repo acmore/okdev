@@ -370,6 +370,8 @@ fi
 if ps | grep '[o]kdev-sshd' >/dev/null 2>&1; then
   exit 0
 fi
+export OKDEV_WORKSPACE="${OKDEV_WORKSPACE:-/workspace}"
+export OKDEV_TMUX="${OKDEV_TMUX:-0}"
 nohup /var/okdev/okdev-sshd --port 2222 --authorized-keys "$HOME/.ssh/authorized_keys" >/var/okdev/okdev-sshd.log 2>&1 </dev/null &
 `
 

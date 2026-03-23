@@ -174,3 +174,20 @@ func TestPreparePodSpecEmbeddedSSHMode(t *testing.T) {
 		}
 	})
 }
+
+func TestPreparePodSpecSetsDevTmuxEnvWhenEnabled(t *testing.T) {
+	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", true, true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev := findContainer(spec.Containers, "dev")
+	if dev == nil {
+		t.Fatal("dev container not found")
+	}
+	for _, env := range dev.Env {
+		if env.Name == "OKDEV_TMUX" && env.Value == "1" {
+			return
+		}
+	}
+	t.Fatal("expected OKDEV_TMUX=1 on dev container when tmux is enabled")
+}
