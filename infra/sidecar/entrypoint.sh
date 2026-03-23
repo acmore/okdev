@@ -179,32 +179,13 @@ if ! grep -q "ForceCommand" /etc/ssh/sshd_config; then
   echo "ForceCommand /usr/local/bin/nsenter-dev.sh" >> /etc/ssh/sshd_config
 fi
 
-# When embedded SSH mode is enabled, copy okdev-sshd into the dev container
-# and start it there. The SSH server runs natively in the dev container's cgroup.
+# When embedded SSH mode is enabled, stage okdev-sshd in the shared runtime
+# volume. The CLI starts it in the dev container via kubectl exec.
 OKDEV_SSH_MODE="${OKDEV_SSH_MODE:-sidecar}"
 if [ "$OKDEV_SSH_MODE" = "embedded" ]; then
-  DEV_PID=""
-  tries=0
-  while [ -z "$DEV_PID" ] && [ "$tries" -lt 60 ]; do
-    DEV_PID="$(/usr/local/bin/find-dev-pid.sh 2>/dev/null || true)"
-    if [ -z "$DEV_PID" ]; then
-      sleep 0.5
-      tries=$((tries + 1))
-    fi
-  done
-
-  if [ -n "$DEV_PID" ]; then
-    /usr/local/bin/sync-gids.sh "$DEV_PID"
-    nsenter --target "$DEV_PID" --mount -- mkdir -p /var/okdev
-    cat /usr/local/bin/okdev-sshd | nsenter --target "$DEV_PID" --mount -- sh -c "cat > /var/okdev/okdev-sshd && chmod +x /var/okdev/okdev-sshd"
-    cat /root/.ssh/authorized_keys | nsenter --target "$DEV_PID" --mount -- sh -c "cat > /var/okdev/authorized_keys && chmod 600 /var/okdev/authorized_keys"
-
-    nsenter --target "$DEV_PID" --mount --uts --ipc --pid --cgroup -- \
-      /var/okdev/okdev-sshd --port 2222 --authorized-keys /var/okdev/authorized_keys &
-    echo "okdev-sshd started in dev container (PID $DEV_PID) on port 2222"
-  else
-    echo "WARNING: could not find dev container PID, embedded SSH not started" >&2
-  fi
+  mkdir -p /var/okdev
+  cp /usr/local/bin/okdev-sshd /var/okdev/okdev-sshd
+  chmod +x /var/okdev/okdev-sshd
 fi
 
 # Start syncthing in background (run as root for workspace access)
