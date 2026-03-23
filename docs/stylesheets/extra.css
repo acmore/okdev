@@ -220,3 +220,29 @@
     linear-gradient(90deg, var(--ok-cyan-faint) 1px, transparent 1px);
   background-size: 40px 40px;
 }
+
+/* ── Mobile adjustments ───────────────────────────────────────────── */
+
+@media screen and (max-width: 76.25em) {
+  [data-md-color-scheme="slate"] .md-main {
+    background-image: none;
+  }
+}
+
+@media screen and (max-width: 44.9375em) {
+  .md-typeset {
+    font-size: 0.78rem;
+  }
+  .md-typeset h1 {
+    font-size: 1.4rem;
+  }
+  .md-typeset h2 {
+    font-size: 1.1rem;
+  }
+  .md-typeset pre {
+    border-radius: 4px;
+  }
+  .md-typeset table:not([class]) {
+    font-size: 0.75rem;
+  }
+}
