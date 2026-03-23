@@ -435,8 +435,7 @@ func detectEmbeddedTmux(ctx context.Context, k devShellExecutor, namespace, pod 
 }
 
 func installEmbeddedTmux(ctx context.Context, k devShellExecutor, namespace, pod, installer string, progress func(string)) (bool, string, error) {
-	installCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-	defer cancel()
+	installCtx := ctx
 	if progress != nil && installer != "" && installer != "none" {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
@@ -458,8 +457,11 @@ func installEmbeddedTmux(ctx context.Context, k devShellExecutor, namespace, pod
 	var raw bytes.Buffer
 	err := k.StreamShInContainer(installCtx, namespace, pod, "dev", script, &raw, &raw)
 	if err != nil {
-		if errors.Is(installCtx.Err(), context.DeadlineExceeded) {
-			return false, "", fmt.Errorf("timed out while installing tmux via %s; inspect %s in the dev container", installer, embeddedTmuxLogPath)
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return false, "", fmt.Errorf("tmux install cancelled after timeout via parent context; inspect %s in the dev container", embeddedTmuxLogPath)
+		}
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return false, "", fmt.Errorf("tmux install cancelled; inspect %s in the dev container", embeddedTmuxLogPath)
 		}
 		return false, "", err
 	}
