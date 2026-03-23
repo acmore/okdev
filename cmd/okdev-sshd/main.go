@@ -137,6 +137,7 @@ func buildInteractiveLoginScript(sessionEnv map[string]string, shell, workspace,
 	var parts []string
 
 	if workspace != "" {
+		parts = append(parts, fmt.Sprintf("if [ -d %s ]; then cd %s; fi", shellQuote(workspace), shellQuote(workspace)))
 		postAttach := shellQuote(strings.TrimRight(workspace, "/") + "/.okdev/post-attach.sh")
 		parts = append(parts, fmt.Sprintf("if [ -x %s ]; then %s 2>&1 || echo 'warning: postAttach script failed' >&2; fi", postAttach, postAttach))
 	}

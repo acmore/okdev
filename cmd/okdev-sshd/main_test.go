@@ -9,6 +9,7 @@ func TestBuildInteractiveLoginScriptIncludesDevTmuxBootstrap(t *testing.T) {
 	script := buildInteractiveLoginScript(map[string]string{}, "/bin/bash", "/workspace", "1")
 
 	for _, want := range []string{
+		"cd '/workspace'",
 		"/workspace/.okdev/post-attach.sh",
 		"/var/okdev/dev.tmux.conf",
 		"exec tmux new-session -A -s okdev",
