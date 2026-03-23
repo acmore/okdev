@@ -302,7 +302,6 @@ func labelsForSession(opts *Options, cfg *config.DevEnvironment, sessionName str
 
 func annotationsForSession(cfg *config.DevEnvironment) map[string]string {
 	out := map[string]string{
-		"okdev.io/last-attach": time.Now().UTC().Format(time.RFC3339),
 		"okdev.io/shareable": func() string {
 			if cfg.Spec.Session.Shareable {
 				return "true"
