@@ -89,9 +89,34 @@
 
 /* ── Navigation ───────────────────────────────────────────────────── */
 
+[data-md-color-scheme="slate"] .md-nav__link {
+  color: rgba(230, 237, 243, 0.78);
+}
+
 [data-md-color-scheme="slate"] .md-nav__link--active,
+[data-md-color-scheme="slate"] .md-nav__item--active > .md-nav__link,
+[data-md-color-scheme="slate"] .md-nav__item--active > .md-nav__container > .md-nav__link,
 [data-md-color-scheme="slate"] .md-nav__link:hover {
   color: var(--ok-cyan);
+  font-weight: 600;
+}
+
+[data-md-color-scheme="slate"] .md-nav__item--active > .md-nav__link,
+[data-md-color-scheme="slate"] .md-nav__item--active > .md-nav__container > .md-nav__link {
+  background: var(--ok-cyan-faint);
+  border-radius: 0.2rem;
+}
+
+@media screen and (max-width: 76.25em) {
+  [data-md-color-scheme="slate"] .md-nav--primary .md-nav__link {
+    color: rgba(230, 237, 243, 0.88);
+  }
+
+  [data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__link,
+  [data-md-color-scheme="slate"] .md-nav--primary .md-nav__item--active > .md-nav__container > .md-nav__link {
+    color: var(--ok-cyan);
+    background: var(--ok-cyan-dim);
+  }
 }
 
 [data-md-color-scheme="slate"] .md-tabs {
