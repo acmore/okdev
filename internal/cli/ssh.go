@@ -35,7 +35,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "ssh",
-		Short: "Connect to session pod over SSH (dev container or okdev SSH sidecar)",
+		Short: "Connect to session pod over SSH",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withQuietConfigAnnounce(func() error {
 				errOut := cmd.ErrOrStderr()
@@ -56,10 +56,6 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					return err
 				}
 				stopOwnership()
-				sshMode, modeErr := detectSessionSSHMode(opts, ns, sn)
-				if modeErr != nil {
-					return fmt.Errorf("detect ssh mode: %w", modeErr)
-				}
 				stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), true, true)
 				defer stopMaintenance()
 
@@ -67,7 +63,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					user = cfg.Spec.SSH.User
 				}
 				if remotePort == 0 {
-					remotePort = sshRemotePortForMode(cfg, sshMode)
+					remotePort = sshPort
 				}
 				if localPort == 0 {
 					localPort = 2222
@@ -81,16 +77,16 @@ func newSSHCmd(opts *Options) *cobra.Command {
 
 				if setupKey {
 					stopKeySetup := startTransientStatus(errOut, "Installing SSH key")
-					if err := ensureSSHKeyOnPod(opts, cfg, ns, podName(sn), keyPath, sshMode); err != nil {
+					if err := ensureSSHKeyOnPod(opts, ns, podName(sn), keyPath); err != nil {
 						stopKeySetup()
 						return err
 					}
 					stopKeySetup()
 				}
 				stopSSHDReady := startTransientStatus(errOut, "Waiting for SSH service")
-				if err := waitForSSHDReady(opts, cfg, ns, podName(sn), sshMode, 20*time.Second); err != nil {
+				if err := waitForSSHReady(opts, ns, podName(sn), 20*time.Second); err != nil {
 					stopSSHDReady()
-					fmt.Fprintf(errOut, "warning: sshd not ready yet: %v\n", err)
+					fmt.Fprintf(errOut, "warning: ssh service not ready yet: %v\n", err)
 				} else {
 					stopSSHDReady()
 				}
@@ -281,7 +277,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 	return cmd
 }
 
-func ensureSSHKeyOnPod(opts *Options, cfg *config.DevEnvironment, namespace, pod, keyPath, sshMode string) error {
+func ensureSSHKeyOnPod(opts *Options, namespace, pod, keyPath string) error {
 	if err := ensureCommand("ssh-keygen"); err != nil {
 		return err
 	}
@@ -306,16 +302,11 @@ func ensureSSHKeyOnPod(opts *Options, cfg *config.DevEnvironment, namespace, pod
 
 	script := fmt.Sprintf("mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && (grep -qxF %s ~/.ssh/authorized_keys || echo %s >> ~/.ssh/authorized_keys)", syncengine.ShellEscape(pubKey), syncengine.ShellEscape(pubKey))
 	k := newKubeClient(opts)
-	container := sshTargetContainer(cfg)
 	var lastErr error
 	installed := false
 	for i := 0; i < 3; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if container == "" {
-			_, err = k.ExecSh(ctx, namespace, pod, script)
-		} else {
-			_, err = k.ExecShInContainer(ctx, namespace, pod, container, script)
-		}
+		_, err = k.ExecShInContainer(ctx, namespace, pod, "dev", script)
 		cancel()
 		if err == nil {
 			installed = true
@@ -330,24 +321,17 @@ func ensureSSHKeyOnPod(opts *Options, cfg *config.DevEnvironment, namespace, pod
 	return nil
 }
 
-func waitForSSHDReady(opts *Options, cfg *config.DevEnvironment, namespace, pod, sshMode string, timeout time.Duration) error {
+func waitForSSHReady(opts *Options, namespace, pod string, timeout time.Duration) error {
 	k := newKubeClient(opts)
-	container := sshTargetContainer(cfg)
-	if container == "" {
-		return nil
+	if err := ensureDevSSHDRunning(context.Background(), k, namespace, pod); err != nil {
+		return fmt.Errorf("start dev-container sshd: %w", err)
 	}
-	probeCmd := "ps | grep '[s]shd' >/dev/null 2>&1"
-	if normalizeSSHMode(sshMode) == sshModeEmbedded {
-		if err := ensureEmbeddedSSHDRunning(context.Background(), k, namespace, pod); err != nil {
-			return fmt.Errorf("start embedded sshd: %w", err)
-		}
-		probeCmd = "ps | grep '[o]kdev-sshd' >/dev/null 2>&1"
-	}
+	probeCmd := "ps | grep '[o]kdev-sshd' >/dev/null 2>&1"
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, err := k.ExecShInContainer(ctx, namespace, pod, container, probeCmd)
+		_, err := k.ExecShInContainer(ctx, namespace, pod, "dev", probeCmd)
 		cancel()
 		if err == nil {
 			return nil
@@ -361,7 +345,7 @@ func waitForSSHDReady(opts *Options, cfg *config.DevEnvironment, namespace, pod,
 	return fmt.Errorf("wait for sshd ready: %w", lastErr)
 }
 
-const embeddedSSHStartScript = `set -eu
+const devSSHStartScript = `set -eu
 mkdir -p /var/okdev "$HOME/.ssh"
 if [ ! -x /var/okdev/okdev-sshd ]; then
   echo "missing /var/okdev/okdev-sshd" >&2
@@ -375,14 +359,14 @@ export OKDEV_TMUX="${OKDEV_TMUX:-0}"
 nohup /var/okdev/okdev-sshd --port 2222 --authorized-keys "$HOME/.ssh/authorized_keys" >/var/okdev/okdev-sshd.log 2>&1 </dev/null &
 `
 
-type embeddedSSHStarter interface {
+type devSSHStarter interface {
 	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
 }
 
-func ensureEmbeddedSSHDRunning(ctx context.Context, k embeddedSSHStarter, namespace, pod string) error {
+func ensureDevSSHDRunning(ctx context.Context, k devSSHStarter, namespace, pod string) error {
 	startCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	_, err := k.ExecShInContainer(startCtx, namespace, pod, "dev", embeddedSSHStartScript)
+	_, err := k.ExecShInContainer(startCtx, namespace, pod, "dev", devSSHStartScript)
 	return err
 }
 
@@ -400,14 +384,6 @@ func defaultSSHKeyPath(cfg *config.DevEnvironment) (string, error) {
 		return legacy, nil
 	}
 	return filepath.Join(home, ".okdev", "ssh", "id_ed25519"), nil
-}
-
-func sshTargetContainer(cfg *config.DevEnvironment) string {
-	if cfg == nil {
-		return ""
-	}
-	// Sidecar is always used; target the merged okdev-sidecar container.
-	return "okdev-sidecar"
 }
 
 func sshHostAlias(sessionName string) string {
@@ -542,7 +518,7 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 					return err
 				}
 				if remotePort == 0 {
-					remotePort = cfg.Spec.SSH.RemotePort
+					remotePort = sshPort
 				}
 				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(k, ns, podName(sn), 2222, remotePort)
 				if err != nil {

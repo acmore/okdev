@@ -81,14 +81,14 @@ Tmux-backed persistent shells are enabled by default. Disable them for a pod wit
 Notes:
 - Local Syncthing is auto-installed when `sync.engine=syncthing`.
 - `okdev up` starts background sync in bidirectional mode by default.
-- Default sidecar image follows binary version: `ghcr.io/<owner>/okdev:<okdev-version>` (`edge` for dev builds).
+- Default sidecar image (syncthing + okdev-sshd binary) follows binary version: `ghcr.io/<owner>/okdev:<okdev-version>` (`edge` for dev builds).
 - `spec.sync.exclude` applies local ignore patterns; `spec.sync.remoteExclude` applies remote-only ignores.
-- SSH target is always the merged `okdev-sidecar` container (`sshd` on `22`).
+- SSH target is the `dev` container via `okdev-sshd` on port `2222`.
 - `spec.ports` are rendered as SSH `LocalForward` entries.
 - Local runtime state/logs are stored under `~/.okdev/` (not in the project working directory).
 - Use `ssh okdev-<session>` for direct SSH. For tmux-backed interactive sessions, force TTY (`ssh -tt okdev-<session>`).
 - Use `okdev ssh --no-tmux` to bypass tmux for a single connection.
-- Use `spec.ssh.persistentSession: false` or `okdev up --no-tmux` if you want non-tmux pod sessions by default.
+- Use `spec.ssh.persistentSession: false` or `okdev up --no-tmux` if you want non-tmux dev-container sessions by default.
 - The managed SSH host entry uses tighter proxy keepalive settings than the general CLI defaults so hung `ssh okdev-<session>` sessions fail fast instead of freezing indefinitely.
 - Proxy health diagnostics are written to `~/.okdev/logs/okdev.log`, not printed into the SSH client session.
 - Tmux uses a built-in okdev profile (history/mouse/vi-copy/status) and keeps the default command prefix (`Ctrl-b`).

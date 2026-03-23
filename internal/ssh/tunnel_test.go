@@ -14,7 +14,7 @@ func TestTunnelManagerConnectFailsWithBadKeyPath(t *testing.T) {
 	tm := &TunnelManager{
 		SSHUser:    "root",
 		SSHKeyPath: "/definitely/missing/key",
-		RemotePort: 22,
+		RemotePort: 2222,
 	}
 	if err := tm.Connect(context.Background(), "127.0.0.1", 2222); err == nil {
 		t.Fatal("expected connect error with missing key")

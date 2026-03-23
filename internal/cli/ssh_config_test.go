@@ -24,7 +24,7 @@ func TestEnsureSSHConfigEntryIncludesNamespaceInProxyCommand(t *testing.T) {
 		"test-session",
 		"dev-ns",
 		"root",
-		22,
+		2222,
 		"/tmp/id_ed25519",
 		"/tmp/.okdev.yaml",
 		[]config.PortMapping{{Local: 8080, Remote: 8080}},
@@ -42,7 +42,7 @@ func TestEnsureSSHConfigEntryIncludesNamespaceInProxyCommand(t *testing.T) {
 	if !strings.Contains(text, "Host okdev-test") {
 		t.Fatalf("missing host block: %s", text)
 	}
-	if !strings.Contains(text, "--session") || !strings.Contains(text, "test-session") || !strings.Contains(text, " -n ") || !strings.Contains(text, "dev-ns") || !strings.Contains(text, "ssh-proxy --remote-port 22") {
+	if !strings.Contains(text, "--session") || !strings.Contains(text, "test-session") || !strings.Contains(text, " -n ") || !strings.Contains(text, "dev-ns") || !strings.Contains(text, "ssh-proxy --remote-port 2222") {
 		t.Fatalf("proxy command missing namespace: %s", text)
 	}
 	if strings.Contains(text, "LocalForward") {
@@ -66,7 +66,7 @@ func TestEnsureSSHConfigEntryUsesProxyKeepaliveValues(t *testing.T) {
 		"test-session2",
 		"dev-ns",
 		"root",
-		22,
+		2222,
 		"/tmp/id_ed25519",
 		"/tmp/.okdev.yaml",
 		nil,

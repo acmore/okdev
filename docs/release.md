@@ -36,7 +36,7 @@ git push origin v0.1.0
 Sidecar image tags are aligned with the `okdev` release tag:
 
 - release `vX.Y.Z` publishes:
-  - `ghcr.io/acmore/okdev:vX.Y.Z` (merged sidecar: syncthing + sshd)
+  - `ghcr.io/acmore/okdev:vX.Y.Z` (sidecar runtime: syncthing + okdev-sshd binary)
 - dev/main pushes publish:
   - `ghcr.io/acmore/okdev:edge`
 

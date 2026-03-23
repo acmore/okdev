@@ -5,12 +5,13 @@ import (
 	"testing"
 )
 
-func TestBuildInteractiveLoginScriptIncludesEmbeddedTmuxBootstrap(t *testing.T) {
+func TestBuildInteractiveLoginScriptIncludesDevTmuxBootstrap(t *testing.T) {
 	script := buildInteractiveLoginScript(map[string]string{}, "/bin/bash", "/workspace", "1")
 
 	for _, want := range []string{
+		"cd '/workspace'",
 		"/workspace/.okdev/post-attach.sh",
-		"/var/okdev/embedded.tmux.conf",
+		"/var/okdev/dev.tmux.conf",
 		"exec tmux new-session -A -s okdev",
 	} {
 		if !strings.Contains(script, want) {

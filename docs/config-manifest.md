@@ -99,7 +99,6 @@ Validation:
 ## `spec.ssh`
 
 - `user` (`string`, default: `root`)
-- `remotePort` (`int`, default: `22`)
 - `privateKeyPath` (`string`, optional)
 - `autoDetectPorts` (`bool`, default: `true`)
 - `persistentSession` (`bool`, default: `true`) enables tmux-backed interactive session mode
@@ -107,7 +106,6 @@ Validation:
 - `keepAliveTimeoutSeconds` (`int`, default: `10`)
 
 Validation:
-- `remotePort` must be `1..65535`
 - `keepAliveIntervalSeconds > 0`
 - `keepAliveTimeoutSeconds > 0`
 - `keepAliveTimeoutSeconds >= keepAliveIntervalSeconds`
@@ -178,7 +176,6 @@ spec:
       remote: 6006
   ssh:
     user: root
-    remotePort: 22
     persistentSession: true
     keepAliveIntervalSeconds: 30
     keepAliveTimeoutSeconds: 90

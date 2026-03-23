@@ -28,7 +28,6 @@ func newUpCmd(opts *Options) *cobra.Command {
 	var dryRun bool
 	var tmux bool
 	var noTmux bool
-	var sshMode string
 	var createMissingPVC bool
 	var missingPVCSize string
 	var missingPVCStorageClass string
@@ -37,9 +36,6 @@ func newUpCmd(opts *Options) *cobra.Command {
 		Use:   "up",
 		Short: "Create or resume a dev session",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if sshMode != "sidecar" && sshMode != "embedded" {
-				return fmt.Errorf("invalid --ssh-mode %q: must be \"sidecar\" or \"embedded\"", sshMode)
-			}
 			ui := newUpUI(cmd.OutOrStdout(), cmd.ErrOrStderr())
 			// Keep legacy config-path announce quiet for this command; we render it in staged output.
 			prevQuiet, hadQuiet := os.LookupEnv("OKDEV_QUIET_CONFIG_ANNOUNCE")
@@ -71,7 +67,6 @@ func newUpCmd(opts *Options) *cobra.Command {
 			ui.stepDone("namespace", ns)
 			labels := labelsForSession(opts, cfg, sn)
 			annotations := annotationsForSession(cfg)
-			annotations["okdev.io/ssh-mode"] = normalizeSSHMode(sshMode)
 			volumes := cfg.EffectiveVolumes()
 			syncPairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.WorkspaceMountPath())
 			if err != nil {
@@ -136,7 +131,6 @@ func newUpCmd(opts *Options) *cobra.Command {
 				cfg.WorkspaceMountPath(),
 				cfg.Spec.Sidecar.Image,
 				enableTmux,
-				sshMode == "embedded",
 				preStopCmd,
 			)
 			if err != nil {
@@ -177,33 +171,27 @@ func newUpCmd(opts *Options) *cobra.Command {
 
 			ui.section("Setup")
 			sshSummary := "disabled"
-			effectiveSSHPort := sshRemotePortForMode(cfg, sshMode)
-			if effectiveSSHPort > 0 {
-				keyPath, keyErr := defaultSSHKeyPath(cfg)
-				if keyErr != nil {
-					return fmt.Errorf("resolve SSH key path: %w", keyErr)
-				} else {
-					if err := ensureSSHKeyOnPod(opts, cfg, ns, pod, keyPath, sshMode); err != nil {
-						return fmt.Errorf("setup SSH key in pod: %w", err)
-					}
-					if err := waitForSSHDReady(opts, cfg, ns, pod, sshMode, waitTimeout); err != nil {
-						return fmt.Errorf("wait for SSH service: %w", err)
-					}
-					alias := sshHostAlias(sn)
-					if _, cfgErr := ensureSSHConfigEntry(alias, sn, ns, cfg.Spec.SSH.User, effectiveSSHPort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
-						return fmt.Errorf("update ~/.ssh/config: %w", cfgErr)
-					} else {
-						// Force-refresh managed master so forward rules are always current after `okdev up`.
-						_ = stopManagedSSHForward(alias)
-						if err := startManagedSSHForwardWithForwards(alias, cfg.Spec.Ports, cfg.Spec.SSH); err != nil {
-							return fmt.Errorf("start managed SSH/port-forwards: %w", err)
-						} else {
-							sshSummary = "ssh " + alias
-							ui.stepDone("ssh", sshSummary)
-						}
-					}
-				}
+			keyPath, keyErr := defaultSSHKeyPath(cfg)
+			if keyErr != nil {
+				return fmt.Errorf("resolve SSH key path: %w", keyErr)
 			}
+			if err := ensureSSHKeyOnPod(opts, ns, pod, keyPath); err != nil {
+				return fmt.Errorf("setup SSH key in pod: %w", err)
+			}
+			if err := waitForSSHReady(opts, ns, pod, waitTimeout); err != nil {
+				return fmt.Errorf("wait for SSH service: %w", err)
+			}
+			alias := sshHostAlias(sn)
+			if _, cfgErr := ensureSSHConfigEntry(alias, sn, ns, cfg.Spec.SSH.User, sshPort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
+				return fmt.Errorf("update ~/.ssh/config: %w", cfgErr)
+			}
+			// Force-refresh managed master so forward rules are always current after `okdev up`.
+			_ = stopManagedSSHForward(alias)
+			if err := startManagedSSHForwardWithForwards(alias, cfg.Spec.Ports, cfg.Spec.SSH); err != nil {
+				return fmt.Errorf("start managed SSH/port-forwards: %w", err)
+			}
+			sshSummary = "ssh " + alias
+			ui.stepDone("ssh", sshSummary)
 
 			syncSummary := "disabled"
 			syncModeSymbol := ""
@@ -235,20 +223,20 @@ func newUpCmd(opts *Options) *cobra.Command {
 					ui.stepDone("postCreate", "already done")
 				}
 			}
-			if enableTmux && sshMode == "embedded" {
+			if enableTmux {
 				ui.stepRun("tmux", "checking dev container")
-				status, installer, err := detectEmbeddedTmux(cmd.Context(), k, ns, pod)
+				status, installer, err := detectDevTmux(cmd.Context(), k, ns, pod)
 				if err != nil {
 					ui.warnf("failed to check tmux in dev container: %v", err)
 				} else if status == "install" {
 					ui.stepRun("tmux", fmt.Sprintf("installing via %s", installer))
-					_, detail, err := installEmbeddedTmux(cmd.Context(), k, ns, pod, installer, func(phase string) {
+					_, detail, err := installDevTmux(cmd.Context(), k, ns, pod, installer, func(phase string) {
 						if strings.TrimSpace(phase) != "" {
 							ui.stepRun("tmux", phase)
 						}
 					})
 					if err != nil {
-						if recoveredDetail, ok := embeddedTmuxDetailIfReady(cmd.Context(), k, ns, pod); ok {
+						if recoveredDetail, ok := devTmuxDetailIfReady(cmd.Context(), k, ns, pod); ok {
 							ui.stepDone("tmux", recoveredDetail)
 						} else {
 							ui.warnf("tmux not ready in dev container: %v", err)
@@ -281,9 +269,8 @@ func newUpCmd(opts *Options) *cobra.Command {
 
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 3*time.Minute, "Wait timeout for pod readiness")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview actions without applying resources")
-	cmd.Flags().BoolVar(&tmux, "tmux", false, "Enable tmux persistent shell sessions in the sidecar")
+	cmd.Flags().BoolVar(&tmux, "tmux", false, "Enable tmux persistent shell sessions in the dev container")
 	cmd.Flags().BoolVar(&noTmux, "no-tmux", false, "Disable tmux persistent shell sessions for this pod")
-	cmd.Flags().StringVar(&sshMode, "ssh-mode", "sidecar", "SSH server mode: sidecar (default) or embedded")
 	cmd.Flags().BoolVar(&createMissingPVC, "create-missing-pvc", false, "Create missing PVCs referenced by spec.volumes")
 	cmd.Flags().StringVar(&missingPVCSize, "missing-pvc-size", config.DefaultWorkspacePVCSize, "Size to use when creating a missing PVC")
 	cmd.Flags().StringVar(&missingPVCStorageClass, "missing-pvc-storage-class", "", "StorageClass to use when creating a missing PVC")
@@ -353,7 +340,7 @@ func runPostCreateIfNeeded(k *kube.Client, namespace, pod, command string, out i
 	return true, nil
 }
 
-const embeddedTmuxDetectScript = `set -eu
+const devTmuxDetectScript = `set -eu
 if command -v tmux >/dev/null 2>&1; then
   echo present:none
   exit 0
@@ -382,7 +369,7 @@ else
 fi
 `
 
-const embeddedTmuxInstallScript = `set -eu
+const devTmuxInstallScript = `set -eu
 installer="${OKDEV_TMUX_INSTALLER:-none}"
 logfile="/tmp/okdev-tmux-install.log"
 mkdir -p /var/okdev >/dev/null 2>&1 || true
@@ -420,12 +407,12 @@ type devShellExecutor interface {
 	StreamShInContainer(context.Context, string, string, string, string, io.Writer, io.Writer) error
 }
 
-const embeddedTmuxLogPath = "/tmp/okdev-tmux-install.log"
+const devTmuxLogPath = "/tmp/okdev-tmux-install.log"
 
-func detectEmbeddedTmux(ctx context.Context, k devShellExecutor, namespace, pod string) (status, installer string, err error) {
+func detectDevTmux(ctx context.Context, k devShellExecutor, namespace, pod string) (status, installer string, err error) {
 	detectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	out, err := k.ExecShInContainer(detectCtx, namespace, pod, "dev", embeddedTmuxDetectScript)
+	out, err := k.ExecShInContainer(detectCtx, namespace, pod, "dev", devTmuxDetectScript)
 	if err != nil {
 		return "", "", err
 	}
@@ -434,7 +421,7 @@ func detectEmbeddedTmux(ctx context.Context, k devShellExecutor, namespace, pod 
 	return status, installer, nil
 }
 
-func installEmbeddedTmux(ctx context.Context, k devShellExecutor, namespace, pod, installer string, progress func(string)) (bool, string, error) {
+func installDevTmux(ctx context.Context, k devShellExecutor, namespace, pod, installer string, progress func(string)) (bool, string, error) {
 	installCtx := ctx
 	if progress != nil && installer != "" && installer != "none" {
 		ticker := time.NewTicker(10 * time.Second)
@@ -453,29 +440,29 @@ func installEmbeddedTmux(ctx context.Context, k devShellExecutor, namespace, pod
 			}
 		}()
 	}
-	script := "export OKDEV_TMUX_INSTALLER=" + shellQuote(installer) + "; " + embeddedTmuxInstallScript
+	script := "export OKDEV_TMUX_INSTALLER=" + shellQuote(installer) + "; " + devTmuxInstallScript
 	var raw bytes.Buffer
 	err := k.StreamShInContainer(installCtx, namespace, pod, "dev", script, &raw, &raw)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return false, "", fmt.Errorf("tmux install cancelled after timeout via parent context; inspect %s in the dev container", embeddedTmuxLogPath)
+			return false, "", fmt.Errorf("tmux install cancelled after timeout via parent context; inspect %s in the dev container", devTmuxLogPath)
 		}
 		if errors.Is(ctx.Err(), context.Canceled) {
-			return false, "", fmt.Errorf("tmux install cancelled; inspect %s in the dev container", embeddedTmuxLogPath)
+			return false, "", fmt.Errorf("tmux install cancelled; inspect %s in the dev container", devTmuxLogPath)
 		}
 		return false, "", err
 	}
 	s, inst, rawLine := parseTmuxStatus(raw.String())
 	if s == "" {
-		detectStatus, detectInstaller, detectErr := detectEmbeddedTmux(ctx, k, namespace, pod)
+		detectStatus, detectInstaller, detectErr := detectDevTmux(ctx, k, namespace, pod)
 		if detectErr == nil {
 			return interpretTmuxStatus(detectStatus, detectInstaller, raw.String())
 		}
 		trimmed := strings.TrimSpace(raw.String())
 		if trimmed == "" {
-			return false, "", fmt.Errorf("unexpected tmux prepare result with no status marker; inspect %s in the dev container", embeddedTmuxLogPath)
+			return false, "", fmt.Errorf("unexpected tmux prepare result with no status marker; inspect %s in the dev container", devTmuxLogPath)
 		}
-		return false, "", fmt.Errorf("unexpected tmux prepare result %q; inspect %s in the dev container", trimmed, embeddedTmuxLogPath)
+		return false, "", fmt.Errorf("unexpected tmux prepare result %q; inspect %s in the dev container", trimmed, devTmuxLogPath)
 	}
 	inst = strings.TrimSpace(inst)
 	return interpretTmuxStatus(s, inst, rawLine)
@@ -495,7 +482,7 @@ func interpretTmuxStatus(status, installer, raw string) (bool, string, error) {
 		return false, "", fmt.Errorf("dev container is not running as root")
 	case "unavailable":
 		if hasInstaller {
-			return false, "", fmt.Errorf("tmux unavailable after best-effort install attempt via %s; inspect %s in the dev container", installer, embeddedTmuxLogPath)
+			return false, "", fmt.Errorf("tmux unavailable after best-effort install attempt via %s; inspect %s in the dev container", installer, devTmuxLogPath)
 		}
 		return false, "", fmt.Errorf("tmux unavailable (no supported package manager found)")
 	default:
@@ -517,8 +504,8 @@ func parseTmuxStatus(raw string) (status, installer, line string) {
 	return status, installer, line
 }
 
-func embeddedTmuxDetailIfReady(ctx context.Context, k devShellExecutor, namespace, pod string) (string, bool) {
-	status, installer, err := detectEmbeddedTmux(ctx, k, namespace, pod)
+func devTmuxDetailIfReady(ctx context.Context, k devShellExecutor, namespace, pod string) (string, bool) {
+	status, installer, err := detectDevTmux(ctx, k, namespace, pod)
 	if err != nil {
 		return "", false
 	}
