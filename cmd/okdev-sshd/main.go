@@ -125,21 +125,36 @@ func buildCmd(s ssh.Session, shell string) *exec.Cmd {
 }
 
 func interactiveLoginScript(s ssh.Session, shell string) string {
-	env := sessionEnvMap(s)
+	return buildInteractiveLoginScript(
+		sessionEnvMap(s),
+		shell,
+		strings.TrimSpace(os.Getenv("OKDEV_WORKSPACE")),
+		strings.TrimSpace(os.Getenv("OKDEV_TMUX")),
+	)
+}
+
+func buildInteractiveLoginScript(sessionEnv map[string]string, shell, workspace, tmuxFlag string) string {
 	var parts []string
 
-	if workspace := strings.TrimSpace(os.Getenv("OKDEV_WORKSPACE")); workspace != "" {
+	if workspace != "" {
 		postAttach := shellQuote(strings.TrimRight(workspace, "/") + "/.okdev/post-attach.sh")
 		parts = append(parts, fmt.Sprintf("if [ -x %s ]; then %s 2>&1 || echo 'warning: postAttach script failed' >&2; fi", postAttach, postAttach))
 	}
 
-	if strings.TrimSpace(os.Getenv("OKDEV_TMUX")) == "1" && env["OKDEV_NO_TMUX"] != "1" {
-		parts = append(parts, "if [ \"${TERM:-}\" = \"xterm-ghostty\" ]; then export TERM=xterm-256color; fi")
-		parts = append(parts, "if command -v tmux >/dev/null 2>&1; then exec tmux new-session -A -s okdev; fi")
+	if tmuxFlag == "1" && sessionEnv["OKDEV_NO_TMUX"] != "1" {
+		parts = append(parts, embeddedTmuxBootstrapScript())
 	}
 
 	parts = append(parts, "exec "+shellQuote(shell)+" -l")
 	return strings.Join(parts, "; ")
+}
+
+func embeddedTmuxBootstrapScript() string {
+	return strings.Join([]string{
+		`if [ "${TERM:-}" = "xterm-ghostty" ]; then export TERM=xterm-256color; fi`,
+		`if command -v tmux >/dev/null 2>&1; then exec tmux new-session -A -s okdev; fi`,
+		`echo 'warning: tmux not available in dev container; continuing without tmux' >&2`,
+	}, "; ")
 }
 
 func sessionEnvMap(s ssh.Session) map[string]string {
