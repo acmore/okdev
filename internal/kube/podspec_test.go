@@ -7,7 +7,7 @@ import (
 )
 
 func TestPreparePodSpecShareProcessNamespace(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, false, "")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -17,7 +17,7 @@ func TestPreparePodSpecShareProcessNamespace(t *testing.T) {
 }
 
 func TestPreparePodSpecWorkspaceDefaultsToEmptyDir(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, false, "")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestPreparePodSpecUsesConfiguredWorkspaceVolume(t *testing.T) {
 			},
 		},
 	}
-	spec, err := PreparePodSpec(corev1.PodSpec{}, volumes, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, false, "")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, volumes, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestPreparePodSpecUsesConfiguredWorkspaceVolume(t *testing.T) {
 }
 
 func TestPreparePodSpecAddsWorkspaceMountOnDevAndSidecar(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, false, "")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestPreparePodSpecAddsWorkspaceMountOnDevAndSidecar(t *testing.T) {
 }
 
 func TestPreparePodSpecErrorsOnEmptyImage(t *testing.T) {
-	if _, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "", false, false, ""); err == nil {
+	if _, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "", false, ""); err == nil {
 		t.Fatal("expected error for empty sidecar image")
 	}
 }
@@ -128,55 +128,8 @@ func findContainer(containers []corev1.Container, name string) *corev1.Container
 	return nil
 }
 
-func TestPreparePodSpecEmbeddedSSHMode(t *testing.T) {
-	t.Run("embeddedSSH=false", func(t *testing.T) {
-		spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, false, "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		sc := findContainer(spec.Containers, "okdev-sidecar")
-		if sc == nil {
-			t.Fatal("sidecar container not found")
-		}
-		for _, env := range sc.Env {
-			if env.Name == "OKDEV_SSH_MODE" {
-				t.Fatal("expected no OKDEV_SSH_MODE env var when embeddedSSH=false")
-			}
-		}
-	})
-
-	t.Run("embeddedSSH=true", func(t *testing.T) {
-		spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, true, "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		sc := findContainer(spec.Containers, "okdev-sidecar")
-		if sc == nil {
-			t.Fatal("sidecar container not found")
-		}
-		foundEnv := false
-		for _, env := range sc.Env {
-			if env.Name == "OKDEV_SSH_MODE" && env.Value == "embedded" {
-				foundEnv = true
-			}
-		}
-		if !foundEnv {
-			t.Fatal("expected OKDEV_SSH_MODE=embedded env var when embeddedSSH=true")
-		}
-		foundPort := false
-		for _, p := range sc.Ports {
-			if p.ContainerPort == 2222 && p.Name == "embedded-ssh" {
-				foundPort = true
-			}
-		}
-		if !foundPort {
-			t.Fatal("expected port 2222 named embedded-ssh when embeddedSSH=true")
-		}
-	})
-}
-
 func TestPreparePodSpecSetsDevTmuxEnvWhenEnabled(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", true, true, "")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", true, "")
 	if err != nil {
 		t.Fatal(err)
 	}

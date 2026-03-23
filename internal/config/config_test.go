@@ -40,8 +40,8 @@ func TestSetDefaults(t *testing.T) {
 	if !cfg.Spec.Sync.Syncthing.AutoInstallEnabled() {
 		t.Fatal("expected syncthing autoinstall default true")
 	}
-	if cfg.Spec.SSH.User != "root" || cfg.Spec.SSH.RemotePort != 22 {
-		t.Fatalf("ssh defaults not set: %+v", cfg.Spec.SSH)
+	if cfg.Spec.SSH.User != "root" {
+		t.Fatalf("ssh user default not set: %+v", cfg.Spec.SSH)
 	}
 	if cfg.Spec.SSH.KeepAliveInterval != 10 || cfg.Spec.SSH.KeepAliveTimeout != 10 || cfg.Spec.SSH.KeepAliveCountMax != 30 {
 		t.Fatalf("ssh keepalive defaults not set: %+v", cfg.Spec.SSH)

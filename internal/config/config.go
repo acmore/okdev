@@ -110,7 +110,6 @@ type LifecycleSpec struct {
 
 type SSHSpec struct {
 	User              string `yaml:"user"`
-	RemotePort        int    `yaml:"remotePort"`
 	PrivateKeyPath    string `yaml:"privateKeyPath"`
 	AutoDetectPorts   *bool  `yaml:"autoDetectPorts"`
 	PersistentSession *bool  `yaml:"persistentSession"`
@@ -141,9 +140,6 @@ func (d *DevEnvironment) SetDefaults() {
 	}
 	if d.Spec.SSH.User == "" {
 		d.Spec.SSH.User = "root"
-	}
-	if d.Spec.SSH.RemotePort == 0 {
-		d.Spec.SSH.RemotePort = 22
 	}
 	if d.Spec.SSH.AutoDetectPorts == nil {
 		v := true
@@ -201,9 +197,6 @@ func (d *DevEnvironment) Validate() error {
 		return errors.New("spec.sync.paths must contain at most one mapping when engine is syncthing")
 	}
 	if err := validatePortMappings(d.Spec.Ports); err != nil {
-		return err
-	}
-	if err := validatePortRange("spec.ssh.remotePort", d.Spec.SSH.RemotePort); err != nil {
 		return err
 	}
 	if d.Spec.SSH.KeepAliveInterval <= 0 {
