@@ -35,6 +35,7 @@ COPY --from=builder /okdev-sshd /usr/local/bin/okdev-sshd
 
 COPY infra/sidecar/sshd_config /etc/ssh/sshd_config
 COPY infra/sidecar/tmux.conf /root/.tmux.conf
+COPY infra/sidecar/embedded-tmux.conf /etc/okdev-embedded.tmux.conf
 COPY infra/sidecar/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

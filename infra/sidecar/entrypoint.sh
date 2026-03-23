@@ -186,6 +186,8 @@ if [ "$OKDEV_SSH_MODE" = "embedded" ]; then
   mkdir -p /var/okdev
   cp /usr/local/bin/okdev-sshd /var/okdev/okdev-sshd
   chmod +x /var/okdev/okdev-sshd
+  cp /etc/okdev-embedded.tmux.conf /var/okdev/embedded.tmux.conf
+  chmod 644 /var/okdev/embedded.tmux.conf
 fi
 
 # Start syncthing in background (run as root for workspace access)

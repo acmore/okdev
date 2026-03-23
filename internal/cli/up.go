@@ -175,41 +175,28 @@ func newUpCmd(opts *Options) *cobra.Command {
 			}
 			ui.stepDone("pod readiness", "ready")
 
-			if err := session.SaveActiveSession(sn); err != nil {
-				return err
-			}
-			ui.stepDone("active session", sn)
-			if err := session.ClearShutdownRequest(sn); err != nil {
-				ui.warnf("failed to clear prior shutdown request: %v", err)
-			}
-
 			ui.section("Setup")
 			sshSummary := "disabled"
 			effectiveSSHPort := sshRemotePortForMode(cfg, sshMode)
 			if effectiveSSHPort > 0 {
 				keyPath, keyErr := defaultSSHKeyPath(cfg)
 				if keyErr != nil {
-					ui.warnf("failed to resolve SSH key path: %v", keyErr)
-					sshSummary = "degraded (key path error)"
+					return fmt.Errorf("resolve SSH key path: %w", keyErr)
 				} else {
 					if err := ensureSSHKeyOnPod(opts, cfg, ns, pod, keyPath, sshMode); err != nil {
-						ui.warnf("failed to setup SSH key in pod: %v", err)
-						sshSummary = "degraded (key setup failed)"
+						return fmt.Errorf("setup SSH key in pod: %w", err)
 					}
-					if err := waitForSSHDReady(opts, cfg, ns, pod, sshMode, 20*time.Second); err != nil {
-						ui.warnf("sshd not ready yet: %v", err)
-						sshSummary = "degraded (sshd not ready)"
+					if err := waitForSSHDReady(opts, cfg, ns, pod, sshMode, waitTimeout); err != nil {
+						return fmt.Errorf("wait for SSH service: %w", err)
 					}
 					alias := sshHostAlias(sn)
 					if _, cfgErr := ensureSSHConfigEntry(alias, sn, ns, cfg.Spec.SSH.User, effectiveSSHPort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
-						ui.warnf("failed to update ~/.ssh/config: %v", cfgErr)
-						sshSummary = "degraded (ssh config update failed)"
+						return fmt.Errorf("update ~/.ssh/config: %w", cfgErr)
 					} else {
 						// Force-refresh managed master so forward rules are always current after `okdev up`.
 						_ = stopManagedSSHForward(alias)
 						if err := startManagedSSHForwardWithForwards(alias, cfg.Spec.Ports, cfg.Spec.SSH); err != nil {
-							ui.warnf("failed to start managed SSH/port-forwards: %v", err)
-							sshSummary = "degraded (managed forward failed)"
+							return fmt.Errorf("start managed SSH/port-forwards: %w", err)
 						} else {
 							sshSummary = "ssh " + alias
 							ui.stepDone("ssh", sshSummary)
@@ -223,8 +210,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 			if cfg.Spec.Sync.Engine == "" || cfg.Spec.Sync.Engine == "syncthing" {
 				logPath, started, err := startDetachedSyncthingSync(opts, upDefaultSyncMode, sn, ns, cfgPath)
 				if err != nil {
-					ui.warnf("failed to start syncthing background sync: %v", err)
-					syncSummary = "degraded (start failed)"
+					return fmt.Errorf("start syncthing background sync: %w", err)
 				} else {
 					syncModeSymbol = modeSymbol(upDefaultSyncMode)
 					syncPathSummary := syncPairsSummary(syncPairs, syncModeSymbol)
@@ -288,6 +274,13 @@ func newUpCmd(opts *Options) *cobra.Command {
 						ui.stepDone("tmux", detail)
 					}
 				}
+			}
+			if err := session.SaveActiveSession(sn); err != nil {
+				return err
+			}
+			ui.stepDone("active session", sn)
+			if err := session.ClearShutdownRequest(sn); err != nil {
+				ui.warnf("failed to clear prior shutdown request: %v", err)
 			}
 
 			ui.printWarnings()
