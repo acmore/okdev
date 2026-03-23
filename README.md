@@ -27,8 +27,9 @@ Binary assets are published to GitHub Releases for `linux/darwin` on `amd64/arm6
 See:
 - `docs/quickstart.md`
 - `docs/command-reference.md`
-- `docs/okdev-design.md`
-- `docs/okdev-implementation-plan.md`
+- `docs/config-manifest.md`
+- `docs/troubleshooting.md`
+- `docs/release.md`
 
 ## GitHub Pages Docs
 

@@ -95,14 +95,80 @@ spec:
               readOnly: true
 ```
 
+### More Examples
+
+#### `emptyDir` Scratch Space
+
+Useful for build caches, temporary outputs, or other pod-lifetime data.
+
+```yaml
+spec:
+  volumes:
+    - name: cache
+      emptyDir: {}
+  podTemplate:
+    spec:
+      containers:
+        - name: dev
+          volumeMounts:
+            - name: cache
+              mountPath: /tmp/build-cache
+```
+
+#### `configMap` and `secret` Mounts
+
+Useful when the dev container needs checked-in config plus cluster-managed credentials.
+
+```yaml
+spec:
+  volumes:
+    - name: app-config
+      configMap:
+        name: my-app-config
+    - name: cloud-creds
+      secret:
+        secretName: cloud-credentials
+  podTemplate:
+    spec:
+      containers:
+        - name: dev
+          volumeMounts:
+            - name: app-config
+              mountPath: /etc/my-app
+              readOnly: true
+            - name: cloud-creds
+              mountPath: /var/run/secrets/cloud
+              readOnly: true
+```
+
+#### `ephemeral` Per-Session Persistent Storage
+
+Useful when each okdev session should get its own PVC-backed storage that is created with the pod and removed with it.
+
+```yaml
+spec:
+  volumes:
+    - name: models
+      ephemeral:
+        volumeClaimTemplate:
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            resources:
+              requests:
+                storage: 50Gi
+  podTemplate:
+    spec:
+      containers:
+        - name: dev
+          volumeMounts:
+            - name: models
+              mountPath: /models
+```
+
 ### Workspace Behavior
 
-- If a `workspace` volume is not provided, okdev injects:
-  - `name: workspace`
-  - `emptyDir: {}`
-- okdev ensures `workspace` is mounted on:
-  - `dev` container
-  - `okdev-sidecar`
+- If a `workspace` volume is not provided, okdev injects a volume with `name: workspace` and `emptyDir: {}`.
+- okdev ensures `workspace` is mounted on the `dev` container and `okdev-sidecar`.
 - Workspace mount path defaults to `/workspace` (or follows `dev` container `volumeMounts` entry for `workspace` if provided in `podTemplate`).
 
 ## `spec.sync`
@@ -111,10 +177,7 @@ spec:
 - `paths` (`[]string`): mappings in `local:remote` format.
 - `exclude` (`[]string`): local ignore patterns.
 - `remoteExclude` (`[]string`): remote-only ignore patterns (written to remote `.stignore`).
-- `syncthing` (`object`):
-  - `version` (`string`, default: `v1.29.7`) for the local auto-installed Syncthing client
-  - `autoInstall` (`bool`, default: `true`)
-  - `image` (`string`, default: `ghcr.io/acmore/okdev:<okdev-version>` with `edge` fallback) for the sidecar runtime image
+- `syncthing` (`object`): includes `version` (`string`, default: `v1.29.7`) for the local auto-installed Syncthing client, `autoInstall` (`bool`, default: `true`), and `image` (`string`, default: `ghcr.io/acmore/okdev:<okdev-version>` with `edge` fallback) for the sidecar runtime image.
 
 ### Example
 
