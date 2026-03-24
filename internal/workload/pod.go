@@ -11,18 +11,30 @@ import (
 const DefaultTargetContainer = "dev"
 
 type PodRuntime struct {
-	SessionName string
-	Labels      map[string]string
-	Annotations map[string]string
-	PodSpec     corev1.PodSpec
+	SessionName        string
+	Labels             map[string]string
+	Annotations        map[string]string
+	PodSpec            corev1.PodSpec
+	Volumes            []corev1.Volume
+	WorkspaceMountPath string
+	SidecarImage       string
+	Tmux               bool
+	PreStop            string
+	TargetContainer    string
 }
 
-func NewPodRuntime(sessionName string, labels, annotations map[string]string, podSpec corev1.PodSpec) *PodRuntime {
+func NewPodRuntime(sessionName string, labels, annotations map[string]string, podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, tmux bool, preStop, targetContainer string) *PodRuntime {
 	return &PodRuntime{
-		SessionName: sessionName,
-		Labels:      labels,
-		Annotations: annotations,
-		PodSpec:     podSpec,
+		SessionName:        sessionName,
+		Labels:             labels,
+		Annotations:        annotations,
+		PodSpec:            podSpec,
+		Volumes:            volumes,
+		WorkspaceMountPath: workspaceMountPath,
+		SidecarImage:       sidecarImage,
+		Tmux:               tmux,
+		PreStop:            preStop,
+		TargetContainer:    targetContainer,
 	}
 }
 
@@ -35,7 +47,12 @@ func (r *PodRuntime) WorkloadName() string {
 }
 
 func (r *PodRuntime) Apply(ctx context.Context, k ApplyClient, namespace string) error {
-	manifest, err := kube.BuildPodManifest(namespace, r.WorkloadName(), LabelsWithWorkload(r.Labels, r.WorkloadName(), "v1", "Pod"), r.Annotations, r.PodSpec)
+	prepared, err := kube.PreparePodSpecForTarget(r.PodSpec, r.Volumes, r.WorkspaceMountPath, r.SidecarImage, r.Tmux, r.PreStop, r.effectiveTargetContainer())
+	if err != nil {
+		return err
+	}
+	name := r.WorkloadName()
+	manifest, err := kube.BuildPodManifest(namespace, name, LabelsWithWorkload(r.Labels, name, "v1", "Pod"), r.Annotations, prepared)
 	if err != nil {
 		return err
 	}
@@ -56,6 +73,13 @@ func (r *PodRuntime) SelectTarget(ctx context.Context, k TargetClient, namespace
 	}
 	return TargetRef{
 		PodName:   r.WorkloadName(),
-		Container: DefaultTargetContainer,
+		Container: r.effectiveTargetContainer(),
 	}, nil
+}
+
+func (r *PodRuntime) effectiveTargetContainer() string {
+	if r.TargetContainer != "" {
+		return r.TargetContainer
+	}
+	return DefaultTargetContainer
 }

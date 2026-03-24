@@ -492,7 +492,7 @@ func ensureSessionAccess(opts *Options, k sessionAccessReader, namespace, sessio
 		return nil
 	}
 	sort.Slice(pods, func(i, j int) bool {
-		return compareSessionPods(pods[i], pods[j])
+		return workload.ComparePodPriority(pods[i], pods[j])
 	})
 	pod := &pods[0]
 	owner := currentOwner(opts)

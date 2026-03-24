@@ -3,6 +3,7 @@ package workload
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
@@ -39,6 +40,7 @@ func (r *GenericRuntime) Kind() string {
 func (r *GenericRuntime) WorkloadName() string {
 	obj, err := r.load()
 	if err != nil {
+		slog.Warn("failed to resolve workload name from manifest", "path", r.ManifestPath, "error", err)
 		return ""
 	}
 	return obj.GetName()
@@ -97,37 +99,8 @@ func (r *GenericRuntime) Delete(ctx context.Context, k DeleteClient, namespace s
 }
 
 func (r *GenericRuntime) WaitReady(ctx context.Context, k WaitClient, namespace string, timeout time.Duration, onProgress func(kube.PodReadinessProgress)) error {
-	deadline := time.Now().Add(timeout)
-	var lastProgress kube.PodReadinessProgress
-	haveProgress := false
-	for {
-		target, pods, err := r.selectCandidate(ctx, k, namespace)
-		if err == nil && strings.TrimSpace(target.PodName) != "" {
-			progress := summarizePodsAsProgress(pods)
-			if onProgress != nil && (!haveProgress || progress != lastProgress) {
-				onProgress(progress)
-				lastProgress = progress
-				haveProgress = true
-			}
-			waitTimeout := time.Until(deadline)
-			if waitTimeout <= 0 {
-				break
-			}
-			return k.WaitReadyWithProgress(ctx, namespace, target.PodName, waitTimeout, onProgress)
-		}
-		if time.Now().After(deadline) {
-			if err != nil {
-				return err
-			}
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(500 * time.Millisecond):
-		}
-	}
-	return fmt.Errorf("wait for generic workload target pod readiness timed out")
+	return waitForCandidatePodReady(ctx, k, namespace, r.selectCandidate, timeout, onProgress,
+		fmt.Sprintf("wait for %s workload target pod readiness timed out", r.Kind()))
 }
 
 func (r *GenericRuntime) SelectTarget(ctx context.Context, k TargetClient, namespace string) (TargetRef, error) {
@@ -140,7 +113,7 @@ func (r *GenericRuntime) SelectTarget(ctx context.Context, k TargetClient, names
 }
 
 func (r *GenericRuntime) selectCandidate(ctx context.Context, k podLister, namespace string) (TargetRef, []kube.PodSummary, error) {
-	selector := buildLabelSelector(r.Labels)
+	selector := DiscoveryLabelSelector(r.Labels)
 	pods, err := k.ListPods(ctx, namespace, false, selector)
 	if err != nil {
 		return TargetRef{}, nil, err
@@ -155,15 +128,10 @@ func (r *GenericRuntime) selectCandidate(ctx context.Context, k podLister, names
 		}
 	}
 	if len(eligible) == 0 {
-		for _, pod := range pods {
-			eligible = append(eligible, pod)
-		}
-	}
-	if len(eligible) == 0 {
-		return TargetRef{}, nil, fmt.Errorf("no attachable pods found")
+		return TargetRef{}, pods, fmt.Errorf("no attachable pods found for label selector %q", selector)
 	}
 	sort.Slice(eligible, func(i, j int) bool {
-		return comparePodPriority(eligible[i], eligible[j])
+		return ComparePodPriority(eligible[i], eligible[j])
 	})
 	return TargetRef{
 		PodName:   eligible[0].Name,

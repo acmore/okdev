@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/acmore/okdev/internal/kube"
+	"github.com/acmore/okdev/internal/workload"
 )
 
 type sessionView struct {
@@ -34,7 +35,7 @@ func buildSessionViews(pods []kube.PodSummary) []sessionView {
 	views := make([]sessionView, 0, len(grouped))
 	for _, group := range grouped {
 		sort.Slice(group, func(i, j int) bool {
-			return compareSessionPods(group[i], group[j])
+			return workload.ComparePodPriority(group[i], group[j])
 		})
 		target := selectTargetPod(group)
 		summary := target
@@ -88,26 +89,3 @@ func selectTargetPod(pods []kube.PodSummary) kube.PodSummary {
 	return pods[0]
 }
 
-func compareSessionPods(a, b kube.PodSummary) bool {
-	score := func(p kube.PodSummary) int {
-		score := 0
-		if strings.EqualFold(p.Phase, "Running") {
-			score += 4
-		}
-		if strings.HasPrefix(strings.TrimSpace(p.Ready), "1/") || strings.EqualFold(strings.TrimSpace(p.Ready), "ready") {
-			score += 2
-		}
-		if strings.TrimSpace(p.Annotations["okdev.io/last-attach"]) != "" {
-			score += 8
-		}
-		return score
-	}
-	as, bs := score(a), score(b)
-	if as != bs {
-		return as > bs
-	}
-	if !a.CreatedAt.Equal(b.CreatedAt) {
-		return a.CreatedAt.After(b.CreatedAt)
-	}
-	return a.Name < b.Name
-}

@@ -58,11 +58,8 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					return err
 				}
 				stopOwnership()
-				target, err := loadTargetRef(sn)
+				target, err := resolveTargetRef(cmd.Context(), opts, cfg, ns, sn, k)
 				if err != nil {
-					return err
-				}
-				if err := validatePinnedTarget(cmd.Context(), k, ns, target); err != nil {
 					return err
 				}
 				stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), true, true)
@@ -527,11 +524,8 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				if err := ensureExistingSessionOwnership(opts, k, ns, sn, true); err != nil {
 					return err
 				}
-				target, err := loadTargetRef(sn)
+				target, err := resolveTargetRef(cmd.Context(), opts, cfg, ns, sn, k)
 				if err != nil {
-					return err
-				}
-				if err := validatePinnedTarget(cmd.Context(), k, ns, target); err != nil {
 					return err
 				}
 				if remotePort == 0 {
