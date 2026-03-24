@@ -51,7 +51,14 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	}
 
 	k := newKubeClient(opts)
-	pod := podName(sessionName)
+	target, err := loadTargetRef(sessionName)
+	if err != nil {
+		return err
+	}
+	if err := validatePinnedTarget(cmd.Context(), k, namespace, target); err != nil {
+		return err
+	}
+	pod := target.PodName
 	if _, err := execInSyncthingContainer(ctx, k, namespace, pod, "command -v syncthing >/dev/null 2>&1"); err != nil {
 		return fmt.Errorf("syncthing sidecar not ready; run `okdev up` with sync.engine=syncthing: %w", err)
 	}

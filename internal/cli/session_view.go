@@ -1,0 +1,113 @@
+package cli
+
+import (
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/acmore/okdev/internal/kube"
+)
+
+type sessionView struct {
+	Namespace    string
+	Session      string
+	Owner        string
+	WorkloadType string
+	TargetPod    string
+	Phase        string
+	Ready        string
+	Restarts     int32
+	Reason       string
+	CreatedAt    time.Time
+	PodCount     int
+	Pods         []kube.PodSummary
+}
+
+func buildSessionViews(pods []kube.PodSummary) []sessionView {
+	grouped := map[string][]kube.PodSummary{}
+	for _, pod := range pods {
+		sessionName := sessionNameFromPodSummary(pod)
+		key := strings.Join([]string{pod.Namespace, pod.Labels["okdev.io/owner"], sessionName}, "\x00")
+		grouped[key] = append(grouped[key], pod)
+	}
+
+	views := make([]sessionView, 0, len(grouped))
+	for _, group := range grouped {
+		sort.Slice(group, func(i, j int) bool {
+			return compareSessionPods(group[i], group[j])
+		})
+		target := selectTargetPod(group)
+		summary := target
+		oldest := group[0].CreatedAt
+		for _, pod := range group[1:] {
+			if pod.CreatedAt.Before(oldest) {
+				oldest = pod.CreatedAt
+			}
+		}
+		views = append(views, sessionView{
+			Namespace:    summary.Namespace,
+			Session:      sessionNameFromPodSummary(summary),
+			Owner:        summary.Labels["okdev.io/owner"],
+			WorkloadType: summary.Labels["okdev.io/workload-type"],
+			TargetPod:    target.Name,
+			Phase:        summary.Phase,
+			Ready:        summary.Ready,
+			Restarts:     summary.Restarts,
+			Reason:       summary.Reason,
+			CreatedAt:    oldest,
+			PodCount:     len(group),
+			Pods:         group,
+		})
+	}
+	sort.Slice(views, func(i, j int) bool {
+		return views[i].CreatedAt.After(views[j].CreatedAt)
+	})
+	return views
+}
+
+func selectTargetPod(pods []kube.PodSummary) kube.PodSummary {
+	var chosen *kube.PodSummary
+	var chosenAttach time.Time
+	for i := range pods {
+		ts := strings.TrimSpace(pods[i].Annotations["okdev.io/last-attach"])
+		if ts == "" {
+			continue
+		}
+		parsed, err := time.Parse(time.RFC3339, ts)
+		if err != nil {
+			continue
+		}
+		if chosen == nil || parsed.After(chosenAttach) {
+			chosen = &pods[i]
+			chosenAttach = parsed
+		}
+	}
+	if chosen != nil {
+		return *chosen
+	}
+	return pods[0]
+}
+
+func compareSessionPods(a, b kube.PodSummary) bool {
+	score := func(p kube.PodSummary) int {
+		score := 0
+		if strings.EqualFold(p.Phase, "Running") {
+			score += 4
+		}
+		if strings.HasPrefix(strings.TrimSpace(p.Ready), "1/") || strings.EqualFold(strings.TrimSpace(p.Ready), "ready") {
+			score += 2
+		}
+		if strings.TrimSpace(p.Annotations["okdev.io/last-attach"]) != "" {
+			score += 8
+		}
+		return score
+	}
+	as, bs := score(a), score(b)
+	if as != bs {
+		return as > bs
+	}
+	if !a.CreatedAt.Equal(b.CreatedAt) {
+		return a.CreatedAt.After(b.CreatedAt)
+	}
+	return a.Name < b.Name
+}

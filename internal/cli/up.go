@@ -72,32 +72,11 @@ func newUpCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			pod := podName(sn)
-			if dryRun {
-				ui.section("Dry Run")
-				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: session=%s namespace=%s\n", sn, ns)
-				fmt.Fprintf(cmd.OutOrStdout(), "- using %d configured volume(s)\n", len(volumes))
-				if createMissingPVC {
-					fmt.Fprintf(cmd.OutOrStdout(), "- would create missing PVC references (size=%s storageClass=%q)\n", missingPVCSize, missingPVCStorageClass)
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "- would apply pod/%s\n", pod)
-				fmt.Fprintf(cmd.OutOrStdout(), "- would wait for pod readiness (timeout=%s)\n", waitTimeout)
-				fmt.Fprintln(cmd.OutOrStdout(), "- would setup SSH config + managed SSH/port-forwards")
-				for _, pair := range syncPairs {
-					fmt.Fprintf(cmd.OutOrStdout(), "- would sync %s -> %s\n", displayLocalSyncPath(pair.Local), pair.Remote)
-				}
-				fmt.Fprintln(cmd.OutOrStdout(), "- would start background sync (when sync.engine=syncthing)")
-				return nil
-			}
-
 			ui.section("Reconcile")
 			if err := ensureSessionOwnership(opts, k, ns, sn, true); err != nil {
 				return err
 			}
 			ui.stepDone("ownership", "ok")
-			if warnErr := warnIfConfigNewerThanSession(opts, k, ns, sn, pod, ui.warnWriter()); warnErr != nil {
-				slog.Debug("skip config drift warning", "error", warnErr)
-			}
 			ctx, cancel := defaultContext()
 			defer cancel()
 			if createMissingPVC {
@@ -136,19 +115,37 @@ func newUpCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-
-			podManifest, err := kube.BuildPodManifest(ns, pod, labels, annotations, preparedSpec)
+			runtime, err := sessionRuntime(cfg, cfgPath, sn, labels, annotations, preparedSpec, volumes, enableTmux, preStopCmd)
 			if err != nil {
 				return err
 			}
-			ui.stepRun("pod", pod)
-			if err := k.Apply(ctx, ns, podManifest); err != nil {
+			workloadName := runtime.WorkloadName()
+
+			if dryRun {
+				ui.section("Dry Run")
+				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: session=%s namespace=%s\n", sn, ns)
+				fmt.Fprintf(cmd.OutOrStdout(), "- using %d configured volume(s)\n", len(volumes))
+				if createMissingPVC {
+					fmt.Fprintf(cmd.OutOrStdout(), "- would create missing PVC references (size=%s storageClass=%q)\n", missingPVCSize, missingPVCStorageClass)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "- would apply %s/%s\n", runtime.Kind(), workloadName)
+				fmt.Fprintf(cmd.OutOrStdout(), "- would wait for workload readiness (timeout=%s)\n", waitTimeout)
+				fmt.Fprintln(cmd.OutOrStdout(), "- would setup SSH config + managed SSH/port-forwards")
+				for _, pair := range syncPairs {
+					fmt.Fprintf(cmd.OutOrStdout(), "- would sync %s -> %s\n", displayLocalSyncPath(pair.Local), pair.Remote)
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), "- would start background sync (when sync.engine=syncthing)")
+				return nil
+			}
+			if warnErr := warnIfConfigNewerThanSession(opts, k, ns, sn, workloadName, ui.warnWriter()); warnErr != nil {
+				slog.Debug("skip config drift warning", "error", warnErr)
+			}
+
+			ui.stepRun(runtime.Kind(), workloadName)
+			if err := runtime.Apply(ctx, k, ns); err != nil {
 				return err
 			}
-			if err := k.AnnotatePod(ctx, ns, pod, "okdev.io/last-attach", time.Now().UTC().Format(time.RFC3339)); err != nil {
-				slog.Debug("failed to set last-attach annotation", "error", err)
-			}
-			ui.stepDone("pod", "applied")
+			ui.stepDone(runtime.Kind(), "applied")
 			ui.section("Wait")
 			progressPrinter := func(p kube.PodReadinessProgress) {
 				reason := strings.TrimSpace(p.Reason)
@@ -157,17 +154,28 @@ func newUpCmd(opts *Options) *cobra.Command {
 				}
 				ui.stepRun("pod readiness", fmt.Sprintf("%s %d/%d (%s)", p.Phase, p.ReadyContainers, p.TotalContainers, reason))
 			}
-			if err := k.WaitReadyWithProgress(ctx, ns, pod, waitTimeout, progressPrinter); err != nil {
-				hints := fmt.Sprintf("next steps:\n- run `okdev status --session %s`\n- run `kubectl -n %s describe pod %s`", sn, ns, pod)
-				diag, derr := k.DescribePod(ctx, ns, pod)
+			if err := runtime.WaitReady(ctx, k, ns, waitTimeout, progressPrinter); err != nil {
+				hints := fmt.Sprintf("next steps:\n- run `okdev status --session %s`\n- run `kubectl -n %s describe pod %s`", sn, ns, workloadName)
+				diag, derr := k.DescribePod(ctx, ns, workloadName)
 				if derr == nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "pod diagnostics:\n%s\n\n%s\n", diag, hints)
-					return fmt.Errorf("wait for pod/%s readiness failed: %w", pod, err)
+					return fmt.Errorf("wait for %s/%s readiness failed: %w", runtime.Kind(), workloadName, err)
 				}
 				fmt.Fprintln(cmd.ErrOrStderr(), hints)
-				return fmt.Errorf("wait for pod/%s readiness failed: %w", pod, err)
+				return fmt.Errorf("wait for %s/%s readiness failed: %w", runtime.Kind(), workloadName, err)
 			}
 			ui.stepDone("pod readiness", "ready")
+			target, err := runtime.SelectTarget(ctx, k, ns)
+			if err != nil {
+				return fmt.Errorf("select target: %w", err)
+			}
+			if err := persistTargetRef(sn, target); err != nil {
+				return fmt.Errorf("save target state: %w", err)
+			}
+			if err := k.AnnotatePod(ctx, ns, target.PodName, "okdev.io/last-attach", time.Now().UTC().Format(time.RFC3339)); err != nil {
+				slog.Debug("failed to set last-attach annotation", "error", err)
+			}
+			ui.stepDone("target", target.PodName+"/"+target.Container)
 
 			ui.section("Setup")
 			sshSummary := "disabled"
@@ -175,10 +183,10 @@ func newUpCmd(opts *Options) *cobra.Command {
 			if keyErr != nil {
 				return fmt.Errorf("resolve SSH key path: %w", keyErr)
 			}
-			if err := ensureSSHKeyOnPod(opts, ns, pod, keyPath); err != nil {
+			if err := ensureSSHKeyOnPod(opts, ns, target.PodName, keyPath); err != nil {
 				return fmt.Errorf("setup SSH key in pod: %w", err)
 			}
-			if err := waitForSSHReady(opts, ns, pod, waitTimeout); err != nil {
+			if err := waitForSSHReady(opts, ns, target.PodName, waitTimeout); err != nil {
 				return fmt.Errorf("wait for SSH service: %w", err)
 			}
 			alias := sshHostAlias(sn)
@@ -213,7 +221,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 			}
 			postCreateCmd := resolvePostCreateCommand(cfg, cfgPath)
 			if postCreateCmd != "" {
-				ran, err := runPostCreateIfNeeded(k, ns, pod, postCreateCmd, cmd.OutOrStdout(), ui.warnWriter())
+				ran, err := runPostCreateIfNeeded(k, ns, target.PodName, target.Container, postCreateCmd, cmd.OutOrStdout(), ui.warnWriter())
 				if err != nil {
 					return err
 				}
@@ -225,18 +233,18 @@ func newUpCmd(opts *Options) *cobra.Command {
 			}
 			if enableTmux {
 				ui.stepRun("tmux", "checking dev container")
-				status, installer, err := detectDevTmux(cmd.Context(), k, ns, pod)
+				status, installer, err := detectDevTmux(cmd.Context(), k, ns, target.PodName, target.Container)
 				if err != nil {
 					ui.warnf("failed to check tmux in dev container: %v", err)
 				} else if status == "install" {
 					ui.stepRun("tmux", fmt.Sprintf("installing via %s", installer))
-					_, detail, err := installDevTmux(cmd.Context(), k, ns, pod, installer, func(phase string) {
+					_, detail, err := installDevTmux(cmd.Context(), k, ns, target.PodName, target.Container, installer, func(phase string) {
 						if strings.TrimSpace(phase) != "" {
 							ui.stepRun("tmux", phase)
 						}
 					})
 					if err != nil {
-						if recoveredDetail, ok := devTmuxDetailIfReady(cmd.Context(), k, ns, pod); ok {
+						if recoveredDetail, ok := devTmuxDetailIfReady(cmd.Context(), k, ns, target.PodName, target.Container); ok {
 							ui.stepDone("tmux", recoveredDetail)
 						} else {
 							ui.warnf("tmux not ready in dev container: %v", err)
@@ -262,7 +270,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 			}
 
 			ui.printWarnings()
-			ui.printReadyCard(sn, ns, pod, sshSummary, syncSummary, cfg.Spec.Ports, syncPairs, syncModeSymbol)
+			ui.printReadyCard(sn, ns, target.PodName, sshSummary, syncSummary, cfg.Spec.Ports, syncPairs, syncModeSymbol)
 			return nil
 		},
 	}
@@ -314,7 +322,7 @@ func reconcileMissingPVCs(ctx context.Context, k interface {
 	return created, nil
 }
 
-func runPostCreateIfNeeded(k *kube.Client, namespace, pod, command string, out io.Writer, errOut io.Writer) (bool, error) {
+func runPostCreateIfNeeded(k *kube.Client, namespace, pod, container, command string, out io.Writer, errOut io.Writer) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	annotation, err := k.GetPodAnnotation(ctx, namespace, pod, "okdev.io/post-create-done")
 	cancel()
@@ -326,7 +334,7 @@ func runPostCreateIfNeeded(k *kube.Client, namespace, pod, command string, out i
 	}
 	fmt.Fprintf(out, "Running postCreate: %s\n", command)
 	runCtx, runCancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	_, runErr := k.ExecShInContainer(runCtx, namespace, pod, "dev", command)
+	_, runErr := k.ExecShInContainer(runCtx, namespace, pod, container, command)
 	runCancel()
 	if runErr != nil {
 		return true, fmt.Errorf("postCreate failed: %w", runErr)
@@ -409,10 +417,10 @@ type devShellExecutor interface {
 
 const devTmuxLogPath = "/tmp/okdev-tmux-install.log"
 
-func detectDevTmux(ctx context.Context, k devShellExecutor, namespace, pod string) (status, installer string, err error) {
+func detectDevTmux(ctx context.Context, k devShellExecutor, namespace, pod, container string) (status, installer string, err error) {
 	detectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	out, err := k.ExecShInContainer(detectCtx, namespace, pod, "dev", devTmuxDetectScript)
+	out, err := k.ExecShInContainer(detectCtx, namespace, pod, container, devTmuxDetectScript)
 	if err != nil {
 		return "", "", err
 	}
@@ -421,7 +429,7 @@ func detectDevTmux(ctx context.Context, k devShellExecutor, namespace, pod strin
 	return status, installer, nil
 }
 
-func installDevTmux(ctx context.Context, k devShellExecutor, namespace, pod, installer string, progress func(string)) (bool, string, error) {
+func installDevTmux(ctx context.Context, k devShellExecutor, namespace, pod, container, installer string, progress func(string)) (bool, string, error) {
 	installCtx := ctx
 	if progress != nil && installer != "" && installer != "none" {
 		ticker := time.NewTicker(10 * time.Second)
@@ -442,7 +450,7 @@ func installDevTmux(ctx context.Context, k devShellExecutor, namespace, pod, ins
 	}
 	script := "export OKDEV_TMUX_INSTALLER=" + shellQuote(installer) + "; " + devTmuxInstallScript
 	var raw bytes.Buffer
-	err := k.StreamShInContainer(installCtx, namespace, pod, "dev", script, &raw, &raw)
+	err := k.StreamShInContainer(installCtx, namespace, pod, container, script, &raw, &raw)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return false, "", fmt.Errorf("tmux install cancelled after timeout via parent context; inspect %s in the dev container", devTmuxLogPath)
@@ -454,7 +462,7 @@ func installDevTmux(ctx context.Context, k devShellExecutor, namespace, pod, ins
 	}
 	s, inst, rawLine := parseTmuxStatus(raw.String())
 	if s == "" {
-		detectStatus, detectInstaller, detectErr := detectDevTmux(ctx, k, namespace, pod)
+		detectStatus, detectInstaller, detectErr := detectDevTmux(ctx, k, namespace, pod, container)
 		if detectErr == nil {
 			return interpretTmuxStatus(detectStatus, detectInstaller, raw.String())
 		}
@@ -504,8 +512,8 @@ func parseTmuxStatus(raw string) (status, installer, line string) {
 	return status, installer, line
 }
 
-func devTmuxDetailIfReady(ctx context.Context, k devShellExecutor, namespace, pod string) (string, bool) {
-	status, installer, err := detectDevTmux(ctx, k, namespace, pod)
+func devTmuxDetailIfReady(ctx context.Context, k devShellExecutor, namespace, pod, container string) (string, bool) {
+	status, installer, err := detectDevTmux(ctx, k, namespace, pod, container)
 	if err != nil {
 		return "", false
 	}

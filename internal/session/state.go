@@ -3,6 +3,7 @@ package session
 import (
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,12 +11,15 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/acmore/okdev/internal/workload"
 )
 
 const stateDirName = ".okdev"
 const sessionsDirName = "sessions"
 const sessionFileName = "active_session"
 const shutdownRequestDirName = "shutdown_requests"
+const targetStateDirName = "targets"
 
 var (
 	repoRootOnce sync.Once
@@ -135,6 +139,71 @@ func ClearActiveSession() error {
 	if lp, lerr := legacyActiveSessionPath(); lerr == nil {
 		_ = os.Remove(lp)
 		_ = os.Remove(filepath.Dir(lp))
+	}
+	return nil
+}
+
+func TargetStatePath(name string) (string, error) {
+	root, err := activeSessionRootDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, targetStateDirName, sanitize(name)+".json"), nil
+}
+
+func SaveTarget(name string, target workload.TargetRef) error {
+	if strings.TrimSpace(name) == "" {
+		return nil
+	}
+	p, err := TargetStatePath(name)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return fmt.Errorf("create target state directory: %w", err)
+	}
+	payload, err := json.Marshal(target)
+	if err != nil {
+		return fmt.Errorf("marshal target state: %w", err)
+	}
+	if err := os.WriteFile(p, append(payload, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write target state: %w", err)
+	}
+	return nil
+}
+
+func LoadTarget(name string) (workload.TargetRef, error) {
+	if strings.TrimSpace(name) == "" {
+		return workload.TargetRef{}, nil
+	}
+	p, err := TargetStatePath(name)
+	if err != nil {
+		return workload.TargetRef{}, err
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return workload.TargetRef{}, nil
+		}
+		return workload.TargetRef{}, fmt.Errorf("read target state: %w", err)
+	}
+	var target workload.TargetRef
+	if err := json.Unmarshal(b, &target); err != nil {
+		return workload.TargetRef{}, fmt.Errorf("decode target state: %w", err)
+	}
+	return target, nil
+}
+
+func ClearTarget(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return nil
+	}
+	p, err := TargetStatePath(name)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("clear target state: %w", err)
 	}
 	return nil
 }

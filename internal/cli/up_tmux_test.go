@@ -63,7 +63,7 @@ func TestDetectDevTmux(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			status, installer, err := detectDevTmux(context.Background(), tt.fake, "default", "okdev-test")
+			status, installer, err := detectDevTmux(context.Background(), tt.fake, "default", "okdev-test", "dev")
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
@@ -104,7 +104,7 @@ func TestInstallDevTmux(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotInstalled, _, err := installDevTmux(context.Background(), tt.fake, "default", "okdev-test", tt.installer, nil)
+			gotInstalled, _, err := installDevTmux(context.Background(), tt.fake, "default", "okdev-test", "dev", tt.installer, nil)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
@@ -138,7 +138,7 @@ func TestInstallDevTmuxDetails(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, gotDetail, err := installDevTmux(context.Background(), tt.fake, "default", "okdev-test", tt.installer, nil)
+			_, gotDetail, err := installDevTmux(context.Background(), tt.fake, "default", "okdev-test", "dev", tt.installer, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -192,7 +192,7 @@ func TestInterpretTmuxStatus(t *testing.T) {
 func TestDevTmuxDetailIfReady(t *testing.T) {
 	t.Run("ready", func(t *testing.T) {
 		fake := newFakeDevShellExecutor([]string{"present:none"}, nil)
-		detail, ok := devTmuxDetailIfReady(context.Background(), fake, "default", "okdev-test")
+		detail, ok := devTmuxDetailIfReady(context.Background(), fake, "default", "okdev-test", "dev")
 		if !ok {
 			t.Fatal("expected ready detail")
 		}
@@ -203,7 +203,7 @@ func TestDevTmuxDetailIfReady(t *testing.T) {
 
 	t.Run("not ready", func(t *testing.T) {
 		fake := newFakeDevShellExecutor([]string{"unavailable:none"}, nil)
-		if detail, ok := devTmuxDetailIfReady(context.Background(), fake, "default", "okdev-test"); ok || detail != "" {
+		if detail, ok := devTmuxDetailIfReady(context.Background(), fake, "default", "okdev-test", "dev"); ok || detail != "" {
 			t.Fatalf("expected no ready detail, got %q ok=%v", detail, ok)
 		}
 	})

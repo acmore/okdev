@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/acmore/okdev/internal/config"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/yaml"
@@ -62,6 +63,15 @@ func BuildPodManifest(namespace, name string, labels map[string]string, annotati
 	b, err := yaml.Marshal(manifest)
 	if err != nil {
 		return nil, fmt.Errorf("marshal pod manifest: %w", err)
+	}
+	return b, nil
+}
+
+func BuildJobManifest(namespace string, job batchv1.Job) ([]byte, error) {
+	job.Namespace = namespace
+	b, err := yaml.Marshal(job)
+	if err != nil {
+		return nil, fmt.Errorf("marshal job manifest: %w", err)
 	}
 	return b, nil
 }

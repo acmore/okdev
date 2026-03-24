@@ -34,6 +34,9 @@ func TestSetDefaults(t *testing.T) {
 	if cfg.Spec.Sync.Engine != "syncthing" {
 		t.Fatalf("sync engine default not set: %q", cfg.Spec.Sync.Engine)
 	}
+	if cfg.Spec.Workload.Type != "pod" {
+		t.Fatalf("workload type default not set: %q", cfg.Spec.Workload.Type)
+	}
 	if cfg.Spec.Sync.Syncthing.Image != DefaultSidecarImageForBinaryVersion(version.Version) {
 		t.Fatalf("sync image default not set: %q", cfg.Spec.Sync.Syncthing.Image)
 	}
@@ -201,6 +204,57 @@ func TestValidateAcceptsValidConfig(t *testing.T) {
 	cfg.SetDefaults()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("unexpected validation error: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidWorkloadType(t *testing.T) {
+	cfg := validConfig()
+	cfg.SetDefaults()
+	cfg.Spec.Workload.Type = "statefulset"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for invalid workload type")
+	}
+}
+
+func TestSetDefaultsJobInjectPath(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Workload.Type = "job"
+	cfg.Spec.Workload.ManifestPath = "job.yaml"
+	cfg.SetDefaults()
+	if len(cfg.Spec.Workload.Inject) != 1 || cfg.Spec.Workload.Inject[0].Path != "spec.template" {
+		t.Fatalf("unexpected job inject defaults: %+v", cfg.Spec.Workload.Inject)
+	}
+}
+
+func TestValidateJobRequiresManifestPath(t *testing.T) {
+	cfg := validConfig()
+	cfg.SetDefaults()
+	cfg.Spec.Workload.Type = "job"
+	cfg.Spec.Workload.ManifestPath = ""
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for missing job manifestPath")
+	}
+}
+
+func TestValidateJobRejectsUnexpectedInjectPath(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Workload.Type = "job"
+	cfg.Spec.Workload.ManifestPath = "job.yaml"
+	cfg.Spec.Workload.Inject = []WorkloadInjectSpec{{Path: "spec.other"}}
+	cfg.SetDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for invalid job inject path")
+	}
+}
+
+func TestValidateGenericRequiresInjectPath(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Workload.Type = "generic"
+	cfg.Spec.Workload.ManifestPath = "controller.yaml"
+	cfg.Spec.Workload.Inject = nil
+	cfg.SetDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for missing generic inject paths")
 	}
 }
 
