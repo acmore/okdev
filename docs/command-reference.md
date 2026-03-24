@@ -20,11 +20,25 @@
 - `okdev status [--all] [--all-users]`
 - `okdev list [--all-namespaces] [--all-users]`
 - `okdev use <session>`
+- `okdev target show`
+- `okdev target set [--pod <name> | --role <role>]`
 - `okdev connect [--shell /bin/bash] [--cmd "..."] [--no-tty]`
 - `okdev ssh [--setup-key] [--user root] [--cmd "..."] [--no-tmux]`
 - `okdev ports`
 - `okdev sync [--mode up|down|bi] [--background] [--dry-run]`
 - `okdev prune [--ttl-hours 72] [--all-namespaces] [--all-users] [--include-pvc] [--dry-run]`
+
+### `okdev target show`
+
+- Prints the pinned interactive target for the current session and shows the session pod set.
+- The selected row is marked with `*`.
+
+### `okdev target set [--pod <name> | --role <role>]`
+
+- Explicitly repins the interactive target used by `ssh`, `connect`, `ports`, and sync.
+- `--pod` selects one concrete session pod.
+- `--role` selects the highest-priority eligible pod with the matching `okdev.io/workload-role`.
+- When attachable pods are defined, repinning is restricted to those pods.
 
 ### `okdev up [--wait-timeout 3m] [--dry-run]`
 
