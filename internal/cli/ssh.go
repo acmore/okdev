@@ -58,6 +58,13 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					return err
 				}
 				stopOwnership()
+				target, err := loadTargetRef(sn)
+				if err != nil {
+					return err
+				}
+				if err := validatePinnedTarget(cmd.Context(), k, ns, target); err != nil {
+					return err
+				}
 				stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), true, true)
 				defer stopMaintenance()
 
@@ -79,14 +86,14 @@ func newSSHCmd(opts *Options) *cobra.Command {
 
 				if setupKey {
 					stopKeySetup := startTransientStatus(errOut, "Installing SSH key")
-					if err := ensureSSHKeyOnPod(opts, ns, podName(sn), keyPath); err != nil {
+					if err := ensureSSHKeyOnPod(opts, ns, target.PodName, keyPath); err != nil {
 						stopKeySetup()
 						return err
 					}
 					stopKeySetup()
 				}
 				stopSSHDReady := startTransientStatus(errOut, "Waiting for SSH service")
-				if err := waitForSSHReady(opts, ns, podName(sn), 20*time.Second); err != nil {
+				if err := waitForSSHReady(opts, ns, target.PodName, 20*time.Second); err != nil {
 					stopSSHDReady()
 					fmt.Fprintf(errOut, "warning: ssh service not ready yet: %v\n", err)
 				} else {
@@ -94,7 +101,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				}
 
 				stopPortForward := startTransientStatus(errOut, "Starting SSH tunnel")
-				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(newKubeClient(opts), ns, podName(sn), localPort, remotePort)
+				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(newKubeClient(opts), ns, target.PodName, localPort, remotePort)
 				if err != nil {
 					stopPortForward()
 					return err
@@ -153,7 +160,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					if p, perr := reserveEphemeralPort(); perr == nil {
 						reconnectLocalPort = p
 					}
-					cancel, lp, err := startSSHPortForwardWithFallback(newKubeClient(opts), ns, podName(sn), reconnectLocalPort, remotePort)
+					cancel, lp, err := startSSHPortForwardWithFallback(newKubeClient(opts), ns, target.PodName, reconnectLocalPort, remotePort)
 					if err != nil {
 						return "", 0, err
 					}
@@ -520,10 +527,17 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				if err := ensureExistingSessionOwnership(opts, k, ns, sn, true); err != nil {
 					return err
 				}
+				target, err := loadTargetRef(sn)
+				if err != nil {
+					return err
+				}
+				if err := validatePinnedTarget(cmd.Context(), k, ns, target); err != nil {
+					return err
+				}
 				if remotePort == 0 {
 					remotePort = sshPort
 				}
-				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(k, ns, podName(sn), 2222, remotePort)
+				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(k, ns, target.PodName, 2222, remotePort)
 				if err != nil {
 					return err
 				}

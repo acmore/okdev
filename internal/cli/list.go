@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/acmore/okdev/internal/config"
@@ -45,47 +45,53 @@ func newListCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sort.Slice(pods, func(i, j int) bool {
-				return pods[i].CreatedAt.After(pods[j].CreatedAt)
-			})
+			views := buildSessionViews(pods)
 			if opts.Output == "json" {
 				type listRow struct {
 					Namespace string `json:"namespace"`
 					Session   string `json:"session"`
 					Owner     string `json:"owner"`
+					Workload  string `json:"workload"`
+					TargetPod string `json:"targetPod"`
 					Phase     string `json:"phase"`
+					Pods      int    `json:"pods"`
 					Age       string `json:"age"`
 					Active    bool   `json:"active"`
 				}
-				rows := make([]listRow, 0, len(pods))
-				for _, p := range pods {
-					sn := sessionNameFromPodSummary(p)
+				rows := make([]listRow, 0, len(views))
+				for _, view := range views {
 					rows = append(rows, listRow{
-						Namespace: p.Namespace,
-						Session:   sn,
-						Owner:     p.Labels["okdev.io/owner"],
-						Phase:     p.Phase,
-						Age:       age(p.CreatedAt),
-						Active:    sn != "" && sn == activeSession,
+						Namespace: view.Namespace,
+						Session:   view.Session,
+						Owner:     view.Owner,
+						Workload:  view.WorkloadType,
+						TargetPod: view.TargetPod,
+						Phase:     view.Phase,
+						Pods:      view.PodCount,
+						Age:       age(view.CreatedAt),
+						Active:    view.Session != "" && view.Session == activeSession,
 					})
 				}
 				return outputJSON(cmd.OutOrStdout(), rows)
 			}
-			rows := make([][]string, 0, len(pods))
-			for _, p := range pods {
-				sn := sessionNameFromPodSummary(p)
+			rows := make([][]string, 0, len(views))
+			for _, view := range views {
+				sn := view.Session
 				if sn != "" && sn == activeSession {
 					sn = "*" + sn
 				}
 				rows = append(rows, []string{
-					p.Namespace,
+					view.Namespace,
 					sn,
-					p.Labels["okdev.io/owner"],
-					p.Phase,
-					age(p.CreatedAt),
+					view.Owner,
+					view.WorkloadType,
+					view.TargetPod,
+					view.Phase,
+					strconv.Itoa(view.PodCount),
+					age(view.CreatedAt),
 				})
 			}
-			output.PrintTable(cmd.OutOrStdout(), []string{"NAMESPACE", "SESSION", "OWNER", "PHASE", "AGE"}, rows)
+			output.PrintTable(cmd.OutOrStdout(), []string{"NAMESPACE", "SESSION", "OWNER", "WORKLOAD", "TARGET", "PHASE", "PODS", "AGE"}, rows)
 			return nil
 		},
 	}

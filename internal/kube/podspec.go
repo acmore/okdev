@@ -11,11 +11,18 @@ import (
 var semverTagPattern = regexp.MustCompile(`^v?\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$`)
 
 func PreparePodSpec(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, tmux bool, preStop string) (corev1.PodSpec, error) {
+	return PreparePodSpecForTarget(podSpec, volumes, workspaceMountPath, sidecarImage, tmux, preStop, "dev")
+}
+
+func PreparePodSpecForTarget(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, tmux bool, preStop string, targetContainer string) (corev1.PodSpec, error) {
 	if strings.TrimSpace(sidecarImage) == "" {
 		return corev1.PodSpec{}, fmt.Errorf("sidecar image cannot be empty")
 	}
 	if strings.TrimSpace(workspaceMountPath) == "" {
 		workspaceMountPath = "/workspace"
+	}
+	if strings.TrimSpace(targetContainer) == "" {
+		targetContainer = "dev"
 	}
 
 	spec := podSpec.DeepCopy()
@@ -49,38 +56,46 @@ func PreparePodSpec(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMo
 		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 	})
 
+	targetIndex := -1
 	for i := range spec.Containers {
-		if spec.Containers[i].Name == "dev" {
-			spec.Containers[i].VolumeMounts = ensureVolumeMount(spec.Containers[i].VolumeMounts, corev1.VolumeMount{
-				Name:      "workspace",
-				MountPath: workspaceMountPath,
+		if spec.Containers[i].Name == targetContainer {
+			targetIndex = i
+			break
+		}
+	}
+	if targetIndex == -1 && len(spec.Containers) > 0 {
+		targetIndex = 0
+	}
+	if targetIndex >= 0 {
+		spec.Containers[targetIndex].VolumeMounts = ensureVolumeMount(spec.Containers[targetIndex].VolumeMounts, corev1.VolumeMount{
+			Name:      "workspace",
+			MountPath: workspaceMountPath,
+		})
+		spec.Containers[targetIndex].VolumeMounts = ensureVolumeMount(spec.Containers[targetIndex].VolumeMounts, corev1.VolumeMount{
+			Name:      "okdev-runtime",
+			MountPath: "/var/okdev",
+		})
+		spec.Containers[targetIndex].Env = ensureEnvVar(spec.Containers[targetIndex].Env, corev1.EnvVar{
+			Name:  "OKDEV_CONTAINER_ROLE",
+			Value: "dev",
+		})
+		spec.Containers[targetIndex].Env = ensureEnvVar(spec.Containers[targetIndex].Env, corev1.EnvVar{
+			Name:  "OKDEV_WORKSPACE",
+			Value: workspaceMountPath,
+		})
+		if tmux {
+			spec.Containers[targetIndex].Env = ensureEnvVar(spec.Containers[targetIndex].Env, corev1.EnvVar{
+				Name:  "OKDEV_TMUX",
+				Value: "1",
 			})
-			spec.Containers[i].VolumeMounts = ensureVolumeMount(spec.Containers[i].VolumeMounts, corev1.VolumeMount{
-				Name:      "okdev-runtime",
-				MountPath: "/var/okdev",
-			})
-			spec.Containers[i].Env = ensureEnvVar(spec.Containers[i].Env, corev1.EnvVar{
-				Name:  "OKDEV_CONTAINER_ROLE",
-				Value: "dev",
-			})
-			spec.Containers[i].Env = ensureEnvVar(spec.Containers[i].Env, corev1.EnvVar{
-				Name:  "OKDEV_WORKSPACE",
-				Value: workspaceMountPath,
-			})
-			if tmux {
-				spec.Containers[i].Env = ensureEnvVar(spec.Containers[i].Env, corev1.EnvVar{
-					Name:  "OKDEV_TMUX",
-					Value: "1",
-				})
-			}
 		}
 	}
 
-	if preStop != "" && len(spec.Containers) > 0 {
-		if spec.Containers[0].Lifecycle == nil {
-			spec.Containers[0].Lifecycle = &corev1.Lifecycle{}
+	if preStop != "" && targetIndex >= 0 {
+		if spec.Containers[targetIndex].Lifecycle == nil {
+			spec.Containers[targetIndex].Lifecycle = &corev1.Lifecycle{}
 		}
-		spec.Containers[0].Lifecycle.PreStop = &corev1.LifecycleHandler{
+		spec.Containers[targetIndex].Lifecycle.PreStop = &corev1.LifecycleHandler{
 			Exec: &corev1.ExecAction{
 				Command: []string{"sh", "-c", preStop},
 			},

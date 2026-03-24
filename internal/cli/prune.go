@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/acmore/okdev/internal/kube"
 	"github.com/spf13/cobra"
 )
 
@@ -41,22 +44,24 @@ func newPruneCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			views := buildSessionViews(pods)
 
 			now := time.Now()
 			deleted := 0
 			candidates := 0
-			for _, p := range pods {
-				if p.CreatedAt.IsZero() {
+			for _, view := range views {
+				targetPod, ok := sessionTargetPod(view)
+				if !ok || targetPod.CreatedAt.IsZero() {
 					continue
 				}
-				ttlExpired := now.Sub(p.CreatedAt) >= time.Duration(ttlHours)*time.Hour
+				ttlExpired := now.Sub(view.CreatedAt) >= time.Duration(ttlHours)*time.Hour
 				idleExpired := false
 				idleReason := ""
-				if idleRaw := p.Annotations["okdev.io/idle-timeout-minutes"]; idleRaw != "" {
+				if idleRaw := targetPod.Annotations["okdev.io/idle-timeout-minutes"]; idleRaw != "" {
 					idleMinutes, err := strconv.Atoi(idleRaw)
 					if err == nil && idleMinutes > 0 {
-						lastActive := p.CreatedAt
-						if ts := p.Annotations["okdev.io/last-attach"]; ts != "" {
+						lastActive := targetPod.CreatedAt
+						if ts := targetPod.Annotations["okdev.io/last-attach"]; ts != "" {
 							if parsed, parseErr := time.Parse(time.RFC3339, ts); parseErr == nil {
 								lastActive = parsed
 							}
@@ -71,10 +76,7 @@ func newPruneCmd(opts *Options) *cobra.Command {
 					continue
 				}
 				candidates++
-				sessionName := p.Labels["okdev.io/session"]
-				if sessionName == "" {
-					sessionName = p.Name
-				}
+				sessionName := view.Session
 				reason := fmt.Sprintf("ttl>%dh", ttlHours)
 				if idleReason != "" && !ttlExpired {
 					reason = idleReason
@@ -82,19 +84,19 @@ func newPruneCmd(opts *Options) *cobra.Command {
 					reason = reason + "," + idleReason
 				}
 				if dryRun {
-					fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: would prune session %s in namespace %s (%s)\n", sessionName, p.Namespace, reason)
+					fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: would prune session %s in namespace %s (%s)\n", sessionName, view.Namespace, reason)
 					if includePVC {
-						fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: would delete pvc/okdev-%s-workspace in namespace %s\n", sessionName, p.Namespace)
+						fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: would delete pvc/okdev-%s-workspace in namespace %s\n", sessionName, view.Namespace)
 					}
 					continue
 				}
-				if err := k.Delete(ctx, p.Namespace, "pod", p.Name, true); err != nil {
+				if err := deleteSessionWorkload(ctx, k, view, targetPod); err != nil {
 					return err
 				}
 				if includePVC {
-					_ = k.Delete(ctx, p.Namespace, "pvc", "okdev-"+sessionName+"-workspace", true)
+					_ = k.Delete(ctx, view.Namespace, "pvc", "okdev-"+sessionName+"-workspace", true)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Pruned session %s in namespace %s (%s)\n", sessionName, p.Namespace, reason)
+				fmt.Fprintf(cmd.OutOrStdout(), "Pruned session %s in namespace %s (%s)\n", sessionName, view.Namespace, reason)
 				deleted++
 			}
 			if dryRun {
@@ -112,4 +114,26 @@ func newPruneCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&includePVC, "include-pvc", false, "Delete default workspace PVCs for pruned sessions")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview prune actions without deleting resources")
 	return cmd
+}
+
+func sessionTargetPod(view sessionView) (kube.PodSummary, bool) {
+	for _, pod := range view.Pods {
+		if pod.Name == view.TargetPod {
+			return pod, true
+		}
+	}
+	if len(view.Pods) == 0 {
+		return kube.PodSummary{}, false
+	}
+	return view.Pods[0], true
+}
+
+func deleteSessionWorkload(ctx context.Context, k *kube.Client, view sessionView, targetPod kube.PodSummary) error {
+	apiVersion := strings.TrimSpace(targetPod.Labels["okdev.io/workload-api-version"])
+	resourceKind := strings.TrimSpace(targetPod.Labels["okdev.io/workload-resource-kind"])
+	workloadName := strings.TrimSpace(targetPod.Labels["okdev.io/workload-name"])
+	if apiVersion != "" && resourceKind != "" && workloadName != "" {
+		return k.DeleteByRef(ctx, view.Namespace, apiVersion, resourceKind, workloadName, true)
+	}
+	return k.Delete(ctx, view.Namespace, "pod", targetPod.Name, true)
 }

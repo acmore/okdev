@@ -42,6 +42,7 @@ type DevEnvSpec struct {
 	Namespace   string           `yaml:"namespace"`
 	KubeContext string           `yaml:"kubeContext"`
 	Session     SessionSpec      `yaml:"session"`
+	Workload    WorkloadSpec     `yaml:"workload"`
 	Volumes     []corev1.Volume  `yaml:"volumes"`
 	Workspace   *LegacyWorkspace `yaml:"workspace,omitempty"`
 	Sync        SyncSpec         `yaml:"sync"`
@@ -61,6 +62,23 @@ type SessionSpec struct {
 	TTLHours            int    `yaml:"ttlHours"`
 	IdleTimeoutMinutes  int    `yaml:"idleTimeoutMinutes"`
 	Shareable           bool   `yaml:"shareable"`
+}
+
+type WorkloadSpec struct {
+	Type         string               `yaml:"type"`
+	ManifestPath string               `yaml:"manifestPath,omitempty"`
+	Inject       []WorkloadInjectSpec `yaml:"inject,omitempty"`
+	Attach       WorkloadAttachSpec   `yaml:"attach,omitempty"`
+}
+
+type WorkloadInjectSpec struct {
+	Path       string `yaml:"path,omitempty"`
+	Sidecar    *bool  `yaml:"sidecar,omitempty"`
+	Attachable *bool  `yaml:"attachable,omitempty"`
+}
+
+type WorkloadAttachSpec struct {
+	Container string `yaml:"container,omitempty"`
 }
 
 const (
@@ -128,6 +146,12 @@ func (d *DevEnvironment) SetDefaults() {
 	if d.Spec.Sync.Engine == "" {
 		d.Spec.Sync.Engine = "syncthing"
 	}
+	if strings.TrimSpace(d.Spec.Workload.Type) == "" {
+		d.Spec.Workload.Type = "pod"
+	}
+	if d.Spec.Workload.Type == "job" && len(d.Spec.Workload.Inject) == 0 {
+		d.Spec.Workload.Inject = []WorkloadInjectSpec{{Path: "spec.template"}}
+	}
 	if d.Spec.Sync.Syncthing.Version == "" {
 		d.Spec.Sync.Syncthing.Version = DefaultSyncthingVersion
 	}
@@ -180,6 +204,35 @@ func (d *DevEnvironment) Validate() error {
 	}
 	if d.Spec.Workspace != nil {
 		return &MigrationEligibleError{Err: errors.New("spec.workspace is removed; use spec.volumes (k8s Volume) and podTemplate.spec.containers[*].volumeMounts, or run \"okdev migrate\" to automatically update your config")}
+	}
+	switch strings.TrimSpace(d.Spec.Workload.Type) {
+	case "", "pod", "job", "pytorchjob", "generic":
+	default:
+		return fmt.Errorf("spec.workload.type must be one of pod, job, pytorchjob, generic, got %q", d.Spec.Workload.Type)
+	}
+	switch strings.TrimSpace(d.Spec.Workload.Type) {
+	case "job", "pytorchjob", "generic":
+		if strings.TrimSpace(d.Spec.Workload.ManifestPath) == "" {
+			return fmt.Errorf("spec.workload.manifestPath is required when spec.workload.type=%q", d.Spec.Workload.Type)
+		}
+	}
+	for i, inject := range d.Spec.Workload.Inject {
+		if strings.TrimSpace(inject.Path) == "" {
+			return fmt.Errorf("spec.workload.inject[%d].path is required", i)
+		}
+		if inject.Attachable != nil && *inject.Attachable && inject.Sidecar != nil && !*inject.Sidecar {
+			return fmt.Errorf("spec.workload.inject[%d]: attachable=true requires sidecar=true", i)
+		}
+	}
+	if d.Spec.Workload.Type == "job" {
+		for i, inject := range d.Spec.Workload.Inject {
+			if strings.TrimSpace(inject.Path) != "spec.template" {
+				return fmt.Errorf("spec.workload.inject[%d].path must be spec.template when spec.workload.type=job", i)
+			}
+		}
+	}
+	if (d.Spec.Workload.Type == "generic" || d.Spec.Workload.Type == "pytorchjob") && len(d.Spec.Workload.Inject) == 0 {
+		return fmt.Errorf("spec.workload.inject is required when spec.workload.type=%q", d.Spec.Workload.Type)
 	}
 	if d.Spec.Sync.Engine != "syncthing" {
 		return fmt.Errorf("spec.sync.engine must be syncthing, got %q", d.Spec.Sync.Engine)
