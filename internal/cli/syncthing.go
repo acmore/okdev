@@ -51,11 +51,8 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	}
 
 	k := newKubeClient(opts)
-	target, err := loadTargetRef(sessionName)
+	target, err := resolveTargetRef(cmd.Context(), opts, cfg, namespace, sessionName, k)
 	if err != nil {
-		return err
-	}
-	if err := validatePinnedTarget(cmd.Context(), k, namespace, target); err != nil {
 		return err
 	}
 	pod := target.PodName

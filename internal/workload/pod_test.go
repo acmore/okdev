@@ -2,6 +2,7 @@ package workload
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,7 +68,16 @@ func (f *fakeTargetClient) ListPods(_ context.Context, _ string, _ bool, _ strin
 }
 
 func TestPodRuntimeLifecycle(t *testing.T) {
-	rt := NewPodRuntime("test", map[string]string{"okdev.io/managed": "true"}, nil, corev1.PodSpec{})
+	rt := NewPodRuntime("test",
+		map[string]string{"okdev.io/managed": "true"}, nil,
+		corev1.PodSpec{},
+		[]corev1.Volume{{
+			Name:         "workspace",
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		}},
+		"/workspace", "ghcr.io/acmore/okdev:edge",
+		false, "", "",
+	)
 	if rt.Kind() != TypePod {
 		t.Fatalf("unexpected kind: %s", rt.Kind())
 	}
@@ -81,6 +91,11 @@ func TestPodRuntimeLifecycle(t *testing.T) {
 	}
 	if apply.namespace != "default" || len(apply.manifest) == 0 {
 		t.Fatalf("unexpected apply call: %+v", apply)
+	}
+	// Verify that Apply prepared the spec (sidecar should be present)
+	manifest := string(apply.manifest)
+	if !strings.Contains(manifest, "okdev-sidecar") {
+		t.Fatal("expected prepared manifest to contain okdev-sidecar container")
 	}
 
 	wait := &fakeWaitClient{}
@@ -105,5 +120,21 @@ func TestPodRuntimeLifecycle(t *testing.T) {
 	}
 	if del.kind != "pod" || del.name != "okdev-test" || !del.ignore {
 		t.Fatalf("unexpected delete call: %+v", del)
+	}
+}
+
+func TestPodRuntimeSelectTargetUsesConfiguredContainer(t *testing.T) {
+	rt := NewPodRuntime("test",
+		map[string]string{"okdev.io/managed": "true"}, nil,
+		corev1.PodSpec{},
+		nil, "/workspace", "ghcr.io/acmore/okdev:edge",
+		false, "", "trainer",
+	)
+	target, err := rt.SelectTarget(context.Background(), &fakeTargetClient{}, "default")
+	if err != nil {
+		t.Fatalf("SelectTarget: %v", err)
+	}
+	if target.Container != "trainer" {
+		t.Fatalf("expected container trainer, got %q", target.Container)
 	}
 }

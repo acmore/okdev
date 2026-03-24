@@ -104,18 +104,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 				enableTmux = false
 			}
 			preStopCmd := resolvePreStopCommand(cfg, cfgPath)
-			preparedSpec, err := kube.PreparePodSpec(
-				cfg.Spec.PodTemplate.Spec,
-				volumes,
-				cfg.WorkspaceMountPath(),
-				cfg.Spec.Sidecar.Image,
-				enableTmux,
-				preStopCmd,
-			)
-			if err != nil {
-				return err
-			}
-			runtime, err := sessionRuntime(cfg, cfgPath, sn, labels, annotations, preparedSpec, volumes, enableTmux, preStopCmd)
+			runtime, err := sessionRuntime(cfg, cfgPath, sn, labels, annotations, cfg.Spec.PodTemplate.Spec, volumes, enableTmux, preStopCmd)
 			if err != nil {
 				return err
 			}

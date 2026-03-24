@@ -5,7 +5,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/output"
 	"github.com/acmore/okdev/internal/workload"
@@ -43,7 +42,7 @@ func newTargetShowCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			target, err := loadTargetRef(sn)
+			target, err := resolveTargetRef(cmd.Context(), opts, cfg, ns, sn, k)
 			if err != nil {
 				return err
 			}
@@ -176,7 +175,7 @@ func resolveTargetCandidate(view sessionView, podName, role string) (kube.PodSum
 		return kube.PodSummary{}, "", fmt.Errorf("no pods found for role %q in session %s", role, view.Session)
 	}
 	sort.Slice(candidates, func(i, j int) bool {
-		return compareSessionPods(candidates[i], candidates[j])
+		return workload.ComparePodPriority(candidates[i], candidates[j])
 	})
 	chosen := candidates[0]
 	return chosen, strings.TrimSpace(chosen.Labels["okdev.io/workload-role"]), nil
@@ -185,7 +184,7 @@ func resolveTargetCandidate(view sessionView, podName, role string) (kube.PodSum
 func sortedSessionPods(pods []kube.PodSummary) []kube.PodSummary {
 	out := append([]kube.PodSummary(nil), pods...)
 	sort.Slice(out, func(i, j int) bool {
-		return compareSessionPods(out[i], out[j])
+		return workload.ComparePodPriority(out[i], out[j])
 	})
 	return out
 }
@@ -201,11 +200,4 @@ func eligibleSessionTargetPods(pods []kube.PodSummary) []kube.PodSummary {
 		return attachable
 	}
 	return append([]kube.PodSummary(nil), pods...)
-}
-
-func resolveTargetContainer(cfg *config.DevEnvironment) string {
-	if strings.TrimSpace(cfg.Spec.Workload.Attach.Container) != "" {
-		return strings.TrimSpace(cfg.Spec.Workload.Attach.Container)
-	}
-	return workload.DefaultTargetContainer
 }

@@ -51,9 +51,15 @@ spec:
 		},
 		Inject: []config.WorkloadInjectSpec{{Path: "spec.template"}},
 	}
-	client := &fakeJobClient{
+	client := &fakeGenericClient{
 		pods: []kube.PodSummary{
-			{Name: "trainer-abc", Phase: "Running", Ready: "1/1", CreatedAt: time.Now()},
+			{
+				Name:      "trainer-abc",
+				Phase:     "Running",
+				Ready:     "1/1",
+				CreatedAt: time.Now(),
+				Labels:    map[string]string{"okdev.io/attachable": "true"},
+			},
 		},
 	}
 	if err := rt.Apply(context.Background(), client, "default"); err != nil {
@@ -86,7 +92,7 @@ func TestGenericRuntimeSelectTargetPrefersAttachablePods(t *testing.T) {
 			"okdev.io/session": "sess1",
 		},
 	}
-	client := &fakeJobClient{
+	client := &fakeGenericClient{
 		pods: []kube.PodSummary{
 			{
 				Name:   "worker-0",
@@ -108,5 +114,32 @@ func TestGenericRuntimeSelectTargetPrefersAttachablePods(t *testing.T) {
 	}
 	if target.PodName != "master-0" || target.Role != "Master" {
 		t.Fatalf("unexpected target: %+v", target)
+	}
+}
+
+func TestGenericRuntimeSelectTargetFailsWithoutAttachablePods(t *testing.T) {
+	rt := &GenericRuntime{
+		WorkloadKind:    TypeGeneric,
+		TargetContainer: "trainer",
+		Labels: map[string]string{
+			"okdev.io/managed":       "true",
+			"okdev.io/session":       "sess1",
+			"okdev.io/name":          "trainer",
+			"okdev.io/repo":          "okdev",
+			"okdev.io/workload-type": "generic",
+		},
+	}
+	client := &fakeGenericClient{
+		pods: []kube.PodSummary{
+			{
+				Name:   "worker-0",
+				Phase:  "Running",
+				Ready:  "1/1",
+				Labels: map[string]string{"okdev.io/attachable": "false", "okdev.io/workload-role": "Worker"},
+			},
+		},
+	}
+	if _, err := rt.SelectTarget(context.Background(), client, "default"); err == nil {
+		t.Fatal("expected SelectTarget to fail without attachable pods")
 	}
 }

@@ -158,17 +158,18 @@ that need the workspace volume but are never interactive targets.
 `attachable` controls whether Pods created from that template are eligible for
 interactive target selection.
 
-For explicit interactive target selection:
+For explicit interactive target container selection:
 
 ```yaml
 workload:
   # ...
   attach:
-    podSelector:
-      matchLabels:
-        training.kubeflow.org/replica-type: Master
     container: trainer
 ```
+
+Label-based pod selection (`podSelector.matchLabels`) is deferred to a future
+iteration. Target pod selection currently uses the `attachable` flag on inject
+paths combined with the deterministic fallback rules.
 
 For explicit storage intent:
 
@@ -241,16 +242,11 @@ okdev.io/managed=true
 okdev.io/session=<session>
 ```
 
-An explicit `podDiscovery.labelSelector` is only needed if the controller
-strips or overwrites Pod template labels:
-
-```yaml
-workload:
-  # ...
-  podDiscovery:
-    labelSelector:
-      training.kubeflow.org/job-name: my-training
-```
+An explicit `podDiscovery.labelSelector` may be needed if the controller
+strips or overwrites Pod template labels. This is deferred to a future
+iteration. The current implementation discovers pods using only the injected
+`okdev.io/managed` and `okdev.io/session` labels, which covers all supported
+workload types.
 
 ### Backward Compatibility
 
@@ -781,11 +777,12 @@ Examples:
 ```yaml
 workload:
   attach:
-    podSelector:
-      matchLabels:
-        training.kubeflow.org/replica-type: Master
     container: trainer
 ```
+
+Target pod selection is driven by `attachable` flags on inject paths and the
+deterministic fallback rules. Label-based pod selection (`podSelector`) is
+deferred to a future iteration.
 
 ### Workload Defaults
 
@@ -936,9 +933,6 @@ workload:
       sidecar: false
       attachable: false
   attach:
-    podSelector:
-      matchLabels:
-        training.kubeflow.org/replica-type: Master
     container: trainer
 ```
 
