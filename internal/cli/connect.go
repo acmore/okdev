@@ -12,19 +12,21 @@ func newConnectCmd(opts *Options) *cobra.Command {
 	var noTTY bool
 
 	cmd := &cobra.Command{
-		Use:   "connect",
+		Use:   "connect [session]",
 		Short: "Open shell or run command in session pod",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			applySessionArg(opts, args)
 			cfg, ns, err := loadConfigAndNamespace(opts)
 			if err != nil {
 				return err
 			}
-			sn, err := resolveSessionName(opts, cfg)
+			sn, err := resolveSessionName(opts, cfg, ns)
 			if err != nil {
 				return err
 			}
 			k := newKubeClient(opts)
-			if err := ensureSessionOwnership(opts, k, ns, sn, true); err != nil {
+			if err := ensureExistingSessionOwnership(opts, k, ns, sn, true); err != nil {
 				return err
 			}
 			stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), true, true)

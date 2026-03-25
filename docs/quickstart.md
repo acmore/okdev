@@ -141,8 +141,9 @@ okdev resolves the target cluster in this order:
 ## SSH Details
 
 - SSH connects to the `dev` container via `okdev-sshd` on port 2222.
-- Tmux is enabled by default with a built-in okdev profile (history, mouse, vi-copy, status bar) using the standard `Ctrl-b` prefix.
-- Use `okdev ssh --no-tmux` to bypass tmux for a single connection, or set `spec.ssh.persistentSession: false` to disable it globally.
+- `okdev ssh` uses tmux by default with a built-in okdev profile (history, mouse, vi-copy, status bar) using the standard `Ctrl-b` prefix.
+- The generated `ssh okdev-<session>` host entry bypasses tmux by default for a plain shell.
+- Use `okdev ssh --no-tmux` to bypass tmux for a single `okdev ssh` connection, or set `spec.ssh.persistentSession: false` to disable it globally.
 - The managed SSH host entry uses tight proxy keepalive settings so hung sessions fail fast instead of freezing.
 - Tune keepalive with `spec.ssh.keepAliveIntervalSeconds` (default `30`) and `spec.ssh.keepAliveTimeoutSeconds` (default `90`, must be >= interval).
 - Proxy diagnostics are written to `~/.okdev/logs/okdev.log`, not the SSH session.

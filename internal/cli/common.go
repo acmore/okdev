@@ -209,29 +209,73 @@ func isTerminalFD(v any) bool {
 	return term.IsTerminal(int(f.Fd()))
 }
 
-func resolveSessionName(opts *Options, cfg *config.DevEnvironment) (string, error) {
-	return session.Resolve(opts.Session, cfg.Spec.Session.DefaultNameTemplate)
+// applySessionArg uses the first positional argument as the session name
+// when --session was not explicitly provided.
+func applySessionArg(opts *Options, args []string) {
+	if len(args) > 0 && strings.TrimSpace(args[0]) != "" && strings.TrimSpace(opts.Session) == "" {
+		opts.Session = args[0]
+	}
+}
+
+func resolveSessionName(opts *Options, cfg *config.DevEnvironment, namespace string) (string, error) {
+	return resolveSessionNameWithState(opts, cfg, namespace, true)
 }
 
 func resolveSessionNameForUpDown(opts *Options, cfg *config.DevEnvironment, namespace string) (string, error) {
+	return resolveSessionNameWithState(opts, cfg, namespace, true)
+}
+
+func resolveSessionNameWithState(opts *Options, cfg *config.DevEnvironment, namespace string, inferExisting bool) (string, error) {
+	return resolveSessionNameWithReader(opts, cfg, namespace, inferExisting, newKubeClient(opts))
+}
+
+func resolveSessionNameWithReader(opts *Options, cfg *config.DevEnvironment, namespace string, inferExisting bool, reader sessionAccessReader) (string, error) {
 	if strings.TrimSpace(opts.Session) != "" {
-		return resolveSessionName(opts, cfg)
+		return session.Resolve(opts.Session, cfg.Spec.Session.DefaultNameTemplate)
 	}
 	active, err := session.LoadActiveSession()
 	if err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(active) != "" {
-		return session.Resolve(active, cfg.Spec.Session.DefaultNameTemplate)
+		resolvedActive, err := session.Resolve(active, cfg.Spec.Session.DefaultNameTemplate)
+		if err != nil {
+			return "", err
+		}
+		exists, existsErr := sessionPodExists(reader, namespace, resolvedActive)
+		if existsErr == nil {
+			if exists {
+				return resolvedActive, nil
+			}
+			_ = session.ClearActiveSession()
+		} else {
+			slog.Debug("failed to verify active session pod", "session", resolvedActive, "namespace", namespace, "error", existsErr)
+			return resolvedActive, nil
+		}
 	}
-	inferred, err := inferExistingSessionForRepo(opts, cfg, namespace)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(inferred) != "" {
-		return inferred, nil
+	if inferExisting {
+		inferred, err := inferExistingSessionForRepo(opts, cfg, namespace)
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(inferred) != "" {
+			return inferred, nil
+		}
 	}
 	return session.Resolve("", cfg.Spec.Session.DefaultNameTemplate)
+}
+
+func sessionPodExists(k sessionAccessReader, namespace, sessionName string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := k.GetPodSummary(ctx, namespace, podName(sessionName))
+	if err == nil {
+		return true, nil
+	}
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	return false, err
 }
 
 func inferExistingSessionForRepo(opts *Options, cfg *config.DevEnvironment, namespace string) (string, error) {
@@ -417,11 +461,26 @@ func isSessionShareable(p kube.PodSummary) bool {
 }
 
 func ensureSessionOwnership(opts *Options, k *kube.Client, namespace, sessionName string, allowShareable bool) error {
+	return ensureSessionAccess(opts, k, namespace, sessionName, allowShareable, false)
+}
+
+func ensureExistingSessionOwnership(opts *Options, k *kube.Client, namespace, sessionName string, allowShareable bool) error {
+	return ensureSessionAccess(opts, k, namespace, sessionName, allowShareable, true)
+}
+
+type sessionAccessReader interface {
+	GetPodSummary(context.Context, string, string) (*kube.PodSummary, error)
+}
+
+func ensureSessionAccess(opts *Options, k sessionAccessReader, namespace, sessionName string, allowShareable bool, requireExisting bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	pod, err := k.GetPodSummary(ctx, namespace, podName(sessionName))
 	if err != nil {
 		if apierrors.IsNotFound(err) {
+			if requireExisting {
+				return fmt.Errorf("session %q does not exist in namespace %q", sessionName, namespace)
+			}
 			return nil
 		}
 		return err

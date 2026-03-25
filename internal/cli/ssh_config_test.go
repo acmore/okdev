@@ -42,6 +42,9 @@ func TestEnsureSSHConfigEntryIncludesNamespaceInProxyCommand(t *testing.T) {
 	if !strings.Contains(text, "Host okdev-test") {
 		t.Fatalf("missing host block: %s", text)
 	}
+	if !strings.Contains(text, "SetEnv OKDEV_NO_TMUX=1") {
+		t.Fatalf("expected managed ssh host to disable tmux by default: %s", text)
+	}
 	if !strings.Contains(text, "--session") || !strings.Contains(text, "test-session") || !strings.Contains(text, " -n ") || !strings.Contains(text, "dev-ns") || !strings.Contains(text, "ssh-proxy --remote-port 2222") {
 		t.Fatalf("proxy command missing namespace: %s", text)
 	}
