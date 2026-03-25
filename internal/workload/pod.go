@@ -59,7 +59,7 @@ func (r *PodRuntime) Apply(ctx context.Context, k ApplyClient, namespace string)
 	manifest, err := kube.BuildPodManifest(
 		namespace,
 		name,
-		LabelsWithWorkload(r.Labels, name, "v1", "Pod"),
+		LabelsWithWorkload(r.Labels, name, "Pod"),
 		AnnotationsWithWorkload(r.Annotations, name, "v1", "Pod"),
 		prepared,
 	)
