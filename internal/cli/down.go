@@ -9,7 +9,6 @@ import (
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/session"
 	"github.com/spf13/cobra"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 func newDownCmd(opts *Options) *cobra.Command {
@@ -59,7 +58,7 @@ func newDownCmd(opts *Options) *cobra.Command {
 
 			ui.section("Delete")
 			ui.stepRun(runtime.Kind(), runtime.WorkloadName())
-			if err := runtime.Delete(ctx, k, ns, true); err != nil && !apierrors.IsNotFound(err) {
+			if err := runtime.Delete(ctx, k, ns, true); err != nil {
 				return fmt.Errorf("delete session %s: %w", runtime.Kind(), err)
 			}
 			ui.stepDone(runtime.Kind(), "deleted")

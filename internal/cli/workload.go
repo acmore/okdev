@@ -103,9 +103,6 @@ func refreshTargetRef(ctx context.Context, opts *Options, cfg *config.DevEnviron
 		if err := validatePinnedTarget(ctx, k, namespace, current); err == nil {
 			return current, nil
 		}
-		if err := persistTargetRef(sessionName, current); err != nil {
-			return workload.TargetRef{}, err
-		}
 	}
 	return resolveTargetRef(ctx, opts, cfg, namespace, sessionName, k)
 }

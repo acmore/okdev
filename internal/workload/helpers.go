@@ -88,7 +88,7 @@ func ComparePodPriority(a, b kube.PodSummary) bool {
 		if strings.EqualFold(p.Phase, string(corev1.PodRunning)) {
 			s += 4
 		}
-		if strings.HasPrefix(strings.TrimSpace(p.Ready), "1/") || strings.EqualFold(strings.TrimSpace(p.Ready), "ready") {
+		if isReadyString(strings.TrimSpace(p.Ready)) {
 			s += 2
 		}
 		return s
@@ -113,7 +113,7 @@ func summarizePodsAsProgress(pods []kube.PodSummary) kube.PodReadinessProgress {
 		if strings.EqualFold(p.Phase, string(corev1.PodRunning)) {
 			progress.Phase = corev1.PodRunning
 		}
-		if strings.HasPrefix(strings.TrimSpace(p.Ready), "1/") || strings.EqualFold(strings.TrimSpace(p.Ready), "ready") {
+		if isReadyString(strings.TrimSpace(p.Ready)) {
 			progress.ReadyContainers++
 		}
 		if strings.TrimSpace(p.Reason) != "" {
@@ -124,6 +124,16 @@ func summarizePodsAsProgress(pods []kube.PodSummary) kube.PodReadinessProgress {
 		progress.Phase = corev1.PodPending
 	}
 	return progress
+}
+
+// isReadyString returns true when a pod readiness string like "2/2" indicates
+// all containers are ready, or when it equals "ready" (case-insensitive).
+func isReadyString(s string) bool {
+	if strings.EqualFold(s, "ready") {
+		return true
+	}
+	num, denom, ok := strings.Cut(s, "/")
+	return ok && strings.TrimSpace(num) == strings.TrimSpace(denom) && strings.TrimSpace(num) != "" && strings.TrimSpace(num) != "0"
 }
 
 type candidateSelector func(ctx context.Context, k podLister, namespace string) (TargetRef, []kube.PodSummary, error)

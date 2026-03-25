@@ -59,7 +59,7 @@ func (r *GenericRuntime) Apply(ctx context.Context, k ApplyClient, namespace str
 	if err != nil {
 		return err
 	}
-	workloadLabels := LabelsWithWorkload(r.Labels, obj.GetName(), obj.GetAPIVersion(), obj.GetKind())
+	workloadLabels := LabelsWithWorkload(r.Labels, obj.GetName(), obj.GetKind())
 	workloadAnnotations := AnnotationsWithWorkload(r.Annotations, obj.GetName(), obj.GetAPIVersion(), obj.GetKind())
 	obj.SetLabels(mergeStringMaps(obj.GetLabels(), workloadLabels))
 	obj.SetAnnotations(mergeStringMaps(obj.GetAnnotations(), workloadAnnotations))
@@ -177,6 +177,8 @@ func (r *GenericRuntime) load() (*unstructured.Unstructured, error) {
 	return u, nil
 }
 
+// resolveMapPath descends into all path segments and returns the nested map
+// at the final key. For "spec.template" it returns obj["spec"]["template"].
 func resolveMapPath(root map[string]any, path string) (map[string]any, error) {
 	current := root
 	for _, part := range strings.Split(strings.TrimSpace(path), ".") {
@@ -196,6 +198,8 @@ func resolveMapPath(root map[string]any, path string) (map[string]any, error) {
 	return current, nil
 }
 
+// writeMapPath descends to the parent of the final path segment and replaces
+// the last key. For "spec.template" it sets obj["spec"]["template"] = value.
 func writeMapPath(root map[string]any, path string, value map[string]any) error {
 	parts := strings.Split(strings.TrimSpace(path), ".")
 	if len(parts) == 0 {

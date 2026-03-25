@@ -1,6 +1,6 @@
 package workload
 
-func LabelsWithWorkload(base map[string]string, workloadName, apiVersion, resourceKind string) map[string]string {
+func LabelsWithWorkload(base map[string]string, workloadName, resourceKind string) map[string]string {
 	out := mergeStringMaps(base, map[string]string{})
 	if workloadName != "" {
 		out["okdev.io/workload-name"] = workloadName
