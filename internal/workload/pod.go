@@ -46,13 +46,23 @@ func (r *PodRuntime) WorkloadName() string {
 	return "okdev-" + r.SessionName
 }
 
+func (r *PodRuntime) WorkloadRef() (string, string, string, error) {
+	return "v1", "Pod", r.WorkloadName(), nil
+}
+
 func (r *PodRuntime) Apply(ctx context.Context, k ApplyClient, namespace string) error {
 	prepared, err := kube.PreparePodSpecForTarget(r.PodSpec, r.Volumes, r.WorkspaceMountPath, r.SidecarImage, r.Tmux, r.PreStop, r.effectiveTargetContainer())
 	if err != nil {
 		return err
 	}
 	name := r.WorkloadName()
-	manifest, err := kube.BuildPodManifest(namespace, name, LabelsWithWorkload(r.Labels, name, "v1", "Pod"), r.Annotations, prepared)
+	manifest, err := kube.BuildPodManifest(
+		namespace,
+		name,
+		LabelsWithWorkload(r.Labels, name, "v1", "Pod"),
+		AnnotationsWithWorkload(r.Annotations, name, "v1", "Pod"),
+		prepared,
+	)
 	if err != nil {
 		return err
 	}

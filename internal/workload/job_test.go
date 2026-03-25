@@ -122,7 +122,6 @@ func TestJobViaGenericRuntimeDiscoveryUsesSessionLabelsOnly(t *testing.T) {
 			"okdev.io/managed":       "true",
 			"okdev.io/session":       "sess1",
 			"okdev.io/name":          "trainer",
-			"okdev.io/repo":          "okdev",
 			"okdev.io/workload-type": "job",
 		},
 	}
@@ -135,7 +134,7 @@ func TestJobViaGenericRuntimeDiscoveryUsesSessionLabelsOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SelectTarget: %v", err)
 	}
-	expected := "okdev.io/managed=true,okdev.io/name=trainer,okdev.io/repo=okdev,okdev.io/session=sess1,okdev.io/workload-type=job"
+	expected := "okdev.io/managed=true,okdev.io/name=trainer,okdev.io/session=sess1,okdev.io/workload-type=job"
 	if client.listSel != expected {
 		t.Fatalf("expected label selector %q, got %q", expected, client.listSel)
 	}

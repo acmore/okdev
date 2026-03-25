@@ -125,7 +125,6 @@ func TestGenericRuntimeSelectTargetFailsWithoutAttachablePods(t *testing.T) {
 			"okdev.io/managed":       "true",
 			"okdev.io/session":       "sess1",
 			"okdev.io/name":          "trainer",
-			"okdev.io/repo":          "okdev",
 			"okdev.io/workload-type": "generic",
 		},
 	}

@@ -123,6 +123,8 @@ okdev sync --dry-run
 okdev down --dry-run
 ```
 
+For controller-backed workloads, `okdev up` reuses an existing session workload by default. Use `okdev up --reconcile` only when you want to reapply the workload manifest explicitly.
+
 ## Teardown
 
 ```bash

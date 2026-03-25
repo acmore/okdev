@@ -17,6 +17,7 @@ import (
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
 	syncengine "github.com/acmore/okdev/internal/sync"
+	"github.com/acmore/okdev/internal/workload"
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -26,6 +27,7 @@ const upDefaultSyncMode = "bi"
 func newUpCmd(opts *Options) *cobra.Command {
 	var waitTimeout time.Duration
 	var dryRun bool
+	var reconcile bool
 	var tmux bool
 	var noTmux bool
 	var createMissingPVC bool
@@ -117,7 +119,11 @@ func newUpCmd(opts *Options) *cobra.Command {
 				if createMissingPVC {
 					fmt.Fprintf(cmd.OutOrStdout(), "- would create missing PVC references (size=%s storageClass=%q)\n", missingPVCSize, missingPVCStorageClass)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "- would apply %s/%s\n", runtime.Kind(), workloadName)
+				if runtime.Kind() == workload.TypePod || reconcile {
+					fmt.Fprintf(cmd.OutOrStdout(), "- would reconcile %s/%s\n", runtime.Kind(), workloadName)
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "- would create or reuse %s/%s\n", runtime.Kind(), workloadName)
+				}
 				fmt.Fprintf(cmd.OutOrStdout(), "- would wait for workload readiness (timeout=%s)\n", waitTimeout)
 				fmt.Fprintln(cmd.OutOrStdout(), "- would setup SSH config + managed SSH/port-forwards")
 				for _, pair := range syncPairs {
@@ -131,10 +137,20 @@ func newUpCmd(opts *Options) *cobra.Command {
 			}
 
 			ui.stepRun(runtime.Kind(), workloadName)
-			if err := runtime.Apply(ctx, k, ns); err != nil {
+			reusedExisting, err := shouldReuseExistingWorkload(ctx, k, ns, runtime, reconcile)
+			if err != nil {
 				return err
 			}
-			ui.stepDone(runtime.Kind(), "applied")
+			if !reusedExisting {
+				if err := runtime.Apply(ctx, k, ns); err != nil {
+					return err
+				}
+			}
+			if reusedExisting {
+				ui.stepDone(runtime.Kind(), "reused existing")
+			} else {
+				ui.stepDone(runtime.Kind(), "applied")
+			}
 			ui.section("Wait")
 			progressPrinter := func(p kube.PodReadinessProgress) {
 				reason := strings.TrimSpace(p.Reason)
@@ -172,10 +188,18 @@ func newUpCmd(opts *Options) *cobra.Command {
 			if keyErr != nil {
 				return fmt.Errorf("resolve SSH key path: %w", keyErr)
 			}
-			if err := ensureSSHKeyOnPod(opts, ns, target.PodName, keyPath); err != nil {
+			target, err = refreshTargetRef(ctx, opts, cfg, ns, sn, k, target)
+			if err != nil {
+				return fmt.Errorf("refresh target before setup: %w", err)
+			}
+			if err := ensureSSHKeyOnPod(opts, ns, target.PodName, target.Container, keyPath); err != nil {
 				return fmt.Errorf("setup SSH key in pod: %w", err)
 			}
-			if err := waitForSSHReady(opts, ns, target.PodName, waitTimeout); err != nil {
+			target, err = refreshTargetRef(ctx, opts, cfg, ns, sn, k, target)
+			if err != nil {
+				return fmt.Errorf("refresh target before sshd wait: %w", err)
+			}
+			if err := waitForSSHReady(opts, ns, target.PodName, target.Container, waitTimeout); err != nil {
 				return fmt.Errorf("wait for SSH service: %w", err)
 			}
 			alias := sshHostAlias(sn)
@@ -210,6 +234,10 @@ func newUpCmd(opts *Options) *cobra.Command {
 			}
 			postCreateCmd := resolvePostCreateCommand(cfg, cfgPath)
 			if postCreateCmd != "" {
+				target, err = refreshTargetRef(ctx, opts, cfg, ns, sn, k, target)
+				if err != nil {
+					return fmt.Errorf("refresh target before postCreate: %w", err)
+				}
 				ran, err := runPostCreateIfNeeded(k, ns, target.PodName, target.Container, postCreateCmd, cmd.OutOrStdout(), ui.warnWriter())
 				if err != nil {
 					return err
@@ -221,6 +249,10 @@ func newUpCmd(opts *Options) *cobra.Command {
 				}
 			}
 			if enableTmux {
+				target, err = refreshTargetRef(ctx, opts, cfg, ns, sn, k, target)
+				if err != nil {
+					return fmt.Errorf("refresh target before tmux setup: %w", err)
+				}
 				ui.stepRun("tmux", "checking dev container")
 				status, installer, err := detectDevTmux(cmd.Context(), k, ns, target.PodName, target.Container)
 				if err != nil {
@@ -266,12 +298,36 @@ func newUpCmd(opts *Options) *cobra.Command {
 
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 3*time.Minute, "Wait timeout for pod readiness")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview actions without applying resources")
+	cmd.Flags().BoolVar(&reconcile, "reconcile", false, "Reapply controller-backed workloads instead of reusing an existing session workload")
 	cmd.Flags().BoolVar(&tmux, "tmux", false, "Enable tmux persistent shell sessions in the dev container")
 	cmd.Flags().BoolVar(&noTmux, "no-tmux", false, "Disable tmux persistent shell sessions for this pod")
 	cmd.Flags().BoolVar(&createMissingPVC, "create-missing-pvc", false, "Create missing PVCs referenced by spec.volumes")
 	cmd.Flags().StringVar(&missingPVCSize, "missing-pvc-size", config.DefaultWorkspacePVCSize, "Size to use when creating a missing PVC")
 	cmd.Flags().StringVar(&missingPVCStorageClass, "missing-pvc-storage-class", "", "StorageClass to use when creating a missing PVC")
 	return cmd
+}
+
+type workloadExistenceChecker interface {
+	ResourceExists(context.Context, string, string, string, string) (bool, error)
+}
+
+func shouldReuseExistingWorkload(ctx context.Context, k workloadExistenceChecker, namespace string, runtime workload.Runtime, reconcile bool) (bool, error) {
+	if runtime.Kind() == workload.TypePod || reconcile {
+		return false, nil
+	}
+	refProvider, ok := runtime.(workload.RefProvider)
+	if !ok {
+		return false, fmt.Errorf("%s runtime does not expose a workload reference", runtime.Kind())
+	}
+	apiVersion, kind, name, err := refProvider.WorkloadRef()
+	if err != nil {
+		return false, fmt.Errorf("resolve workload ref: %w", err)
+	}
+	exists, err := k.ResourceExists(ctx, namespace, apiVersion, kind, name)
+	if err != nil {
+		return false, fmt.Errorf("check %s/%s existence: %w", kind, name, err)
+	}
+	return exists, nil
 }
 
 func reconcileMissingPVCs(ctx context.Context, k interface {
@@ -346,21 +402,27 @@ if [ "$(id -u)" != "0" ]; then
   echo no-root:none
   exit 0
 fi
+installer="none"
+if command -v apk >/dev/null 2>&1; then
+  installer="apk"
+elif command -v apt-get >/dev/null 2>&1; then
+  installer="apt-get"
+elif command -v apt >/dev/null 2>&1; then
+  installer="apt"
+elif command -v dnf >/dev/null 2>&1; then
+  installer="dnf"
+elif command -v microdnf >/dev/null 2>&1; then
+  installer="microdnf"
+elif command -v yum >/dev/null 2>&1; then
+  installer="yum"
+fi
 mkdir -p /var/okdev >/dev/null 2>&1 || true
 if [ -f /var/okdev/.tmux-install-attempted ]; then
-  echo unavailable:none
+  echo unavailable:${installer}
   exit 0
 fi
-if command -v apk >/dev/null 2>&1; then
-  echo install:apk
-elif command -v apt-get >/dev/null 2>&1; then
-  echo install:apt-get
-elif command -v dnf >/dev/null 2>&1; then
-  echo install:dnf
-elif command -v microdnf >/dev/null 2>&1; then
-  echo install:microdnf
-elif command -v yum >/dev/null 2>&1; then
-  echo install:yum
+if [ "$installer" != "none" ]; then
+  echo install:${installer}
 else
   echo unavailable:none
 fi
@@ -385,6 +447,9 @@ if [ "$installer" = "apk" ]; then
 elif [ "$installer" = "apt-get" ]; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get -o DPkg::Lock::Timeout=10 update >>"$logfile" 2>&1 && apt-get -o DPkg::Lock::Timeout=10 install -y --no-install-recommends tmux >>"$logfile" 2>&1 || true
+elif [ "$installer" = "apt" ]; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt update >>"$logfile" 2>&1 && apt install -y --no-install-recommends tmux >>"$logfile" 2>&1 || true
 elif [ "$installer" = "dnf" ]; then
   dnf install -y tmux >>"$logfile" 2>&1 || true
 elif [ "$installer" = "microdnf" ]; then

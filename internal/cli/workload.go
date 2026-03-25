@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -99,6 +98,18 @@ func resolveTargetRef(ctx context.Context, opts *Options, cfg *config.DevEnviron
 	return target, nil
 }
 
+func refreshTargetRef(ctx context.Context, opts *Options, cfg *config.DevEnvironment, namespace, sessionName string, k targetResolverClient, current workload.TargetRef) (workload.TargetRef, error) {
+	if strings.TrimSpace(current.PodName) != "" {
+		if err := validatePinnedTarget(ctx, k, namespace, current); err == nil {
+			return current, nil
+		}
+		if err := persistTargetRef(sessionName, current); err != nil {
+			return workload.TargetRef{}, err
+		}
+	}
+	return resolveTargetRef(ctx, opts, cfg, namespace, sessionName, k)
+}
+
 func persistTargetRef(sessionName string, target workload.TargetRef) error {
 	if strings.TrimSpace(target.PodName) == "" {
 		target = defaultTargetRef(sessionName)
@@ -116,8 +127,12 @@ type kubeClientTargetGetter interface {
 func validatePinnedTarget(ctx context.Context, k kubeClientTargetGetter, namespace string, target workload.TargetRef) error {
 	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	if _, err := k.GetPodSummary(checkCtx, namespace, target.PodName); err != nil {
+	summary, err := k.GetPodSummary(checkCtx, namespace, target.PodName)
+	if err != nil {
 		return fmt.Errorf("pinned target %s is not available: %w", target.PodName, err)
+	}
+	if summary.Deleting {
+		return fmt.Errorf("pinned target %s is terminating", target.PodName)
 	}
 	return nil
 }
@@ -136,10 +151,5 @@ func discoveryLabelsForSession(cfg *config.DevEnvironment, sessionName string) m
 		"okdev.io/name":          cfg.Metadata.Name,
 		"okdev.io/workload-type": strings.TrimSpace(cfg.Spec.Workload.Type),
 	}
-	repo := "unknown"
-	if root, err := session.RepoRoot(); err == nil && strings.TrimSpace(root) != "" {
-		repo = filepath.Base(root)
-	}
-	labels["okdev.io/repo"] = repo
 	return labels
 }
