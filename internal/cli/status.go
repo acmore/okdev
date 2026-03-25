@@ -13,9 +13,11 @@ func newStatusCmd(opts *Options) *cobra.Command {
 	var allUsers bool
 
 	cmd := &cobra.Command{
-		Use:   "status",
+		Use:   "status [session]",
 		Short: "Show session status",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			applySessionArg(opts, args)
 			cfg, ns, err := loadConfigAndNamespace(opts)
 			if err != nil {
 				return err
@@ -25,7 +27,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 				label = label + "," + ownerLabelSelector(opts)
 			}
 			if !all {
-				sn, err := resolveSessionName(opts, cfg)
+				sn, err := resolveSessionName(opts, cfg, ns)
 				if err != nil {
 					return err
 				}

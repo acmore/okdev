@@ -38,7 +38,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			k := newKubeClient(opts)
-			if err := ensureSessionOwnership(opts, k, ns, sn, true); err != nil {
+			if err := ensureExistingSessionOwnership(opts, k, ns, sn, true); err != nil {
 				return err
 			}
 			engine := cfg.Spec.Sync.Engine

@@ -34,24 +34,26 @@ func newSSHCmd(opts *Options) *cobra.Command {
 	var noTmux bool
 
 	cmd := &cobra.Command{
-		Use:   "ssh",
+		Use:   "ssh [session]",
 		Short: "Connect to session pod over SSH",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withQuietConfigAnnounce(func() error {
 				errOut := cmd.ErrOrStderr()
+				applySessionArg(opts, args)
 				cfg, ns, err := loadConfigAndNamespace(opts)
 				if err != nil {
 					return err
 				}
 				stopResolve := startTransientStatus(errOut, "Resolving SSH session")
-				sn, err := resolveSessionName(opts, cfg)
+				sn, err := resolveSessionName(opts, cfg, ns)
 				stopResolve()
 				if err != nil {
 					return err
 				}
 				k := newKubeClient(opts)
 				stopOwnership := startTransientStatus(errOut, "Verifying session access")
-				if err := ensureSessionOwnership(opts, k, ns, sn, true); err != nil {
+				if err := ensureExistingSessionOwnership(opts, k, ns, sn, true); err != nil {
 					stopOwnership()
 					return err
 				}
@@ -416,6 +418,7 @@ func ensureSSHConfigEntry(hostAlias, sessionName, namespace, user string, remote
 		"  IdentityFile " + keyPath,
 		"  StrictHostKeyChecking no",
 		"  UserKnownHostsFile /dev/null",
+		"  SetEnv OKDEV_NO_TMUX=1",
 		"  ProxyCommand " + proxyCmd,
 	}
 	// Hardcoded keepalive values for the proxy path — sshSpec values are
@@ -509,12 +512,12 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				sn, err := resolveSessionName(opts, cfg)
+				sn, err := resolveSessionName(opts, cfg, ns)
 				if err != nil {
 					return err
 				}
 				k := newKubeClient(opts)
-				if err := ensureSessionOwnership(opts, k, ns, sn, true); err != nil {
+				if err := ensureExistingSessionOwnership(opts, k, ns, sn, true); err != nil {
 					return err
 				}
 				if remotePort == 0 {
