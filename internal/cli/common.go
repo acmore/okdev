@@ -22,6 +22,7 @@ import (
 	"github.com/acmore/okdev/internal/session"
 	"github.com/acmore/okdev/internal/workload"
 	"golang.org/x/term"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 const sessionHeartbeatInterval = 5 * time.Minute

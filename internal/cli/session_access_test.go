@@ -24,19 +24,25 @@ func (f fakeSessionAccessReader) GetPodSummary(_ context.Context, _, _ string) (
 	return f.pod, nil
 }
 
+func (f fakeSessionAccessReader) ListPods(_ context.Context, _ string, _ bool, _ string) ([]kube.PodSummary, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.pod == nil {
+		return nil, nil
+	}
+	return []kube.PodSummary{*f.pod}, nil
+}
+
 func TestEnsureSessionAccessRequiresExistingSessionWhenRequested(t *testing.T) {
-	err := ensureSessionAccess(&Options{}, fakeSessionAccessReader{
-		err: apierrors.NewNotFound(schema.GroupResource{Group: "", Resource: "pods"}, "okdev-old"),
-	}, "default", "old", true, true)
+	err := ensureSessionAccess(&Options{}, fakeSessionAccessReader{}, "default", "old", true, true)
 	if err == nil || !strings.Contains(err.Error(), `session "old" does not exist in namespace "default"`) {
 		t.Fatalf("expected missing session error, got %v", err)
 	}
 }
 
 func TestEnsureSessionAccessAllowsMissingSessionWhenNotRequired(t *testing.T) {
-	err := ensureSessionAccess(&Options{}, fakeSessionAccessReader{
-		err: apierrors.NewNotFound(schema.GroupResource{Group: "", Resource: "pods"}, "okdev-old"),
-	}, "default", "old", true, false)
+	err := ensureSessionAccess(&Options{}, fakeSessionAccessReader{}, "default", "old", true, false)
 	if err != nil {
 		t.Fatalf("expected missing session to be allowed, got %v", err)
 	}

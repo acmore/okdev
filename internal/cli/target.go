@@ -30,7 +30,7 @@ func newTargetShowCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sn, err := resolveSessionName(opts, cfg)
+			sn, err := resolveSessionName(opts, cfg, ns)
 			if err != nil {
 				return err
 			}
@@ -93,7 +93,7 @@ func newTargetSetCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sn, err := resolveSessionName(opts, cfg)
+			sn, err := resolveSessionName(opts, cfg, ns)
 			if err != nil {
 				return err
 			}
