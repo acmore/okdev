@@ -9,7 +9,6 @@ import (
 
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
-	"github.com/acmore/okdev/internal/session"
 	"github.com/acmore/okdev/internal/workload"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -116,11 +115,7 @@ func TestResolveTargetRefRecoversControllerBackedTargetWhenLocalStateIsMissing(t
 	if target.PodName != "trainer-0" || target.Container != "trainer" {
 		t.Fatalf("unexpected target: %+v", target)
 	}
-	repoRoot, err := session.RepoRoot()
-	if err != nil {
-		t.Fatalf("RepoRoot: %v", err)
-	}
-	expectedSelector := "okdev.io/managed=true,okdev.io/name=trainer,okdev.io/repo=" + filepath.Base(repoRoot) + ",okdev.io/session=sess1,okdev.io/workload-type=job"
+	expectedSelector := "okdev.io/managed=true,okdev.io/name=trainer,okdev.io/session=sess1,okdev.io/workload-type=job"
 	if client.listSel != expectedSelector {
 		t.Fatalf("expected selector %q, got %q", expectedSelector, client.listSel)
 	}

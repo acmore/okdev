@@ -29,6 +29,10 @@ type Runtime interface {
 	SelectTarget(ctx context.Context, k TargetClient, namespace string) (TargetRef, error)
 }
 
+type RefProvider interface {
+	WorkloadRef() (apiVersion string, kind string, name string, err error)
+}
+
 type ApplyClient interface {
 	Apply(ctx context.Context, namespace string, manifest []byte) error
 }

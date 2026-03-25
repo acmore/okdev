@@ -66,9 +66,6 @@ func DiscoveryLabelSelector(labels map[string]string) string {
 	if v, ok := labels["okdev.io/name"]; ok {
 		discovery["okdev.io/name"] = v
 	}
-	if v, ok := labels["okdev.io/repo"]; ok {
-		discovery["okdev.io/repo"] = v
-	}
 	if v, ok := labels["okdev.io/workload-type"]; ok {
 		discovery["okdev.io/workload-type"] = v
 	}
@@ -82,6 +79,9 @@ func DiscoveryLabelSelector(labels map[string]string) string {
 func ComparePodPriority(a, b kube.PodSummary) bool {
 	score := func(p kube.PodSummary) int {
 		s := 0
+		if p.Deleting {
+			s -= 16
+		}
 		if strings.TrimSpace(p.Annotations["okdev.io/last-attach"]) != "" {
 			s += 8
 		}

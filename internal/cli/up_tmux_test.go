@@ -56,6 +56,7 @@ func TestDetectDevTmux(t *testing.T) {
 	}{
 		{name: "present", fake: newFakeDevShellExecutor([]string{"present:none"}, nil), wantStatus: "present", wantInstaller: "none"},
 		{name: "install apt-get", fake: newFakeDevShellExecutor([]string{"install:apt-get"}, nil), wantStatus: "install", wantInstaller: "apt-get"},
+		{name: "install apt", fake: newFakeDevShellExecutor([]string{"install:apt"}, nil), wantStatus: "install", wantInstaller: "apt"},
 		{name: "no-root", fake: newFakeDevShellExecutor([]string{"no-root:none"}, nil), wantStatus: "no-root", wantInstaller: "none"},
 		{name: "unavailable", fake: newFakeDevShellExecutor([]string{"unavailable:none"}, nil), wantStatus: "unavailable", wantInstaller: "none"},
 		{name: "exec error", fake: newFakeDevShellExecutor(nil, []error{errors.New("boom")}), wantErr: "boom"},
@@ -98,6 +99,7 @@ func TestInstallDevTmux(t *testing.T) {
 		{name: "installed via fallback detect", fake: newFakeDevShellExecutor([]string{"", "present:none"}, nil), installer: "apt-get"},
 		{name: "no-root", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=no-root:none"}, nil), installer: "apt-get", wantErr: "not running as root"},
 		{name: "unavailable", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=unavailable:apk"}, nil), installer: "apk", wantErr: devTmuxLogPath},
+		{name: "unavailable apt", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=unavailable:apt"}, nil), installer: "apt", wantErr: devTmuxLogPath},
 		{name: "exec error", fake: newFakeDevShellExecutor(nil, []error{errors.New("boom")}), installer: "apt-get", wantErr: "boom"},
 		{name: "empty output fallback error", fake: newFakeDevShellExecutor([]string{"", ""}, []error{nil, errors.New("detect boom")}), installer: "apt-get", wantErr: devTmuxLogPath},
 	}
@@ -132,6 +134,7 @@ func TestInstallDevTmuxDetails(t *testing.T) {
 		wantDetail string
 	}{
 		{name: "installed with installer", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=installed:apt-get"}, nil), installer: "apt-get", wantDetail: "installed in dev container via apt-get"},
+		{name: "installed with apt", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=installed:apt"}, nil), installer: "apt", wantDetail: "installed in dev container via apt"},
 		{name: "installed no installer", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=installed:none"}, nil), installer: "none", wantDetail: "installed in dev container"},
 		{name: "present via fallback detect", fake: newFakeDevShellExecutor([]string{"", "present:none"}, nil), installer: "apt-get", wantDetail: "ready in dev container"},
 	}
@@ -160,6 +163,7 @@ func TestInterpretTmuxStatus(t *testing.T) {
 	}{
 		{name: "present", status: "present", installer: "none", wantDetail: "ready in dev container"},
 		{name: "installed with installer", status: "installed", installer: "apt-get", wantInstalled: true, wantDetail: "installed in dev container via apt-get"},
+		{name: "installed with apt", status: "installed", installer: "apt", wantInstalled: true, wantDetail: "installed in dev container via apt"},
 		{name: "installed no installer", status: "installed", installer: "none", wantInstalled: true, wantDetail: "installed in dev container"},
 		{name: "no-root", status: "no-root", installer: "none", wantErr: "not running as root"},
 		{name: "unavailable with installer", status: "unavailable", installer: "apk", wantErr: devTmuxLogPath},
@@ -211,10 +215,13 @@ func TestDevTmuxDetailIfReady(t *testing.T) {
 
 func TestDevTmuxScriptsIncludeKnownPackageManagers(t *testing.T) {
 	for _, want := range []string{
-		"echo install:apk",
-		"echo install:apt-get",
+		`echo install:${installer}`,
+		`installer="apk"`,
+		`installer="apt-get"`,
+		`installer="apt"`,
 		"apk add --no-cache tmux",
 		"apt-get -o DPkg::Lock::Timeout=10 install -y --no-install-recommends tmux",
+		"apt install -y --no-install-recommends tmux",
 		"dnf install -y tmux",
 		"microdnf install -y tmux",
 		"yum install -y tmux",

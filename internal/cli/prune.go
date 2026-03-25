@@ -129,9 +129,18 @@ func sessionTargetPod(view sessionView) (kube.PodSummary, bool) {
 }
 
 func deleteSessionWorkload(ctx context.Context, k *kube.Client, view sessionView, targetPod kube.PodSummary) error {
-	apiVersion := strings.TrimSpace(targetPod.Labels["okdev.io/workload-api-version"])
-	resourceKind := strings.TrimSpace(targetPod.Labels["okdev.io/workload-resource-kind"])
-	workloadName := strings.TrimSpace(targetPod.Labels["okdev.io/workload-name"])
+	apiVersion := strings.TrimSpace(targetPod.Annotations["okdev.io/workload-api-version"])
+	if apiVersion == "" {
+		apiVersion = strings.TrimSpace(targetPod.Labels["okdev.io/workload-api-version"])
+	}
+	resourceKind := strings.TrimSpace(targetPod.Annotations["okdev.io/workload-resource-kind"])
+	if resourceKind == "" {
+		resourceKind = strings.TrimSpace(targetPod.Labels["okdev.io/workload-resource-kind"])
+	}
+	workloadName := strings.TrimSpace(targetPod.Annotations["okdev.io/workload-name"])
+	if workloadName == "" {
+		workloadName = strings.TrimSpace(targetPod.Labels["okdev.io/workload-name"])
+	}
 	if apiVersion != "" && resourceKind != "" && workloadName != "" {
 		return k.DeleteByRef(ctx, view.Namespace, apiVersion, resourceKind, workloadName, true)
 	}

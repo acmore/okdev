@@ -10,11 +10,11 @@ import (
 func TestEnsureDevSSHDRunning(t *testing.T) {
 	fake := newFakeDevShellExecutor([]string{""}, nil)
 
-	if err := ensureDevSSHDRunning(context.Background(), fake, "default", "okdev-test"); err != nil {
+	if err := ensureDevSSHDRunning(context.Background(), fake, "default", "okdev-test", "trainer"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if fake.container != "dev" {
-		t.Fatalf("expected dev container, got %q", fake.container)
+	if fake.container != "trainer" {
+		t.Fatalf("expected trainer container, got %q", fake.container)
 	}
 	for _, want := range []string{
 		"/var/okdev/okdev-sshd",
@@ -32,7 +32,7 @@ func TestEnsureDevSSHDRunning(t *testing.T) {
 func TestEnsureDevSSHDRunningError(t *testing.T) {
 	fake := newFakeDevShellExecutor(nil, []error{errors.New("boom")})
 
-	err := ensureDevSSHDRunning(context.Background(), fake, "default", "okdev-test")
+	err := ensureDevSSHDRunning(context.Background(), fake, "default", "okdev-test", "trainer")
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("expected error containing boom, got %v", err)
 	}

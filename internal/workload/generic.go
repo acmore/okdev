@@ -46,14 +46,23 @@ func (r *GenericRuntime) WorkloadName() string {
 	return obj.GetName()
 }
 
+func (r *GenericRuntime) WorkloadRef() (string, string, string, error) {
+	obj, err := r.load()
+	if err != nil {
+		return "", "", "", err
+	}
+	return obj.GetAPIVersion(), obj.GetKind(), obj.GetName(), nil
+}
+
 func (r *GenericRuntime) Apply(ctx context.Context, k ApplyClient, namespace string) error {
 	obj, err := r.load()
 	if err != nil {
 		return err
 	}
 	workloadLabels := LabelsWithWorkload(r.Labels, obj.GetName(), obj.GetAPIVersion(), obj.GetKind())
+	workloadAnnotations := AnnotationsWithWorkload(r.Annotations, obj.GetName(), obj.GetAPIVersion(), obj.GetKind())
 	obj.SetLabels(mergeStringMaps(obj.GetLabels(), workloadLabels))
-	obj.SetAnnotations(mergeStringMaps(obj.GetAnnotations(), r.Annotations))
+	obj.SetAnnotations(mergeStringMaps(obj.GetAnnotations(), workloadAnnotations))
 	for _, inject := range r.Inject {
 		templateMap, err := resolveMapPath(obj.Object, inject.Path)
 		if err != nil {
@@ -64,11 +73,13 @@ func (r *GenericRuntime) Apply(ctx context.Context, k ApplyClient, namespace str
 			return fmt.Errorf("decode inject path %s: %w", inject.Path, err)
 		}
 		templateLabels := mergeStringMaps(template.Labels, workloadLabels)
+		templateAnnotations := mergeStringMaps(template.Annotations, workloadAnnotations)
 		templateLabels["okdev.io/attachable"] = boolLabel(injectAttachable(inject))
 		if role := roleFromInjectPath(inject.Path); role != "" {
 			templateLabels["okdev.io/workload-role"] = role
 		}
 		template.Labels = templateLabels
+		template.Annotations = templateAnnotations
 		if inject.Sidecar == nil || *inject.Sidecar {
 			template.Spec, err = kube.PreparePodSpecForTarget(template.Spec, r.Volumes, r.WorkspaceMountPath, r.SidecarImage, r.Tmux, r.PreStop, r.interactiveContainer())
 			if err != nil {
