@@ -105,12 +105,12 @@ func announceConfigPathWithWriter(w io.Writer, path string, interactive bool) fu
 }
 
 type transientStatus struct {
-	w       io.Writer
-	message string
-	enabled bool
-	stopCh  chan struct{}
-	doneCh  chan struct{}
-	mu      sync.Mutex
+	w        io.Writer
+	message  string
+	enabled  bool
+	stopCh   chan struct{}
+	doneCh   chan struct{}
+	mu       sync.Mutex
 	stopOnce sync.Once
 }
 

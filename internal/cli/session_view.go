@@ -88,4 +88,3 @@ func selectTargetPod(pods []kube.PodSummary) kube.PodSummary {
 	}
 	return pods[0]
 }
-
