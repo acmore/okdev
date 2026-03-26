@@ -15,7 +15,7 @@
 - `okdev version`
 - `okdev init [--template basic|gpu|llm-stack] [--force]`
 - `okdev validate`
-- `okdev up [--wait-timeout 3m] [--dry-run]`
+- `okdev up [--wait-timeout 10m] [--dry-run]`
 - `okdev down [--delete-pvc] [--dry-run]`
 - `okdev status [--all] [--all-users]`
 - `okdev list [--all-namespaces] [--all-users]`
@@ -25,7 +25,7 @@
 - `okdev connect [--shell /bin/bash] [--cmd "..."] [--no-tty]`
 - `okdev ssh [--setup-key] [--user root] [--cmd "..."] [--no-tmux]`
 - `okdev ports`
-- `okdev sync [--mode up|down|bi] [--background] [--dry-run]`
+- `okdev sync [--mode up|down|bi] [--background] [--reset] [--dry-run]`
 - `okdev prune [--ttl-hours 72] [--all-namespaces] [--all-users] [--include-pvc] [--dry-run]`
 
 ### `okdev target show`
@@ -40,7 +40,7 @@
 - `--role` selects the highest-priority eligible pod with the matching `okdev.io/workload-role`.
 - When attachable pods are defined, repinning is restricted to those pods.
 
-### `okdev up [--wait-timeout 3m] [--dry-run]`
+### `okdev up [--wait-timeout 10m] [--dry-run]`
 
 - Reconciles Pod/PVC resources, updates SSH config, initializes managed forwarding/sync, then exits.
 - tmux-backed persistent interactive shells are enabled by default.
@@ -60,7 +60,8 @@
 - Advanced/recovery command. Rebuilds managed SSH `LocalForward` state from `spec.ports` after disconnects or local port changes.
 - No-op when managed forwards are already healthy and config is unchanged.
 
-### `okdev sync [--mode up|down|bi] [--background] [--dry-run]`
+### `okdev sync [--mode up|down|bi] [--background] [--reset] [--dry-run]`
 
 - Advanced command. Use for foreground sync debugging, or explicit one-way sync (`up`/`down`).
 - For default `--mode bi`, no-op when background sync is already active for the session.
+- `--reset`: stop the session's existing local sync processes and local Syncthing state, then bootstrap sync again.

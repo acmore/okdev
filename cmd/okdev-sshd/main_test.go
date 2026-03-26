@@ -1,31 +1,39 @@
 package main
 
 import (
-	"strings"
 	"testing"
+
+	"github.com/gliderlabs/ssh"
 )
 
-func TestBuildInteractiveLoginScriptIncludesDevTmuxBootstrap(t *testing.T) {
-	script := buildInteractiveLoginScript(map[string]string{}, "/bin/bash", "/workspace", "1")
+func TestNewServerEnablesLocalPortForwarding(t *testing.T) {
+	srv := newServer(":2222", "/bin/sh", nil)
 
-	for _, want := range []string{
-		"cd '/workspace'",
-		"/workspace/.okdev/post-attach.sh",
-		"/var/okdev/dev.tmux.conf",
-		"exec tmux new-session -A -s okdev",
-	} {
-		if !strings.Contains(script, want) {
-			t.Fatalf("expected script to contain %q, got:\n%s", want, script)
-		}
+	if srv.ChannelHandlers == nil {
+		t.Fatal("expected channel handlers to be configured")
+	}
+	if _, ok := srv.ChannelHandlers["session"]; !ok {
+		t.Fatal("expected default session channel handler")
+	}
+	if _, ok := srv.ChannelHandlers["direct-tcpip"]; !ok {
+		t.Fatal("expected direct-tcpip channel handler for ssh forwarding")
+	}
+	if srv.LocalPortForwardingCallback == nil {
+		t.Fatal("expected local port forwarding callback")
+	}
+	if !srv.LocalPortForwardingCallback(nil, "127.0.0.1", 8080) {
+		t.Fatal("expected local port forwarding to be allowed")
 	}
 }
 
-func TestBuildInteractiveLoginScriptSkipsTmuxWhenDisabledForSession(t *testing.T) {
-	script := buildInteractiveLoginScript(map[string]string{"OKDEV_NO_TMUX": "1"}, "/bin/sh", "/workspace", "1")
-	if strings.Contains(script, "tmux") {
-		t.Fatalf("expected tmux bootstrap to be skipped, got:\n%s", script)
+func TestNewServerAddsPublicKeyHandlerWhenKeysProvided(t *testing.T) {
+	pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE9mN6e2Q2x8tQz4pT2r8j04YfGLwRoTSesFiNUFDXL9 test\n"))
+	if err != nil {
+		t.Fatalf("parse authorized key: %v", err)
 	}
-	if !strings.Contains(script, "exec '/bin/sh' -l") {
-		t.Fatalf("expected shell fallback, got:\n%s", script)
+
+	srv := newServer(":2222", "/bin/sh", []ssh.PublicKey{pub})
+	if srv.PublicKeyHandler == nil {
+		t.Fatal("expected public key handler to be configured")
 	}
 }
