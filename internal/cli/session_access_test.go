@@ -13,20 +13,25 @@ import (
 )
 
 type fakeSessionAccessReader struct {
-	pod *kube.PodSummary
-	err error
+	pod     *kube.PodSummary
+	pods    []kube.PodSummary
+	getErr  error
+	listErr error
 }
 
 func (f fakeSessionAccessReader) GetPodSummary(_ context.Context, _, _ string) (*kube.PodSummary, error) {
-	if f.err != nil {
-		return nil, f.err
+	if f.getErr != nil {
+		return nil, f.getErr
 	}
 	return f.pod, nil
 }
 
 func (f fakeSessionAccessReader) ListPods(_ context.Context, _ string, _ bool, _ string) ([]kube.PodSummary, error) {
-	if f.err != nil {
-		return nil, f.err
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	if f.pods != nil {
+		return f.pods, nil
 	}
 	if f.pod == nil {
 		return nil, nil
@@ -107,7 +112,7 @@ func TestResolveSessionNameWithReaderIgnoresStaleActiveSession(t *testing.T) {
 	cfg.Spec.Session.DefaultNameTemplate = "fresh-session"
 
 	got, err := resolveSessionNameWithReader(&Options{}, cfg, "default", false, fakeSessionAccessReader{
-		err: apierrors.NewNotFound(schema.GroupResource{Group: "", Resource: "pods"}, "okdev-old-session"),
+		getErr: apierrors.NewNotFound(schema.GroupResource{Group: "", Resource: "pods"}, "okdev-old-session"),
 	})
 	if err != nil {
 		t.Fatalf("resolveSessionNameWithReader: %v", err)
@@ -122,5 +127,32 @@ func TestResolveSessionNameWithReaderIgnoresStaleActiveSession(t *testing.T) {
 	}
 	if active != "" {
 		t.Fatalf("expected stale active session to be cleared, got %q", active)
+	}
+}
+
+func TestResolveSessionNameWithReaderKeepsControllerBackedActiveSession(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := session.SaveActiveSession("job-session"); err != nil {
+		t.Fatalf("SaveActiveSession: %v", err)
+	}
+
+	cfg := &config.DevEnvironment{}
+	cfg.Spec.Session.DefaultNameTemplate = "fresh-session"
+
+	got, err := resolveSessionNameWithReader(&Options{}, cfg, "default", false, fakeSessionAccessReader{
+		getErr: apierrors.NewNotFound(schema.GroupResource{Group: "", Resource: "pods"}, "okdev-job-session"),
+		pods: []kube.PodSummary{{
+			Name: "job-session-abc123",
+			Labels: map[string]string{
+				"okdev.io/managed": "true",
+				"okdev.io/session": "job-session",
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("resolveSessionNameWithReader: %v", err)
+	}
+	if got != "job-session" {
+		t.Fatalf("expected controller-backed active session to be preserved, got %q", got)
 	}
 }

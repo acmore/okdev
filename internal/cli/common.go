@@ -111,6 +111,7 @@ type transientStatus struct {
 	stopCh  chan struct{}
 	doneCh  chan struct{}
 	mu      sync.Mutex
+	stopOnce sync.Once
 }
 
 func newTransientStatus(w io.Writer, message string) *transientStatus {
@@ -190,8 +191,10 @@ func (s *transientStatus) stop() {
 	if !s.enabled {
 		return
 	}
-	close(s.stopCh)
-	<-s.doneCh
+	s.stopOnce.Do(func() {
+		close(s.stopCh)
+		<-s.doneCh
+	})
 }
 
 func isTerminalWriter(w io.Writer) bool {
@@ -269,7 +272,11 @@ func resolveSessionNameWithReader(opts *Options, cfg *config.DevEnvironment, nam
 func sessionPodExists(k sessionAccessReader, namespace, sessionName string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_, err := k.GetPodSummary(ctx, namespace, podName(sessionName))
+	pods, err := k.ListPods(ctx, namespace, false, "okdev.io/managed=true,okdev.io/session="+sessionName)
+	if err == nil {
+		return len(pods) > 0, nil
+	}
+	_, err = k.GetPodSummary(ctx, namespace, podName(sessionName))
 	if err == nil {
 		return true, nil
 	}

@@ -2,6 +2,7 @@ package workload
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -166,7 +167,14 @@ func waitForCandidatePodReady(
 			if waitTimeout <= 0 {
 				break
 			}
-			return k.WaitReadyWithProgress(ctx, namespace, target.PodName, waitTimeout, onProgress)
+			waitErr := k.WaitReadyWithProgress(ctx, namespace, target.PodName, waitTimeout, onProgress)
+			if waitErr == nil {
+				return nil
+			}
+			if shouldRetryCandidateWait(waitErr) {
+				continue
+			}
+			return waitErr
 		}
 		if time.Now().After(deadline) {
 			if err != nil {
@@ -181,4 +189,17 @@ func waitForCandidatePodReady(
 		}
 	}
 	return fmt.Errorf("%s", timeoutMessage)
+}
+
+func shouldRetryCandidateWait(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "was deleted while waiting for readiness") ||
+		strings.Contains(msg, "is terminating") ||
+		strings.Contains(msg, "not found")
 }

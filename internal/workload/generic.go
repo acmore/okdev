@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
@@ -28,6 +29,9 @@ type GenericRuntime struct {
 	Labels             map[string]string
 	Annotations        map[string]string
 	Inject             []config.WorkloadInjectSpec
+
+	loadMu     sync.Mutex
+	loadedBase *unstructured.Unstructured
 }
 
 func (r *GenericRuntime) Kind() string {
@@ -159,6 +163,11 @@ func (r *GenericRuntime) interactiveContainer() string {
 }
 
 func (r *GenericRuntime) load() (*unstructured.Unstructured, error) {
+	r.loadMu.Lock()
+	defer r.loadMu.Unlock()
+	if r.loadedBase != nil {
+		return r.loadedBase.DeepCopy(), nil
+	}
 	raw, err := os.ReadFile(r.ManifestPath)
 	if err != nil {
 		return nil, fmt.Errorf("read generic manifest %q: %w", r.ManifestPath, err)
@@ -174,7 +183,8 @@ func (r *GenericRuntime) load() (*unstructured.Unstructured, error) {
 	if strings.TrimSpace(u.GetName()) == "" {
 		return nil, fmt.Errorf("generic manifest %q is missing metadata.name", r.ManifestPath)
 	}
-	return u, nil
+	r.loadedBase = u.DeepCopy()
+	return u.DeepCopy(), nil
 }
 
 // resolveMapPath descends into all path segments and returns the nested map
