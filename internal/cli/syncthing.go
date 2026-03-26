@@ -265,6 +265,26 @@ func stopLocalSyncthingForSession(sessionName string) error {
 	return nil
 }
 
+func resetSyncthingSessionState(sessionName string) error {
+	if err := stopDetachedSyncthingSync(sessionName); err != nil {
+		return fmt.Errorf("stop background sync: %w", err)
+	}
+	if err := stopLocalSyncthingForSession(sessionName); err != nil {
+		return fmt.Errorf("stop local syncthing: %w", err)
+	}
+	home, err := localSyncthingHome(sessionName)
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(home); err != nil {
+		return fmt.Errorf("remove local syncthing state for session %s: %w", sessionName, err)
+	}
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		return fmt.Errorf("recreate local syncthing state dir for session %s: %w", sessionName, err)
+	}
+	return nil
+}
+
 func startSyncthingPortForward(opts *Options, namespace, pod string) (context.CancelFunc, string, string, error) {
 	lastErr := error(nil)
 	for i := 0; i < 5; i++ {
