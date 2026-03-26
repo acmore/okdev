@@ -65,4 +65,3 @@ func BuildPodManifest(namespace, name string, labels map[string]string, annotati
 	}
 	return b, nil
 }
-
