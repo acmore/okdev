@@ -240,10 +240,8 @@ func allocateLocalSyncthingAPIEndpoint() (guiAddr, apiBase string, err error) {
 }
 
 func stopLocalSyncthing(binary, home string) error {
-	pattern := syncengine.ShellEscape(binary + " serve --home " + home)
-	cmd := exec.Command("sh", "-lc", fmt.Sprintf("pkill -f %s >/dev/null 2>&1 || true", pattern))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("stop local syncthing: %w (%s)", err, strings.TrimSpace(string(out)))
+	if err := pkillByPattern(binary + " serve --home " + home); err != nil {
+		return fmt.Errorf("stop local syncthing: %w", err)
 	}
 	return nil
 }
@@ -257,12 +255,23 @@ func stopLocalSyncthingForSession(sessionName string) error {
 	if err != nil {
 		return err
 	}
-	pattern := syncengine.ShellEscape("serve --home " + home)
-	cmd := exec.Command("sh", "-lc", fmt.Sprintf("pkill -f %s >/dev/null 2>&1 || true", pattern))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("stop local syncthing for session %s: %w (%s)", sessionName, err, strings.TrimSpace(string(out)))
+	if err := pkillByPattern("serve --home " + home); err != nil {
+		return fmt.Errorf("stop local syncthing for session %s: %w", sessionName, err)
 	}
 	return nil
+}
+
+func pkillByPattern(pattern string) error {
+	cmd := exec.Command("pkill", "-f", pattern)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return nil
+	}
+	return fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
 }
 
 func resetSyncthingSessionState(sessionName string) error {
