@@ -15,7 +15,7 @@
 - `okdev version`
 - `okdev init [--template basic|gpu|llm-stack] [--force]`
 - `okdev validate`
-- `okdev up [--wait-timeout 3m] [--dry-run]`
+- `okdev up [--wait-timeout 10m] [--dry-run]`
 - `okdev down [--delete-pvc] [--dry-run]`
 - `okdev status [--all] [--all-users]`
 - `okdev list [--all-namespaces] [--all-users]`
@@ -26,7 +26,7 @@
 - `okdev sync [--mode up|down|bi] [--background] [--dry-run]`
 - `okdev prune [--ttl-hours 72] [--all-namespaces] [--all-users] [--include-pvc] [--dry-run]`
 
-### `okdev up [--wait-timeout 3m] [--dry-run]`
+### `okdev up [--wait-timeout 10m] [--dry-run]`
 
 - Reconciles Pod/PVC resources, updates SSH config, initializes managed forwarding/sync, then exits.
 - tmux-backed persistent interactive shells are enabled by default.

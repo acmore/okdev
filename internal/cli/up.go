@@ -267,7 +267,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 3*time.Minute, "Wait timeout for pod readiness")
+	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 10*time.Minute, "Wait timeout for pod readiness")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview actions without applying resources")
 	cmd.Flags().BoolVar(&tmux, "tmux", false, "Enable tmux persistent shell sessions in the dev container")
 	cmd.Flags().BoolVar(&noTmux, "no-tmux", false, "Disable tmux persistent shell sessions for this pod")
