@@ -3,11 +3,13 @@ package cli
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/acmore/okdev/internal/kube"
+	"github.com/acmore/okdev/internal/workload"
 	"github.com/spf13/cobra"
 )
 
@@ -143,6 +145,9 @@ func deleteSessionWorkload(ctx context.Context, k *kube.Client, view sessionView
 	}
 	if apiVersion != "" && resourceKind != "" && workloadName != "" {
 		return k.DeleteByRef(ctx, view.Namespace, apiVersion, resourceKind, workloadName, true)
+	}
+	if strings.TrimSpace(view.WorkloadType) != "" && view.WorkloadType != string(workload.TypePod) {
+		slog.Warn("missing workload metadata on controller-backed session pod; falling back to pod delete", "session", view.Session, "namespace", view.Namespace, "workloadType", view.WorkloadType, "pod", targetPod.Name)
 	}
 	return k.Delete(ctx, view.Namespace, "pod", targetPod.Name, true)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,5 +141,36 @@ func TestGenericRuntimeSelectTargetFailsWithoutAttachablePods(t *testing.T) {
 	}
 	if _, err := rt.SelectTarget(context.Background(), client, "default"); err == nil {
 		t.Fatal("expected SelectTarget to fail without attachable pods")
+	}
+}
+
+func TestGenericRuntimeLoadCachesManifestBaseline(t *testing.T) {
+	tmp := t.TempDir()
+	manifestPath := filepath.Join(tmp, "deployment.yaml")
+	initial := []byte(`
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trainer
+spec:
+  template:
+    spec:
+      containers:
+        - name: trainer
+          image: python:3.12
+`)
+	if err := os.WriteFile(manifestPath, initial, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rt := &GenericRuntime{ManifestPath: manifestPath}
+	if got := rt.WorkloadName(); got != "trainer" {
+		t.Fatalf("expected initial workload name, got %q", got)
+	}
+	if err := os.WriteFile(manifestPath, []byte(strings.ReplaceAll(string(initial), "trainer", "mutated")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := rt.WorkloadName(); got != "trainer" {
+		t.Fatalf("expected cached workload name, got %q", got)
 	}
 }

@@ -143,10 +143,12 @@ func resolveTargetContainer(cfg *config.DevEnvironment) string {
 
 func discoveryLabelsForSession(cfg *config.DevEnvironment, sessionName string) map[string]string {
 	labels := map[string]string{
-		"okdev.io/managed":       "true",
-		"okdev.io/session":       sessionName,
-		"okdev.io/name":          cfg.Metadata.Name,
-		"okdev.io/workload-type": strings.TrimSpace(cfg.Spec.Workload.Type),
+		"okdev.io/managed": "true",
+		"okdev.io/session": sessionName,
+		"okdev.io/name":    cfg.Metadata.Name,
+	}
+	if workloadType := strings.TrimSpace(cfg.Spec.Workload.Type); workloadType != "" {
+		labels["okdev.io/workload-type"] = workloadType
 	}
 	return labels
 }
