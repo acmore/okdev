@@ -20,6 +20,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 	var mode string
 	var background bool
 	var dryRun bool
+	var reset bool
 
 	cmd := &cobra.Command{
 		Use:   "sync",
@@ -55,6 +56,9 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if dryRun {
 				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: sync session=%s namespace=%s engine=%s mode=%s\n", sn, ns, engine, mode)
 				fmt.Fprintf(cmd.OutOrStdout(), "- paths: %v\n", pairs)
+				if reset {
+					fmt.Fprintln(cmd.OutOrStdout(), "- would reset local sync state for this session before setup")
+				}
 				if background {
 					fmt.Fprintln(cmd.OutOrStdout(), "- detached background mode enabled")
 				}
@@ -62,6 +66,13 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			}
 			stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), false, true)
 			defer stopMaintenance()
+
+			if reset {
+				if err := resetSyncthingSessionState(sn); err != nil {
+					return err
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Reset local sync state for session %s\n", sn)
+			}
 
 			if !background && mode == "bi" && os.Getenv("OKDEV_SYNCTHING_BACKGROUND_CHILD") != "1" {
 				if pidPath, err := syncthingPIDPath(sn); err == nil {
@@ -91,6 +102,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 
 	cmd.Flags().StringVar(&mode, "mode", "bi", "Sync mode: up|down|bi")
 	cmd.Flags().BoolVar(&background, "background", false, "Run syncthing sync as a detached background process")
+	cmd.Flags().BoolVar(&reset, "reset", false, "Stop existing local sync state for this session and bootstrap again")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview sync actions without transferring files")
 	return cmd
 }

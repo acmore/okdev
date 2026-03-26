@@ -78,6 +78,32 @@ ssh okdev-<session>
 ssh -tt okdev-<session>
 ```
 
+## Remote Coding Tools
+
+`okdev` does not have first-class coding-agent commands yet, but the SSH workflow already works with remote development tools that can connect over SSH.
+
+Examples:
+
+```bash
+# Open a plain remote shell and install tools in the container
+ssh okdev-<session>
+
+# Then inside the container, install or run the tools you want
+codex
+claude
+```
+
+Cursor and similar editors can use the managed `okdev-<session>` SSH host directly for remote development. The generated SSH host entry bypasses tmux by default, which is usually the right behavior for editor-driven SSH sessions.
+
+Typical flow:
+
+1. `okdev up`
+2. Open your editor's SSH remote connection to `okdev-<session>`
+3. Install `codex`, `claude`, or other CLI tools inside the container if needed
+4. Use the editor remote session or `ssh okdev-<session>` as your entry point
+
+Use `okdev ssh` when you want the tmux-backed interactive shell managed by okdev. Use `ssh okdev-<session>` when you want a plain SSH session for editors, remote IDEs, or direct tool execution.
+
 ## File Sync
 
 `okdev up` starts bidirectional Syncthing sync automatically. For manual control:

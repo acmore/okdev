@@ -33,11 +33,28 @@ func main() {
 		log.Fatalf("failed to load authorized keys: %v", err)
 	}
 
+	srv := newServer(fmt.Sprintf(":%d", *port), *shell, keys)
+
+	log.Printf("okdev-sshd listening on :%d", *port)
+	log.Fatal(srv.ListenAndServe())
+}
+
+func newServer(addr, shell string, keys []ssh.PublicKey) *ssh.Server {
+	channelHandlers := map[string]ssh.ChannelHandler{}
+	for name, handler := range ssh.DefaultChannelHandlers {
+		channelHandlers[name] = handler
+	}
+	channelHandlers["direct-tcpip"] = ssh.DirectTCPIPHandler
+
 	srv := &ssh.Server{
-		Addr:    fmt.Sprintf(":%d", *port),
-		Handler: sessionHandler(*shell),
+		Addr:    addr,
+		Handler: sessionHandler(shell),
 		SubsystemHandlers: map[string]ssh.SubsystemHandler{
 			"sftp": sftpHandler,
+		},
+		ChannelHandlers: channelHandlers,
+		LocalPortForwardingCallback: func(ctx ssh.Context, destinationHost string, destinationPort uint32) bool {
+			return true
 		},
 	}
 
@@ -52,8 +69,7 @@ func main() {
 		}
 	}
 
-	log.Printf("okdev-sshd listening on :%d", *port)
-	log.Fatal(srv.ListenAndServe())
+	return srv
 }
 
 func detectShell() string {

@@ -79,7 +79,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			ui.stepDone("ownership", "ok")
-			ctx, cancel := defaultContext()
+			ctx, cancel := upCommandContext(waitTimeout)
 			defer cancel()
 			if createMissingPVC {
 				createdPVCs, err := reconcileMissingPVCs(ctx, k, ns, volumes, missingPVCSize, missingPVCStorageClass, labels, annotations)
@@ -296,7 +296,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 3*time.Minute, "Wait timeout for pod readiness")
+	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 10*time.Minute, "Wait timeout for pod readiness")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview actions without applying resources")
 	cmd.Flags().BoolVar(&reconcile, "reconcile", false, "Reapply controller-backed workloads instead of reusing an existing session workload")
 	cmd.Flags().BoolVar(&tmux, "tmux", false, "Enable tmux persistent shell sessions in the dev container")
@@ -328,6 +328,15 @@ func shouldReuseExistingWorkload(ctx context.Context, k workloadExistenceChecker
 		return false, fmt.Errorf("check %s/%s existence: %w", kind, name, err)
 	}
 	return exists, nil
+}
+
+func upCommandContext(waitTimeout time.Duration) (context.Context, context.CancelFunc) {
+	timeout := 5 * time.Minute
+	needed := (2 * waitTimeout) + (2 * time.Minute)
+	if needed > timeout {
+		timeout = needed
+	}
+	return context.WithTimeout(context.Background(), timeout)
 }
 
 func reconcileMissingPVCs(ctx context.Context, k interface {
