@@ -98,7 +98,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 			if warnErr := warnIfConfigNewerThanSession(opts, k, ns, sn, pod, ui.warnWriter()); warnErr != nil {
 				slog.Debug("skip config drift warning", "error", warnErr)
 			}
-			ctx, cancel := defaultContext()
+			ctx, cancel := upCommandContext(waitTimeout)
 			defer cancel()
 			if createMissingPVC {
 				createdPVCs, err := reconcileMissingPVCs(ctx, k, ns, volumes, missingPVCSize, missingPVCStorageClass, labels, annotations)
@@ -275,6 +275,15 @@ func newUpCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&missingPVCSize, "missing-pvc-size", config.DefaultWorkspacePVCSize, "Size to use when creating a missing PVC")
 	cmd.Flags().StringVar(&missingPVCStorageClass, "missing-pvc-storage-class", "", "StorageClass to use when creating a missing PVC")
 	return cmd
+}
+
+func upCommandContext(waitTimeout time.Duration) (context.Context, context.CancelFunc) {
+	timeout := 5 * time.Minute
+	needed := (2 * waitTimeout) + (2 * time.Minute)
+	if needed > timeout {
+		timeout = needed
+	}
+	return context.WithTimeout(context.Background(), timeout)
 }
 
 func reconcileMissingPVCs(ctx context.Context, k interface {
