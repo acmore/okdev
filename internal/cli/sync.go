@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/logx"
 	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
@@ -27,23 +26,14 @@ func newSyncCmd(opts *Options) *cobra.Command {
 		Use:   "sync",
 		Short: "Start syncthing sync for session pod",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, ns, err := loadConfigAndNamespace(opts)
+			cc, err := resolveCommandContext(opts, resolveSessionNameForUpDown)
 			if err != nil {
 				return err
 			}
-			cfgPath, err := config.ResolvePath(opts.ConfigPath)
-			if err != nil {
+			if err := ensureExistingSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName, true); err != nil {
 				return err
 			}
-			sn, err := resolveSessionNameForUpDown(opts, cfg, ns)
-			if err != nil {
-				return err
-			}
-			k := newKubeClient(opts)
-			if err := ensureExistingSessionOwnership(opts, k, ns, sn, true); err != nil {
-				return err
-			}
-			engine := cfg.Spec.Sync.Engine
+			engine := cc.cfg.Spec.Sync.Engine
 			if engine == "" {
 				engine = "syncthing"
 			}
@@ -56,12 +46,12 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if foreground {
 				background = false
 			}
-			pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.WorkspaceMountPath())
+			pairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.WorkspaceMountPath())
 			if err != nil {
 				return err
 			}
 			if dryRun {
-				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: sync session=%s namespace=%s engine=%s mode=%s\n", sn, ns, engine, mode)
+				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: sync session=%s namespace=%s engine=%s mode=%s\n", cc.sessionName, cc.namespace, engine, mode)
 				fmt.Fprintf(cmd.OutOrStdout(), "- paths: %v\n", pairs)
 				if reset {
 					fmt.Fprintln(cmd.OutOrStdout(), "- would reset local sync state for this session before setup")
@@ -71,39 +61,39 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				}
 				return nil
 			}
-			stopMaintenance := startSessionMaintenance(opts, ns, sn, cmd.OutOrStdout(), true)
+			stopMaintenance := startSessionMaintenance(opts, cc.namespace, cc.sessionName, cmd.OutOrStdout(), true)
 			defer stopMaintenance()
 
 			if reset {
-				if err := resetSyncthingSessionState(sn); err != nil {
+				if err := resetSyncthingSessionState(cc.sessionName); err != nil {
 					return err
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Reset local sync state for session %s\n", sn)
+				fmt.Fprintf(cmd.OutOrStdout(), "Reset local sync state for session %s\n", cc.sessionName)
 			}
 
 			if !background && mode == "bi" && os.Getenv("OKDEV_SYNCTHING_BACKGROUND_CHILD") != "1" {
-				if pidPath, err := syncthingPIDPath(sn); err == nil {
+				if pidPath, err := syncthingPIDPath(cc.sessionName); err == nil {
 					if pid, ok := readSyncthingPID(pidPath); ok && processAlive(pid) && processLooksLikeSyncthingSync(pid) {
-						fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync already active in background for session %s\n", sn)
+						fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync already active in background for session %s\n", cc.sessionName)
 						return nil
 					}
 				}
 			}
 
 			if background && os.Getenv("OKDEV_SYNCTHING_BACKGROUND_CHILD") != "1" {
-				logPath, started, err := startDetachedSyncthingSync(opts, mode, sn, ns, cfgPath)
+				logPath, started, err := startDetachedSyncthingSync(opts, mode, cc.sessionName, cc.namespace, cc.cfgPath)
 				if err != nil {
 					return err
 				}
 				if started {
-					fmt.Fprintf(cmd.OutOrStdout(), "Started syncthing sync in background for session %s\n", sn)
+					fmt.Fprintf(cmd.OutOrStdout(), "Started syncthing sync in background for session %s\n", cc.sessionName)
 				} else {
-					fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync already running in background for session %s\n", sn)
+					fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync already running in background for session %s\n", cc.sessionName)
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Logs: %s\n", logPath)
 				return nil
 			}
-			return runSyncthingSync(cmd, opts, cfg, ns, sn, mode, pairs)
+			return runSyncthingSync(cmd, opts, cc.cfg, cc.namespace, cc.sessionName, mode, pairs)
 		},
 	}
 
@@ -177,7 +167,7 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 		return "", false, err
 	}
 	// Guard against immediate child exit (common when sync init fails).
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(syncthingDetachedStartupDelay)
 	if !processAlive(cmd.Process.Pid) || !processLooksLikeSyncthingSync(cmd.Process.Pid) {
 		_ = logFile.Close()
 		return "", false, fmt.Errorf("syncthing background process exited early; check logs: %s", logPath)
@@ -216,9 +206,9 @@ func stopDetachedSyncthingSync(sessionName string) error {
 		if err == nil {
 			_ = p.Signal(syscall.SIGTERM)
 		}
-		deadline := time.Now().Add(3 * time.Second)
+		deadline := time.Now().Add(syncthingShutdownWait)
 		for processAlive(pid) && time.Now().Before(deadline) {
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(syncthingShutdownPollInterval)
 		}
 		if processAlive(pid) {
 			if p, err := os.FindProcess(pid); err == nil {

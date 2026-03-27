@@ -33,7 +33,6 @@ const (
 	syncthingPeerAddrDynamic   = "dynamic"
 	syncthingAPIReadyTimeout   = 30 * time.Second
 	syncthingHTTPClientTimeout = 15 * time.Second
-	syncthingWatcherDelayS     = 10
 )
 
 var syncthingHTTPClient = &http.Client{Timeout: syncthingHTTPClientTimeout}

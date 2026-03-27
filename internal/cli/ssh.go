@@ -41,32 +41,27 @@ func newSSHCmd(opts *Options) *cobra.Command {
 			return withQuietConfigAnnounce(func() error {
 				errOut := cmd.ErrOrStderr()
 				applySessionArg(opts, args)
-				cfg, ns, err := loadConfigAndNamespace(opts)
-				if err != nil {
-					return err
-				}
 				stopResolve := startTransientStatus(errOut, "Resolving SSH session")
-				sn, err := resolveSessionName(opts, cfg, ns)
+				cc, err := resolveCommandContext(opts, resolveSessionName)
 				stopResolve()
 				if err != nil {
 					return err
 				}
-				k := newKubeClient(opts)
 				stopOwnership := startTransientStatus(errOut, "Verifying session access")
-				if err := ensureExistingSessionOwnership(opts, k, ns, sn, true); err != nil {
+				if err := ensureExistingSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName, true); err != nil {
 					stopOwnership()
 					return err
 				}
 				stopOwnership()
-				target, err := resolveTargetRef(cmd.Context(), opts, cfg, ns, sn, k)
+				target, err := resolveTargetRef(cmd.Context(), opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
 				if err != nil {
 					return err
 				}
-				stopMaintenance := startSessionMaintenance(opts, ns, sn, cmd.OutOrStdout(), true)
+				stopMaintenance := startSessionMaintenance(opts, cc.namespace, cc.sessionName, cmd.OutOrStdout(), true)
 				defer stopMaintenance()
 
 				if user == "" {
-					user = cfg.Spec.SSH.User
+					user = cc.cfg.Spec.SSH.User
 				}
 				if remotePort == 0 {
 					remotePort = sshPort
@@ -75,7 +70,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					localPort = 2222
 				}
 				if keyPath == "" {
-					keyPath, err = defaultSSHKeyPath(cfg)
+					keyPath, err = defaultSSHKeyPath(cc.cfg)
 					if err != nil {
 						return err
 					}
@@ -83,14 +78,14 @@ func newSSHCmd(opts *Options) *cobra.Command {
 
 				if setupKey {
 					stopKeySetup := startTransientStatus(errOut, "Installing SSH key")
-					if err := ensureSSHKeyOnPod(opts, ns, target.PodName, target.Container, keyPath); err != nil {
+					if err := ensureSSHKeyOnPod(opts, cc.namespace, target.PodName, target.Container, keyPath); err != nil {
 						stopKeySetup()
 						return err
 					}
 					stopKeySetup()
 				}
 				stopSSHDReady := startTransientStatus(errOut, "Waiting for SSH service")
-				if err := waitForSSHReady(opts, ns, target.PodName, target.Container, 20*time.Second); err != nil {
+				if err := waitForSSHReady(opts, cc.namespace, target.PodName, target.Container, sshServiceWaitTimeout); err != nil {
 					stopSSHDReady()
 					fmt.Fprintf(errOut, "warning: ssh service not ready yet: %v\n", err)
 				} else {
@@ -98,7 +93,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				}
 
 				stopPortForward := startTransientStatus(errOut, "Starting SSH tunnel")
-				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(newKubeClient(opts), ns, target.PodName, localPort, remotePort)
+				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(cc.kube, cc.namespace, target.PodName, localPort, remotePort)
 				if err != nil {
 					stopPortForward()
 					return err
@@ -111,7 +106,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 						t.ForceReconnect()
 					}
 				}
-				startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, 10*time.Second, pfDegraded)
+				startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, portForwardKeepaliveInterval, pfDegraded)
 				var pfMu sync.Mutex
 				currentCancelPF := cancelPF
 				defer func() {
@@ -123,10 +118,9 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					}
 				}()
 
-				sshHost := sshHostAlias(sn)
-				cfgPath, _ := config.ResolvePath(opts.ConfigPath)
+				sshHost := sshHostAlias(cc.sessionName)
 				stopSSHConfig := startTransientStatus(errOut, "Preparing SSH config")
-				if _, cfgErr := ensureSSHConfigEntry(sshHost, sn, ns, user, remotePort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
+				if _, cfgErr := ensureSSHConfigEntry(sshHost, cc.sessionName, cc.namespace, user, remotePort, keyPath, cc.cfgPath, cc.cfg.Spec.Ports); cfgErr != nil {
 					stopSSHConfig()
 					fmt.Fprintf(errOut, "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
 				} else {
@@ -137,9 +131,9 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					SSHUser:           user,
 					SSHKeyPath:        keyPath,
 					RemotePort:        remotePort,
-					KeepAliveInterval: time.Duration(cfg.Spec.SSH.KeepAliveInterval) * time.Second,
-					KeepAliveTimeout:  time.Duration(cfg.Spec.SSH.KeepAliveTimeout) * time.Second,
-					KeepAliveCountMax: cfg.Spec.SSH.KeepAliveCountMax,
+					KeepAliveInterval: time.Duration(cc.cfg.Spec.SSH.KeepAliveInterval) * time.Second,
+					KeepAliveTimeout:  time.Duration(cc.cfg.Spec.SSH.KeepAliveTimeout) * time.Second,
+					KeepAliveCountMax: cc.cfg.Spec.SSH.KeepAliveCountMax,
 				}
 				if noTmux {
 					tm.Env = map[string]string{"OKDEV_NO_TMUX": "1"}
@@ -157,24 +151,24 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					if p, perr := reserveEphemeralPort(); perr == nil {
 						reconnectLocalPort = p
 					}
-					cancel, lp, err := startSSHPortForwardWithFallback(newKubeClient(opts), ns, target.PodName, reconnectLocalPort, remotePort)
+					cancel, lp, err := startSSHPortForwardWithFallback(cc.kube, cc.namespace, target.PodName, reconnectLocalPort, remotePort)
 					if err != nil {
 						return "", 0, err
 					}
 					currentCancelPF = cancel
 					newCtx, newCancel := context.WithCancel(cmd.Context())
 					pfKeepAliveCancel = newCancel
-					startPortForwardKeepalive(newCtx, lp, 10*time.Second, pfDegraded)
+					startPortForwardKeepalive(newCtx, lp, portForwardKeepaliveInterval, pfDegraded)
 					return "127.0.0.1", lp, nil
 				})
 				var lastRTTWarnNanos atomic.Int64
 				tm.SetKeepAliveRTTCallback(func(rtt time.Duration) {
-					if rtt < 5*time.Second {
+					if rtt < sshRTTWarnThreshold {
 						return
 					}
 					now := time.Now().UnixNano()
 					prev := lastRTTWarnNanos.Load()
-					if prev != 0 && now-prev < int64(30*time.Second) {
+					if prev != 0 && now-prev < int64(sshRTTWarnCooldown) {
 						return
 					}
 					if lastRTTWarnNanos.CompareAndSwap(prev, now) {
@@ -199,7 +193,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					}
 					return nil
 				}
-				return runSSHShellWithReconnect(cmd.Context(), tm, sn, cmd.ErrOrStderr())
+				return runSSHShellWithReconnect(cmd.Context(), tm, cc.sessionName, cmd.ErrOrStderr())
 			})
 		},
 	}
@@ -225,10 +219,7 @@ type sshShellRunner interface {
 	ExecContext(ctx context.Context, cmd string) ([]byte, error)
 }
 
-const maxRecoveryDuration = 3 * time.Minute
 const rapidFailureThreshold = 20
-const rapidFailureWindow = 60 * time.Second
-const shellStartThreshold = 5 * time.Second
 
 func runSSHShellWithReconnect(ctx context.Context, tm sshShellRunner, sessionName string, errOut io.Writer) error {
 	rapidFailures := 0
@@ -258,10 +249,10 @@ func runSSHShellWithReconnect(ctx context.Context, tm sshShellRunner, sessionNam
 			inRecovery = true
 			recoveryStart = time.Now()
 		}
-		if time.Since(recoveryStart) > maxRecoveryDuration {
-			return fmt.Errorf("reconnect timed out after %s: %w", maxRecoveryDuration, err)
+		if time.Since(recoveryStart) > sshRecoveryTimeout {
+			return fmt.Errorf("reconnect timed out after %s: %w", sshRecoveryTimeout, err)
 		}
-		if time.Since(started) < shellStartThreshold {
+		if time.Since(started) < sshShellStartThreshold {
 			if rapidFailures == 0 {
 				firstRapidFailure = time.Now()
 			}
@@ -271,10 +262,10 @@ func runSSHShellWithReconnect(ctx context.Context, tm sshShellRunner, sessionNam
 			readinessFailures = 0
 			firstRapidFailure = time.Time{}
 		}
-		if rapidFailures >= rapidFailureThreshold && !firstRapidFailure.IsZero() && time.Since(firstRapidFailure) <= rapidFailureWindow {
+		if rapidFailures >= rapidFailureThreshold && !firstRapidFailure.IsZero() && time.Since(firstRapidFailure) <= sshRapidFailureWindow {
 			return fmt.Errorf("ssh shell failed repeatedly after reconnect: %w", err)
 		}
-		waitCtx, waitCancel := context.WithTimeout(ctx, 15*time.Second)
+		waitCtx, waitCancel := context.WithTimeout(ctx, sshReconnectWaitTimeout)
 		connected := tm.WaitConnected(waitCtx)
 		waitCancel()
 		if !connected {
@@ -286,7 +277,7 @@ func runSSHShellWithReconnect(ctx context.Context, tm sshShellRunner, sessionNam
 			fmt.Fprintf(errOut, "Still reconnecting (%s elapsed)...\n", elapsed)
 			continue
 		}
-		if err := waitForSSHSessionReady(ctx, tm, 15*time.Second); err != nil {
+		if err := waitForSSHSessionReady(ctx, tm, sshReadinessTimeout); err != nil {
 			readinessFailures++
 			elapsed := time.Since(recoveryStart).Round(time.Second)
 			if readinessFailures == 1 || readinessFailures%5 == 0 {
@@ -329,7 +320,7 @@ func ensureSSHKeyOnPod(opts *Options, namespace, pod, container, keyPath string)
 	var lastErr error
 	installed := false
 	for i := 0; i < 3; i++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), sshKeyInstallTimeout)
 		_, err = k.ExecShInContainer(ctx, namespace, pod, container, script)
 		cancel()
 		if err == nil {
@@ -337,7 +328,7 @@ func ensureSSHKeyOnPod(opts *Options, namespace, pod, container, keyPath string)
 			break
 		}
 		lastErr = err
-		time.Sleep(time.Duration(i+1) * 500 * time.Millisecond)
+		time.Sleep(time.Duration(i+1) * sshKeyInstallRetryStep)
 	}
 	if !installed {
 		return fmt.Errorf("install ssh key in pod: %w", lastErr)
@@ -354,14 +345,14 @@ func waitForSSHReady(opts *Options, namespace, pod, container string, timeout ti
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), execProbeTimeout)
 		_, err := k.ExecShInContainer(ctx, namespace, pod, container, probeCmd)
 		cancel()
 		if err == nil {
 			return nil
 		}
 		lastErr = err
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(sshdReadinessPollInterval)
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("timeout waiting for sshd")
@@ -388,7 +379,7 @@ type devSSHStarter interface {
 }
 
 func ensureDevSSHDRunning(ctx context.Context, k devSSHStarter, namespace, pod, container string) error {
-	startCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	startCtx, cancel := context.WithTimeout(ctx, sshdStartTimeout)
 	defer cancel()
 	_, err := k.ExecShInContainer(startCtx, namespace, pod, container, devSSHStartScript)
 	return err
@@ -530,26 +521,21 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withQuietConfigAnnounce(func() error {
-				cfg, ns, err := loadConfigAndNamespace(opts)
+				cc, err := resolveCommandContext(opts, resolveSessionName)
 				if err != nil {
 					return err
 				}
-				sn, err := resolveSessionName(opts, cfg, ns)
-				if err != nil {
+				if err := ensureExistingSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName, true); err != nil {
 					return err
 				}
-				k := newKubeClient(opts)
-				if err := ensureExistingSessionOwnership(opts, k, ns, sn, true); err != nil {
-					return err
-				}
-				target, err := resolveTargetRef(cmd.Context(), opts, cfg, ns, sn, k)
+				target, err := resolveTargetRef(cmd.Context(), opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
 				if err != nil {
 					return err
 				}
 				if remotePort == 0 {
 					remotePort = sshPort
 				}
-				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(k, ns, target.PodName, 2222, remotePort)
+				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(cc.kube, cc.namespace, target.PodName, 2222, remotePort)
 				if err != nil {
 					return err
 				}
@@ -558,7 +544,7 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				}
 
 				slog.Debug("ssh-proxy dialing local port-forward", "port", usedLocalPort)
-				conn, err := waitDialLocal(usedLocalPort, 10*time.Second)
+				conn, err := waitDialLocal(usedLocalPort, localDialTotalTimeout)
 				if err != nil {
 					slog.Debug("ssh-proxy dial failed", "error", err)
 					return err
@@ -573,7 +559,7 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				// Layer 3: Port-forward keepalive probe with onDegraded wired up
 				pfKeepAliveCtx, pfKeepAliveCancel := context.WithCancel(cmd.Context())
 				defer pfKeepAliveCancel()
-				startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, 10*time.Second, func() {
+				startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, portForwardKeepaliveInterval, func() {
 					healthDisconnect.Store(true)
 					logx.Printf("time=%s source=ssh-proxy msg=%q port=%d uptime=%s\n",
 						time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
@@ -597,13 +583,13 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				lastData.Store(time.Now().UnixNano())
 				watchdogCtx, watchdogCancel := context.WithCancel(cmd.Context())
 				defer watchdogCancel()
-				go proxyDataFlowWatchdog(watchdogCtx, &lastData, 5*time.Second, 15*time.Second, func(idle time.Duration) {
+				go proxyDataFlowWatchdog(watchdogCtx, &lastData, dataFlowWatchdogInterval, dataFlowWatchdogIdleTimeout, func(idle time.Duration) {
 					healthDisconnect.Store(true)
 					logx.Printf("time=%s source=ssh-proxy msg=%q idle=%s threshold=%s uptime=%s\n",
 						time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
 						"data flow watchdog idle timeout",
 						idle.Round(time.Millisecond),
-						(15 * time.Second),
+						dataFlowWatchdogIdleTimeout,
 						time.Since(startTime).Round(time.Second),
 					)
 					_ = conn.Close()
@@ -707,7 +693,7 @@ func waitForSSHSessionReady(ctx context.Context, tm sshSessionProber, timeout ti
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		probeCtx, cancel := context.WithTimeout(ctx, sshReadinessProbeTimeout)
 		_, err := tm.ExecContext(probeCtx, "true")
 		cancel()
 		if err == nil {
@@ -715,12 +701,12 @@ func waitForSSHSessionReady(ctx context.Context, tm sshSessionProber, timeout ti
 			if consecutiveSuccess >= 2 {
 				return nil
 			}
-			time.Sleep(150 * time.Millisecond)
+			time.Sleep(sshReadinessSuccessWait)
 			continue
 		}
 		consecutiveSuccess = 0
 		lastErr = err
-		time.Sleep(250 * time.Millisecond)
+		time.Sleep(sshReadinessFailureWait)
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("timeout waiting for ssh session readiness")
@@ -733,16 +719,16 @@ func waitDialLocal(localPort int, timeout time.Duration) (net.Conn, error) {
 	addr := fmt.Sprintf("127.0.0.1:%d", localPort)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", addr, 750*time.Millisecond)
+		conn, err := net.DialTimeout("tcp", addr, localDialTimeout)
 		if err == nil {
 			if tc, ok := conn.(*net.TCPConn); ok {
 				_ = tc.SetKeepAlive(true)
-				_ = tc.SetKeepAlivePeriod(10 * time.Second)
+				_ = tc.SetKeepAlivePeriod(proxyTCPKeepAlivePeriod)
 			}
 			return conn, nil
 		}
 		lastErr = err
-		time.Sleep(150 * time.Millisecond)
+		time.Sleep(localDialRetryInterval)
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("timed out connecting to %s", addr)
