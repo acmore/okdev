@@ -118,3 +118,24 @@ func TestReadSyncthingPIDRejectsInvalidValue(t *testing.T) {
 		t.Fatal("expected invalid pid to be rejected")
 	}
 }
+
+func TestProcStatIsZombie(t *testing.T) {
+	if !procStatIsZombie([]byte("123 (okdev) Z 1 2 3")) {
+		t.Fatal("expected zombie proc stat to be detected")
+	}
+	if procStatIsZombie([]byte("123 (okdev) S 1 2 3")) {
+		t.Fatal("did not expect running proc stat to be zombie")
+	}
+	if procStatIsZombie([]byte("malformed")) {
+		t.Fatal("did not expect malformed proc stat to be zombie")
+	}
+}
+
+func TestPSStatIsZombie(t *testing.T) {
+	if !psStatIsZombie("Z+") {
+		t.Fatal("expected ps zombie state to be detected")
+	}
+	if psStatIsZombie("Ss") {
+		t.Fatal("did not expect normal ps state to be zombie")
+	}
+}

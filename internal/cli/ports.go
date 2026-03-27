@@ -35,7 +35,7 @@ func newPortsCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			effectiveSSHPort := sshPort
-			stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), true, true)
+			stopMaintenance := startSessionMaintenance(opts, ns, sn, cmd.OutOrStdout(), true)
 			defer stopMaintenance()
 			if len(cfg.Spec.Ports) == 0 {
 				return fmt.Errorf("no ports configured in config")

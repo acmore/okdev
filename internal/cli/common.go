@@ -394,13 +394,11 @@ func runConnectWithClient(k *kube.Client, namespace string, target workload.Targ
 	return connect.Run(ctx, k, namespace, target.PodName, command, tty, os.Stdin, os.Stdout, os.Stderr)
 }
 
-func startSessionMaintenance(opts *Options, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer, renewLock bool, emitHeartbeat bool) func() {
-	return startSessionMaintenanceWithClient(newKubeClient(opts), cfg, namespace, sessionName, out, renewLock, emitHeartbeat)
+func startSessionMaintenance(opts *Options, namespace, sessionName string, out io.Writer, emitHeartbeat bool) func() {
+	return startSessionMaintenanceWithClient(newKubeClient(opts), namespace, sessionName, out, emitHeartbeat)
 }
 
-func startSessionMaintenanceWithClient(k *kube.Client, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer, renewLock bool, emitHeartbeat bool) func() {
-	_ = cfg
-	_ = renewLock
+func startSessionMaintenanceWithClient(k *kube.Client, namespace, sessionName string, out io.Writer, emitHeartbeat bool) func() {
 	if !emitHeartbeat {
 		return func() {}
 	}

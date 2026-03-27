@@ -62,7 +62,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), true, true)
+				stopMaintenance := startSessionMaintenance(opts, ns, sn, cmd.OutOrStdout(), true)
 				defer stopMaintenance()
 
 				if user == "" {
@@ -199,76 +199,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					}
 					return nil
 				}
-				const maxRecoveryDuration = 3 * time.Minute
-				rapidFailures := 0
-				readinessFailures := 0
-				var firstRapidFailure time.Time
-				var recoveryStart time.Time
-				inRecovery := false
-				for {
-					if requested, reqErr := session.ShutdownRequested(sn); reqErr == nil && requested {
-						fmt.Fprintln(cmd.ErrOrStderr(), "Session shutdown requested. Closing SSH client.")
-						return nil
-					}
-					started := time.Now()
-					err := tm.OpenShell()
-					if err == nil {
-						return nil
-					}
-					if shouldReconnectShell(err, tm.IsConnected()) {
-						if requested, reqErr := session.ShutdownRequested(sn); reqErr == nil && requested {
-							fmt.Fprintln(cmd.ErrOrStderr(), "\nSession shutdown requested. Closing SSH client.")
-							return nil
-						}
-						if !inRecovery {
-							fmt.Fprintln(cmd.ErrOrStderr(), "\nConnection lost. Reconnecting...")
-							inRecovery = true
-							recoveryStart = time.Now()
-						}
-						if time.Since(recoveryStart) > maxRecoveryDuration {
-							return fmt.Errorf("reconnect timed out after %s: %w", maxRecoveryDuration, err)
-						}
-						if time.Since(started) < 5*time.Second {
-							if rapidFailures == 0 {
-								firstRapidFailure = time.Now()
-							}
-							rapidFailures++
-						} else {
-							rapidFailures = 0
-							readinessFailures = 0
-							firstRapidFailure = time.Time{}
-						}
-						if rapidFailures >= 20 && !firstRapidFailure.IsZero() && time.Since(firstRapidFailure) <= 60*time.Second {
-							return fmt.Errorf("ssh shell failed repeatedly after reconnect: %w", err)
-						}
-						waitCtx, waitCancel := context.WithTimeout(cmd.Context(), 15*time.Second)
-						connected := tm.WaitConnected(waitCtx)
-						waitCancel()
-						if !connected {
-							if cmd.Context().Err() != nil {
-								fmt.Fprintln(cmd.ErrOrStderr(), "Reconnect cancelled. Session ended.")
-								return nil
-							}
-							elapsed := time.Since(recoveryStart).Round(time.Second)
-							fmt.Fprintf(cmd.ErrOrStderr(), "Still reconnecting (%s elapsed)...\n", elapsed)
-							continue
-						}
-						if err := waitForSSHSessionReady(cmd.Context(), tm, 15*time.Second); err != nil {
-							readinessFailures++
-							elapsed := time.Since(recoveryStart).Round(time.Second)
-							if readinessFailures == 1 || readinessFailures%5 == 0 {
-								fmt.Fprintf(cmd.ErrOrStderr(), "Reconnect not ready yet (%s elapsed): %v\n", elapsed, err)
-							}
-							tm.ForceReconnect()
-							continue
-						}
-						readinessFailures = 0
-						fmt.Fprintln(cmd.ErrOrStderr(), "Reconnected.")
-						inRecovery = false
-						continue
-					}
-					return fmt.Errorf("ssh shell failed: %w", err)
-				}
+				return runSSHShellWithReconnect(cmd.Context(), tm, sn, cmd.ErrOrStderr())
 			})
 		},
 	}
@@ -281,6 +212,93 @@ func newSSHCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&cmdStr, "cmd", "", "Run a command over SSH")
 	cmd.Flags().BoolVar(&noTmux, "no-tmux", false, "Disable tmux for this SSH session even if enabled on the pod")
 	return cmd
+}
+
+// sshShellRunner abstracts the TunnelManager methods needed by
+// runSSHShellWithReconnect so the reconnection logic can be tested
+// without a real SSH connection.
+type sshShellRunner interface {
+	OpenShell() error
+	IsConnected() bool
+	WaitConnected(ctx context.Context) bool
+	ForceReconnect()
+	ExecContext(ctx context.Context, cmd string) ([]byte, error)
+}
+
+const maxRecoveryDuration = 3 * time.Minute
+const rapidFailureThreshold = 20
+const rapidFailureWindow = 60 * time.Second
+const shellStartThreshold = 5 * time.Second
+
+func runSSHShellWithReconnect(ctx context.Context, tm sshShellRunner, sessionName string, errOut io.Writer) error {
+	rapidFailures := 0
+	readinessFailures := 0
+	var firstRapidFailure time.Time
+	var recoveryStart time.Time
+	inRecovery := false
+	for {
+		if requested, reqErr := session.ShutdownRequested(sessionName); reqErr == nil && requested {
+			fmt.Fprintln(errOut, "Session shutdown requested. Closing SSH client.")
+			return nil
+		}
+		started := time.Now()
+		err := tm.OpenShell()
+		if err == nil {
+			return nil
+		}
+		if !shouldReconnectShell(err, tm.IsConnected()) {
+			return fmt.Errorf("ssh shell failed: %w", err)
+		}
+		if requested, reqErr := session.ShutdownRequested(sessionName); reqErr == nil && requested {
+			fmt.Fprintln(errOut, "\nSession shutdown requested. Closing SSH client.")
+			return nil
+		}
+		if !inRecovery {
+			fmt.Fprintln(errOut, "\nConnection lost. Reconnecting...")
+			inRecovery = true
+			recoveryStart = time.Now()
+		}
+		if time.Since(recoveryStart) > maxRecoveryDuration {
+			return fmt.Errorf("reconnect timed out after %s: %w", maxRecoveryDuration, err)
+		}
+		if time.Since(started) < shellStartThreshold {
+			if rapidFailures == 0 {
+				firstRapidFailure = time.Now()
+			}
+			rapidFailures++
+		} else {
+			rapidFailures = 0
+			readinessFailures = 0
+			firstRapidFailure = time.Time{}
+		}
+		if rapidFailures >= rapidFailureThreshold && !firstRapidFailure.IsZero() && time.Since(firstRapidFailure) <= rapidFailureWindow {
+			return fmt.Errorf("ssh shell failed repeatedly after reconnect: %w", err)
+		}
+		waitCtx, waitCancel := context.WithTimeout(ctx, 15*time.Second)
+		connected := tm.WaitConnected(waitCtx)
+		waitCancel()
+		if !connected {
+			if ctx.Err() != nil {
+				fmt.Fprintln(errOut, "Reconnect cancelled. Session ended.")
+				return nil
+			}
+			elapsed := time.Since(recoveryStart).Round(time.Second)
+			fmt.Fprintf(errOut, "Still reconnecting (%s elapsed)...\n", elapsed)
+			continue
+		}
+		if err := waitForSSHSessionReady(ctx, tm, 15*time.Second); err != nil {
+			readinessFailures++
+			elapsed := time.Since(recoveryStart).Round(time.Second)
+			if readinessFailures == 1 || readinessFailures%5 == 0 {
+				fmt.Fprintf(errOut, "Reconnect not ready yet (%s elapsed): %v\n", elapsed, err)
+			}
+			tm.ForceReconnect()
+			continue
+		}
+		readinessFailures = 0
+		fmt.Fprintln(errOut, "Reconnected.")
+		inRecovery = false
+	}
 }
 
 func ensureSSHKeyOnPod(opts *Options, namespace, pod, container, keyPath string) error {
@@ -677,7 +695,11 @@ func shouldReconnectShell(err error, connected bool) bool {
 		strings.Contains(msg, "i/o timeout")
 }
 
-func waitForSSHSessionReady(ctx context.Context, tm *okssh.TunnelManager, timeout time.Duration) error {
+type sshSessionProber interface {
+	ExecContext(ctx context.Context, cmd string) ([]byte, error)
+}
+
+func waitForSSHSessionReady(ctx context.Context, tm sshSessionProber, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	consecutiveSuccess := 0

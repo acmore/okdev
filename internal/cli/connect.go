@@ -33,7 +33,7 @@ func newConnectCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), true, true)
+			stopMaintenance := startSessionMaintenance(opts, ns, sn, cmd.OutOrStdout(), true)
 			defer stopMaintenance()
 
 			execCmd := []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}

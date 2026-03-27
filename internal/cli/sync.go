@@ -71,7 +71,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				}
 				return nil
 			}
-			stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), false, true)
+			stopMaintenance := startSessionMaintenance(opts, ns, sn, cmd.OutOrStdout(), true)
 			defer stopMaintenance()
 
 			if reset {
@@ -252,28 +252,59 @@ func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	if statOut, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "stat=").CombinedOutput(); err == nil {
-		stat := strings.TrimSpace(string(statOut))
-		if stat == "" || strings.Contains(stat, "Z") {
-			return false
-		}
-	}
 	p, err := os.FindProcess(pid)
 	if err != nil {
 		return false
 	}
-	err = p.Signal(syscall.Signal(0))
-	return err == nil
+	if err := p.Signal(syscall.Signal(0)); err != nil {
+		return false
+	}
+	// Signal(0) succeeds for zombies on Unix. Check process state to
+	// reject them so stale PID files don't block new sync starts.
+	if isZombie(pid) {
+		return false
+	}
+	return true
+}
+
+func isZombie(pid int) bool {
+	// Try /proc/<pid>/stat first (Linux, no subprocess needed).
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err == nil {
+		return procStatIsZombie(data)
+	}
+	// /proc unavailable (macOS); fall back to ps.
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "stat=").CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return psStatIsZombie(string(out))
+}
+
+func procStatIsZombie(data []byte) bool {
+	// Format: "<pid> (comm) <state> ..."  — state is the third field.
+	fields := strings.SplitAfterN(string(data), ") ", 2)
+	return len(fields) == 2 && len(fields[1]) > 0 && fields[1][0] == 'Z'
+}
+
+func psStatIsZombie(stat string) bool {
+	return strings.Contains(strings.TrimSpace(stat), "Z")
 }
 
 func processLooksLikeSyncthingSync(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").CombinedOutput()
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 	if err != nil {
-		return false
+		// /proc not available (e.g. macOS); fall back to ps.
+		out, psErr := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").CombinedOutput()
+		if psErr != nil {
+			return false
+		}
+		cmdline := string(out)
+		return strings.Contains(cmdline, "okdev") && strings.Contains(cmdline, "sync")
 	}
-	cmdline := string(out)
+	cmdline := strings.ReplaceAll(string(data), "\x00", " ")
 	return strings.Contains(cmdline, "okdev") && strings.Contains(cmdline, "sync")
 }
