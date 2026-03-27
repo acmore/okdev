@@ -24,6 +24,42 @@ var builtinNames = map[string]string{
 	"multi-container": "templates/llm-stack.yaml.tmpl",
 }
 
+var builtinTemplateLocalIgnores = map[string][]string{
+	"basic": {
+		".git/",
+		".venv/",
+		"node_modules/",
+	},
+	"gpu": {
+		".git/",
+		".venv/",
+		"node_modules/",
+		"checkpoints/",
+		"data/",
+	},
+	"llm-gpu": {
+		".git/",
+		".venv/",
+		"node_modules/",
+		"checkpoints/",
+		"data/",
+	},
+	"llm-stack": {
+		".git/",
+		".venv/",
+		"node_modules/",
+		"checkpoints/",
+		"data/",
+	},
+	"multi-container": {
+		".git/",
+		".venv/",
+		"node_modules/",
+		"checkpoints/",
+		"data/",
+	},
+}
+
 // TemplateVars holds all variables available to templates.
 type TemplateVars struct {
 	Name             string
@@ -141,4 +177,14 @@ func BuiltinTemplateNames() []string {
 		}
 	}
 	return names
+}
+
+func BuiltinTemplateLocalIgnores(ref string) []string {
+	patterns, ok := builtinTemplateLocalIgnores[ref]
+	if !ok {
+		return nil
+	}
+	out := make([]string, len(patterns))
+	copy(out, patterns)
+	return out
 }

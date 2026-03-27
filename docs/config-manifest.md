@@ -160,7 +160,7 @@ spec:
 |-------|------|---------|-------------|
 | `engine` | `string` | — | Sync engine (currently only `syncthing`) |
 | `paths` | `[]string` | — | Mappings in `local:remote` format (max 1 entry) |
-| `exclude` | `[]string` | — | Local ignore patterns |
+| `exclude` | `[]string` | — | Local ignore patterns. Prefer `.stignore` for day-to-day local ignore management. |
 | `remoteExclude` | `[]string` | — | Remote-only ignore patterns (written to `.stignore`) |
 | `syncthing.version` | `string` | `v1.29.7` | Local Syncthing binary version |
 | `syncthing.autoInstall` | `bool` | `true` | Auto-install local Syncthing |
@@ -179,10 +179,6 @@ spec:
       autoInstall: true
     paths:
       - .:/workspace
-    exclude:
-      - .git/
-      - node_modules/
-      - .venv/
     remoteExclude:
       - ".cache/"
 ```
