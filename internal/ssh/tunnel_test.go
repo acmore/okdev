@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"reflect"
+	"sort"
+	"syscall"
 	"testing"
 
 	xssh "golang.org/x/crypto/ssh"
@@ -88,5 +91,45 @@ func TestParseProcNetTCPPorts(t *testing.T) {
 	want := []int{22, 8080}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected ports: got=%v want=%v", got, want)
+	}
+}
+
+func TestIsAddrInUse(t *testing.T) {
+	addrInUseErr := &net.OpError{
+		Op:  "listen",
+		Net: "tcp",
+		Err: &os.SyscallError{Syscall: "bind", Err: syscall.EADDRINUSE},
+	}
+	if !isAddrInUse(addrInUseErr) {
+		t.Fatal("expected syscall-based address-in-use detection")
+	}
+	if !isAddrInUse(errors.New("bind: address already in use")) {
+		t.Fatal("expected string-based address-in-use detection")
+	}
+	if isAddrInUse(errors.New("connection reset by peer")) {
+		t.Fatal("did not expect unrelated error to match")
+	}
+}
+
+func TestParsePortFromAddr(t *testing.T) {
+	if port, ok := parsePortFromAddr("127.0.0.1:2222"); !ok || port != 2222 {
+		t.Fatalf("unexpected parse result port=%d ok=%v", port, ok)
+	}
+	if _, ok := parsePortFromAddr("missing-port"); ok {
+		t.Fatal("expected parse failure")
+	}
+	if _, ok := parsePortFromAddr("127.0.0.1:not-a-number"); ok {
+		t.Fatal("expected parse failure")
+	}
+}
+
+func TestSortedPorts(t *testing.T) {
+	got := sortedPorts(map[int]struct{}{8080: {}, 22: {}, 22000: {}})
+	if !sort.IntsAreSorted(got) {
+		t.Fatalf("expected sorted ports, got %v", got)
+	}
+	want := []int{22, 8080, 22000}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected sorted ports: got=%v want=%v", got, want)
 	}
 }
