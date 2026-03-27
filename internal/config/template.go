@@ -24,40 +24,51 @@ var builtinNames = map[string]string{
 	"multi-container": "templates/llm-stack.yaml.tmpl",
 }
 
-var builtinTemplateLocalIgnores = map[string][]string{
-	"basic": {
+var stignorePresets = map[string][]string{
+	"default": {
 		".git/",
 		".venv/",
 		"node_modules/",
+		".DS_Store",
 	},
-	"gpu": {
+	"python": {
 		".git/",
 		".venv/",
-		"node_modules/",
-		"checkpoints/",
-		"data/",
+		"__pycache__/",
+		".pytest_cache/",
+		".mypy_cache/",
+		".ruff_cache/",
+		".DS_Store",
 	},
-	"llm-gpu": {
+	"node": {
 		".git/",
-		".venv/",
 		"node_modules/",
-		"checkpoints/",
-		"data/",
+		".next/",
+		"dist/",
+		"coverage/",
+		".DS_Store",
 	},
-	"llm-stack": {
+	"go": {
 		".git/",
-		".venv/",
-		"node_modules/",
-		"checkpoints/",
-		"data/",
+		"bin/",
+		"dist/",
+		".coverprofile",
+		"coverage.out",
+		".DS_Store",
 	},
-	"multi-container": {
+	"rust": {
 		".git/",
-		".venv/",
-		"node_modules/",
-		"checkpoints/",
-		"data/",
+		"target/",
+		".DS_Store",
 	},
+}
+
+var builtinTemplateStignorePreset = map[string]string{
+	"basic":           "default",
+	"gpu":             "default",
+	"llm-gpu":         "default",
+	"llm-stack":       "default",
+	"multi-container": "default",
 }
 
 // TemplateVars holds all variables available to templates.
@@ -180,7 +191,15 @@ func BuiltinTemplateNames() []string {
 }
 
 func BuiltinTemplateLocalIgnores(ref string) []string {
-	patterns, ok := builtinTemplateLocalIgnores[ref]
+	preset, ok := builtinTemplateStignorePreset[ref]
+	if !ok {
+		return nil
+	}
+	return STIgnorePreset(preset)
+}
+
+func STIgnorePreset(name string) []string {
+	patterns, ok := stignorePresets[name]
 	if !ok {
 		return nil
 	}

@@ -56,6 +56,19 @@ func TestBuiltinTemplateLocalIgnores(t *testing.T) {
 	}
 }
 
+func TestSTIgnorePreset(t *testing.T) {
+	patterns := STIgnorePreset("go")
+	if len(patterns) == 0 {
+		t.Fatal("expected go preset patterns")
+	}
+	if patterns[1] != "bin/" {
+		t.Fatalf("unexpected go preset pattern %q", patterns[1])
+	}
+	if got := STIgnorePreset("missing"); got != nil {
+		t.Fatalf("expected nil for unknown preset, got %+v", got)
+	}
+}
+
 func TestResolveTemplateBuiltinName(t *testing.T) {
 	content, err := ResolveTemplate("basic")
 	if err != nil {
