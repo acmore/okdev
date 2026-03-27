@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 )
 
@@ -83,5 +84,16 @@ func TestApplyManagedSyncthingFolderDefaults(t *testing.T) {
 	}
 	if got := folder["rescanIntervalS"]; got != 300 {
 		t.Fatalf("expected rescanIntervalS=%d, got %#v", 300, got)
+	}
+}
+
+func TestLocalSyncthingLogPath(t *testing.T) {
+	got, err := localSyncthingLogPath("/tmp/okdev-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join("/tmp/okdev-session", "local.log")
+	if got != want {
+		t.Fatalf("unexpected log path: got %q want %q", got, want)
 	}
 }

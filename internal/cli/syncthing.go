@@ -32,7 +32,6 @@ const (
 const (
 	syncthingPeerAddrDynamic   = "dynamic"
 	syncthingAPIReadyTimeout   = 30 * time.Second
-	syncthingLocalLogPath      = "/tmp/okdev-syncthing-local.log"
 	syncthingHTTPClientTimeout = 15 * time.Second
 	syncthingWatcherDelayS     = 10
 )
@@ -231,13 +230,36 @@ func startLocalSyncthing(binary, home, localGUIAddr string) error {
 		}
 	}
 
-	pattern := syncengine.ShellEscape(binary + " serve --home " + home)
-	binaryQ := syncengine.ShellEscape(binary)
-	homeQ := syncengine.ShellEscape(home)
-	cmd := exec.Command("sh", "-lc", fmt.Sprintf("pkill -f %s >/dev/null 2>&1 || true; nohup %s serve --home %s --no-browser --gui-address=http://%s --no-restart --skip-port-probing >%s 2>&1 &", pattern, binaryQ, homeQ, syncengine.ShellEscape(localGUIAddr), syncengine.ShellEscape(syncthingLocalLogPath)))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("start local syncthing: %w (%s)", err, strings.TrimSpace(string(out)))
+	if err := stopLocalSyncthingForHome(home); err != nil {
+		return err
 	}
+	logPath, err := localSyncthingLogPath(home)
+	if err != nil {
+		return err
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open local syncthing log: %w", err)
+	}
+	cmd := exec.Command(
+		binary,
+		"serve",
+		"--home", home,
+		"--no-browser",
+		"--gui-address=http://"+localGUIAddr,
+		"--no-restart",
+		"--skip-port-probing",
+	)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.Stdin = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
+		return fmt.Errorf("start local syncthing: %w", err)
+	}
+	_ = cmd.Process.Release()
+	_ = logFile.Close()
 	return nil
 }
 
@@ -257,7 +279,7 @@ func allocateLocalSyncthingAPIEndpoint() (guiAddr, apiBase string, err error) {
 }
 
 func stopLocalSyncthing(binary, home string) error {
-	if err := pkillByPattern(binary + " serve --home " + home); err != nil {
+	if err := stopLocalSyncthingForHome(home); err != nil {
 		return fmt.Errorf("stop local syncthing: %w", err)
 	}
 	return nil
@@ -272,10 +294,21 @@ func stopLocalSyncthingForSession(sessionName string) error {
 	if err != nil {
 		return err
 	}
-	if err := pkillByPattern("serve --home " + home); err != nil {
+	if err := stopLocalSyncthingForHome(home); err != nil {
 		return fmt.Errorf("stop local syncthing for session %s: %w", sessionName, err)
 	}
 	return nil
+}
+
+func stopLocalSyncthingForHome(home string) error {
+	return pkillByPattern("serve --home " + home)
+}
+
+func localSyncthingLogPath(home string) (string, error) {
+	if strings.TrimSpace(home) == "" {
+		return "", errors.New("syncthing home is empty")
+	}
+	return filepath.Join(home, "local.log"), nil
 }
 
 func pkillByPattern(pattern string) error {
