@@ -196,6 +196,9 @@ func newUpCmd(opts *Options) *cobra.Command {
 			syncSummary := "disabled"
 			syncModeSymbol := ""
 			if cfg.Spec.Sync.Engine == "" || cfg.Spec.Sync.Engine == "syncthing" {
+				if err := refreshSyncthingSessionProcesses(sn); err != nil {
+					return fmt.Errorf("refresh local syncthing session state: %w", err)
+				}
 				logPath, started, err := startDetachedSyncthingSync(opts, upDefaultSyncMode, sn, ns, cfgPath)
 				if err != nil {
 					return fmt.Errorf("start syncthing background sync: %w", err)
