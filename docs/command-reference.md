@@ -26,6 +26,11 @@
 - `okdev sync [--mode up|down|bi] [--background] [--reset] [--dry-run]`
 - `okdev prune [--ttl-hours 72] [--all-namespaces] [--all-users] [--include-pvc] [--dry-run]`
 
+### `okdev init [--template basic|gpu|llm-stack] [--force]`
+
+- Writes a starter `.okdev.yaml`.
+- For built-in templates, it also writes a starter local `.stignore` file for the initialized sync root.
+
 ### `okdev up [--wait-timeout 10m] [--dry-run]`
 
 - Reconciles Pod/PVC resources, updates SSH config, initializes managed forwarding/sync, then exits.
@@ -51,3 +56,4 @@
 - Advanced command. Use for foreground sync debugging, or explicit one-way sync (`up`/`down`).
 - For default `--mode bi`, no-op when background sync is already active for the session.
 - `--reset`: stop the session's existing local sync processes and local Syncthing state, then bootstrap sync again.
+- `okdev init` writes the starter config and, when `spec.sync.exclude` is populated, a local `.stignore` file for the initialized sync root.

@@ -16,10 +16,6 @@ spec:
       autoInstall: true
     paths:
       - "{{ .SyncLocal }}:{{ .SyncRemote }}"
-    exclude:
-      - .git/
-      - .venv/
-      - node_modules/
     remoteExclude: []
   ports:
     - name: app
