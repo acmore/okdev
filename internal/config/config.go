@@ -115,6 +115,7 @@ type SyncthingSpec struct {
 	AutoInstall           *bool  `yaml:"autoInstall"`
 	Image                 string `yaml:"image"`
 	RescanIntervalSeconds int    `yaml:"rescanIntervalSeconds"`
+	RelaysEnabled         bool   `yaml:"relaysEnabled"`
 }
 
 type PortMapping struct {

@@ -166,6 +166,7 @@ spec:
 | `syncthing.autoInstall` | `bool` | `true` | Auto-install local Syncthing |
 | `syncthing.image` | `string` | `ghcr.io/acmore/okdev:<version>` | Sidecar image (fallback: `edge`) |
 | `syncthing.rescanIntervalSeconds` | `int` | `300` | Fallback full rescan interval; `0` disables periodic rescans |
+| `syncthing.relaysEnabled` | `bool` | `false` | Allow Syncthing relay fallback when direct connectivity is unavailable |
 
 **Validation:** `engine` must be `syncthing`; each `paths[]` entry must be `local:remote`.
 
@@ -179,6 +180,7 @@ spec:
       version: v1.29.7
       autoInstall: true
       rescanIntervalSeconds: 300
+      relaysEnabled: false
     paths:
       - .:/workspace
     remoteExclude:

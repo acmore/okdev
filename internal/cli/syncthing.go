@@ -138,10 +138,10 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	folderTypeLocal, folderTypeRemote := folderTypesForMode(mode)
 	folderID := "okdev-" + sessionName
 
-	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds); err != nil {
+	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds, cfg.Spec.Sync.Syncthing.RelaysEnabled); err != nil {
 		return fmt.Errorf("configure local syncthing: %w", err)
 	}
-	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, syncthingPeerAddrDynamic, folderID, pair.Remote, folderTypeRemote, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds); err != nil {
+	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, syncthingPeerAddrDynamic, folderID, pair.Remote, folderTypeRemote, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds, cfg.Spec.Sync.Syncthing.RelaysEnabled); err != nil {
 		return fmt.Errorf("configure remote syncthing: %w", err)
 	}
 
@@ -536,11 +536,12 @@ func folderTypesForMode(mode string) (local, remote string) {
 	}
 }
 
-func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peerAddr, folderID, folderPath, folderType string, rescanIntervalSeconds int) error {
+func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peerAddr, folderID, folderPath, folderType string, rescanIntervalSeconds int, relaysEnabled bool) error {
 	cfg, err := syncthingGetConfig(ctx, base, key)
 	if err != nil {
 		return err
 	}
+	applyManagedSyncthingGlobalDefaults(cfg, relaysEnabled)
 
 	devices, err := syncthingObjectArray(cfg, "devices")
 	if err != nil {
@@ -619,6 +620,18 @@ func applyManagedSyncthingFolderDefaults(folder map[string]any, rescanIntervalSe
 	folder["fsWatcherEnabled"] = true
 	folder["fsWatcherDelayS"] = syncthingWatcherDelayS
 	folder["rescanIntervalS"] = rescanIntervalSeconds
+}
+
+func applyManagedSyncthingGlobalDefaults(cfg map[string]any, relaysEnabled bool) {
+	options, err := syncthingObjectMap(cfg["options"], "options")
+	if err != nil {
+		options = map[string]any{}
+	}
+	options["autoUpgradeIntervalH"] = 0
+	options["upgradeToPreReleases"] = false
+	options["urAccepted"] = -1
+	options["relaysEnabled"] = relaysEnabled
+	cfg["options"] = options
 }
 
 func syncthingGetConfig(ctx context.Context, base, key string) (map[string]any, error) {

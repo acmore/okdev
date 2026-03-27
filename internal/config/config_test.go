@@ -46,6 +46,9 @@ func TestSetDefaults(t *testing.T) {
 	if cfg.Spec.Sync.Syncthing.RescanIntervalSeconds != DefaultSyncthingRescanSeconds {
 		t.Fatalf("expected syncthing rescan default %d, got %d", DefaultSyncthingRescanSeconds, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds)
 	}
+	if cfg.Spec.Sync.Syncthing.RelaysEnabled {
+		t.Fatal("expected syncthing relays to default disabled")
+	}
 	if cfg.Spec.SSH.User != "root" {
 		t.Fatalf("ssh user default not set: %+v", cfg.Spec.SSH)
 	}

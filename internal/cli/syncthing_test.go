@@ -161,6 +161,36 @@ func TestApplyManagedSyncthingFolderDefaults(t *testing.T) {
 	}
 }
 
+func TestApplyManagedSyncthingGlobalDefaults(t *testing.T) {
+	cfg := map[string]any{
+		"options": map[string]any{
+			"autoUpgradeIntervalH": float64(12),
+			"upgradeToPreReleases": true,
+			"urAccepted":           float64(2),
+			"relaysEnabled":        true,
+		},
+	}
+
+	applyManagedSyncthingGlobalDefaults(cfg, false)
+
+	options, err := syncthingObjectMap(cfg["options"], "options")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := options["autoUpgradeIntervalH"]; got != 0 {
+		t.Fatalf("expected autoUpgradeIntervalH=0, got %#v", got)
+	}
+	if got := options["upgradeToPreReleases"]; got != false {
+		t.Fatalf("expected upgradeToPreReleases=false, got %#v", got)
+	}
+	if got := options["urAccepted"]; got != -1 {
+		t.Fatalf("expected urAccepted=-1, got %#v", got)
+	}
+	if got := options["relaysEnabled"]; got != false {
+		t.Fatalf("expected relaysEnabled=false, got %#v", got)
+	}
+}
+
 func TestLocalSyncthingLogPath(t *testing.T) {
 	got, err := localSyncthingLogPath("/tmp/okdev-session")
 	if err != nil {
@@ -285,10 +315,10 @@ func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300); err != nil {
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "dynamic", "okdev-test", "/tmp/updated", "sendonly", 120); err != nil {
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "dynamic", "okdev-test", "/tmp/updated", "sendonly", 120, false); err != nil {
 		t.Fatal(err)
 	}
 	if len(putBodies) != 2 {
@@ -336,5 +366,21 @@ func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	}
 	if got := folder["fsWatcherEnabled"]; got != true {
 		t.Fatalf("unexpected fsWatcherEnabled %#v", got)
+	}
+	options, err := syncthingObjectMap(cfg["options"], "options")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := options["autoUpgradeIntervalH"]; got != float64(0) {
+		t.Fatalf("unexpected autoUpgradeIntervalH %#v", got)
+	}
+	if got := options["upgradeToPreReleases"]; got != false {
+		t.Fatalf("unexpected upgradeToPreReleases %#v", got)
+	}
+	if got := options["urAccepted"]; got != float64(-1) {
+		t.Fatalf("unexpected urAccepted %#v", got)
+	}
+	if got := options["relaysEnabled"]; got != false {
+		t.Fatalf("unexpected relaysEnabled %#v", got)
 	}
 }
