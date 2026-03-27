@@ -27,9 +27,14 @@ go build -o bin/okdev ./cmd/okdev
 okdev init
 # GPU/LLM-focused scaffold
 okdev init --template gpu
+# Go project with a Go-oriented local sync ignore preset
+okdev init --template basic --stignore-preset go
 ```
 
 This generates `.okdev.yaml` in the current directory. See [Config Manifest](config-manifest.md) for the full field reference and examples.
+
+For built-in templates, `okdev init` also writes a starter local `.stignore` file for the initialized sync root. Use `--stignore-preset` to override that starter with a project-oriented preset like `python`, `node`, `go`, or `rust`.
+When `--stignore-preset` is omitted, `okdev init` will try to detect a preset from common repo markers like `go.mod`, `package.json`, `Cargo.toml`, or `pyproject.toml`.
 
 okdev discovers configuration in this order:
 
@@ -109,11 +114,11 @@ Use `okdev ssh` when you want the tmux-backed interactive shell managed by okdev
 `okdev up` starts bidirectional Syncthing sync automatically. For manual control:
 
 ```bash
-# Foreground sync (useful for troubleshooting)
+# Detached background sync (default)
 okdev sync
 
-# Detached background sync
-okdev sync --background
+# Foreground sync (useful for troubleshooting)
+okdev sync --foreground
 
 # One-way sync (local → remote or remote → local)
 okdev sync --mode up

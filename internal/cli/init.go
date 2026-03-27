@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 
 	"github.com/acmore/okdev/internal/config"
+	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
+	"sigs.k8s.io/yaml"
 )
 
 func newInitCmd(opts *Options) *cobra.Command {
@@ -64,8 +66,15 @@ func newInitCmd(opts *Options) *cobra.Command {
 			if err := os.WriteFile(abs, []byte(rendered), 0o644); err != nil {
 				return fmt.Errorf("write config %q: %w", abs, err)
 			}
+			stignorePath, wroteSTIgnore, err := writeInitSTIgnore(abs, []byte(rendered), templateRef, force)
+			if err != nil {
+				return err
+			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", abs)
+			if wroteSTIgnore {
+				fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", stignorePath)
+			}
 			return nil
 		},
 	}
@@ -80,4 +89,39 @@ func newInitCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&syncRemoteOverride, "sync-remote", "", "Remote sync path")
 	cmd.Flags().StringVar(&sshUserOverride, "ssh-user", "", "SSH user")
 	return cmd
+}
+
+func writeInitSTIgnore(configPath string, rendered []byte, templateRef string, force bool) (string, bool, error) {
+	var cfg config.DevEnvironment
+	if err := yaml.Unmarshal(rendered, &cfg); err != nil {
+		return "", false, fmt.Errorf("parse generated config for .stignore: %w", err)
+	}
+	cfg.SetDefaults()
+	content, ok := buildSTIgnoreContent(config.BuiltinTemplateLocalIgnores(templateRef))
+	if !ok {
+		return "", false, nil
+	}
+	pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.WorkspaceMountPath())
+	if err != nil {
+		return "", false, fmt.Errorf("resolve generated sync paths for .stignore: %w", err)
+	}
+	if len(pairs) == 0 {
+		return "", false, nil
+	}
+	localRoot := pairs[0].Local
+	if !filepath.IsAbs(localRoot) {
+		localRoot = filepath.Join(filepath.Dir(configPath), localRoot)
+	}
+	localRoot = filepath.Clean(localRoot)
+	if err := os.MkdirAll(localRoot, 0o755); err != nil {
+		return "", false, fmt.Errorf("create local sync root for .stignore: %w", err)
+	}
+	stignorePath := filepath.Join(localRoot, ".stignore")
+	if _, err := os.Stat(stignorePath); err == nil && !force {
+		return stignorePath, false, nil
+	}
+	if err := os.WriteFile(stignorePath, []byte(content), 0o644); err != nil {
+		return "", false, fmt.Errorf("write .stignore %q: %w", stignorePath, err)
+	}
+	return stignorePath, true, nil
 }
