@@ -56,6 +56,7 @@ func TestDetectDevTmux(t *testing.T) {
 	}{
 		{name: "present", fake: newFakeDevShellExecutor([]string{"present:none"}, nil), wantStatus: "present", wantInstaller: "none"},
 		{name: "install apt-get", fake: newFakeDevShellExecutor([]string{"install:apt-get"}, nil), wantStatus: "install", wantInstaller: "apt-get"},
+		{name: "install apt", fake: newFakeDevShellExecutor([]string{"install:apt"}, nil), wantStatus: "install", wantInstaller: "apt"},
 		{name: "no-root", fake: newFakeDevShellExecutor([]string{"no-root:none"}, nil), wantStatus: "no-root", wantInstaller: "none"},
 		{name: "unavailable", fake: newFakeDevShellExecutor([]string{"unavailable:none"}, nil), wantStatus: "unavailable", wantInstaller: "none"},
 		{name: "exec error", fake: newFakeDevShellExecutor(nil, []error{errors.New("boom")}), wantErr: "boom"},
@@ -63,7 +64,7 @@ func TestDetectDevTmux(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			status, installer, err := detectDevTmux(context.Background(), tt.fake, "default", "okdev-test")
+			status, installer, err := detectDevTmux(context.Background(), tt.fake, "default", "okdev-test", "dev")
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
@@ -98,13 +99,14 @@ func TestInstallDevTmux(t *testing.T) {
 		{name: "installed via fallback detect", fake: newFakeDevShellExecutor([]string{"", "present:none"}, nil), installer: "apt-get"},
 		{name: "no-root", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=no-root:none"}, nil), installer: "apt-get", wantErr: "not running as root"},
 		{name: "unavailable", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=unavailable:apk"}, nil), installer: "apk", wantErr: devTmuxLogPath},
+		{name: "unavailable apt", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=unavailable:apt"}, nil), installer: "apt", wantErr: devTmuxLogPath},
 		{name: "exec error", fake: newFakeDevShellExecutor(nil, []error{errors.New("boom")}), installer: "apt-get", wantErr: "boom"},
 		{name: "empty output fallback error", fake: newFakeDevShellExecutor([]string{"", ""}, []error{nil, errors.New("detect boom")}), installer: "apt-get", wantErr: devTmuxLogPath},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotInstalled, _, err := installDevTmux(context.Background(), tt.fake, "default", "okdev-test", tt.installer, nil)
+			gotInstalled, _, err := installDevTmux(context.Background(), tt.fake, "default", "okdev-test", "dev", tt.installer, nil)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
@@ -132,13 +134,14 @@ func TestInstallDevTmuxDetails(t *testing.T) {
 		wantDetail string
 	}{
 		{name: "installed with installer", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=installed:apt-get"}, nil), installer: "apt-get", wantDetail: "installed in dev container via apt-get"},
+		{name: "installed with apt", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=installed:apt"}, nil), installer: "apt", wantDetail: "installed in dev container via apt"},
 		{name: "installed no installer", fake: newFakeDevShellExecutor([]string{"__OKDEV_TMUX_STATUS__=installed:none"}, nil), installer: "none", wantDetail: "installed in dev container"},
 		{name: "present via fallback detect", fake: newFakeDevShellExecutor([]string{"", "present:none"}, nil), installer: "apt-get", wantDetail: "ready in dev container"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, gotDetail, err := installDevTmux(context.Background(), tt.fake, "default", "okdev-test", tt.installer, nil)
+			_, gotDetail, err := installDevTmux(context.Background(), tt.fake, "default", "okdev-test", "dev", tt.installer, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -160,6 +163,7 @@ func TestInterpretTmuxStatus(t *testing.T) {
 	}{
 		{name: "present", status: "present", installer: "none", wantDetail: "ready in dev container"},
 		{name: "installed with installer", status: "installed", installer: "apt-get", wantInstalled: true, wantDetail: "installed in dev container via apt-get"},
+		{name: "installed with apt", status: "installed", installer: "apt", wantInstalled: true, wantDetail: "installed in dev container via apt"},
 		{name: "installed no installer", status: "installed", installer: "none", wantInstalled: true, wantDetail: "installed in dev container"},
 		{name: "no-root", status: "no-root", installer: "none", wantErr: "not running as root"},
 		{name: "unavailable with installer", status: "unavailable", installer: "apk", wantErr: devTmuxLogPath},
@@ -192,7 +196,7 @@ func TestInterpretTmuxStatus(t *testing.T) {
 func TestDevTmuxDetailIfReady(t *testing.T) {
 	t.Run("ready", func(t *testing.T) {
 		fake := newFakeDevShellExecutor([]string{"present:none"}, nil)
-		detail, ok := devTmuxDetailIfReady(context.Background(), fake, "default", "okdev-test")
+		detail, ok := devTmuxDetailIfReady(context.Background(), fake, "default", "okdev-test", "dev")
 		if !ok {
 			t.Fatal("expected ready detail")
 		}
@@ -203,7 +207,7 @@ func TestDevTmuxDetailIfReady(t *testing.T) {
 
 	t.Run("not ready", func(t *testing.T) {
 		fake := newFakeDevShellExecutor([]string{"unavailable:none"}, nil)
-		if detail, ok := devTmuxDetailIfReady(context.Background(), fake, "default", "okdev-test"); ok || detail != "" {
+		if detail, ok := devTmuxDetailIfReady(context.Background(), fake, "default", "okdev-test", "dev"); ok || detail != "" {
 			t.Fatalf("expected no ready detail, got %q ok=%v", detail, ok)
 		}
 	})
@@ -211,10 +215,13 @@ func TestDevTmuxDetailIfReady(t *testing.T) {
 
 func TestDevTmuxScriptsIncludeKnownPackageManagers(t *testing.T) {
 	for _, want := range []string{
-		"echo install:apk",
-		"echo install:apt-get",
+		`echo install:${installer}`,
+		`installer="apk"`,
+		`installer="apt-get"`,
+		`installer="apt"`,
 		"apk add --no-cache tmux",
 		"apt-get -o DPkg::Lock::Timeout=10 install -y --no-install-recommends tmux",
+		"apt install -y --no-install-recommends tmux",
 		"dnf install -y tmux",
 		"microdnf install -y tmux",
 		"yum install -y tmux",

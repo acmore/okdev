@@ -30,6 +30,10 @@ func newPortsCmd(opts *Options) *cobra.Command {
 			if err := ensureExistingSessionOwnership(opts, k, ns, sn, true); err != nil {
 				return err
 			}
+			target, err := resolveTargetRef(cmd.Context(), opts, cfg, ns, sn, k)
+			if err != nil {
+				return err
+			}
 			effectiveSSHPort := sshPort
 			stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), true, true)
 			defer stopMaintenance()
@@ -51,10 +55,10 @@ func newPortsCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("resolve SSH key path: %w", err)
 			}
-			if err := ensureSSHKeyOnPod(opts, ns, podName(sn), keyPath); err != nil {
+			if err := ensureSSHKeyOnPod(opts, ns, target.PodName, target.Container, keyPath); err != nil {
 				return fmt.Errorf("setup SSH key in pod: %w", err)
 			}
-			if err := waitForSSHReady(opts, ns, podName(sn), 20*time.Second); err != nil {
+			if err := waitForSSHReady(opts, ns, target.PodName, target.Container, 20*time.Second); err != nil {
 				return fmt.Errorf("wait for ssh service ready: %w", err)
 			}
 			alias := sshHostAlias(sn)

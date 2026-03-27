@@ -58,6 +58,10 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					return err
 				}
 				stopOwnership()
+				target, err := resolveTargetRef(cmd.Context(), opts, cfg, ns, sn, k)
+				if err != nil {
+					return err
+				}
 				stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), true, true)
 				defer stopMaintenance()
 
@@ -79,14 +83,14 @@ func newSSHCmd(opts *Options) *cobra.Command {
 
 				if setupKey {
 					stopKeySetup := startTransientStatus(errOut, "Installing SSH key")
-					if err := ensureSSHKeyOnPod(opts, ns, podName(sn), keyPath); err != nil {
+					if err := ensureSSHKeyOnPod(opts, ns, target.PodName, target.Container, keyPath); err != nil {
 						stopKeySetup()
 						return err
 					}
 					stopKeySetup()
 				}
 				stopSSHDReady := startTransientStatus(errOut, "Waiting for SSH service")
-				if err := waitForSSHReady(opts, ns, podName(sn), 20*time.Second); err != nil {
+				if err := waitForSSHReady(opts, ns, target.PodName, target.Container, 20*time.Second); err != nil {
 					stopSSHDReady()
 					fmt.Fprintf(errOut, "warning: ssh service not ready yet: %v\n", err)
 				} else {
@@ -94,7 +98,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				}
 
 				stopPortForward := startTransientStatus(errOut, "Starting SSH tunnel")
-				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(newKubeClient(opts), ns, podName(sn), localPort, remotePort)
+				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(newKubeClient(opts), ns, target.PodName, localPort, remotePort)
 				if err != nil {
 					stopPortForward()
 					return err
@@ -153,7 +157,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					if p, perr := reserveEphemeralPort(); perr == nil {
 						reconnectLocalPort = p
 					}
-					cancel, lp, err := startSSHPortForwardWithFallback(newKubeClient(opts), ns, podName(sn), reconnectLocalPort, remotePort)
+					cancel, lp, err := startSSHPortForwardWithFallback(newKubeClient(opts), ns, target.PodName, reconnectLocalPort, remotePort)
 					if err != nil {
 						return "", 0, err
 					}
@@ -279,7 +283,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 	return cmd
 }
 
-func ensureSSHKeyOnPod(opts *Options, namespace, pod, keyPath string) error {
+func ensureSSHKeyOnPod(opts *Options, namespace, pod, container, keyPath string) error {
 	if err := ensureCommand("ssh-keygen"); err != nil {
 		return err
 	}
@@ -308,7 +312,7 @@ func ensureSSHKeyOnPod(opts *Options, namespace, pod, keyPath string) error {
 	installed := false
 	for i := 0; i < 3; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		_, err = k.ExecShInContainer(ctx, namespace, pod, "dev", script)
+		_, err = k.ExecShInContainer(ctx, namespace, pod, container, script)
 		cancel()
 		if err == nil {
 			installed = true
@@ -323,9 +327,9 @@ func ensureSSHKeyOnPod(opts *Options, namespace, pod, keyPath string) error {
 	return nil
 }
 
-func waitForSSHReady(opts *Options, namespace, pod string, timeout time.Duration) error {
+func waitForSSHReady(opts *Options, namespace, pod, container string, timeout time.Duration) error {
 	k := newKubeClient(opts)
-	if err := ensureDevSSHDRunning(context.Background(), k, namespace, pod); err != nil {
+	if err := ensureDevSSHDRunning(context.Background(), k, namespace, pod, container); err != nil {
 		return fmt.Errorf("start dev-container sshd: %w", err)
 	}
 	probeCmd := "ps | grep '[o]kdev-sshd' >/dev/null 2>&1"
@@ -333,7 +337,7 @@ func waitForSSHReady(opts *Options, namespace, pod string, timeout time.Duration
 	var lastErr error
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, err := k.ExecShInContainer(ctx, namespace, pod, "dev", probeCmd)
+		_, err := k.ExecShInContainer(ctx, namespace, pod, container, probeCmd)
 		cancel()
 		if err == nil {
 			return nil
@@ -365,10 +369,10 @@ type devSSHStarter interface {
 	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
 }
 
-func ensureDevSSHDRunning(ctx context.Context, k devSSHStarter, namespace, pod string) error {
+func ensureDevSSHDRunning(ctx context.Context, k devSSHStarter, namespace, pod, container string) error {
 	startCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	_, err := k.ExecShInContainer(startCtx, namespace, pod, "dev", devSSHStartScript)
+	_, err := k.ExecShInContainer(startCtx, namespace, pod, container, devSSHStartScript)
 	return err
 }
 
@@ -520,10 +524,14 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				if err := ensureExistingSessionOwnership(opts, k, ns, sn, true); err != nil {
 					return err
 				}
+				target, err := resolveTargetRef(cmd.Context(), opts, cfg, ns, sn, k)
+				if err != nil {
+					return err
+				}
 				if remotePort == 0 {
 					remotePort = sshPort
 				}
-				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(k, ns, podName(sn), 2222, remotePort)
+				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(k, ns, target.PodName, 2222, remotePort)
 				if err != nil {
 					return err
 				}

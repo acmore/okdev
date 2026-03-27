@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"sort"
 
 	"github.com/acmore/okdev/internal/output"
 	"github.com/spf13/cobra"
@@ -45,52 +44,74 @@ func newStatusCmd(opts *Options) *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "No matching sessions found")
 				return nil
 			}
-			sort.Slice(pods, func(i, j int) bool {
-				return pods[i].CreatedAt.After(pods[j].CreatedAt)
-			})
+			views := buildSessionViews(pods)
 			if opts.Output == "json" {
 				type statusRow struct {
-					Session  string `json:"session"`
-					Owner    string `json:"owner"`
-					Pod      string `json:"pod"`
-					Phase    string `json:"phase"`
-					Age      string `json:"age"`
-					Ready    string `json:"ready"`
-					Restarts int32  `json:"restarts"`
-					Reason   string `json:"reason"`
+					Session   string `json:"session"`
+					Owner     string `json:"owner"`
+					Workload  string `json:"workload"`
+					TargetPod string `json:"targetPod"`
+					Phase     string `json:"phase"`
+					Age       string `json:"age"`
+					Ready     string `json:"ready"`
+					Restarts  int32  `json:"restarts"`
+					Reason    string `json:"reason"`
+					PodCount  int    `json:"podCount"`
 				}
-				rows := make([]statusRow, 0, len(pods))
-				for _, p := range pods {
-					sn := p.Labels["okdev.io/session"]
+				rows := make([]statusRow, 0, len(views))
+				for _, view := range views {
 					rows = append(rows, statusRow{
-						Session:  sn,
-						Owner:    p.Labels["okdev.io/owner"],
-						Pod:      p.Name,
-						Phase:    p.Phase,
-						Age:      age(p.CreatedAt),
-						Ready:    p.Ready,
-						Restarts: p.Restarts,
-						Reason:   p.Reason,
+						Session:   view.Session,
+						Owner:     view.Owner,
+						Workload:  view.WorkloadType,
+						TargetPod: view.TargetPod,
+						Phase:     view.Phase,
+						Age:       age(view.CreatedAt),
+						Ready:     view.Ready,
+						Restarts:  view.Restarts,
+						Reason:    view.Reason,
+						PodCount:  view.PodCount,
 					})
 				}
 				return outputJSON(cmd.OutOrStdout(), rows)
 			}
 
-			rows := make([][]string, 0, len(pods))
-			for _, p := range pods {
-				sn := p.Labels["okdev.io/session"]
+			rows := make([][]string, 0, len(views))
+			for _, view := range views {
 				rows = append(rows, []string{
-					sn,
-					p.Labels["okdev.io/owner"],
-					p.Name,
-					p.Phase,
-					p.Ready,
-					fmt.Sprintf("%d", p.Restarts),
-					p.Reason,
-					age(p.CreatedAt),
+					view.Session,
+					view.Owner,
+					view.WorkloadType,
+					view.TargetPod,
+					view.Phase,
+					view.Ready,
+					fmt.Sprintf("%d", view.PodCount),
+					fmt.Sprintf("%d", view.Restarts),
+					view.Reason,
+					age(view.CreatedAt),
 				})
 			}
-			output.PrintTable(cmd.OutOrStdout(), []string{"SESSION", "OWNER", "POD", "PHASE", "READY", "RESTARTS", "REASON", "AGE"}, rows)
+			output.PrintTable(cmd.OutOrStdout(), []string{"SESSION", "OWNER", "WORKLOAD", "TARGET", "PHASE", "READY", "PODS", "RESTARTS", "REASON", "AGE"}, rows)
+			if !all && len(views) == 1 && len(views[0].Pods) > 1 {
+				fmt.Fprintln(cmd.OutOrStdout(), "")
+				podRows := make([][]string, 0, len(views[0].Pods))
+				for _, pod := range views[0].Pods {
+					marker := ""
+					if pod.Name == views[0].TargetPod {
+						marker = "*"
+					}
+					podRows = append(podRows, []string{
+						marker,
+						pod.Name,
+						pod.Phase,
+						pod.Ready,
+						fmt.Sprintf("%d", pod.Restarts),
+						pod.Reason,
+						age(pod.CreatedAt),
+					})
+				}
+				output.PrintTable(cmd.OutOrStdout(), []string{"SEL", "POD", "PHASE", "READY", "RESTARTS", "REASON", "AGE"}, podRows)
+			}
 			return nil
 		},
 	}

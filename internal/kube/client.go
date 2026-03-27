@@ -20,16 +20,24 @@ import (
 	"time"
 
 	"github.com/acmore/okdev/internal/shellutil"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	meta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/httpstream"
 	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/discovery/cached/memory"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/tools/remotecommand"
@@ -42,15 +50,18 @@ var chooseContainerErrPattern = regexp.MustCompile(`choose one of: \[([^\]]+)\]`
 type Client struct {
 	Context string
 
-	mu           sync.Mutex
-	cachedSet    *kubernetes.Clientset
-	cachedConfig *rest.Config
+	mu            sync.Mutex
+	cachedSet     *kubernetes.Clientset
+	cachedDynamic dynamic.Interface
+	cachedMapper  meta.RESTMapper
+	cachedConfig  *rest.Config
 }
 
 type PodSummary struct {
 	Namespace   string
 	Name        string
 	Phase       string
+	Deleting    bool
 	CreatedAt   time.Time
 	Labels      map[string]string
 	Annotations map[string]string
@@ -85,23 +96,42 @@ func (c *Client) restConfig() (*rest.Config, error) {
 	return restCfg, nil
 }
 
-func (c *Client) clientset() (*kubernetes.Clientset, *rest.Config, error) {
+func (c *Client) clients() (*kubernetes.Clientset, dynamic.Interface, meta.RESTMapper, *rest.Config, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.cachedSet != nil && c.cachedConfig != nil {
-		return c.cachedSet, c.cachedConfig, nil
+	if c.cachedSet != nil && c.cachedConfig != nil && c.cachedDynamic != nil && c.cachedMapper != nil {
+		return c.cachedSet, c.cachedDynamic, c.cachedMapper, c.cachedConfig, nil
 	}
 	restCfg, err := c.restConfig()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	cs, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("create kubernetes client: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("create kubernetes client: %w", err)
 	}
+	dc, err := dynamic.NewForConfig(restCfg)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("create dynamic client: %w", err)
+	}
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(restCfg)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("create discovery client: %w", err)
+	}
+	mapper := restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(discoveryClient))
 	c.cachedSet = cs
+	c.cachedDynamic = dc
+	c.cachedMapper = mapper
 	c.cachedConfig = restCfg
-	return cs, restCfg, nil
+	return cs, dc, mapper, restCfg, nil
+}
+
+func (c *Client) clientset() (*kubernetes.Clientset, *rest.Config, error) {
+	cs, _, _, cfg, err := c.clients()
+	if err != nil {
+		return nil, nil, err
+	}
+	return cs, cfg, nil
 }
 
 func (c *Client) Apply(ctx context.Context, namespace string, manifest []byte) error {
@@ -109,7 +139,7 @@ func (c *Client) Apply(ctx context.Context, namespace string, manifest []byte) e
 	if err := yaml.Unmarshal(manifest, &tm); err != nil {
 		return fmt.Errorf("decode manifest type: %w", err)
 	}
-	cs, _, err := c.clientset()
+	cs, dc, mapper, _, err := c.clients()
 	if err != nil {
 		return err
 	}
@@ -186,9 +216,76 @@ func (c *Client) Apply(ctx context.Context, namespace string, manifest []byte) e
 		}
 		_, err = cs.CoreV1().PersistentVolumeClaims(namespace).Update(ctx, updated, metav1.UpdateOptions{})
 		return err
+	case "Job":
+		var job batchv1.Job
+		if err := yaml.Unmarshal(manifest, &job); err != nil {
+			return fmt.Errorf("decode job manifest: %w", err)
+		}
+		job.Namespace = namespace
+		normalizeJobForApplyComparison(&job)
+		existing, err := cs.BatchV1().Jobs(namespace).Get(ctx, job.Name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			_, err = cs.BatchV1().Jobs(namespace).Create(ctx, &job, metav1.CreateOptions{})
+			return err
+		}
+		if err != nil {
+			return err
+		}
+		normalizedExisting := existing.DeepCopy()
+		normalizeJobForApplyComparison(normalizedExisting)
+		if reflect.DeepEqual(normalizedExisting.Spec, job.Spec) &&
+			reflect.DeepEqual(normalizedExisting.Labels, job.Labels) &&
+			reflect.DeepEqual(normalizedExisting.Annotations, job.Annotations) {
+			return nil
+		}
+		propagation := metav1.DeletePropagationBackground
+		if err := cs.BatchV1().Jobs(namespace).Delete(ctx, job.Name, metav1.DeleteOptions{PropagationPolicy: &propagation}); err != nil {
+			return err
+		}
+		if err := waitForJobDeletion(ctx, cs, namespace, job.Name); err != nil {
+			return err
+		}
+		_, err = cs.BatchV1().Jobs(namespace).Create(ctx, &job, metav1.CreateOptions{})
+		return err
 	default:
-		return fmt.Errorf("unsupported manifest kind %q", tm.Kind)
+		return c.applyUnstructured(ctx, dc, mapper, namespace, manifest)
 	}
+}
+
+func (c *Client) applyUnstructured(ctx context.Context, dc dynamic.Interface, mapper meta.RESTMapper, namespace string, manifest []byte) error {
+	var obj unstructured.Unstructured
+	if err := yaml.Unmarshal(manifest, &obj.Object); err != nil {
+		return fmt.Errorf("decode unstructured manifest: %w", err)
+	}
+	gvk := obj.GroupVersionKind()
+	if gvk.Empty() {
+		return fmt.Errorf("manifest missing apiVersion/kind")
+	}
+	if strings.TrimSpace(obj.GetName()) == "" {
+		return fmt.Errorf("manifest missing metadata.name")
+	}
+	mapping, err := mapper.RESTMapping(schema.GroupKind{Group: gvk.Group, Kind: gvk.Kind}, gvk.Version)
+	if err != nil {
+		return fmt.Errorf("resolve rest mapping for %s: %w", gvk.String(), err)
+	}
+	var resource dynamic.ResourceInterface
+	if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
+		obj.SetNamespace(namespace)
+		resource = dc.Resource(mapping.Resource).Namespace(namespace)
+	} else {
+		resource = dc.Resource(mapping.Resource)
+	}
+	existing, err := resource.Get(ctx, obj.GetName(), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		_, err = resource.Create(ctx, &obj, metav1.CreateOptions{})
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	obj.SetResourceVersion(existing.GetResourceVersion())
+	_, err = resource.Update(ctx, &obj, metav1.UpdateOptions{})
+	return err
 }
 
 func waitForPodDeletion(ctx context.Context, cs *kubernetes.Clientset, namespace, name string) error {
@@ -206,6 +303,120 @@ func waitForPodDeletion(ctx context.Context, cs *kubernetes.Clientset, namespace
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
+		}
+	}
+}
+
+func waitForJobDeletion(ctx context.Context, cs *kubernetes.Clientset, namespace, name string) error {
+	ticker := time.NewTicker(300 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		_, err := cs.BatchV1().Jobs(namespace).Get(ctx, name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func normalizeJobForApplyComparison(job *batchv1.Job) {
+	if job == nil {
+		return
+	}
+	scheme.Scheme.Default(job)
+
+	job.ResourceVersion = ""
+	job.UID = ""
+	job.CreationTimestamp = metav1.Time{}
+	job.Generation = 0
+	job.ManagedFields = nil
+	job.SelfLink = ""
+
+	if !manualSelectorEnabled(job.Spec.ManualSelector) {
+		job.Spec.Selector = nil
+		if job.Spec.Template.Labels != nil {
+			for _, key := range []string{
+				"batch.kubernetes.io/controller-uid",
+				"batch.kubernetes.io/job-name",
+				"controller-uid",
+				"job-name",
+			} {
+				delete(job.Spec.Template.Labels, key)
+			}
+			if len(job.Spec.Template.Labels) == 0 {
+				job.Spec.Template.Labels = nil
+			}
+		}
+	}
+	if job.Spec.Parallelism != nil && *job.Spec.Parallelism == 1 {
+		job.Spec.Parallelism = nil
+	}
+	if job.Spec.Completions != nil && *job.Spec.Completions == 1 {
+		job.Spec.Completions = nil
+	}
+	if job.Spec.ManualSelector != nil && !*job.Spec.ManualSelector {
+		job.Spec.ManualSelector = nil
+	}
+	if job.Spec.CompletionMode != nil && *job.Spec.CompletionMode == batchv1.NonIndexedCompletion {
+		job.Spec.CompletionMode = nil
+	}
+	if job.Spec.Suspend != nil && !*job.Spec.Suspend {
+		job.Spec.Suspend = nil
+	}
+	if job.Spec.PodReplacementPolicy != nil && *job.Spec.PodReplacementPolicy == batchv1.TerminatingOrFailed {
+		job.Spec.PodReplacementPolicy = nil
+	}
+	normalizePodSpecDefaults(&job.Spec.Template.Spec)
+}
+
+func manualSelectorEnabled(v *bool) bool {
+	return v != nil && *v
+}
+
+func normalizePodSpecDefaults(spec *corev1.PodSpec) {
+	if spec == nil {
+		return
+	}
+	if spec.TerminationGracePeriodSeconds != nil && *spec.TerminationGracePeriodSeconds == 30 {
+		spec.TerminationGracePeriodSeconds = nil
+	}
+	if spec.DNSPolicy == corev1.DNSClusterFirst {
+		spec.DNSPolicy = ""
+	}
+	if spec.SchedulerName == "default-scheduler" {
+		spec.SchedulerName = ""
+	}
+	if spec.SecurityContext != nil && reflect.DeepEqual(*spec.SecurityContext, corev1.PodSecurityContext{}) {
+		spec.SecurityContext = nil
+	}
+	for i := range spec.Containers {
+		normalizeContainerDefaults(&spec.Containers[i])
+	}
+}
+
+func normalizeContainerDefaults(c *corev1.Container) {
+	if c == nil {
+		return
+	}
+	if c.ImagePullPolicy == corev1.PullIfNotPresent {
+		c.ImagePullPolicy = ""
+	}
+	if c.TerminationMessagePath == "/dev/termination-log" {
+		c.TerminationMessagePath = ""
+	}
+	if c.TerminationMessagePolicy == corev1.TerminationMessageReadFile {
+		c.TerminationMessagePolicy = ""
+	}
+	for i := range c.Ports {
+		if c.Ports[i].Protocol == corev1.ProtocolTCP {
+			c.Ports[i].Protocol = ""
 		}
 	}
 }
@@ -252,7 +463,57 @@ func cloneStringMap(in map[string]string) map[string]string {
 }
 
 func (c *Client) Delete(ctx context.Context, namespace string, kind string, name string, ignoreNotFound bool) error {
-	cs, _, err := c.clientset()
+	return c.DeleteByRef(ctx, namespace, "", kind, name, ignoreNotFound)
+}
+
+func (c *Client) ResourceExists(ctx context.Context, namespace string, apiVersion string, kind string, name string) (bool, error) {
+	if strings.TrimSpace(name) == "" {
+		return false, fmt.Errorf("resource name is required")
+	}
+
+	cs, dc, mapper, _, err := c.clients()
+	if err != nil {
+		return false, err
+	}
+
+	switch {
+	case strings.EqualFold(strings.TrimSpace(apiVersion), "v1") && strings.EqualFold(strings.TrimSpace(kind), "pod"):
+		_, err := cs.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return err == nil, err
+	case strings.EqualFold(strings.TrimSpace(apiVersion), "batch/v1") && strings.EqualFold(strings.TrimSpace(kind), "job"):
+		_, err := cs.BatchV1().Jobs(namespace).Get(ctx, name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return err == nil, err
+	}
+
+	gv, err := schema.ParseGroupVersion(apiVersion)
+	if err != nil {
+		return false, fmt.Errorf("parse apiVersion %q: %w", apiVersion, err)
+	}
+	mapping, err := mapper.RESTMapping(schema.GroupKind{Group: gv.Group, Kind: kind}, gv.Version)
+	if err != nil {
+		return false, fmt.Errorf("resolve rest mapping for %s/%s: %w", apiVersion, kind, err)
+	}
+	var resource dynamic.ResourceInterface
+	if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
+		resource = dc.Resource(mapping.Resource).Namespace(namespace)
+	} else {
+		resource = dc.Resource(mapping.Resource)
+	}
+	_, err = resource.Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (c *Client) DeleteByRef(ctx context.Context, namespace string, apiVersion string, kind string, name string, ignoreNotFound bool) error {
+	cs, dc, mapper, _, err := c.clients()
 	if err != nil {
 		return err
 	}
@@ -261,10 +522,30 @@ func (c *Client) Delete(ctx context.Context, namespace string, kind string, name
 	switch strings.ToLower(kind) {
 	case "pod", "pods":
 		delErr = cs.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	case "job", "jobs":
+		propagation := metav1.DeletePropagationBackground
+		delErr = cs.BatchV1().Jobs(namespace).Delete(ctx, name, metav1.DeleteOptions{PropagationPolicy: &propagation})
 	case "pvc", "persistentvolumeclaim", "persistentvolumeclaims":
 		delErr = cs.CoreV1().PersistentVolumeClaims(namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	default:
-		return fmt.Errorf("unsupported delete kind %q", kind)
+		if strings.TrimSpace(apiVersion) == "" {
+			return fmt.Errorf("unsupported delete kind %q", kind)
+		}
+		gv, err := schema.ParseGroupVersion(apiVersion)
+		if err != nil {
+			return fmt.Errorf("parse apiVersion %q: %w", apiVersion, err)
+		}
+		mapping, err := mapper.RESTMapping(schema.GroupKind{Group: gv.Group, Kind: kind}, gv.Version)
+		if err != nil {
+			return fmt.Errorf("resolve rest mapping for %s/%s: %w", apiVersion, kind, err)
+		}
+		var resource dynamic.ResourceInterface
+		if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
+			resource = dc.Resource(mapping.Resource).Namespace(namespace)
+		} else {
+			resource = dc.Resource(mapping.Resource)
+		}
+		delErr = resource.Delete(ctx, name, metav1.DeleteOptions{})
 	}
 	if ignoreNotFound && apierrors.IsNotFound(delErr) {
 		return nil
@@ -280,7 +561,7 @@ func (c *Client) WaitReadyWithProgress(ctx context.Context, namespace, pod strin
 	ctxWait, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cs, _, err := c.clientset()
+	cs, _, _, _, err := c.clients()
 	if err != nil {
 		return err
 	}
@@ -756,10 +1037,16 @@ func podSummaryFromPod(p *corev1.Pod) PodSummary {
 	if reason == "" {
 		reason = "-"
 	}
+	deleting := p.DeletionTimestamp != nil
+	phase := string(p.Status.Phase)
+	if deleting {
+		phase = "Terminating"
+	}
 	return PodSummary{
 		Namespace:   p.Namespace,
 		Name:        p.Name,
-		Phase:       string(p.Status.Phase),
+		Phase:       phase,
+		Deleting:    deleting,
 		CreatedAt:   p.CreationTimestamp.Time,
 		Labels:      p.Labels,
 		Annotations: p.Annotations,

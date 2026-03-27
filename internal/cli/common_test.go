@@ -129,6 +129,22 @@ func TestTransientStatusUpdate(t *testing.T) {
 	}
 }
 
+func TestTransientStatusStopIsIdempotent(t *testing.T) {
+	var out bytes.Buffer
+	status := &transientStatus{
+		w:       &out,
+		message: "Loading config /tmp/.okdev.yaml",
+		enabled: true,
+		stopCh:  make(chan struct{}),
+		doneCh:  make(chan struct{}),
+	}
+
+	go status.run(5 * time.Millisecond)
+	time.Sleep(8 * time.Millisecond)
+	status.stop()
+	status.stop()
+}
+
 func TestAnnounceConfigPathFallsBackToStaticOutput(t *testing.T) {
 	var out bytes.Buffer
 	done := announceConfigPathWithWriter(&out, "/tmp/.okdev.yaml", false)

@@ -29,6 +29,10 @@ func newConnectCmd(opts *Options) *cobra.Command {
 			if err := ensureExistingSessionOwnership(opts, k, ns, sn, true); err != nil {
 				return err
 			}
+			target, err := resolveTargetRef(cmd.Context(), opts, cfg, ns, sn, k)
+			if err != nil {
+				return err
+			}
 			stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), true, true)
 			defer stopMaintenance()
 
@@ -45,7 +49,7 @@ func newConnectCmd(opts *Options) *cobra.Command {
 			if len(execCmd) == 1 && strings.TrimSpace(execCmd[0]) == "" {
 				execCmd = []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}
 			}
-			return runConnectWithClient(k, ns, sn, execCmd, !noTTY)
+			return runConnectWithClient(k, ns, target, execCmd, !noTTY)
 		},
 	}
 	cmd.Flags().StringVar(&shell, "shell", "", "Shell to start (default auto-detects bash/sh)")

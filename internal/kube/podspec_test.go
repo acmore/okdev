@@ -144,3 +144,40 @@ func TestPreparePodSpecSetsDevTmuxEnvWhenEnabled(t *testing.T) {
 	}
 	t.Fatal("expected OKDEV_TMUX=1 on dev container when tmux is enabled")
 }
+
+func TestPreparePodSpecForTargetUsesNamedContainer(t *testing.T) {
+	spec, err := PreparePodSpecForTarget(corev1.PodSpec{
+		Containers: []corev1.Container{
+			{Name: "trainer", Image: "python:3.12"},
+			{Name: "helper", Image: "busybox"},
+		},
+	}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "echo bye", "trainer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	trainer := findContainer(spec.Containers, "trainer")
+	if trainer == nil {
+		t.Fatal("trainer container not found")
+	}
+	helper := findContainer(spec.Containers, "helper")
+	if helper == nil {
+		t.Fatal("helper container not found")
+	}
+	hasMount := func(c *corev1.Container, name string) bool {
+		for _, m := range c.VolumeMounts {
+			if m.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasMount(trainer, "workspace") || !hasMount(trainer, "okdev-runtime") {
+		t.Fatalf("expected mounts on trainer, got %+v", trainer.VolumeMounts)
+	}
+	if hasMount(helper, "workspace") || hasMount(helper, "okdev-runtime") {
+		t.Fatalf("did not expect runtime mounts on helper, got %+v", helper.VolumeMounts)
+	}
+	if trainer.Lifecycle == nil || trainer.Lifecycle.PreStop == nil {
+		t.Fatal("expected prestop lifecycle on trainer container")
+	}
+}
