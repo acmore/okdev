@@ -294,6 +294,16 @@ func resetSyncthingSessionState(sessionName string) error {
 	return nil
 }
 
+func refreshSyncthingSessionProcesses(sessionName string) error {
+	if err := stopDetachedSyncthingSync(sessionName); err != nil {
+		return fmt.Errorf("stop background sync: %w", err)
+	}
+	if err := stopLocalSyncthingForSession(sessionName); err != nil {
+		return fmt.Errorf("stop local syncthing: %w", err)
+	}
+	return nil
+}
+
 func startSyncthingPortForward(opts *Options, namespace, pod string) (context.CancelFunc, string, string, error) {
 	lastErr := error(nil)
 	for i := 0; i < 5; i++ {

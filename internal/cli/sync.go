@@ -19,6 +19,7 @@ import (
 func newSyncCmd(opts *Options) *cobra.Command {
 	var mode string
 	var background bool
+	var foreground bool
 	var dryRun bool
 	var reset bool
 
@@ -48,6 +49,12 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			}
 			if engine != "syncthing" {
 				return fmt.Errorf("unsupported sync engine %q (only syncthing is supported)", engine)
+			}
+			if foreground && cmd.Flags().Changed("background") {
+				return fmt.Errorf("--background and --foreground cannot be used together")
+			}
+			if foreground {
+				background = false
 			}
 			pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.WorkspaceMountPath())
 			if err != nil {
@@ -101,7 +108,8 @@ func newSyncCmd(opts *Options) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&mode, "mode", "bi", "Sync mode: up|down|bi")
-	cmd.Flags().BoolVar(&background, "background", false, "Run syncthing sync as a detached background process")
+	cmd.Flags().BoolVar(&background, "background", true, "Run syncthing sync as a detached background process")
+	cmd.Flags().BoolVar(&foreground, "foreground", false, "Run syncthing sync in the foreground for troubleshooting")
 	cmd.Flags().BoolVar(&reset, "reset", false, "Stop existing local sync state for this session and bootstrap again")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview sync actions without transferring files")
 	return cmd
