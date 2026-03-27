@@ -2,10 +2,15 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestSyncthingObjectArray(t *testing.T) {
@@ -69,6 +74,75 @@ func TestBuildSTIgnoreContent(t *testing.T) {
 	}
 }
 
+func TestWriteSTIgnore(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeSTIgnore(dir, []string{".git/", "node_modules/"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, ".stignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != ".git/\nnode_modules/\n" {
+		t.Fatalf("unexpected stignore content %q", got)
+	}
+}
+
+type syncthingExecRecorder struct {
+	namespace string
+	pod       string
+	container string
+	script    string
+	out       []byte
+	err       error
+}
+
+func (r *syncthingExecRecorder) ExecShInContainer(_ context.Context, namespace, pod, container, script string) ([]byte, error) {
+	r.namespace = namespace
+	r.pod = pod
+	r.container = container
+	r.script = script
+	return r.out, r.err
+}
+
+func TestWriteRemoteSTIgnoreInPod(t *testing.T) {
+	rec := &syncthingExecRecorder{}
+	err := writeRemoteSTIgnoreInPod(context.Background(), rec, "ns", "pod", "/workspace", []string{".git/", "node_modules/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.namespace != "ns" || rec.pod != "pod" || rec.container != syncthingContainerName {
+		t.Fatalf("unexpected exec target: %+v", rec)
+	}
+	if !strings.Contains(rec.script, "/workspace/.stignore") {
+		t.Fatalf("expected .stignore path in script, got %q", rec.script)
+	}
+	if !strings.Contains(rec.script, ".git/\nnode_modules/\n") {
+		t.Fatalf("expected ignore content in script, got %q", rec.script)
+	}
+}
+
+func TestWriteRemoteSTIgnoreInPodRejectsInvalidRemotePath(t *testing.T) {
+	rec := &syncthingExecRecorder{}
+	err := writeRemoteSTIgnoreInPod(context.Background(), rec, "ns", "pod", "/", []string{".git/"})
+	if err == nil {
+		t.Fatal("expected invalid remote path error")
+	}
+}
+
+func TestAllocateLocalSyncthingAPIEndpoint(t *testing.T) {
+	guiAddr, apiBase, err := allocateLocalSyncthingAPIEndpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(guiAddr, "127.0.0.1:") {
+		t.Fatalf("unexpected guiAddr %q", guiAddr)
+	}
+	if apiBase != "http://"+guiAddr {
+		t.Fatalf("unexpected apiBase %q", apiBase)
+	}
+}
+
 func TestApplyManagedSyncthingFolderDefaults(t *testing.T) {
 	folder := map[string]any{
 		"id": "okdev-test",
@@ -95,5 +169,172 @@ func TestLocalSyncthingLogPath(t *testing.T) {
 	want := filepath.Join("/tmp/okdev-session", "local.log")
 	if got != want {
 		t.Fatalf("unexpected log path: got %q want %q", got, want)
+	}
+}
+
+func TestLocalSyncthingLogPathRejectsEmptyHome(t *testing.T) {
+	if _, err := localSyncthingLogPath("   "); err == nil {
+		t.Fatal("expected empty home error")
+	}
+}
+
+func TestFolderTypesForMode(t *testing.T) {
+	tests := []struct {
+		mode       string
+		wantLocal  string
+		wantRemote string
+	}{
+		{mode: "up", wantLocal: "sendonly", wantRemote: "receiveonly"},
+		{mode: "down", wantLocal: "receiveonly", wantRemote: "sendonly"},
+		{mode: "bi", wantLocal: "sendreceive", wantRemote: "sendreceive"},
+		{mode: "other", wantLocal: "sendreceive", wantRemote: "sendreceive"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.mode, func(t *testing.T) {
+			gotLocal, gotRemote := folderTypesForMode(tc.mode)
+			if gotLocal != tc.wantLocal || gotRemote != tc.wantRemote {
+				t.Fatalf("unexpected folder types local=%q remote=%q", gotLocal, gotRemote)
+			}
+		})
+	}
+}
+
+func TestSyncthingDeviceIDRejectsEmptyID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"myID":""}`))
+	}))
+	defer srv.Close()
+
+	if _, err := syncthingDeviceID(context.Background(), srv.URL, "k"); err == nil {
+		t.Fatal("expected empty myID error")
+	}
+}
+
+func TestWaitSyncthingAPISucceedsAfterRetry(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`{"myID":"LOCALID"}`))
+	}))
+	defer srv.Close()
+
+	if err := waitSyncthingAPI(context.Background(), srv.URL, "k", 1500*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSyncthingAPIRequestWithContextSetsHeaders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-API-Key"); got != "secret" {
+			t.Fatalf("unexpected API key header %q", got)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Fatalf("unexpected content type %q", got)
+		}
+		_, _ = w.Write([]byte(`ok`))
+	}))
+	defer srv.Close()
+
+	body, err := syncthingAPIRequestWithContext(context.Background(), http.MethodPost, srv.URL, "secret", "/rest/config", []byte(`{}`), "application/json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "ok" {
+		t.Fatalf("unexpected body %q", body)
+	}
+}
+
+func TestSyncthingAPIRequestWithContextRejectsErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "bad", http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	if _, err := syncthingAPIRequestWithContext(context.Background(), http.MethodGet, srv.URL, "k", "/rest/config", nil, ""); err == nil {
+		t.Fatal("expected status error")
+	}
+}
+
+func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
+	cfg := map[string]any{
+		"devices": []any{},
+		"folders": []any{},
+	}
+	var putBodies [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/rest/config":
+			_ = json.NewEncoder(w).Encode(cfg)
+		case r.Method == http.MethodPut && r.URL.Path == "/rest/config":
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			putBodies = append(putBodies, body)
+			if err := json.Unmarshal(body, &cfg); err != nil {
+				t.Fatal(err)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300); err != nil {
+		t.Fatal(err)
+	}
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "dynamic", "okdev-test", "/tmp/updated", "sendonly", 120); err != nil {
+		t.Fatal(err)
+	}
+	if len(putBodies) != 2 {
+		t.Fatalf("expected 2 config writes, got %d", len(putBodies))
+	}
+
+	devices, err := syncthingObjectArray(cfg, "devices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("expected 1 device, got %d", len(devices))
+	}
+	device, err := syncthingObjectMap(devices[0], "devices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := asString(device["deviceID"]); got != "REMOTE" {
+		t.Fatalf("unexpected deviceID %q", got)
+	}
+	addresses, ok := device["addresses"].([]any)
+	if !ok || len(addresses) != 1 || addresses[0] != "dynamic" {
+		t.Fatalf("unexpected device addresses %#v", device["addresses"])
+	}
+
+	folders, err := syncthingObjectArray(cfg, "folders")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(folders) != 1 {
+		t.Fatalf("expected 1 folder, got %d", len(folders))
+	}
+	folder, err := syncthingObjectMap(folders[0], "folders")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := asString(folder["path"]); got != "/tmp/updated" {
+		t.Fatalf("unexpected folder path %q", got)
+	}
+	if got := asString(folder["type"]); got != "sendonly" {
+		t.Fatalf("unexpected folder type %q", got)
+	}
+	if got := folder["rescanIntervalS"]; got != float64(120) {
+		t.Fatalf("unexpected rescanIntervalS %#v", got)
+	}
+	if got := folder["fsWatcherEnabled"]; got != true {
+		t.Fatalf("unexpected fsWatcherEnabled %#v", got)
 	}
 }
