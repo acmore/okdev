@@ -31,6 +31,8 @@ okdev init --template gpu
 
 This generates `.okdev.yaml` in the current directory. See [Config Manifest](config-manifest.md) for the full field reference and examples.
 
+For built-in templates, `okdev init` also writes a starter local `.stignore` file for the initialized sync root.
+
 okdev discovers configuration in this order:
 
 1. `-c, --config <path>` flag
