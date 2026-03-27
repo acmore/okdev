@@ -34,6 +34,7 @@ const (
 	syncthingAPIReadyTimeout   = 30 * time.Second
 	syncthingLocalLogPath      = "/tmp/okdev-syncthing-local.log"
 	syncthingHTTPClientTimeout = 15 * time.Second
+	syncthingWatcherDelayS     = 10
 )
 
 var syncthingHTTPClient = &http.Client{Timeout: syncthingHTTPClientTimeout}
@@ -138,10 +139,10 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	folderTypeLocal, folderTypeRemote := folderTypesForMode(mode)
 	folderID := "okdev-" + sessionName
 
-	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal); err != nil {
+	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds); err != nil {
 		return fmt.Errorf("configure local syncthing: %w", err)
 	}
-	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, syncthingPeerAddrDynamic, folderID, pair.Remote, folderTypeRemote); err != nil {
+	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, syncthingPeerAddrDynamic, folderID, pair.Remote, folderTypeRemote, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds); err != nil {
 		return fmt.Errorf("configure remote syncthing: %w", err)
 	}
 
@@ -502,7 +503,7 @@ func folderTypesForMode(mode string) (local, remote string) {
 	}
 }
 
-func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peerAddr, folderID, folderPath, folderType string) error {
+func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peerAddr, folderID, folderPath, folderType string, rescanIntervalSeconds int) error {
 	cfg, err := syncthingGetConfig(ctx, base, key)
 	if err != nil {
 		return err
@@ -552,13 +553,14 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 				map[string]any{"deviceID": selfID},
 				map[string]any{"deviceID": peerID},
 			}
+			applyManagedSyncthingFolderDefaults(fm, rescanIntervalSeconds)
 			folders[i] = fm
 			foundFolder = true
 			break
 		}
 	}
 	if !foundFolder {
-		folders = append(folders, map[string]any{
+		folder := map[string]any{
 			"id":         folderID,
 			"label":      folderID,
 			"path":       folderPath,
@@ -568,7 +570,9 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 				map[string]any{"deviceID": selfID},
 				map[string]any{"deviceID": peerID},
 			},
-		})
+		}
+		applyManagedSyncthingFolderDefaults(folder, rescanIntervalSeconds)
+		folders = append(folders, folder)
 	}
 	cfg["folders"] = folders
 
@@ -576,6 +580,12 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 		return err
 	}
 	return nil
+}
+
+func applyManagedSyncthingFolderDefaults(folder map[string]any, rescanIntervalSeconds int) {
+	folder["fsWatcherEnabled"] = true
+	folder["fsWatcherDelayS"] = syncthingWatcherDelayS
+	folder["rescanIntervalS"] = rescanIntervalSeconds
 }
 
 func syncthingGetConfig(ctx context.Context, base, key string) (map[string]any, error) {

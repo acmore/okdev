@@ -67,3 +67,21 @@ func TestBuildSTIgnoreContent(t *testing.T) {
 		t.Fatalf("unexpected content %q", content)
 	}
 }
+
+func TestApplyManagedSyncthingFolderDefaults(t *testing.T) {
+	folder := map[string]any{
+		"id": "okdev-test",
+	}
+
+	applyManagedSyncthingFolderDefaults(folder, 300)
+
+	if got := folder["fsWatcherEnabled"]; got != true {
+		t.Fatalf("expected fsWatcherEnabled=true, got %#v", got)
+	}
+	if got := folder["fsWatcherDelayS"]; got != syncthingWatcherDelayS {
+		t.Fatalf("expected fsWatcherDelayS=%d, got %#v", syncthingWatcherDelayS, got)
+	}
+	if got := folder["rescanIntervalS"]; got != 300 {
+		t.Fatalf("expected rescanIntervalS=%d, got %#v", 300, got)
+	}
+}
