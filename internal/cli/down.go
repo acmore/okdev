@@ -9,7 +9,6 @@ import (
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/session"
 	"github.com/spf13/cobra"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 func newDownCmd(opts *Options) *cobra.Command {
@@ -36,6 +35,10 @@ func newDownCmd(opts *Options) *cobra.Command {
 			}
 			ui.stepDone("session", sn)
 			ui.stepDone("namespace", ns)
+			runtime, err := sessionRuntimeForExisting(cfg, cfgPath, sn)
+			if err != nil {
+				return err
+			}
 			k := newKubeClient(opts)
 			if err := ensureSessionOwnership(opts, k, ns, sn, false); err != nil {
 				return err
@@ -46,7 +49,7 @@ func newDownCmd(opts *Options) *cobra.Command {
 			if dryRun {
 				ui.section("Dry Run")
 				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: session=%s namespace=%s\n", sn, ns)
-				fmt.Fprintf(cmd.OutOrStdout(), "- would delete pod/%s\n", podName(sn))
+				fmt.Fprintf(cmd.OutOrStdout(), "- would delete %s/%s\n", runtime.Kind(), runtime.WorkloadName())
 				if deletePVC {
 					fmt.Fprintln(cmd.OutOrStdout(), "- note: --delete-pvc is ignored (okdev no longer manages PVC lifecycle)")
 				}
@@ -54,11 +57,11 @@ func newDownCmd(opts *Options) *cobra.Command {
 			}
 
 			ui.section("Delete")
-			ui.stepRun("pod", podName(sn))
-			if err := k.Delete(ctx, ns, "pod", podName(sn), true); err != nil && !apierrors.IsNotFound(err) {
-				return fmt.Errorf("delete session pod: %w", err)
+			ui.stepRun(runtime.Kind(), runtime.WorkloadName())
+			if err := runtime.Delete(ctx, k, ns, true); err != nil {
+				return fmt.Errorf("delete session %s: %w", runtime.Kind(), err)
 			}
-			ui.stepDone("pod", "deleted")
+			ui.stepDone(runtime.Kind(), "deleted")
 			if deletePVC {
 				ui.warnf("--delete-pvc ignored: okdev no longer manages PVC lifecycle; delete PVCs manually if needed")
 			}
@@ -90,6 +93,11 @@ func newDownCmd(opts *Options) *cobra.Command {
 			if active, err := session.LoadActiveSession(); err == nil && active == sn {
 				_ = session.ClearActiveSession()
 				ui.stepDone("active session", "cleared")
+			}
+			if err := session.ClearTarget(sn); err != nil {
+				ui.warnf("failed to clear target state: %v", err)
+			} else {
+				ui.stepDone("target", "cleared")
 			}
 			ui.printWarnings()
 			ui.section("Ready")

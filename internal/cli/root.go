@@ -42,6 +42,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newStatusCmd(opts))
 	cmd.AddCommand(newListCmd(opts))
 	cmd.AddCommand(newUseCmd(opts))
+	cmd.AddCommand(newTargetCmd(opts))
 	cmd.AddCommand(newConnectCmd(opts))
 	cmd.AddCommand(newSSHCmd(opts))
 	cmd.AddCommand(newSSHProxyCmd(opts))

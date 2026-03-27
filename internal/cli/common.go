@@ -20,6 +20,7 @@ import (
 	"github.com/acmore/okdev/internal/connect"
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
+	"github.com/acmore/okdev/internal/workload"
 	"golang.org/x/term"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
@@ -104,12 +105,13 @@ func announceConfigPathWithWriter(w io.Writer, path string, interactive bool) fu
 }
 
 type transientStatus struct {
-	w       io.Writer
-	message string
-	enabled bool
-	stopCh  chan struct{}
-	doneCh  chan struct{}
-	mu      sync.Mutex
+	w        io.Writer
+	message  string
+	enabled  bool
+	stopCh   chan struct{}
+	doneCh   chan struct{}
+	mu       sync.Mutex
+	stopOnce sync.Once
 }
 
 func newTransientStatus(w io.Writer, message string) *transientStatus {
@@ -189,8 +191,10 @@ func (s *transientStatus) stop() {
 	if !s.enabled {
 		return
 	}
-	close(s.stopCh)
-	<-s.doneCh
+	s.stopOnce.Do(func() {
+		close(s.stopCh)
+		<-s.doneCh
+	})
 }
 
 func isTerminalWriter(w io.Writer) bool {
@@ -268,7 +272,11 @@ func resolveSessionNameWithReader(opts *Options, cfg *config.DevEnvironment, nam
 func sessionPodExists(k sessionAccessReader, namespace, sessionName string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_, err := k.GetPodSummary(ctx, namespace, podName(sessionName))
+	pods, err := k.ListPods(ctx, namespace, false, "okdev.io/managed=true,okdev.io/session="+sessionName)
+	if err == nil {
+		return len(pods) > 0, nil
+	}
+	_, err = k.GetPodSummary(ctx, namespace, podName(sessionName))
 	if err == nil {
 		return true, nil
 	}
@@ -326,11 +334,12 @@ func labelsForSession(opts *Options, cfg *config.DevEnvironment, sessionName str
 		repo = filepath.Base(root)
 	}
 	return map[string]string{
-		"okdev.io/managed": "true",
-		"okdev.io/name":    cfg.Metadata.Name,
-		"okdev.io/session": sessionName,
-		"okdev.io/owner":   owner,
-		"okdev.io/repo":    repo,
+		"okdev.io/managed":       "true",
+		"okdev.io/name":          cfg.Metadata.Name,
+		"okdev.io/session":       sessionName,
+		"okdev.io/owner":         owner,
+		"okdev.io/repo":          repo,
+		"okdev.io/workload-type": cfg.Spec.Workload.Type,
 		"okdev.io/shareable": func() string {
 			if cfg.Spec.Session.Shareable {
 				return "true"
@@ -374,15 +383,15 @@ func interactiveContext() (context.Context, context.CancelFunc) {
 	return context.WithCancel(context.Background())
 }
 
-func runConnect(opts *Options, namespace, sessionName string, command []string, tty bool) error {
-	return runConnectWithClient(newKubeClient(opts), namespace, sessionName, command, tty)
+func runConnect(opts *Options, namespace string, target workload.TargetRef, command []string, tty bool) error {
+	return runConnectWithClient(newKubeClient(opts), namespace, target, command, tty)
 }
 
-func runConnectWithClient(k *kube.Client, namespace, sessionName string, command []string, tty bool) error {
+func runConnectWithClient(k *kube.Client, namespace string, target workload.TargetRef, command []string, tty bool) error {
 	ctx, cancel := interactiveContext()
 	defer cancel()
-	slog.Debug("connect start", "namespace", namespace, "session", sessionName, "tty", tty)
-	return connect.Run(ctx, k, namespace, podName(sessionName), command, tty, os.Stdin, os.Stdout, os.Stderr)
+	slog.Debug("connect start", "namespace", namespace, "pod", target.PodName, "tty", tty)
+	return connect.Run(ctx, k, namespace, target.PodName, command, tty, os.Stdin, os.Stdout, os.Stderr)
 }
 
 func startSessionMaintenance(opts *Options, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer, renewLock bool, emitHeartbeat bool) func() {
@@ -395,7 +404,11 @@ func startSessionMaintenanceWithClient(k *kube.Client, cfg *config.DevEnvironmen
 	if !emitHeartbeat {
 		return func() {}
 	}
+	target, err := loadTargetRef(sessionName)
 	pod := podName(sessionName)
+	if err == nil && strings.TrimSpace(target.PodName) != "" {
+		pod = target.PodName
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
@@ -470,21 +483,26 @@ func ensureExistingSessionOwnership(opts *Options, k *kube.Client, namespace, se
 
 type sessionAccessReader interface {
 	GetPodSummary(context.Context, string, string) (*kube.PodSummary, error)
+	ListPods(context.Context, string, bool, string) ([]kube.PodSummary, error)
 }
 
 func ensureSessionAccess(opts *Options, k sessionAccessReader, namespace, sessionName string, allowShareable bool, requireExisting bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	pod, err := k.GetPodSummary(ctx, namespace, podName(sessionName))
+	pods, err := k.ListPods(ctx, namespace, false, "okdev.io/managed=true,okdev.io/session="+sessionName)
 	if err != nil {
-		if apierrors.IsNotFound(err) {
-			if requireExisting {
-				return fmt.Errorf("session %q does not exist in namespace %q", sessionName, namespace)
-			}
-			return nil
-		}
 		return err
 	}
+	if len(pods) == 0 {
+		if requireExisting {
+			return fmt.Errorf("session %q does not exist in namespace %q", sessionName, namespace)
+		}
+		return nil
+	}
+	sort.Slice(pods, func(i, j int) bool {
+		return workload.ComparePodPriority(pods[i], pods[j])
+	})
+	pod := &pods[0]
 	owner := currentOwner(opts)
 	otherOwner := strings.TrimSpace(pod.Labels["okdev.io/owner"])
 	if otherOwner == "" || otherOwner == owner {
