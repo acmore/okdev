@@ -17,7 +17,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			applySessionArg(opts, args)
-			cfg, ns, err := loadConfigAndNamespace(opts)
+			cc, err := resolveCommandContext(opts, nil)
 			if err != nil {
 				return err
 			}
@@ -26,17 +26,16 @@ func newStatusCmd(opts *Options) *cobra.Command {
 				label = label + "," + ownerLabelSelector(opts)
 			}
 			if !all {
-				sn, err := resolveSessionName(opts, cfg, ns)
+				cc.sessionName, err = resolveSessionName(opts, cc.cfg, cc.namespace)
 				if err != nil {
 					return err
 				}
-				label = label + ",okdev.io/session=" + sn
+				label = label + ",okdev.io/session=" + cc.sessionName
 			}
 
 			ctx, cancel := defaultContext()
 			defer cancel()
-			k := newKubeClient(opts)
-			pods, err := k.ListPods(ctx, ns, false, label)
+			pods, err := cc.kube.ListPods(ctx, cc.namespace, false, label)
 			if err != nil {
 				return err
 			}

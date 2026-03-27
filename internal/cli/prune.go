@@ -24,12 +24,12 @@ func newPruneCmd(opts *Options) *cobra.Command {
 		Use:   "prune",
 		Short: "Delete expired sessions by TTL",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, ns, err := loadConfigAndNamespace(opts)
+			cc, err := resolveCommandContext(opts, nil)
 			if err != nil {
 				return err
 			}
 			if ttlHours <= 0 {
-				ttlHours = cfg.Spec.Session.TTLHours
+				ttlHours = cc.cfg.Spec.Session.TTLHours
 			}
 			if ttlHours <= 0 {
 				ttlHours = 72
@@ -37,12 +37,11 @@ func newPruneCmd(opts *Options) *cobra.Command {
 
 			ctx, cancel := defaultContext()
 			defer cancel()
-			k := newKubeClient(opts)
 			label := "okdev.io/managed=true"
 			if !allUsers {
 				label = label + "," + ownerLabelSelector(opts)
 			}
-			pods, err := k.ListPods(ctx, ns, allNamespaces, label)
+			pods, err := cc.kube.ListPods(ctx, cc.namespace, allNamespaces, label)
 			if err != nil {
 				return err
 			}
@@ -92,11 +91,11 @@ func newPruneCmd(opts *Options) *cobra.Command {
 					}
 					continue
 				}
-				if err := deleteSessionWorkload(ctx, k, view, targetPod); err != nil {
+				if err := deleteSessionWorkload(ctx, cc.kube, view, targetPod); err != nil {
 					return err
 				}
 				if includePVC {
-					_ = k.Delete(ctx, view.Namespace, "pvc", "okdev-"+sessionName+"-workspace", true)
+					_ = cc.kube.Delete(ctx, view.Namespace, "pvc", "okdev-"+sessionName+"-workspace", true)
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Pruned session %s in namespace %s (%s)\n", sessionName, view.Namespace, reason)
 				deleted++

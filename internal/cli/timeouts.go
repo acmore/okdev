@@ -119,6 +119,9 @@ const (
 	// Data-flow watchdog idle timeout.
 	dataFlowWatchdogIdleTimeout = 15 * time.Second
 
+	// TCP keepalive period for proxy sockets.
+	proxySocketKeepAlivePeriod = 5 * time.Second
+
 	// SSHD readiness poll interval.
 	sshdReadinessPollInterval = 300 * time.Millisecond
 
@@ -136,6 +139,24 @@ const (
 
 	// Tmux installation progress update interval.
 	tmuxInstallProgressInterval = 10 * time.Second
+
+	// Timeout for validating a pinned interactive target pod.
+	targetValidationTimeout = 15 * time.Second
+
+	// Timeout for local Syncthing binary bootstrap and sidecar setup.
+	syncthingBootstrapTimeout = 2 * time.Minute
+
+	// HTTP timeout for Syncthing REST API requests.
+	syncthingHTTPClientTimeout = 15 * time.Second
+
+	// Max wait for Syncthing REST API readiness.
+	syncthingAPIReadyTimeout = 30 * time.Second
+
+	// Poll interval while waiting for the Syncthing API to come up.
+	syncthingAPIReadyPollInterval = 1 * time.Second
+
+	// Progress reporting interval for foreground Syncthing sync.
+	syncthingProgressInterval = 5 * time.Second
 
 	// Delay used to confirm a detached Syncthing child stayed up.
 	syncthingDetachedStartupDelay = 300 * time.Millisecond

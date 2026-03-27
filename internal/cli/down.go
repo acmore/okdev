@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -21,26 +20,18 @@ func newDownCmd(opts *Options) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ui := newUpUI(cmd.OutOrStdout(), cmd.ErrOrStderr())
 			ui.section("Validate")
-			cfg, ns, err := loadConfigAndNamespace(opts)
+			cc, err := resolveCommandContext(opts, resolveSessionNameForUpDown)
 			if err != nil {
 				return err
 			}
-			cfgPath, pathErr := config.ResolvePath(opts.ConfigPath)
-			if pathErr == nil {
-				ui.stepDone("config", cfgPath)
-			}
-			sn, err := resolveSessionNameForUpDown(opts, cfg, ns)
+			ui.stepDone("config", cc.cfgPath)
+			ui.stepDone("session", cc.sessionName)
+			ui.stepDone("namespace", cc.namespace)
+			runtime, err := sessionRuntimeForExisting(cc.cfg, cc.cfgPath, cc.sessionName)
 			if err != nil {
 				return err
 			}
-			ui.stepDone("session", sn)
-			ui.stepDone("namespace", ns)
-			runtime, err := sessionRuntimeForExisting(cfg, cfgPath, sn)
-			if err != nil {
-				return err
-			}
-			k := newKubeClient(opts)
-			if err := ensureSessionOwnership(opts, k, ns, sn, false); err != nil {
+			if err := ensureSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName, false); err != nil {
 				return err
 			}
 			ui.stepDone("ownership", "ok")
@@ -48,7 +39,7 @@ func newDownCmd(opts *Options) *cobra.Command {
 			defer cancel()
 			if dryRun {
 				ui.section("Dry Run")
-				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: session=%s namespace=%s\n", sn, ns)
+				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: session=%s namespace=%s\n", cc.sessionName, cc.namespace)
 				fmt.Fprintf(cmd.OutOrStdout(), "- would delete %s/%s\n", runtime.Kind(), runtime.WorkloadName())
 				if deletePVC {
 					fmt.Fprintln(cmd.OutOrStdout(), "- note: --delete-pvc is ignored (okdev no longer manages PVC lifecycle)")
@@ -58,7 +49,7 @@ func newDownCmd(opts *Options) *cobra.Command {
 
 			ui.section("Delete")
 			ui.stepRun(runtime.Kind(), runtime.WorkloadName())
-			if err := runtime.Delete(ctx, k, ns, true); err != nil {
+			if err := runtime.Delete(ctx, cc.kube, cc.namespace, true); err != nil {
 				return fmt.Errorf("delete session %s: %w", runtime.Kind(), err)
 			}
 			ui.stepDone(runtime.Kind(), "deleted")
@@ -66,19 +57,19 @@ func newDownCmd(opts *Options) *cobra.Command {
 				ui.warnf("--delete-pvc ignored: okdev no longer manages PVC lifecycle; delete PVCs manually if needed")
 			}
 			ui.stepDone("pvc", "not managed")
-			alias := sshHostAlias(sn)
+			alias := sshHostAlias(cc.sessionName)
 			ui.section("Cleanup")
-			if err := session.RequestShutdown(sn); err != nil {
+			if err := session.RequestShutdown(cc.sessionName); err != nil {
 				ui.warnf("failed to request shutdown for local clients: %v", err)
 			} else {
 				ui.stepDone("local clients", "shutdown requested")
 			}
-			if err := stopDetachedSyncthingSync(sn); err != nil {
+			if err := stopDetachedSyncthingSync(cc.sessionName); err != nil {
 				ui.warnf("failed to stop background sync: %v", err)
 			} else {
 				ui.stepDone("sync", "stopped")
 			}
-			if err := stopLocalSyncthingForSession(sn); err != nil {
+			if err := stopLocalSyncthingForSession(cc.sessionName); err != nil {
 				ui.warnf("failed to stop local syncthing: %v", err)
 			} else {
 				ui.stepDone("syncthing", "stopped")
@@ -90,19 +81,19 @@ func newDownCmd(opts *Options) *cobra.Command {
 			} else {
 				ui.stepDone("ssh config", "cleaned")
 			}
-			if active, err := session.LoadActiveSession(); err == nil && active == sn {
+			if active, err := session.LoadActiveSession(); err == nil && active == cc.sessionName {
 				_ = session.ClearActiveSession()
 				ui.stepDone("active session", "cleared")
 			}
-			if err := session.ClearTarget(sn); err != nil {
+			if err := session.ClearTarget(cc.sessionName); err != nil {
 				ui.warnf("failed to clear target state: %v", err)
 			} else {
 				ui.stepDone("target", "cleared")
 			}
 			ui.printWarnings()
 			ui.section("Ready")
-			fmt.Fprintf(cmd.OutOrStdout(), "session:   %s\n", sn)
-			fmt.Fprintf(cmd.OutOrStdout(), "namespace: %s\n", ns)
+			fmt.Fprintf(cmd.OutOrStdout(), "session:   %s\n", cc.sessionName)
+			fmt.Fprintf(cmd.OutOrStdout(), "namespace: %s\n", cc.namespace)
 			fmt.Fprintln(cmd.OutOrStdout(), "status:    stopped")
 			fmt.Fprintln(cmd.OutOrStdout(), "workspace: pod deleted; volumes/PVCs unchanged")
 			return nil

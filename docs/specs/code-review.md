@@ -19,8 +19,8 @@
 
 ## P1 — Performance
 
-### 4. Repeated Kubernetes client creation (PARTIALLY FIXED)
-`internal/cli/common.go`, `internal/cli/ssh.go`, `internal/cli/connect.go`, `internal/cli/ports.go`, `internal/cli/sync.go`, `internal/cli/up.go` — a shared `commandContext` now creates and reuses one `kube.Client` per command in the main session-oriented flows. Some simpler commands still build their own client inline, but the repeated multi-step command paths no longer recreate the client several times during one execution.
+### 4. Repeated Kubernetes client creation (MOSTLY FIXED)
+`internal/cli/common.go`, `internal/cli/ssh.go`, `internal/cli/connect.go`, `internal/cli/ports.go`, `internal/cli/sync.go`, `internal/cli/up.go`, `internal/cli/status.go`, `internal/cli/target.go`, `internal/cli/down.go`, and `internal/cli/prune.go` — a shared `commandContext` now creates and reuses one `kube.Client` per command in the main session-oriented flows. Some simpler commands still build their own client inline, but the repeated multi-step command paths no longer recreate the client several times during one execution.
 
 ### 5. ~~Shelling out to `ps` in a polling loop~~ (FIXED)
 `processAlive()` now uses `os.FindProcess` + `Signal(0)` with an `isZombie()` guard that reads `/proc/<pid>/stat` on Linux (no subprocess) and falls back to `ps` only on macOS. `processLooksLikeSyncthingSync()` reads `/proc/<pid>/cmdline` on Linux with the same macOS fallback. The zombie check is necessary because `Signal(0)` succeeds for zombie processes on Unix.
@@ -47,12 +47,12 @@
 ### 10. ~~Unused parameters~~ (FIXED)
 `startSessionMaintenance()` and `startSessionMaintenanceWithClient()` no longer accept `cfg` or `renewLock`. All 4 callers (ssh.go, connect.go, ports.go, sync.go) updated.
 
-### 11. Duplicated config/namespace/session resolution (PARTIALLY FIXED)
-`internal/cli/common.go` now has `commandContext` + `resolveCommandContext()` and the repeated load-config → resolve-namespace → resolve-session → build-kube-client flow has been collapsed in `up`, `ssh`, `ssh-proxy`, `connect`, `ports`, and `sync`.
+### 11. Duplicated config/namespace/session resolution (MOSTLY FIXED)
+`internal/cli/common.go` now has `commandContext` + `resolveCommandContext()` and the repeated load-config → resolve-namespace → resolve-session → build-kube-client flow has been collapsed in `up`, `ssh`, `ssh-proxy`, `connect`, `ports`, `sync`, `status`, `target`, `down`, and `prune`.
 
-**Remaining work:** Extend the same pattern to the remaining commands that still resolve config and session state manually, such as `status`, `target`, `down`, and `prune`.
+**Remaining work:** Decide whether to extend the same pattern to lower-complexity commands like `list` and any remaining one-off helpers, or leave those as intentionally simpler exceptions.
 
-### 12. Hardcoded timeouts scattered across files (PARTIALLY FIXED)
+### 12. Hardcoded timeouts scattered across files (MOSTLY FIXED)
 ```
 common.go:28    — 5 * time.Minute (heartbeat)
 common.go:379   — 5 * time.Minute (context timeout)
@@ -62,9 +62,9 @@ ssh.go:241      — 60 * time.Second, 20 failures (circuit breaker)
 syncthing.go:180 — 300ms sleep
 portforward_helper.go:50 — 200ms ticker
 ```
-These are now mostly centralized in `internal/cli/timeouts.go`, and the touched `common`, `ssh`, `sync`, `up`, and `portforward_helper` paths have been updated to use named constants.
+These are now mostly centralized in `internal/cli/timeouts.go`, and the touched `common`, `ssh`, `sync`, `up`, `portforward_helper`, `workload`, `syncthing`, and proxy-health paths have been updated to use named constants.
 
-**Remaining work:** Sweep the rest of `internal/cli` for leftover literals and decide whether every remaining timing knob belongs in the shared timeout set.
+**Remaining work:** Sweep the last few non-test literals and decide whether every remaining timing knob belongs in the shared timeout set or should stay local because it is formatting- or UX-specific.
 
 ### 13. `goto` in migration code
 `internal/config/migrate.go:239` — Uses `goto podTemplateDone` to break nested loops. A labeled `break` or helper function would be more idiomatic.
@@ -123,6 +123,6 @@ Cleanup errors being silenced is fine, but should at least log at debug level fo
 
 ## Next Recommended Actions
 
-1. **Finish rolling `commandContext` out to the remaining commands** — the pattern is fixed in the main session commands but still duplicated elsewhere.
-2. **Do a final timeout sweep** — `timeouts.go` exists now, but not every CLI literal has been normalized yet.
-3. **Keep trimming helper complexity in SSH/up setup flows** — the top-level commands are much cleaner, but some setup helpers are still dense.
+1. **Trim helper complexity in SSH and up setup flows** — the top-level commands are much cleaner, but some setup helpers are still dense.
+2. **Decide on the final scope of `commandContext` and `timeouts.go`** — most high-value call sites are migrated now, so the remaining work is cleanup and consistency rather than broad rollout.
+3. **Address the remaining non-refactor review items** — context propagation in `template.go`, safer target/session view contracts, and the workload/kube cleanup items are now the more meaningful remaining work.

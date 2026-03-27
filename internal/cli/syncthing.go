@@ -30,9 +30,7 @@ const (
 	syncthingContainerName = "okdev-sidecar"
 )
 const (
-	syncthingPeerAddrDynamic   = "dynamic"
-	syncthingAPIReadyTimeout   = 30 * time.Second
-	syncthingHTTPClientTimeout = 15 * time.Second
+	syncthingPeerAddrDynamic = "dynamic"
 )
 
 var syncthingHTTPClient = &http.Client{Timeout: syncthingHTTPClientTimeout}
@@ -42,7 +40,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		return fmt.Errorf("syncthing engine currently supports exactly one sync path mapping")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), syncthingBootstrapTimeout)
 	defer cancel()
 	localBinary, err := syncthing.EnsureBinary(ctx, cfg.Spec.Sync.Syncthing.Version, cfg.Spec.Sync.Syncthing.AutoInstallEnabled())
 	if err != nil {
@@ -426,7 +424,7 @@ func execInSyncthingContainer(ctx context.Context, k interface {
 
 func waitSyncthingAPI(ctx context.Context, base, key string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(syncthingAPIReadyPollInterval)
 	defer ticker.Stop()
 	for time.Now().Before(deadline) {
 		select {
@@ -474,7 +472,7 @@ func syncthingDeviceID(ctx context.Context, base, key string) (string, error) {
 }
 
 func runSyncthingProgressReporter(ctx context.Context, out io.Writer, localBase, localKey, remoteBase, remoteKey, folderID, localID, remoteID string) {
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(syncthingProgressInterval)
 	defer ticker.Stop()
 	emit := func() bool {
 		upPct, upNeed, err := syncthingCompletion(ctx, localBase, localKey, folderID, remoteID)
