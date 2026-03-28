@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -221,5 +222,19 @@ func TestPSStatIsZombie(t *testing.T) {
 	}
 	if psStatIsZombie("Ss") {
 		t.Fatal("did not expect normal ps state to be zombie")
+	}
+}
+
+func TestReportSyncthingTargetReset(t *testing.T) {
+	var out bytes.Buffer
+	reportSyncthingTargetReset(&out, "sess-a", true)
+	if got := out.String(); got != "Reset local sync state for session sess-a: target pod was recreated\n" {
+		t.Fatalf("unexpected reset report %q", got)
+	}
+
+	out.Reset()
+	reportSyncthingTargetReset(&out, "sess-a", false)
+	if out.Len() != 0 {
+		t.Fatalf("expected no output when reset is false, got %q", out.String())
 	}
 }
