@@ -120,10 +120,16 @@ type SyncthingSpec struct {
 }
 
 type PortMapping struct {
-	Name   string `yaml:"name"`
-	Local  int    `yaml:"local"`
-	Remote int    `yaml:"remote"`
+	Name      string `yaml:"name"`
+	Local     int    `yaml:"local"`
+	Remote    int    `yaml:"remote"`
+	Direction string `yaml:"direction,omitempty"`
 }
+
+const (
+	PortDirectionForward = "forward"
+	PortDirectionReverse = "reverse"
+)
 
 type LifecycleSpec struct {
 	PostCreate string `yaml:"postCreate"`
@@ -345,9 +351,16 @@ func validateSyncPaths(paths []string) error {
 
 func validatePortMappings(ports []PortMapping) error {
 	usedLocal := map[int]struct{}{}
+	usedRemote := map[int]struct{}{}
 	for i, p := range ports {
 		if p.Local == 0 && p.Remote == 0 {
 			continue
+		}
+		direction := normalizePortDirection(p.Direction)
+		switch direction {
+		case PortDirectionForward, PortDirectionReverse:
+		default:
+			return fmt.Errorf("spec.ports[%d].direction must be %q or %q, got %q", i, PortDirectionForward, PortDirectionReverse, p.Direction)
 		}
 		if err := validatePortRange(fmt.Sprintf("spec.ports[%d].local", i), p.Local); err != nil {
 			return err
@@ -355,12 +368,34 @@ func validatePortMappings(ports []PortMapping) error {
 		if err := validatePortRange(fmt.Sprintf("spec.ports[%d].remote", i), p.Remote); err != nil {
 			return err
 		}
+		if direction == PortDirectionReverse {
+			if _, exists := usedRemote[p.Remote]; exists {
+				return fmt.Errorf("spec.ports has duplicate reverse remote port %d", p.Remote)
+			}
+			usedRemote[p.Remote] = struct{}{}
+			continue
+		}
 		if _, exists := usedLocal[p.Local]; exists {
 			return fmt.Errorf("spec.ports has duplicate local port %d", p.Local)
 		}
 		usedLocal[p.Local] = struct{}{}
 	}
 	return nil
+}
+
+func normalizePortDirection(direction string) string {
+	switch strings.ToLower(strings.TrimSpace(direction)) {
+	case "", PortDirectionForward:
+		return PortDirectionForward
+	case PortDirectionReverse:
+		return PortDirectionReverse
+	default:
+		return strings.ToLower(strings.TrimSpace(direction))
+	}
+}
+
+func (p PortMapping) EffectiveDirection() string {
+	return normalizePortDirection(p.Direction)
 }
 
 func validatePortRange(field string, port int) error {
