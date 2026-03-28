@@ -19,6 +19,7 @@ import (
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/logx"
 	"github.com/acmore/okdev/internal/session"
+	"github.com/acmore/okdev/internal/shellutil"
 	okssh "github.com/acmore/okdev/internal/ssh"
 	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
@@ -451,6 +452,9 @@ func ensureSSHConfigEntry(hostAlias, sessionName, namespace, user string, remote
 		return false, err
 	}
 	defer lockFile.Close()
+	defer func() {
+		_ = os.Remove(lockPath)
+	}()
 	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
 		return false, err
 	}
@@ -507,10 +511,7 @@ func stripManagedSSHBlock(content, begin, end string) string {
 }
 
 func shellQuote(v string) string {
-	if v == "" {
-		return "''"
-	}
-	return "'" + strings.ReplaceAll(v, "'", `'"'"'`) + "'"
+	return shellutil.Quote(v)
 }
 
 func newSSHProxyCmd(opts *Options) *cobra.Command {
@@ -596,14 +597,24 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				})
 
 				var copyErr error
+				var copyErrMu sync.Mutex
 				var once sync.Once
 				done := make(chan struct{})
+				getCopyErr := func() error {
+					copyErrMu.Lock()
+					defer copyErrMu.Unlock()
+					return copyErr
+				}
 				setErr := func(err error) {
 					if err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, syscall.EPIPE) || isIgnorableProxyIOError(err) {
 						return
 					}
 					slog.Debug("ssh-proxy copy error", "error", err)
-					once.Do(func() { copyErr = err })
+					once.Do(func() {
+						copyErrMu.Lock()
+						copyErr = err
+						copyErrMu.Unlock()
+					})
 				}
 				go func() {
 					slog.Debug("ssh-proxy starting copy: stdin -> conn")
@@ -627,25 +638,26 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				<-done
 				watchdogCancel()
 				if healthDisconnect.Load() {
+					err := getCopyErr()
 					logx.Printf("time=%s source=ssh-proxy msg=%q err=%q uptime=%s\n",
 						time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
 						"session finished after health-triggered disconnect",
-						copyErr,
+						err,
 						time.Since(startTime).Round(time.Second),
 					)
-					if copyErr != nil {
-						return fmt.Errorf("%w: %v", ErrProxyHealthDisconnect, copyErr)
+					if err != nil {
+						return fmt.Errorf("%w: %v", ErrProxyHealthDisconnect, err)
 					}
 					return ErrProxyHealthDisconnect
 				}
-				if copyErr != nil {
+				if err := getCopyErr(); err != nil {
 					logx.Printf("time=%s source=ssh-proxy msg=%q err=%q uptime=%s\n",
 						time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
 						"session finished with proxy copy error",
-						copyErr,
+						err,
 						time.Since(startTime).Round(time.Second),
 					)
-					return copyErr
+					return err
 				}
 				return nil
 			})
@@ -881,6 +893,9 @@ func updateSSHConfigWithLock(configPath string, mutator func(existing string) st
 	}
 	defer func() {
 		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	}()
+	defer func() {
+		_ = os.Remove(lockPath)
 	}()
 
 	existing, _ := os.ReadFile(configPath)

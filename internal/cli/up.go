@@ -329,11 +329,10 @@ func upSetup(state *upState) error {
 		state.ui.stepRun("agents", "checking configured CLIs and auth")
 		results := ensureConfiguredAgentsInstalled(state.ctx, state.command.kube, state.command.namespace, target.PodName, target.Container, state.command.cfg.Spec.Agents, state.ui.warnf)
 		authResults := ensureConfiguredAgentAuth(state.ctx, state.command.kube, state.command.namespace, target.PodName, target.Container, state.command.cfg.Spec.Session.Shareable, state.command.cfg.Spec.Agents, state.ui.warnf)
-		results = append(results, authResults...)
-		if len(results) == 0 {
+		if len(results) == 0 && len(authResults) == 0 {
 			state.ui.stepDone("agents", "no configured agents")
 		} else {
-			state.ui.stepDone("agents", strings.Join(results, ", "))
+			state.ui.stepDone("agents", summarizeAgentResults(results, authResults))
 		}
 	}
 

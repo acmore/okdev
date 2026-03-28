@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -39,5 +40,28 @@ func TestSessionLastActiveFallsBackWhenAnnotationInvalid(t *testing.T) {
 	}
 	if !got.Equal(createdAt) {
 		t.Fatalf("expected createdAt fallback %s, got %s", createdAt, got)
+	}
+}
+
+func TestPruneOutputJSONShape(t *testing.T) {
+	payload := pruneOutput{
+		DryRun:     true,
+		TTLHours:   72,
+		Candidates: 1,
+		Deleted:    0,
+		Actions: []pruneAction{{
+			Session:   "sess-a",
+			Namespace: "default",
+			Reason:    "ttl>72h",
+			DeletePVC: true,
+			DryRun:    true,
+		}},
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal pruneOutput: %v", err)
+	}
+	if string(b) == "" {
+		t.Fatal("expected non-empty json payload")
 	}
 }

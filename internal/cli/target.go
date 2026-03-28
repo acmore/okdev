@@ -11,6 +11,24 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type targetShowOutput struct {
+	Session   string          `json:"session"`
+	Workload  string          `json:"workload"`
+	Target    string          `json:"target"`
+	Container string          `json:"container"`
+	Role      string          `json:"role,omitempty"`
+	Pods      []targetShowPod `json:"pods"`
+}
+
+type targetShowPod struct {
+	Selected   bool   `json:"selected"`
+	Pod        string `json:"pod"`
+	Role       string `json:"role,omitempty"`
+	Attachable string `json:"attachable,omitempty"`
+	Phase      string `json:"phase"`
+	Ready      string `json:"ready"`
+}
+
 func newTargetCmd(opts *Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "target",
@@ -41,6 +59,10 @@ func newTargetShowCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			payload := buildTargetShowOutput(view, target)
+			if opts.Output == "json" {
+				return outputJSON(cmd.OutOrStdout(), payload)
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "session:   %s\n", view.Session)
 			fmt.Fprintf(cmd.OutOrStdout(), "workload:  %s\n", view.WorkloadType)
 			fmt.Fprintf(cmd.OutOrStdout(), "target:    %s\n", target.PodName)
@@ -68,6 +90,28 @@ func newTargetShowCmd(opts *Options) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func buildTargetShowOutput(view sessionView, target workload.TargetRef) targetShowOutput {
+	out := targetShowOutput{
+		Session:   view.Session,
+		Workload:  view.WorkloadType,
+		Target:    target.PodName,
+		Container: target.Container,
+		Role:      target.Role,
+		Pods:      make([]targetShowPod, 0, len(view.Pods)),
+	}
+	for _, pod := range sortedSessionPods(view.Pods) {
+		out.Pods = append(out.Pods, targetShowPod{
+			Selected:   pod.Name == target.PodName,
+			Pod:        pod.Name,
+			Role:       strings.TrimSpace(pod.Labels["okdev.io/workload-role"]),
+			Attachable: strings.TrimSpace(pod.Labels["okdev.io/attachable"]),
+			Phase:      pod.Phase,
+			Ready:      pod.Ready,
+		})
+	}
+	return out
 }
 
 func newTargetSetCmd(opts *Options) *cobra.Command {

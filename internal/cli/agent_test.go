@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,15 @@ type fakeAgentExecClient struct {
 	results   map[string]error
 }
 
+const fakeAgentNPMDetectKey = "__agent_npm_detect__"
+
+func looksLikeAgentNPMDetectScript(script string) bool {
+	return strings.Contains(script, "echo install:${installer}") &&
+		strings.Contains(script, "echo unavailable:none") &&
+		strings.Contains(script, "command -v bash") &&
+		strings.Contains(script, "command -v curl")
+}
+
 func (f *fakeAgentExecClient) ExecShInContainer(_ context.Context, _, _, _, script string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -30,7 +40,6 @@ func (f *fakeAgentExecClient) ExecShInContainer(_ context.Context, _, _, _, scri
 	case "npm install -g @anthropic-ai/claude-code":
 	case "npm install -g @google/gemini-cli":
 	case "npm install -g opencode-ai":
-	case agentNPMDetectScript:
 	}
 	switch {
 	case strings.Contains(script, "binary='codex'"):
@@ -49,6 +58,14 @@ func (f *fakeAgentExecClient) ExecShInContainer(_ context.Context, _, _, _, scri
 			return []byte("__OKDEV_NPM_STATUS__=installed:nvm\n"), nil
 		}
 		return []byte("__OKDEV_NPM_STATUS__=installed:none\n"), nil
+	}
+	if looksLikeAgentNPMDetectScript(script) {
+		if out, ok := f.outputs[fakeAgentNPMDetectKey]; ok {
+			return out, nil
+		}
+		if err, ok := f.results[fakeAgentNPMDetectKey]; ok {
+			return nil, err
+		}
 	}
 	if err, ok := f.results[script]; ok {
 		return nil, err
@@ -136,6 +153,46 @@ func TestEnsureConfiguredAgentsInstalled(t *testing.T) {
 	}
 }
 
+func TestEnsureConfiguredAgentsInstalledBootstrapsNPMOnce(t *testing.T) {
+	client := &fakeAgentExecClient{
+		results: map[string]error{
+			"command -v codex >/dev/null 2>&1":    errors.New("exit status 1"),
+			"command -v gemini >/dev/null 2>&1":   errors.New("exit status 1"),
+			"command -v opencode >/dev/null 2>&1": errors.New("exit status 1"),
+			"npm install -g @openai/codex":        nil,
+			"npm install -g @google/gemini-cli":   nil,
+			"npm install -g opencode-ai":          nil,
+		},
+		outputs: map[string][]byte{
+			`node -p 'process.versions.node.split(".")[0]'`: []byte("12\n"),
+			fakeAgentNPMDetectKey:                           []byte("install:nvm\n"),
+		},
+	}
+
+	results := ensureConfiguredAgentsInstalled(
+		context.Background(),
+		client,
+		"default",
+		"pod",
+		"dev",
+		[]config.AgentSpec{{Name: "codex"}, {Name: "gemini"}, {Name: "opencode"}},
+		func(string, ...any) {},
+	)
+
+	if got := strings.Join(results, ", "); strings.Count(got, "node/npm installed via nvm") != 1 {
+		t.Fatalf("expected one npm bootstrap result, got %q", got)
+	}
+	detectCalls := 0
+	for _, script := range client.scripts {
+		if looksLikeAgentNPMDetectScript(script) {
+			detectCalls++
+		}
+	}
+	if detectCalls != 1 {
+		t.Fatalf("expected one npm detect call, got %d (%#v)", detectCalls, client.scripts)
+	}
+}
+
 func TestEnsureConfiguredAgentsInstalledWarnsWhenNpmMissing(t *testing.T) {
 	client := &fakeAgentExecClient{
 		results: map[string]error{
@@ -144,7 +201,7 @@ func TestEnsureConfiguredAgentsInstalledWarnsWhenNpmMissing(t *testing.T) {
 		},
 		outputs: map[string][]byte{
 			`node -p 'process.versions.node.split(".")[0]'`: []byte("0\n"),
-			agentNPMDetectScript:                            []byte("unavailable:none\n"),
+			fakeAgentNPMDetectKey:                           []byte("unavailable:none\n"),
 		},
 	}
 	var warnings []string
@@ -166,6 +223,26 @@ func TestEnsureConfiguredAgentsInstalledWarnsWhenNpmMissing(t *testing.T) {
 	}
 }
 
+func TestEnsureConfiguredAgentsInstalledReportsUnknownAgents(t *testing.T) {
+	var warnings []string
+	results := ensureConfiguredAgentsInstalled(
+		context.Background(),
+		&fakeAgentExecClient{},
+		"default",
+		"pod",
+		"dev",
+		[]config.AgentSpec{{Name: "mystery-agent"}},
+		func(format string, args ...any) { warnings = append(warnings, fmt.Sprintf(format, args...)) },
+	)
+
+	if len(warnings) != 1 || !strings.Contains(warnings[0], `unknown configured agent "mystery-agent"`) {
+		t.Fatalf("unexpected warnings %#v", warnings)
+	}
+	if len(results) != 1 || results[0] != "mystery-agent: unsupported" {
+		t.Fatalf("unexpected results %#v", results)
+	}
+}
+
 func TestEnsureConfiguredAgentsInstalledBootstrapsNPM(t *testing.T) {
 	client := &fakeAgentExecClient{
 		results: map[string]error{
@@ -174,7 +251,7 @@ func TestEnsureConfiguredAgentsInstalledBootstrapsNPM(t *testing.T) {
 		},
 		outputs: map[string][]byte{
 			`node -p 'process.versions.node.split(".")[0]'`: []byte("12\n"),
-			agentNPMDetectScript:                            []byte("install:nvm\n"),
+			fakeAgentNPMDetectKey:                           []byte("install:nvm\n"),
 		},
 	}
 	var warnings []string
@@ -204,7 +281,7 @@ func TestEnsureConfiguredAgentsInstalledBootstrapsCurlThenNVM(t *testing.T) {
 		},
 		outputs: map[string][]byte{
 			`node -p 'process.versions.node.split(".")[0]'`: []byte("0\n"),
-			agentNPMDetectScript:                            []byte("install:apt-get\n"),
+			fakeAgentNPMDetectKey:                           []byte("install:apt-get\n"),
 		},
 	}
 	var warnings []string
@@ -262,7 +339,7 @@ func TestEnsureConfiguredAgentsInstalledSkipsBootstrapWhenNodeAndNpmAlreadyPrese
 		t.Fatalf("unexpected install summary %q", got)
 	}
 	for _, script := range client.scripts {
-		if script == agentNPMDetectScript {
+		if looksLikeAgentNPMDetectScript(script) {
 			t.Fatalf("did not expect npm detect script when node/npm are already present")
 		}
 	}
@@ -464,5 +541,16 @@ func TestLinkAgentBinaryQuotesBinaryName(t *testing.T) {
 	}
 	if !strings.Contains(client.scripts[0], "binary='my tool'") {
 		t.Fatalf("unexpected link script %q", client.scripts[0])
+	}
+}
+
+func TestSummarizeAgentResults(t *testing.T) {
+	got := summarizeAgentResults(
+		[]string{"claude-code: present", "codex: installed"},
+		[]string{"codex: auth staged", "gemini: env configured (manual login still required)"},
+	)
+	want := "claude-code: present; codex: installed, auth staged; gemini: env configured (manual login still required)"
+	if got != want {
+		t.Fatalf("summarizeAgentResults() = %q, want %q", got, want)
 	}
 }

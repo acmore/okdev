@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -77,6 +78,9 @@ func (tm *TunnelManager) Connect(ctx context.Context, host string, port int) err
 	defer tm.mu.Unlock()
 	if tm.ctx == nil {
 		tm.ctx, tm.cancel = context.WithCancel(ctx)
+		runtime.SetFinalizer(tm, func(t *TunnelManager) {
+			_ = t.Close()
+		})
 	}
 	if tm.listeners == nil {
 		tm.listeners = map[int]net.Listener{}
@@ -101,8 +105,8 @@ func (tm *TunnelManager) dialSSH(host string, port int) (*xssh.Client, error) {
 		return nil, fmt.Errorf("parse ssh key: %w", err)
 	}
 	clientConfig := &xssh.ClientConfig{
-		User:            tm.SSHUser,
-		Auth:            []xssh.AuthMethod{xssh.PublicKeys(signer)},
+		User: tm.SSHUser,
+		Auth: []xssh.AuthMethod{xssh.PublicKeys(signer)},
 		// okdev always dials the SSH server through a local port-forwarded loopback
 		// endpoint, so host-key verification would not add meaningful protection here.
 		// If this ever starts dialing non-loopback or non-port-forwarded targets,
@@ -635,6 +639,7 @@ func (tm *TunnelManager) disconnectClient(client *xssh.Client) {
 }
 
 func (tm *TunnelManager) closeLocked() error {
+	runtime.SetFinalizer(tm, nil)
 	if tm.autoCancel != nil {
 		tm.autoCancel()
 		tm.autoCancel = nil
