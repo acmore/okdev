@@ -51,6 +51,22 @@ func TestUpUIWarnWriterAndPrintWarnings(t *testing.T) {
 	}
 }
 
+func TestUpUIStepDoneHighlightsReusedWorkloadInteractively(t *testing.T) {
+	var out bytes.Buffer
+	ui := &upUI{
+		out:         &out,
+		errOut:      &out,
+		interactive: true,
+	}
+
+	ui.stepDone("pod", "reused existing workload (run `okdev down` then `okdev up` to recreate)")
+
+	got := out.String()
+	if !strings.Contains(got, ansiYellow) || !strings.Contains(got, ansiReset) {
+		t.Fatalf("expected colored reused-workload detail, got %q", got)
+	}
+}
+
 func TestSyncHelpers(t *testing.T) {
 	relPath := "testdata"
 	if got := displayLocalSyncPath(relPath); got != filepath.Join(mustAbs("."), relPath) {

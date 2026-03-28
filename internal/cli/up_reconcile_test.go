@@ -64,15 +64,18 @@ func TestShouldReuseExistingWorkloadForExistingControllerBackedRuntime(t *testin
 	}
 }
 
-func TestShouldReuseExistingWorkloadSkipsReuseForPodAndReconcile(t *testing.T) {
+func TestShouldReuseExistingWorkloadReusesExistingPodAndSkipsForReconcile(t *testing.T) {
 	k := &fakeWorkloadExistenceChecker{exists: true}
 
 	reuse, err := shouldReuseExistingWorkload(context.Background(), k, "default", fakeRefRuntime{kind: workload.TypePod, apiVersion: "v1", name: "okdev-sess"}, false)
 	if err != nil {
 		t.Fatalf("pod shouldReuseExistingWorkload: %v", err)
 	}
-	if reuse {
-		t.Fatal("expected pod runtime to reconcile directly")
+	if !reuse {
+		t.Fatal("expected pod runtime to reuse existing workload")
+	}
+	if k.apiVersion != "v1" || k.kind != workload.TypePod || k.name != "okdev-sess" {
+		t.Fatalf("unexpected pod workload ref lookup: %#v", k)
 	}
 
 	reuse, err = shouldReuseExistingWorkload(context.Background(), k, "default", fakeRefRuntime{kind: workload.TypeJob, apiVersion: "batch/v1", name: "trainer"}, true)

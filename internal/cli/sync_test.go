@@ -1,10 +1,23 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/acmore/okdev/internal/kube"
 )
+
+type fakePodSummaryReader struct {
+	summary *kube.PodSummary
+	err     error
+}
+
+func (f fakePodSummaryReader) GetPodSummary(context.Context, string, string) (*kube.PodSummary, error) {
+	return f.summary, f.err
+}
 
 func TestNewSyncCmdDefaultsToBackground(t *testing.T) {
 	cmd := newSyncCmd(&Options{})
@@ -116,6 +129,77 @@ func TestReadSyncthingPIDRejectsInvalidValue(t *testing.T) {
 	}
 	if _, ok := readSyncthingPID(pidPath); ok {
 		t.Fatal("expected invalid pid to be rejected")
+	}
+}
+
+func TestEnsureSyncthingTargetSessionStateInitialSaveDoesNotReset(t *testing.T) {
+	home := t.TempDir()
+	origHome := os.Getenv("HOME")
+	if err := os.Setenv("HOME", home); err != nil {
+		t.Fatalf("set HOME: %v", err)
+	}
+	defer func() {
+		_ = os.Setenv("HOME", origHome)
+	}()
+
+	reset, err := ensureSyncthingTargetSessionState(context.Background(), fakePodSummaryReader{
+		summary: &kube.PodSummary{Name: "pod-a", CreatedAt: time.Unix(100, 0)},
+	}, "default", "sess-a", "pod-a")
+	if err != nil {
+		t.Fatalf("ensureSyncthingTargetSessionState: %v", err)
+	}
+	if reset {
+		t.Fatal("did not expect initial state to reset")
+	}
+	state, err := loadSyncthingTargetSessionState("sess-a")
+	if err != nil {
+		t.Fatalf("loadSyncthingTargetSessionState: %v", err)
+	}
+	if state.PodName != "pod-a" {
+		t.Fatalf("unexpected saved pod name %q", state.PodName)
+	}
+}
+
+func TestEnsureSyncthingTargetSessionStateResetsWhenPodRecreated(t *testing.T) {
+	home := t.TempDir()
+	origHome := os.Getenv("HOME")
+	if err := os.Setenv("HOME", home); err != nil {
+		t.Fatalf("set HOME: %v", err)
+	}
+	defer func() {
+		_ = os.Setenv("HOME", origHome)
+	}()
+
+	sessionName := "sess-b"
+	sessionHome, err := localSyncthingHome(sessionName)
+	if err != nil {
+		t.Fatalf("localSyncthingHome: %v", err)
+	}
+	staleFile := filepath.Join(sessionHome, "config", "state.txt")
+	if err := os.MkdirAll(filepath.Dir(staleFile), 0o755); err != nil {
+		t.Fatalf("mkdir stale dir: %v", err)
+	}
+	if err := os.WriteFile(staleFile, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("write stale file: %v", err)
+	}
+	if err := saveSyncthingTargetSessionState(sessionName, syncthingSessionTargetState{
+		PodName:   "pod-a",
+		CreatedAt: time.Unix(100, 0).UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("saveSyncthingTargetSessionState: %v", err)
+	}
+
+	reset, err := ensureSyncthingTargetSessionState(context.Background(), fakePodSummaryReader{
+		summary: &kube.PodSummary{Name: "pod-a", CreatedAt: time.Unix(200, 0)},
+	}, "default", sessionName, "pod-a")
+	if err != nil {
+		t.Fatalf("ensureSyncthingTargetSessionState: %v", err)
+	}
+	if !reset {
+		t.Fatal("expected recreated pod to trigger reset")
+	}
+	if _, err := os.Stat(staleFile); !os.IsNotExist(err) {
+		t.Fatalf("expected stale local sync state to be removed, got err=%v", err)
 	}
 }
 

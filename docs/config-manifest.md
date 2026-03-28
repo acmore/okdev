@@ -23,6 +23,7 @@ spec: {}
 | `namespace` | `string` | `default` | Kubernetes namespace |
 | `kubeContext` | `string` | — | Kubeconfig context for okdev commands |
 | `session` | `object` | — | Session naming and lifecycle policy |
+| `agents` | `array` | — | Coding agent configuration and local auth conventions |
 | `volumes` | `array` | — | Kubernetes volume definitions |
 | `sync` | `object` | — | File sync configuration |
 | `ports` | `array` | — | Port forwarding rules |
@@ -30,6 +31,54 @@ spec: {}
 | `lifecycle` | `object` | — | Post-create and pre-stop hooks |
 | `sidecar` | `object` | — | Sidecar container image |
 | `podTemplate` | `object` | — | Full Kubernetes PodSpec overlay |
+
+---
+
+## `spec.agents`
+
+Configures supported coding-agent CLIs for the session container.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | `string` | — | Supported agent name: `claude-code`, `codex`, `gemini`, or `opencode` |
+| `auth.env` | `string` | convention | Local env var to check during setup-time auth preparation |
+| `auth.localPath` | `string` | convention | Local auth file path to stage into the session container |
+
+**Validation:** agent names must be unique; `auth.env` must be a valid env var name; `auth.localPath` must resolve on the local machine.
+
+Convention defaults:
+
+| Agent | Default `auth.env` | Default `auth.localPath` |
+|-------|--------------------|--------------------------|
+| `claude-code` | — | — |
+| `codex` | — | `~/.codex/auth.json` |
+| `gemini` | — | — |
+| `opencode` | — | — |
+
+```yaml
+spec:
+  agents:
+    - name: claude-code
+    - name: codex
+    - name: gemini
+    - name: opencode
+```
+
+Phase 1 currently supports:
+
+- `okdev up` install checks for configured agent CLIs
+- `okdev up` best-effort installation of a modern Node/npm runtime via `nvm` first when a configured agent CLI needs it and the dev image has `bash` and `curl`
+- `okdev up` setup-time staging of local auth files into reserved runtime paths for dedicated sessions
+- `okdev down` best-effort cleanup of staged agent auth before session deletion
+- `okdev agent list` to show configured agents, install status, and whether auth is staged in the current session container
+
+Current limits:
+
+- shareable sessions skip auth staging and warn
+- env-only auth sources are detected but still require manual login inside the container
+- existing real auth files inside the container are left alone instead of being overwritten
+
+Users continue to launch agent CLIs manually through `okdev ssh`, plain SSH, or editor remote sessions.
 
 ---
 
