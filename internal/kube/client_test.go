@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -202,6 +203,55 @@ func TestPreferredContainerFromExecErr(t *testing.T) {
 	err = errors.New("choose one of: [okdev-sidecar]")
 	if got := preferredContainerFromExecErr(err); got != "okdev-sidecar" {
 		t.Fatalf("expected sole sidecar name, got %q", got)
+	}
+}
+
+func TestBuildPodLogOptions(t *testing.T) {
+	tail := int64(100)
+	got := buildPodLogOptions(LogStreamOptions{
+		Container: " dev ",
+		Follow:    true,
+		Previous:  true,
+		TailLines: &tail,
+		Since:     5*time.Minute + 200*time.Millisecond,
+	})
+
+	if got.Container != "dev" {
+		t.Fatalf("expected trimmed container, got %q", got.Container)
+	}
+	if !got.Follow || !got.Previous {
+		t.Fatalf("expected follow and previous to be true: %+v", got)
+	}
+	if got.TailLines == nil || *got.TailLines != tail {
+		t.Fatalf("unexpected tail lines: %+v", got.TailLines)
+	}
+	if got.SinceSeconds == nil || *got.SinceSeconds != 300 {
+		t.Fatalf("unexpected since seconds: %+v", got.SinceSeconds)
+	}
+}
+
+func TestBuildPodLogOptionsRoundsShortDurationsUpToOneSecond(t *testing.T) {
+	got := buildPodLogOptions(LogStreamOptions{Since: 500 * time.Millisecond})
+	if got.SinceSeconds == nil || *got.SinceSeconds != 1 {
+		t.Fatalf("expected short duration to round up to one second, got %+v", got.SinceSeconds)
+	}
+}
+
+func TestPodContainerNames(t *testing.T) {
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{Name: "dev"},
+				{Name: " okdev-sidecar "},
+				{Name: ""},
+			},
+		},
+	}
+
+	got := podContainerNames(pod)
+	want := []string{"dev", "okdev-sidecar"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected container names: got %#v want %#v", got, want)
 	}
 }
 
