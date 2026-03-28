@@ -22,6 +22,7 @@ import (
 
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
+	"github.com/acmore/okdev/internal/logx"
 	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/acmore/okdev/internal/syncthing"
 	"github.com/spf13/cobra"
@@ -255,7 +256,7 @@ func startLocalSyncthing(binary, home, localGUIAddr string) error {
 	if err != nil {
 		return err
 	}
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logFile, err := openLocalSyncthingLog(logPath)
 	if err != nil {
 		return fmt.Errorf("open local syncthing log: %w", err)
 	}
@@ -333,6 +334,10 @@ func localSyncthingLogPath(home string) (string, error) {
 		return "", errors.New("syncthing home is empty")
 	}
 	return filepath.Join(home, "local.log"), nil
+}
+
+func openLocalSyncthingLog(path string) (*os.File, error) {
+	return logx.OpenRotatingLog(path)
 }
 
 func pkillByPattern(pattern string) error {
