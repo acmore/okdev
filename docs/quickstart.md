@@ -113,7 +113,7 @@ Typical flow:
 
 Current scope:
 
-- `okdev up` checks/install configured `claude-code` and `codex` CLIs when possible
+- `okdev up` checks/install configured `claude-code` and `codex` CLIs when possible, including best-effort `npm` bootstrap for supported images
 - `okdev up` stages configured local auth files into reserved runtime paths for dedicated sessions
 - `okdev down` cleans that staged runtime auth up before session deletion when the target is still reachable
 - `okdev agent list` reports configured agents, install status, and auth staging status

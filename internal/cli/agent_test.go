@@ -30,6 +30,16 @@ func (f *fakeAgentExecClient) ExecShInContainer(_ context.Context, _, _, _, scri
 	case "npm install -g @anthropic-ai/claude-code":
 		delete(f.results, "command -v claude >/dev/null 2>&1")
 	}
+	if strings.HasPrefix(script, "export OKDEV_NPM_INSTALLER=") && strings.Contains(script, "__OKDEV_NPM_STATUS__=installed:") {
+		delete(f.results, "command -v npm >/dev/null 2>&1")
+		if strings.Contains(script, "apk add --no-cache nodejs npm") {
+			return []byte("__OKDEV_NPM_STATUS__=installed:apk\n"), nil
+		}
+		if strings.Contains(script, "apt-get -o DPkg::Lock::Timeout=10 install -y --no-install-recommends nodejs npm") {
+			return []byte("__OKDEV_NPM_STATUS__=installed:apt-get\n"), nil
+		}
+		return []byte("__OKDEV_NPM_STATUS__=installed:none\n"), nil
+	}
 	if err, ok := f.results[script]; ok {
 		return nil, err
 	}
@@ -112,6 +122,9 @@ func TestEnsureConfiguredAgentsInstalledWarnsWhenNpmMissing(t *testing.T) {
 			"command -v codex >/dev/null 2>&1": errors.New("exit status 1"),
 			"command -v npm >/dev/null 2>&1":   errors.New("exit status 1"),
 		},
+		outputs: map[string][]byte{
+			agentNPMDetectScript: []byte("unavailable:none\n"),
+		},
 	}
 	var warnings []string
 	results := ensureConfiguredAgentsInstalled(
@@ -129,6 +142,36 @@ func TestEnsureConfiguredAgentsInstalledWarnsWhenNpmMissing(t *testing.T) {
 	}
 	if len(results) != 1 || results[0] != "codex: skipped (npm missing)" {
 		t.Fatalf("unexpected results %#v", results)
+	}
+}
+
+func TestEnsureConfiguredAgentsInstalledBootstrapsNPM(t *testing.T) {
+	client := &fakeAgentExecClient{
+		results: map[string]error{
+			"command -v codex >/dev/null 2>&1": errors.New("exit status 1"),
+			"command -v npm >/dev/null 2>&1":   errors.New("exit status 1"),
+			"npm install -g @openai/codex":     nil,
+		},
+		outputs: map[string][]byte{
+			agentNPMDetectScript: []byte("install:apk\n"),
+		},
+	}
+	var warnings []string
+	results := ensureConfiguredAgentsInstalled(
+		context.Background(),
+		client,
+		"default",
+		"pod",
+		"dev",
+		[]config.AgentSpec{{Name: "codex"}},
+		func(format string, args ...any) { warnings = append(warnings, format) },
+	)
+
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %#v", warnings)
+	}
+	if got := strings.Join(results, ", "); !strings.Contains(got, "codex: npm installed via apk") || !strings.Contains(got, "codex: installed") {
+		t.Fatalf("unexpected install summary %q", got)
 	}
 }
 

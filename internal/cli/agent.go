@@ -142,9 +142,15 @@ func ensureConfiguredAgentsInstalled(ctx context.Context, client agentExecClient
 			continue
 		}
 		if !npmInstalled {
-			warnf("skipping %s install: npm is not available in container %s", spec.Name, container)
-			results = append(results, spec.Name+": skipped (npm missing)")
-			continue
+			npmResult, npmErr := ensureAgentNPMInstalled(ctx, client, namespace, pod, container)
+			if npmErr != nil {
+				warnf("skipping %s install: %v", spec.Name, npmErr)
+				results = append(results, spec.Name+": skipped (npm missing)")
+				continue
+			}
+			if strings.TrimSpace(npmResult) != "" {
+				results = append(results, spec.Name+": "+npmResult)
+			}
 		}
 		if _, err := client.ExecShInContainer(ctx, namespace, pod, container, spec.InstallCommand); err != nil {
 			warnf("failed to install %s: %v", spec.Name, err)
@@ -164,6 +170,129 @@ func ensureConfiguredAgentsInstalled(ctx context.Context, client agentExecClient
 		results = append(results, spec.Name+": installed")
 	}
 	return results
+}
+
+const agentNPMDetectScript = `set -eu
+if command -v npm >/dev/null 2>&1; then
+  echo present:none
+  exit 0
+fi
+if [ "$(id -u)" != "0" ]; then
+  echo no-root:none
+  exit 0
+fi
+installer="none"
+if command -v apk >/dev/null 2>&1; then
+  installer="apk"
+elif command -v apt-get >/dev/null 2>&1; then
+  installer="apt-get"
+elif command -v apt >/dev/null 2>&1; then
+  installer="apt"
+elif command -v dnf >/dev/null 2>&1; then
+  installer="dnf"
+elif command -v microdnf >/dev/null 2>&1; then
+  installer="microdnf"
+elif command -v yum >/dev/null 2>&1; then
+  installer="yum"
+fi
+if [ "$installer" != "none" ]; then
+  echo install:${installer}
+else
+  echo unavailable:none
+fi
+`
+
+const agentNPMInstallScript = `set -eu
+installer="${OKDEV_NPM_INSTALLER:-none}"
+if command -v npm >/dev/null 2>&1; then
+  echo "__OKDEV_NPM_STATUS__=installed:${installer}"
+  exit 0
+fi
+if [ "$(id -u)" != "0" ]; then
+  echo "__OKDEV_NPM_STATUS__=no-root:none"
+  exit 0
+fi
+if [ "$installer" = "apk" ]; then
+  apk add --no-cache nodejs npm >/dev/null 2>&1 || true
+elif [ "$installer" = "apt-get" ]; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get -o DPkg::Lock::Timeout=10 update >/dev/null 2>&1 && apt-get -o DPkg::Lock::Timeout=10 install -y --no-install-recommends nodejs npm >/dev/null 2>&1 || true
+elif [ "$installer" = "apt" ]; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt update >/dev/null 2>&1 && apt install -y --no-install-recommends nodejs npm >/dev/null 2>&1 || true
+elif [ "$installer" = "dnf" ]; then
+  dnf install -y nodejs npm >/dev/null 2>&1 || true
+elif [ "$installer" = "microdnf" ]; then
+  microdnf install -y nodejs npm >/dev/null 2>&1 || true
+elif [ "$installer" = "yum" ]; then
+  yum install -y nodejs npm >/dev/null 2>&1 || true
+fi
+if command -v npm >/dev/null 2>&1; then
+  echo "__OKDEV_NPM_STATUS__=installed:${installer}"
+  exit 0
+fi
+echo "__OKDEV_NPM_STATUS__=unavailable:${installer}"
+`
+
+func ensureAgentNPMInstalled(ctx context.Context, client agentExecClient, namespace, pod, container string) (string, error) {
+	status, installer, err := detectAgentNPM(ctx, client, namespace, pod, container)
+	if err != nil {
+		return "", err
+	}
+	switch status {
+	case "present":
+		return "", nil
+	case "no-root":
+		return "", fmt.Errorf("npm is unavailable and the dev container is not running as root")
+	case "unavailable":
+		return "", fmt.Errorf("npm is unavailable and no supported package manager was found")
+	case "install":
+	default:
+		return "", fmt.Errorf("unexpected npm prepare result %q", status)
+	}
+	out, err := client.ExecShInContainer(ctx, namespace, pod, container, "export OKDEV_NPM_INSTALLER="+shellQuote(installer)+"; "+agentNPMInstallScript)
+	if err != nil {
+		return "", err
+	}
+	status, installer = parseAgentNPMStatus(string(out))
+	switch status {
+	case "installed":
+		if installer != "" && installer != "none" {
+			return "npm installed via " + installer, nil
+		}
+		return "npm installed", nil
+	case "no-root":
+		return "", fmt.Errorf("npm is unavailable and the dev container is not running as root")
+	case "unavailable":
+		if installer != "" && installer != "none" {
+			return "", fmt.Errorf("npm is unavailable after best-effort install via %s", installer)
+		}
+		return "", fmt.Errorf("npm is unavailable after best-effort install")
+	default:
+		return "", fmt.Errorf("unexpected npm install result %q", strings.TrimSpace(string(out)))
+	}
+}
+
+func detectAgentNPM(ctx context.Context, client agentExecClient, namespace, pod, container string) (status, installer string, err error) {
+	out, err := client.ExecShInContainer(ctx, namespace, pod, container, agentNPMDetectScript)
+	if err != nil {
+		return "", "", err
+	}
+	status, installer, _ = strings.Cut(strings.TrimSpace(string(out)), ":")
+	return strings.TrimSpace(status), strings.TrimSpace(installer), nil
+}
+
+func parseAgentNPMStatus(raw string) (status, installer string) {
+	for _, line := range strings.Split(raw, "\n") {
+		text := strings.TrimSpace(line)
+		if !strings.HasPrefix(text, "__OKDEV_NPM_STATUS__=") {
+			continue
+		}
+		payload := strings.TrimPrefix(text, "__OKDEV_NPM_STATUS__=")
+		status, installer, _ = strings.Cut(payload, ":")
+		return strings.TrimSpace(status), strings.TrimSpace(installer)
+	}
+	return "", ""
 }
 
 func ensureConfiguredAgentAuth(ctx context.Context, client agentExecClient, namespace, pod, container string, shareable bool, agents []config.AgentSpec, warnf func(string, ...any)) []string {
