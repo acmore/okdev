@@ -204,6 +204,19 @@ fi
 
 const agentNPMInstallScript = `set -eu
 installer="${OKDEV_NPM_INSTALLER:-none}"
+apt_retry() {
+  retries="${1:-12}"
+  shift
+  attempt=1
+  while [ "$attempt" -le "$retries" ]; do
+    if "$@"; then
+      return 0
+    fi
+    sleep 5
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
 if command -v npm >/dev/null 2>&1; then
   echo "__OKDEV_NPM_STATUS__=installed:${installer}"
   exit 0
@@ -216,10 +229,10 @@ if [ "$installer" = "apk" ]; then
   apk add --no-cache nodejs npm >/dev/null 2>&1 || true
 elif [ "$installer" = "apt-get" ]; then
   export DEBIAN_FRONTEND=noninteractive
-  apt-get -o DPkg::Lock::Timeout=10 update >/dev/null 2>&1 && apt-get -o DPkg::Lock::Timeout=10 install -y --no-install-recommends nodejs npm >/dev/null 2>&1 || true
+  apt_retry 12 apt-get -o DPkg::Lock::Timeout=10 update >/dev/null 2>&1 && apt_retry 12 apt-get -o DPkg::Lock::Timeout=10 install -y --no-install-recommends nodejs npm >/dev/null 2>&1 || true
 elif [ "$installer" = "apt" ]; then
   export DEBIAN_FRONTEND=noninteractive
-  apt update >/dev/null 2>&1 && apt install -y --no-install-recommends nodejs npm >/dev/null 2>&1 || true
+  apt_retry 12 apt update >/dev/null 2>&1 && apt_retry 12 apt install -y --no-install-recommends nodejs npm >/dev/null 2>&1 || true
 elif [ "$installer" = "dnf" ]; then
   dnf install -y nodejs npm >/dev/null 2>&1 || true
 elif [ "$installer" = "microdnf" ]; then
