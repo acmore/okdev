@@ -2,6 +2,8 @@ package kube
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -199,5 +201,32 @@ func TestPreferredContainerFromExecErr(t *testing.T) {
 	err = errors.New("choose one of: [okdev-sidecar]")
 	if got := preferredContainerFromExecErr(err); got != "okdev-sidecar" {
 		t.Fatalf("expected sole sidecar name, got %q", got)
+	}
+}
+
+func TestClientCacheKeyChangesWhenKubeconfigChanges(t *testing.T) {
+	dir := t.TempDir()
+	kubeconfig := filepath.Join(dir, "config")
+	if err := os.WriteFile(kubeconfig, []byte("apiVersion: v1\nkind: Config\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KUBECONFIG", kubeconfig)
+
+	client := &Client{Context: "dev"}
+	first, err := client.cacheKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	if err := os.WriteFile(kubeconfig, []byte("apiVersion: v1\nkind: Config\nclusters: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := client.cacheKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatalf("expected cache key to change after kubeconfig update: %q", first)
 	}
 }

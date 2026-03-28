@@ -11,7 +11,7 @@ func newPortsCmd(opts *Options) *cobra.Command {
 		Use:   "ports",
 		Short: "Reconcile managed SSH port forwards for configured ports",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cc, err := resolveCommandContext(opts, resolveSessionNameForUpDown)
+			cc, err := resolveCommandContext(opts, resolveManagedSessionName)
 			if err != nil {
 				return err
 			}

@@ -61,11 +61,9 @@ func newPruneCmd(opts *Options) *cobra.Command {
 				if idleRaw := targetPod.Annotations["okdev.io/idle-timeout-minutes"]; idleRaw != "" {
 					idleMinutes, err := strconv.Atoi(idleRaw)
 					if err == nil && idleMinutes > 0 {
-						lastActive := targetPod.CreatedAt
-						if ts := targetPod.Annotations["okdev.io/last-attach"]; ts != "" {
-							if parsed, parseErr := time.Parse(time.RFC3339, ts); parseErr == nil {
-								lastActive = parsed
-							}
+						lastActive, warned := sessionLastActive(targetPod)
+						if warned {
+							slog.Warn("invalid session last-attach annotation; falling back to pod creation time", "session", view.Session, "namespace", view.Namespace, "pod", targetPod.Name, "value", targetPod.Annotations["okdev.io/last-attach"])
 						}
 						if now.Sub(lastActive) >= time.Duration(idleMinutes)*time.Minute {
 							idleExpired = true
@@ -127,6 +125,19 @@ func sessionTargetPod(view sessionView) (kube.PodSummary, bool) {
 		return kube.PodSummary{}, false
 	}
 	return view.Pods[0], true
+}
+
+func sessionLastActive(pod kube.PodSummary) (time.Time, bool) {
+	lastActive := pod.CreatedAt
+	ts := strings.TrimSpace(pod.Annotations["okdev.io/last-attach"])
+	if ts == "" {
+		return lastActive, false
+	}
+	parsed, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return lastActive, true
+	}
+	return parsed, false
 }
 
 func deleteSessionWorkload(ctx context.Context, k *kube.Client, view sessionView, targetPod kube.PodSummary) error {

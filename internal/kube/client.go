@@ -56,6 +56,7 @@ type Client struct {
 	cachedDynamic dynamic.Interface
 	cachedMapper  meta.RESTMapper
 	cachedConfig  *rest.Config
+	cachedKey     string
 }
 
 type PodSummary struct {
@@ -100,7 +101,11 @@ func (c *Client) restConfig() (*rest.Config, error) {
 func (c *Client) clients() (*kubernetes.Clientset, dynamic.Interface, meta.RESTMapper, *rest.Config, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.cachedSet != nil && c.cachedConfig != nil && c.cachedDynamic != nil && c.cachedMapper != nil {
+	cacheKey, err := c.cacheKey()
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if c.cachedSet != nil && c.cachedConfig != nil && c.cachedDynamic != nil && c.cachedMapper != nil && c.cachedKey == cacheKey {
 		return c.cachedSet, c.cachedDynamic, c.cachedMapper, c.cachedConfig, nil
 	}
 	restCfg, err := c.restConfig()
@@ -124,7 +129,26 @@ func (c *Client) clients() (*kubernetes.Clientset, dynamic.Interface, meta.RESTM
 	c.cachedDynamic = dc
 	c.cachedMapper = mapper
 	c.cachedConfig = restCfg
+	c.cachedKey = cacheKey
 	return cs, dc, mapper, restCfg, nil
+}
+
+func (c *Client) cacheKey() (string, error) {
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	parts := []string{strings.TrimSpace(c.Context)}
+	for _, path := range loadingRules.Precedence {
+		info, err := os.Stat(path)
+		if err == nil {
+			parts = append(parts, fmt.Sprintf("%s:%d:%d", path, info.ModTime().UnixNano(), info.Size()))
+			continue
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			parts = append(parts, path+":missing")
+			continue
+		}
+		return "", fmt.Errorf("stat kubeconfig %q: %w", path, err)
+	}
+	return strings.Join(parts, "|"), nil
 }
 
 func (c *Client) clientset() (*kubernetes.Clientset, *rest.Config, error) {

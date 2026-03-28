@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,6 +25,15 @@ func TestDefaultTemplateVars(t *testing.T) {
 	if vars.SyncRemote != "/workspace" {
 		t.Fatalf("expected /workspace sync remote, got %q", vars.SyncRemote)
 	}
+}
+
+type fakeTemplateHTTPDoer struct {
+	resp *http.Response
+	err  error
+}
+
+func (f fakeTemplateHTTPDoer) Do(*http.Request) (*http.Response, error) {
+	return f.resp, f.err
 }
 
 func TestRenderBuiltinBasic(t *testing.T) {
@@ -129,6 +139,24 @@ func TestResolveTemplateContextCancelsURLFetch(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for canceled fetch to return")
+	}
+}
+
+func TestResolveTemplateContextUsesInjectableHTTPClient(t *testing.T) {
+	old := templateHTTPClient
+	t.Cleanup(func() { templateHTTPClient = old })
+	templateHTTPClient = fakeTemplateHTTPDoer{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("name: {{ .Name }}")),
+		},
+	}
+	got, err := ResolveTemplateContext(context.Background(), "https://example.com/template.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "name: {{ .Name }}" {
+		t.Fatalf("unexpected template body %q", got)
 	}
 }
 

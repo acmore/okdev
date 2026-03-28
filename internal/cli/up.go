@@ -118,7 +118,7 @@ func runUp(cmd *cobra.Command, opts *Options, flags upOptions) error {
 func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, error) {
 	ui := newUpUI(cmd.OutOrStdout(), cmd.ErrOrStderr())
 	ui.section("Validate")
-	cc, err := resolveCommandContext(opts, resolveSessionNameForUpDown)
+	cc, err := resolveCommandContext(opts, resolveManagedSessionName)
 	if err != nil {
 		return nil, err
 	}

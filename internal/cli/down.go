@@ -20,7 +20,7 @@ func newDownCmd(opts *Options) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ui := newUpUI(cmd.OutOrStdout(), cmd.ErrOrStderr())
 			ui.section("Validate")
-			cc, err := resolveCommandContext(opts, resolveSessionNameForUpDown)
+			cc, err := resolveCommandContext(opts, resolveManagedSessionName)
 			if err != nil {
 				return err
 			}
@@ -82,8 +82,11 @@ func newDownCmd(opts *Options) *cobra.Command {
 				ui.stepDone("ssh config", "cleaned")
 			}
 			if active, err := session.LoadActiveSession(); err == nil && active == cc.sessionName {
-				_ = session.ClearActiveSession()
-				ui.stepDone("active session", "cleared")
+				if clearErr := session.ClearActiveSession(); clearErr != nil {
+					ui.warnf("failed to clear active session: %v", clearErr)
+				} else {
+					ui.stepDone("active session", "cleared")
+				}
 			}
 			if err := session.ClearTarget(cc.sessionName); err != nil {
 				ui.warnf("failed to clear target state: %v", err)

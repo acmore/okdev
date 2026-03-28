@@ -6,14 +6,7 @@
 
 ## P0 — Bugs & Correctness
 
-### 1. Race condition in proxy health watchdog
-`internal/cli/proxy_health.go:53-57` — Time calculation happens before the zero-check, meaning `time.Since(time.Unix(0, 0))` runs unnecessarily and could produce misleading results.
-
-### 2. Missing context propagation in HTTP fetch
-`internal/config/template.go:144-158` — `fetchTemplateURL()` creates an `http.Client` without accepting a context. If the caller's context is cancelled, the HTTP request won't be interrupted. Should use `http.NewRequestWithContext()`.
-
-### 3. Fragile nil guard in session view
-`internal/cli/session_view.go:69-89` — `selectTargetPod()` would panic on empty `pods` slice. Currently safe only because the caller checks `len(pods) == 0` first — an implicit contract that's easy to break.
+No open P0 findings at the moment from this review pass.
 
 ---
 
@@ -25,14 +18,14 @@
 ### 5. ~~Shelling out to `ps` in a polling loop~~ (FIXED)
 `processAlive()` now uses `os.FindProcess` + `Signal(0)` with an `isZombie()` guard that reads `/proc/<pid>/stat` on Linux (no subprocess) and falls back to `ps` only on macOS. `processLooksLikeSyncthingSync()` reads `/proc/<pid>/cmdline` on Linux with the same macOS fallback. The zombie check is necessary because `Signal(0)` succeeds for zombie processes on Unix.
 
-### 6. Marshal-unmarshal round-trip for type conversion
-`internal/workload/generic.go:234-256` — `decodePodTemplateSpec` and `encodePodTemplateSpec` serialize to YAML then deserialize back just to convert between `map[string]any` and typed structs. Consider using `runtime.DefaultUnstructuredConverter`.
+### 6. ~~Marshal-unmarshal round-trip for type conversion~~ (FIXED)
+`internal/workload/generic.go` now uses `runtime.DefaultUnstructuredConverter` for `PodTemplateSpec` conversion instead of a YAML marshal/unmarshal round-trip.
 
-### 7. `reflect.DeepEqual` on Kubernetes objects
-`internal/kube/client.go:169-171,205,236,396,425,436` — Used 8 times for spec/label/annotation equality. Field-level comparison or `equality.Semantic.DeepEqual` from apimachinery would be faster and more precise.
+### 7. ~~`reflect.DeepEqual` on Kubernetes objects~~ (FIXED)
+`internal/kube/client.go` now uses `apiequality.Semantic.DeepEqual` for Kubernetes API structs and `maps.Equal` for string metadata maps instead of raw `reflect.DeepEqual`.
 
-### 8. Bubble sort instead of `sort.Ints()`
-`internal/ssh/tunnel.go:801-815` — Comment says "keep dependency surface low" but `sort` is a stdlib package.
+### 8. ~~Bubble sort instead of `sort.Ints()`~~ (FIXED)
+`internal/ssh/tunnel.go` now uses `sort.Ints()`.
 
 ---
 
@@ -50,7 +43,7 @@
 ### 11. Duplicated config/namespace/session resolution (MOSTLY FIXED)
 `internal/cli/common.go` now has `commandContext` + `resolveCommandContext()` and the repeated load-config → resolve-namespace → resolve-session → build-kube-client flow has been collapsed in `up`, `ssh`, `ssh-proxy`, `connect`, `ports`, `sync`, `status`, `target`, `down`, and `prune`.
 
-**Remaining work:** Decide whether to extend the same pattern to lower-complexity commands like `list` and any remaining one-off helpers, or leave those as intentionally simpler exceptions.
+**Remaining work:** Decide whether any remaining one-off helpers should adopt the same pattern, or whether the current scope is the right stopping point.
 
 ### 12. Hardcoded timeouts scattered across files (MOSTLY FIXED)
 ```
@@ -66,17 +59,17 @@ These are now mostly centralized in `internal/cli/timeouts.go`, and the touched 
 
 **Remaining work:** Sweep the last few non-test literals and decide whether every remaining timing knob belongs in the shared timeout set or should stay local because it is formatting- or UX-specific.
 
-### 13. `goto` in migration code
-`internal/config/migrate.go:239` — Uses `goto podTemplateDone` to break nested loops. A labeled `break` or helper function would be more idiomatic.
+### 13. ~~`goto` in migration code~~ (FIXED)
+`internal/config/migrate.go` now uses a helper instead of `goto` to merge the workspace volume mount into the existing pod template.
 
-### 14. Inconsistent HTTP client patterns
-`syncthing/installer.go` correctly uses an injectable `httpDoer` interface. `config/template.go` creates a raw `http.Client` inline — inconsistent and harder to test.
+### 14. ~~Inconsistent HTTP client patterns~~ (FIXED)
+`internal/config/template.go` now uses an injectable HTTP doer and propagates context, aligning with the Syncthing installer pattern.
 
-### 15. No cache invalidation
-`internal/kube/client.go:99-127` and `internal/workload/generic.go:165-188` both cache results (Kubernetes clientsets and parsed manifests) with no invalidation strategy. If the kubeconfig or manifest files change mid-session, stale data will be served.
+### 15. ~~No cache invalidation~~ (FIXED)
+`internal/kube/client.go` now invalidates its client cache when kubeconfig inputs change, and `internal/workload/generic.go` now invalidates its cached manifest baseline when the manifest file changes on disk.
 
-### 16. Goroutine lifecycle management
-`internal/cli/common.go:414-437` — Heartbeat goroutine is fire-and-forget with only context cancellation for cleanup. No `sync.WaitGroup` or completion signal — caller can't tell if heartbeat succeeded or is still running.
+### 16. ~~Goroutine lifecycle management~~ (FIXED)
+`internal/cli/common.go` now waits for the heartbeat goroutine to exit when session maintenance is stopped.
 
 ---
 
@@ -94,15 +87,15 @@ Cleanup errors being silenced is fine, but should at least log at debug level fo
 `up.go:313`, `workload.go:69`, `portforward_helper.go:24` — Several narrow interfaces exist only for test doubles. Consider proper dependency injection at construction time instead.
 
 ### 19. Naming inconsistencies
-- `resolveSessionName()` vs `resolveSessionNameForUpDown()` vs `resolveSessionNameWithState()` — confusing overloading
+- `resolveSessionName()` vs `resolveManagedSessionName()` vs `resolveSessionNameWithState()` — improved, but still not fully uniform
 - No consistent parameter ordering for `(ctx, k, namespace, pod)` across functions
 - `refreshTargetRef()` vs `loadTargetRef()` — unclear distinction
 
-### 20. Silent time-parse failures
-`internal/cli/prune.go:62-69` — If the `okdev.io/last-attach` annotation fails to parse as RFC3339, it silently falls back to `CreatedAt` with no log. Hard to debug malformed annotations.
+### 20. ~~Silent time-parse failures~~ (FIXED)
+`internal/cli/prune.go` now logs a warning when `okdev.io/last-attach` cannot be parsed and falls back to `CreatedAt`.
 
-### 21. No response body size limit on syncthing downloads
-`internal/syncthing/installer.go` pipes HTTP response bodies directly to disk without size limits. `config/template.go` correctly limits to 1MB. Should be consistent.
+### 21. ~~No response body size limit on syncthing downloads~~ (FIXED)
+`internal/syncthing/installer.go` now applies explicit size limits to checksum and archive downloads.
 
 ---
 
@@ -110,10 +103,10 @@ Cleanup errors being silenced is fine, but should at least log at debug level fo
 
 | Category | P0 | P1 | P2 | P3 |
 |---|---|---|---|---|
-| Bugs/Correctness | 3 | — | — | — |
-| Performance | — | 5 | — | — |
-| Architecture/Tech Debt | — | — | 8 | — |
-| Code Quality | — | — | — | 5 |
+| Bugs/Correctness | 0 | — | — | — |
+| Performance | — | 2 | — | — |
+| Architecture/Tech Debt | — | — | 4 | — |
+| Code Quality | — | — | — | 3 |
 
 ## Top 3 Recommended Actions — Status
 
@@ -125,4 +118,4 @@ Cleanup errors being silenced is fine, but should at least log at debug level fo
 
 1. **Trim helper complexity in SSH and up setup flows** — the top-level commands are much cleaner, but some setup helpers are still dense.
 2. **Decide on the final scope of `commandContext` and `timeouts.go`** — most high-value call sites are migrated now, so the remaining work is cleanup and consistency rather than broad rollout.
-3. **Address the remaining non-refactor review items** — context propagation in `template.go`, safer target/session view contracts, and the workload/kube cleanup items are now the more meaningful remaining work.
+3. **Address the remaining consistency items** — error-handling policy, naming cleanup, and whether test-only interfaces should be refactored further.

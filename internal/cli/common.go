@@ -260,8 +260,12 @@ func resolveSessionName(opts *Options, cfg *config.DevEnvironment, namespace str
 	return resolveSessionNameWithState(opts, cfg, namespace, true)
 }
 
-func resolveSessionNameForUpDown(opts *Options, cfg *config.DevEnvironment, namespace string) (string, error) {
+func resolveManagedSessionName(opts *Options, cfg *config.DevEnvironment, namespace string) (string, error) {
 	return resolveSessionNameWithState(opts, cfg, namespace, true)
+}
+
+func resolveSessionNameForUpDown(opts *Options, cfg *config.DevEnvironment, namespace string) (string, error) {
+	return resolveManagedSessionName(opts, cfg, namespace)
 }
 
 func resolveSessionNameWithState(opts *Options, cfg *config.DevEnvironment, namespace string, inferExisting bool) (string, error) {
@@ -286,7 +290,9 @@ func resolveSessionNameWithReader(opts *Options, cfg *config.DevEnvironment, nam
 			if exists {
 				return resolvedActive, nil
 			}
-			_ = session.ClearActiveSession()
+			if clearErr := session.ClearActiveSession(); clearErr != nil {
+				slog.Debug("failed to clear stale active session", "session", resolvedActive, "error", clearErr)
+			}
 		} else {
 			slog.Debug("failed to verify active session pod", "session", resolvedActive, "namespace", namespace, "error", existsErr)
 			return resolvedActive, nil
@@ -443,8 +449,10 @@ func startSessionMaintenanceWithClient(k *kube.Client, namespace, sessionName st
 		pod = target.PodName
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 
 	go func() {
+		defer close(done)
 		heartbeatTicker := time.NewTicker(sessionHeartbeatInterval)
 		defer heartbeatTicker.Stop()
 
@@ -469,7 +477,10 @@ func startSessionMaintenanceWithClient(k *kube.Client, namespace, sessionName st
 		}
 	}()
 
-	return cancel
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 func currentOwner(opts *Options) string {

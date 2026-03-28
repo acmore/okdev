@@ -13,6 +13,10 @@ import (
 	"time"
 )
 
+type templateHTTPDoer interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
 //go:embed templates/*.yaml.tmpl
 var embeddedTemplates embed.FS
 
@@ -71,6 +75,8 @@ var builtinTemplateStignorePreset = map[string]string{
 	"llm-stack":       "default",
 	"multi-container": "default",
 }
+
+var templateHTTPClient templateHTTPDoer = &http.Client{Timeout: 30 * time.Second}
 
 // TemplateVars holds all variables available to templates.
 type TemplateVars struct {
@@ -148,12 +154,11 @@ func ResolveTemplateContext(ctx context.Context, ref string) (string, error) {
 }
 
 func fetchTemplateURL(ctx context.Context, url string) (string, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", fmt.Errorf("build request for template %q: %w", url, err)
 	}
-	resp, err := client.Do(req) //nolint:gosec // user-provided URL is intentional
+	resp, err := templateHTTPClient.Do(req) //nolint:gosec // user-provided URL is intentional
 	if err != nil {
 		return "", fmt.Errorf("fetch template from %q: %w", url, err)
 	}

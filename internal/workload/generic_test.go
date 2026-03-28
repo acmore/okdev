@@ -144,7 +144,7 @@ func TestGenericRuntimeSelectTargetFailsWithoutAttachablePods(t *testing.T) {
 	}
 }
 
-func TestGenericRuntimeLoadCachesManifestBaseline(t *testing.T) {
+func TestGenericRuntimeLoadInvalidatesManifestCacheOnFileChange(t *testing.T) {
 	tmp := t.TempDir()
 	manifestPath := filepath.Join(tmp, "deployment.yaml")
 	initial := []byte(`
@@ -167,11 +167,12 @@ spec:
 	if got := rt.WorkloadName(); got != "trainer" {
 		t.Fatalf("expected initial workload name, got %q", got)
 	}
+	time.Sleep(10 * time.Millisecond)
 	if err := os.WriteFile(manifestPath, []byte(strings.ReplaceAll(string(initial), "trainer", "mutated")), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := rt.WorkloadName(); got != "trainer" {
-		t.Fatalf("expected cached workload name, got %q", got)
+	if got := rt.WorkloadName(); got != "mutated" {
+		t.Fatalf("expected refreshed workload name, got %q", got)
 	}
 }
 

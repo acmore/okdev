@@ -26,7 +26,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 		Use:   "sync",
 		Short: "Start syncthing sync for session pod",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cc, err := resolveCommandContext(opts, resolveSessionNameForUpDown)
+			cc, err := resolveCommandContext(opts, resolveManagedSessionName)
 			if err != nil {
 				return err
 			}

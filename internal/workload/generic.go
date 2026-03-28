@@ -33,6 +33,13 @@ type GenericRuntime struct {
 
 	loadMu     sync.Mutex
 	loadedBase *unstructured.Unstructured
+	loadedFrom manifestCacheStamp
+}
+
+type manifestCacheStamp struct {
+	path    string
+	modTime time.Time
+	size    int64
 }
 
 func (r *GenericRuntime) Kind() string {
@@ -166,7 +173,11 @@ func (r *GenericRuntime) interactiveContainer() string {
 func (r *GenericRuntime) load() (*unstructured.Unstructured, error) {
 	r.loadMu.Lock()
 	defer r.loadMu.Unlock()
-	if r.loadedBase != nil {
+	stamp, err := manifestStamp(r.ManifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat generic manifest %q: %w", r.ManifestPath, err)
+	}
+	if r.loadedBase != nil && r.loadedFrom == stamp {
 		return r.loadedBase.DeepCopy(), nil
 	}
 	raw, err := os.ReadFile(r.ManifestPath)
@@ -185,7 +196,20 @@ func (r *GenericRuntime) load() (*unstructured.Unstructured, error) {
 		return nil, fmt.Errorf("generic manifest %q is missing metadata.name", r.ManifestPath)
 	}
 	r.loadedBase = u.DeepCopy()
+	r.loadedFrom = stamp
 	return u.DeepCopy(), nil
+}
+
+func manifestStamp(path string) (manifestCacheStamp, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return manifestCacheStamp{}, err
+	}
+	return manifestCacheStamp{
+		path:    path,
+		modTime: info.ModTime(),
+		size:    info.Size(),
+	}, nil
 }
 
 // resolveMapPath descends into all path segments and returns the nested map
