@@ -6,6 +6,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +27,9 @@ func TestDefaultTemplateVars(t *testing.T) {
 	}
 	if vars.SyncRemote != "/workspace" {
 		t.Fatalf("expected /workspace sync remote, got %q", vars.SyncRemote)
+	}
+	if vars.WorkloadType != "pod" {
+		t.Fatalf("expected pod workload type, got %q", vars.WorkloadType)
 	}
 }
 
@@ -91,6 +97,24 @@ func TestResolveTemplateBuiltinName(t *testing.T) {
 	}
 	if !strings.Contains(content, "{{ .Name }}") {
 		t.Fatal("expected template variable in raw content")
+	}
+}
+
+func TestResolveTemplateUserRegistry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	registryDir := filepath.Join(home, ".okdev", "templates")
+	if err := os.MkdirAll(registryDir, 0o755); err != nil {
+		t.Fatalf("mkdir registry: %v", err)
+	}
+	writeFile(t, filepath.Join(registryDir, "team.yaml.tmpl"), "name: {{ .Name }}")
+
+	content, err := ResolveTemplate("team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content != "name: {{ .Name }}" {
+		t.Fatalf("unexpected content: %q", content)
 	}
 }
 
@@ -177,5 +201,70 @@ func TestRenderTemplateContextFetchesURLTemplate(t *testing.T) {
 	}
 	if !strings.Contains(out, "namespace: default") {
 		t.Fatalf("expected rendered namespace, got %q", out)
+	}
+}
+
+func TestBuiltinTemplateNames(t *testing.T) {
+	if got := BuiltinTemplateNames(); !slices.Equal(got, []string{"basic"}) {
+		t.Fatalf("unexpected builtins: %+v", got)
+	}
+}
+
+func TestUserTemplateNamesEmptyDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	names, err := UserTemplateNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 0 {
+		t.Fatalf("expected no user templates, got %v", names)
+	}
+}
+
+func TestUserTemplateNamesFiltersNonTemplates(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	registryDir := filepath.Join(home, ".okdev", "templates")
+	if err := os.MkdirAll(registryDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(registryDir, "valid.yaml.tmpl"), "ok")
+	writeFile(t, filepath.Join(registryDir, "readme.md"), "skip")
+	writeFile(t, filepath.Join(registryDir, "backup.yaml.bak"), "skip")
+
+	names, err := UserTemplateNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(names, []string{"valid"}) {
+		t.Fatalf("expected [valid], got %v", names)
+	}
+}
+
+func TestResolveUserTemplateRejectsTraversal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	_, err := resolveUserTemplate("../../../etc/passwd")
+	if err == nil {
+		t.Fatal("expected path traversal error")
+	}
+	if !strings.Contains(err.Error(), "resolves outside registry") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRenderEmbeddedTemplate(t *testing.T) {
+	vars := NewTemplateVars()
+	vars.Name = "demo"
+	out, err := RenderEmbeddedTemplate("templates/manifests/job.yaml.tmpl", vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "kind: Job") {
+		t.Fatalf("expected job manifest, got %q", out)
+	}
+	if !strings.Contains(out, "name: demo") {
+		t.Fatalf("expected rendered name, got %q", out)
 	}
 }

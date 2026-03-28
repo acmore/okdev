@@ -25,8 +25,10 @@ go build -o bin/okdev ./cmd/okdev
 
 ```bash
 okdev init
-# GPU/LLM-focused scaffold
-okdev init --template gpu
+# Job scaffold with starter manifest
+okdev init --workload job
+# Generic deployment-style scaffold
+okdev init --workload generic --generic-preset deployment
 # Go project with a Go-oriented local sync ignore preset
 okdev init --template basic --stignore-preset go
 ```
@@ -35,6 +37,7 @@ This generates `.okdev.yaml` in the current directory. See [Config Manifest](con
 
 For built-in templates, `okdev init` also writes a starter local `.stignore` file for the initialized sync root. Use `--stignore-preset` to override that starter with a project-oriented preset like `python`, `node`, `go`, or `rust`.
 When `--stignore-preset` is omitted, `okdev init` will try to detect a preset from common repo markers like `go.mod`, `package.json`, `Cargo.toml`, or `pyproject.toml`.
+`okdev init --template` also supports user templates from `~/.okdev/templates/` by stem name, in addition to file paths and URLs.
 
 okdev discovers configuration in this order:
 

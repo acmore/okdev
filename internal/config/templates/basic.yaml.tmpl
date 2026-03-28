@@ -21,6 +21,19 @@ spec:
     - name: app
       local: 8080
       remote: 8080
+{{- if ne .WorkloadType "pod" }}
+  workload:
+    type: {{ .WorkloadType }}
+    manifestPath: {{ .ManifestPath }}
+    inject:
+{{- range .InjectPaths }}
+      - path: "{{ . }}"
+{{- end }}
+{{- if .AttachContainer }}
+    attach:
+      container: {{ .AttachContainer }}
+{{- end }}
+{{- end }}
   ssh:
     user: {{ .SSHUser }}
     keepAliveIntervalSeconds: 30

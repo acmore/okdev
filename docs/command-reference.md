@@ -13,7 +13,7 @@
 ## Commands
 
 - `okdev version`
-- `okdev init [--template basic|gpu|llm-stack] [--stignore-preset default|python|node|go|rust] [--force]`
+- `okdev init [--workload pod|job|pytorchjob|generic] [--template basic|<registry>|<path>|<url>] [--stignore-preset default|python|node|go|rust] [--force]`
 - `okdev validate`
 - `okdev up [--wait-timeout 10m] [--dry-run]`
 - `okdev down [--delete-pvc] [--dry-run]`
@@ -57,10 +57,13 @@
 - `okdev` does not own agent process launch; users run `codex`, `claude`, `gemini`, `opencode`, or similar CLIs manually after connecting.
 - shareable sessions skip auth staging by default.
 
-### `okdev init [--template basic|gpu|llm-stack] [--stignore-preset default|python|node|go|rust] [--force]`
+### `okdev init [--workload pod|job|pytorchjob|generic] [--template basic|<registry>|<path>|<url>] [--stignore-preset default|python|node|go|rust] [--force]`
 
 - Writes a starter `.okdev.yaml`.
+- `--workload`: chooses the scaffold mode. `pod` keeps the current simple config shape; `job` and `pytorchjob` add a `spec.workload` block plus a starter manifest; `generic` requires explicit inject information and can optionally use a preset such as `--generic-preset deployment`.
+- `--template`: accepts built-in `basic`, a user template name from `~/.okdev/templates/`, a file path, or a URL.
 - For built-in templates, it also writes a starter local `.stignore` file for the initialized sync root.
+- For built-in `basic`, `job` and `pytorchjob` scaffold `.okdev/job.yaml` or `.okdev/pytorchjob.yaml`. `generic --generic-preset deployment` scaffolds `.okdev/deployment.yaml` while still using `spec.workload.type=generic`.
 - `--stignore-preset`: override the starter `.stignore` patterns with a project-oriented preset.
 - When `--stignore-preset` is omitted, `okdev init` tries to detect a preset from common repo markers like `go.mod`, `package.json`, `Cargo.toml`, and `pyproject.toml`.
 
