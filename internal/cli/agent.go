@@ -65,7 +65,7 @@ func newAgentListCmd(opts *Options) *cobra.Command {
 				return outputJSON(cmd.OutOrStdout(), rows)
 			}
 			if len(rows) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "No agents configured")
+				fmt.Fprintln(cmd.OutOrStdout(), "No agents configured. Add spec.agents to .okdev.yaml to enable agent support.")
 				return nil
 			}
 			table := make([][]string, 0, len(rows))

@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -326,7 +327,7 @@ func stopLocalSyncthingForSession(sessionName string) error {
 }
 
 func stopLocalSyncthingForHome(home string) error {
-	return pkillByPattern("serve --home " + home)
+	return pkillByPattern(syncthingServeHomePattern(home))
 }
 
 func localSyncthingLogPath(home string) (string, error) {
@@ -351,6 +352,10 @@ func pkillByPattern(pattern string) error {
 		return nil
 	}
 	return fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
+}
+
+func syncthingServeHomePattern(home string) string {
+	return "serve --home " + regexp.QuoteMeta(home)
 }
 
 func resetSyncthingSessionState(sessionName string) error {
