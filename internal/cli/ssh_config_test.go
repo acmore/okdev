@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -89,5 +90,36 @@ func TestEnsureSSHConfigEntryUsesProxyKeepaliveValues(t *testing.T) {
 	}
 	if !strings.Contains(text, "ServerAliveCountMax 10") {
 		t.Fatalf("expected ServerAliveCountMax 10, got: %s", text)
+	}
+}
+
+func TestManagedSSHForwardArgs(t *testing.T) {
+	args := managedSSHForwardArgs(
+		"okdev-test",
+		"/tmp/okdev.sock",
+		[]config.PortMapping{
+			{Name: "app", Local: 8080, Remote: 80},
+			{Name: "hybrid", Local: 3000, Remote: 3000, Direction: config.PortDirectionReverse},
+		},
+		config.SSHSpec{KeepAliveInterval: 10, KeepAliveCountMax: 30},
+	)
+
+	want := []string{
+		"ssh",
+		"-fN",
+		"-M",
+		"-S", "/tmp/okdev.sock",
+		"-o", "ControlPersist=3600",
+		"-o", "ExitOnForwardFailure=no",
+		"-o", "ServerAliveInterval=10",
+		"-o", "ServerAliveCountMax=30",
+		"-o", "TCPKeepAlive=yes",
+		"-o", "LogLevel=ERROR",
+		"-L", "8080:127.0.0.1:80",
+		"-R", "3000:127.0.0.1:3000",
+		"okdev-test",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("unexpected args:\n got: %#v\nwant: %#v", args, want)
 	}
 }

@@ -198,8 +198,9 @@ spec:
 | `name` | `string` | no | Label for the port rule |
 | `local` | `int` | yes | Local listening port |
 | `remote` | `int` | yes | Remote target port |
+| `direction` | `string` | `forward` | `forward` for local-to-remote, `reverse` for remote-to-local |
 
-**Validation:** ports must be `1..65535`; `local` ports must be unique.
+**Validation:** ports must be `1..65535`; forward mappings must have unique `local` ports; reverse mappings must have unique `remote` ports.
 
 ```yaml
 spec:
@@ -210,6 +211,10 @@ spec:
     - name: tensorboard
       local: 6006
       remote: 6006
+    - name: api-reverse
+      local: 3000
+      remote: 3000
+      direction: reverse
 ```
 
 ---
