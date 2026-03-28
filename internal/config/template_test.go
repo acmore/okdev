@@ -1,8 +1,13 @@
 package config
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDefaultTemplateVars(t *testing.T) {
@@ -89,5 +94,60 @@ func TestResolveTemplateFilePath(t *testing.T) {
 	}
 	if content != "name: {{ .Name }}" {
 		t.Fatalf("unexpected content: %q", content)
+	}
+}
+
+func TestResolveTemplateContextCancelsURLFetch(t *testing.T) {
+	blocked := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(blocked)
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := ResolveTemplateContext(ctx, srv.URL)
+		errCh <- err
+	}()
+
+	select {
+	case <-blocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for request to start")
+	}
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected cancellation error")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context cancellation, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for canceled fetch to return")
+	}
+}
+
+func TestRenderTemplateContextFetchesURLTemplate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("name: {{ .Name }}\nnamespace: {{ .Namespace }}\n"))
+	}))
+	defer srv.Close()
+
+	vars := NewTemplateVars()
+	vars.Name = "demo"
+	out, err := RenderTemplateContext(context.Background(), srv.URL, vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "name: demo") {
+		t.Fatalf("expected rendered name, got %q", out)
+	}
+	if !strings.Contains(out, "namespace: default") {
+		t.Fatalf("expected rendered namespace, got %q", out)
 	}
 }

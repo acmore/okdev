@@ -174,3 +174,58 @@ spec:
 		t.Fatalf("expected cached workload name, got %q", got)
 	}
 }
+
+func TestPodTemplateSpecUnstructuredRoundTrip(t *testing.T) {
+	src := map[string]any{
+		"metadata": map[string]any{
+			"labels": map[string]any{
+				"app": "trainer",
+			},
+		},
+		"spec": map[string]any{
+			"containers": []any{
+				map[string]any{
+					"name":  "trainer",
+					"image": "python:3.12",
+					"env": []any{
+						map[string]any{
+							"name":  "MODE",
+							"value": "train",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	template, err := decodePodTemplateSpec(src)
+	if err != nil {
+		t.Fatalf("decodePodTemplateSpec: %v", err)
+	}
+	if template.Labels["app"] != "trainer" {
+		t.Fatalf("unexpected labels: %+v", template.Labels)
+	}
+	if len(template.Spec.Containers) != 1 || template.Spec.Containers[0].Image != "python:3.12" {
+		t.Fatalf("unexpected containers: %+v", template.Spec.Containers)
+	}
+
+	out, err := encodePodTemplateSpec(template)
+	if err != nil {
+		t.Fatalf("encodePodTemplateSpec: %v", err)
+	}
+	spec, ok := out["spec"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected spec map, got %#v", out["spec"])
+	}
+	containers, ok := spec["containers"].([]any)
+	if !ok || len(containers) != 1 {
+		t.Fatalf("unexpected containers payload: %#v", spec["containers"])
+	}
+	first, ok := containers[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected first container map, got %#v", containers[0])
+	}
+	if first["image"] != "python:3.12" {
+		t.Fatalf("unexpected image in round-trip: %#v", first["image"])
+	}
+}

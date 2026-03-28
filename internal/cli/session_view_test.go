@@ -52,3 +52,24 @@ func TestBuildSessionViewsGroupsPodsAndPrefersAnnotatedTarget(t *testing.T) {
 		t.Fatalf("expected pod count 2, got %d", view.PodCount)
 	}
 }
+
+func TestSelectTargetPodReturnsFalseForEmptySlice(t *testing.T) {
+	target, ok := selectTargetPod(nil)
+	if ok {
+		t.Fatalf("expected empty selection, got %+v", target)
+	}
+}
+
+func TestSelectTargetPodFallsBackToFirstPodWithoutAnnotation(t *testing.T) {
+	pods := []kube.PodSummary{
+		{Name: "pod-a"},
+		{Name: "pod-b"},
+	}
+	target, ok := selectTargetPod(pods)
+	if !ok {
+		t.Fatal("expected a target pod")
+	}
+	if target.Name != "pod-a" {
+		t.Fatalf("expected first pod fallback, got %q", target.Name)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -803,13 +804,6 @@ func sortedPorts(m map[int]struct{}) []int {
 	for p := range m {
 		out = append(out, p)
 	}
-	// Small sizes expected; keep dependency surface low.
-	for i := 0; i < len(out); i++ {
-		for j := i + 1; j < len(out); j++ {
-			if out[j] < out[i] {
-				out[i], out[j] = out[j], out[i]
-			}
-		}
-	}
+	sort.Ints(out)
 	return out
 }

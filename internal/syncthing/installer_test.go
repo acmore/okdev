@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -115,6 +116,30 @@ func TestDownloadArchiveToTemp(t *testing.T) {
 	wantChecksum := fmt.Sprintf("%x", sha256.Sum256(body))
 	if gotChecksum != wantChecksum {
 		t.Fatalf("unexpected checksum got=%q want=%q", gotChecksum, wantChecksum)
+	}
+}
+
+func TestDownloadArchiveToTempRejectsOversizedArchive(t *testing.T) {
+	oldClient := installerHTTPClient
+	oldLimit := installerArchiveMaxBytes
+	t.Cleanup(func() {
+		installerHTTPClient = oldClient
+		installerArchiveMaxBytes = oldLimit
+	})
+	installerArchiveMaxBytes = 8
+	installerHTTPClient = fakeHTTPDoer{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewBufferString("0123456789")),
+		},
+	}
+
+	_, _, err := downloadArchiveToTemp(context.Background(), "https://example.com/archive", "syncthing.tar.gz")
+	if err == nil {
+		t.Fatal("expected oversized archive error")
+	}
+	if !strings.Contains(err.Error(), "exceeds download limit") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

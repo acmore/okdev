@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"fmt"
 	"io"
@@ -110,6 +111,11 @@ func NewTemplateVars() *TemplateVars {
 
 // ResolveTemplate loads raw template content from a built-in name, file path, or URL.
 func ResolveTemplate(ref string) (string, error) {
+	return ResolveTemplateContext(context.Background(), ref)
+}
+
+// ResolveTemplateContext loads raw template content from a built-in name, file path, or URL.
+func ResolveTemplateContext(ctx context.Context, ref string) (string, error) {
 	hasPathIndicator := strings.Contains(ref, "/") ||
 		strings.HasSuffix(ref, ".yaml") ||
 		strings.HasSuffix(ref, ".yml") ||
@@ -138,12 +144,16 @@ func ResolveTemplate(ref string) (string, error) {
 	}
 
 	// Treat as URL
-	return fetchTemplateURL(ref)
+	return fetchTemplateURL(ctx, ref)
 }
 
-func fetchTemplateURL(url string) (string, error) {
+func fetchTemplateURL(ctx context.Context, url string) (string, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(url) //nolint:gosec // user-provided URL is intentional
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("build request for template %q: %w", url, err)
+	}
+	resp, err := client.Do(req) //nolint:gosec // user-provided URL is intentional
 	if err != nil {
 		return "", fmt.Errorf("fetch template from %q: %w", url, err)
 	}
@@ -160,7 +170,12 @@ func fetchTemplateURL(url string) (string, error) {
 
 // RenderTemplate resolves a template by ref and renders it with the given vars.
 func RenderTemplate(ref string, vars *TemplateVars) (string, error) {
-	raw, err := ResolveTemplate(ref)
+	return RenderTemplateContext(context.Background(), ref, vars)
+}
+
+// RenderTemplateContext resolves a template by ref and renders it with the given vars.
+func RenderTemplateContext(ctx context.Context, ref string, vars *TemplateVars) (string, error) {
+	raw, err := ResolveTemplateContext(ctx, ref)
 	if err != nil {
 		return "", err
 	}

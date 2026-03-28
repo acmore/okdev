@@ -13,6 +13,7 @@ import (
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 )
@@ -232,24 +233,16 @@ func writeMapPath(root map[string]any, path string, value map[string]any) error 
 }
 
 func decodePodTemplateSpec(src map[string]any) (corev1.PodTemplateSpec, error) {
-	raw, err := yaml.Marshal(src)
-	if err != nil {
-		return corev1.PodTemplateSpec{}, err
-	}
 	var template corev1.PodTemplateSpec
-	if err := yaml.Unmarshal(raw, &template); err != nil {
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(src, &template); err != nil {
 		return corev1.PodTemplateSpec{}, err
 	}
 	return template, nil
 }
 
 func encodePodTemplateSpec(template corev1.PodTemplateSpec) (map[string]any, error) {
-	raw, err := yaml.Marshal(template)
+	out, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&template)
 	if err != nil {
-		return nil, err
-	}
-	var out map[string]any
-	if err := yaml.Unmarshal(raw, &out); err != nil {
 		return nil, err
 	}
 	return out, nil
