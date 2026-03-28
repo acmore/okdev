@@ -180,7 +180,29 @@ if [ "$(id -u)" != "0" ]; then
   echo no-root:none
   exit 0
 fi
-echo unavailable:none
+if ! command -v bash >/dev/null 2>&1; then
+  echo unavailable:none
+  exit 0
+fi
+installer="none"
+if command -v apk >/dev/null 2>&1; then
+  installer="apk"
+elif command -v apt-get >/dev/null 2>&1; then
+  installer="apt-get"
+elif command -v apt >/dev/null 2>&1; then
+  installer="apt"
+elif command -v dnf >/dev/null 2>&1; then
+  installer="dnf"
+elif command -v microdnf >/dev/null 2>&1; then
+  installer="microdnf"
+elif command -v yum >/dev/null 2>&1; then
+  installer="yum"
+fi
+if [ "$installer" != "none" ]; then
+  echo install:${installer}
+else
+  echo unavailable:none
+fi
 `
 
 const agentNPMInstallScript = `set -eu
@@ -212,6 +234,36 @@ nvm_install() {
   fi
   return 0
 }
+install_curl() {
+  case "$installer" in
+    apk)
+      apk add --no-cache bash curl >/dev/null 2>&1 || return 1
+      ;;
+    apt-get)
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get -o DPkg::Lock::Timeout=10 update >/dev/null 2>&1 || return 1
+      apt-get -o DPkg::Lock::Timeout=10 install -y --no-install-recommends bash curl ca-certificates >/dev/null 2>&1 || return 1
+      ;;
+    apt)
+      export DEBIAN_FRONTEND=noninteractive
+      apt update >/dev/null 2>&1 || return 1
+      apt install -y --no-install-recommends bash curl ca-certificates >/dev/null 2>&1 || return 1
+      ;;
+    dnf)
+      dnf install -y bash curl ca-certificates >/dev/null 2>&1 || return 1
+      ;;
+    microdnf)
+      microdnf install -y bash curl ca-certificates >/dev/null 2>&1 || return 1
+      ;;
+    yum)
+      yum install -y bash curl ca-certificates >/dev/null 2>&1 || return 1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  return 0
+}
 if command -v npm >/dev/null 2>&1 && [ "$(node_major)" -ge 16 ]; then
   echo "__OKDEV_NPM_STATUS__=installed:${installer}"
   exit 0
@@ -220,7 +272,10 @@ if [ "$(id -u)" != "0" ]; then
   echo "__OKDEV_NPM_STATUS__=no-root:none"
   exit 0
 fi
-if [ "$installer" = "nvm" ]; then
+if ! command -v curl >/dev/null 2>&1; then
+  install_curl || true
+fi
+if [ "$installer" = "nvm" ] || [ "$installer" = "apk" ] || [ "$installer" = "apt-get" ] || [ "$installer" = "apt" ] || [ "$installer" = "dnf" ] || [ "$installer" = "microdnf" ] || [ "$installer" = "yum" ]; then
   nvm_install || true
 fi
 if command -v npm >/dev/null 2>&1 && [ "$(node_major)" -ge 16 ]; then
@@ -250,7 +305,7 @@ func ensureAgentNPMInstalled(ctx context.Context, client agentExecClient, namesp
 	case "no-root":
 		return "", fmt.Errorf("npm is unavailable and the dev container is not running as root")
 	case "unavailable":
-		return "", fmt.Errorf("npm is unavailable and nvm prerequisites (bash, curl) were not found")
+		return "", fmt.Errorf("npm is unavailable and neither nvm prerequisites nor a supported package manager were found")
 	case "install":
 	default:
 		return "", fmt.Errorf("unexpected npm prepare result %q", status)

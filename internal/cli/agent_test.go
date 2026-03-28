@@ -177,6 +177,46 @@ func TestEnsureConfiguredAgentsInstalledBootstrapsNPM(t *testing.T) {
 	}
 }
 
+func TestEnsureConfiguredAgentsInstalledBootstrapsCurlThenNVM(t *testing.T) {
+	client := &fakeAgentExecClient{
+		results: map[string]error{
+			"command -v codex >/dev/null 2>&1": errors.New("exit status 1"),
+			"npm install -g @openai/codex":     nil,
+		},
+		outputs: map[string][]byte{
+			`node -p 'process.versions.node.split(".")[0]'`: []byte("0\n"),
+			agentNPMDetectScript:                            []byte("install:apt-get\n"),
+		},
+	}
+	var warnings []string
+	results := ensureConfiguredAgentsInstalled(
+		context.Background(),
+		client,
+		"default",
+		"pod",
+		"dev",
+		[]config.AgentSpec{{Name: "codex"}},
+		func(format string, args ...any) { warnings = append(warnings, format) },
+	)
+
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %#v", warnings)
+	}
+	found := false
+	for _, script := range client.scripts {
+		if strings.Contains(script, "install_curl()") && strings.Contains(script, "apt-get -o DPkg::Lock::Timeout=10 install -y --no-install-recommends bash curl ca-certificates") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected curl bootstrap script, got %#v", client.scripts)
+	}
+	if got := strings.Join(results, ", "); !strings.Contains(got, "codex: node/npm installed via nvm") || !strings.Contains(got, "codex: installed") {
+		t.Fatalf("unexpected install summary %q", got)
+	}
+}
+
 func TestEnsureConfiguredAgentAuthStagesLocalFile(t *testing.T) {
 	localDir := t.TempDir()
 	localAuth := filepath.Join(localDir, "auth.json")
