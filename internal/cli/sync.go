@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,7 +27,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 		Use:   "sync",
 		Short: "Start syncthing sync for session pod",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cc, err := resolveCommandContext(opts, resolveManagedSessionName)
+			cc, err := resolveCommandContext(opts, resolveSessionName)
 			if err != nil {
 				return err
 			}
@@ -93,7 +94,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(), "Logs: %s\n", logPath)
 				return nil
 			}
-			return runSyncthingSync(cmd, opts, cc.cfg, cc.namespace, cc.sessionName, mode, pairs)
+			return runSyncthingSync(cmd, opts, cc.cfg, cc.namespace, cc.sessionName, mode, pairs, cc.kube)
 		},
 	}
 
@@ -127,7 +128,9 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 		if processAlive(pid) && processLooksLikeSyncthingSync(pid) {
 			return logPath, false, nil
 		}
-		_ = os.Remove(pidPath)
+		if rmErr := os.Remove(pidPath); rmErr != nil {
+			slog.Debug("failed to remove stale PID file", "path", pidPath, "error", rmErr)
+		}
 	}
 	logFile, err := logx.OpenRotatingLog(logPath)
 	if err != nil {
@@ -159,21 +162,31 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 	cmd.Stdin = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
-		_ = logFile.Close()
+		if closeErr := logFile.Close(); closeErr != nil {
+			slog.Debug("failed to close log file after start failure", "path", logPath, "error", closeErr)
+		}
 		return "", false, err
 	}
 	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)+"\n"), 0o644); err != nil {
-		_ = logFile.Close()
+		if closeErr := logFile.Close(); closeErr != nil {
+			slog.Debug("failed to close log file after PID write failure", "path", logPath, "error", closeErr)
+		}
 		return "", false, err
 	}
 	// Guard against immediate child exit (common when sync init fails).
 	time.Sleep(syncthingDetachedStartupDelay)
 	if !processAlive(cmd.Process.Pid) || !processLooksLikeSyncthingSync(cmd.Process.Pid) {
-		_ = logFile.Close()
+		if closeErr := logFile.Close(); closeErr != nil {
+			slog.Debug("failed to close log file after early exit", "path", logPath, "error", closeErr)
+		}
 		return "", false, fmt.Errorf("syncthing background process exited early; check logs: %s", logPath)
 	}
-	_ = cmd.Process.Release()
-	_ = logFile.Close()
+	if releaseErr := cmd.Process.Release(); releaseErr != nil {
+		slog.Debug("failed to release detached process", "pid", cmd.Process.Pid, "error", releaseErr)
+	}
+	if closeErr := logFile.Close(); closeErr != nil {
+		slog.Debug("failed to close log file", "path", logPath, "error", closeErr)
+	}
 	return logPath, true, nil
 }
 
@@ -204,7 +217,9 @@ func stopDetachedSyncthingSync(sessionName string) error {
 	if processAlive(pid) && processLooksLikeSyncthingSync(pid) {
 		p, err := os.FindProcess(pid)
 		if err == nil {
-			_ = p.Signal(syscall.SIGTERM)
+			if sigErr := p.Signal(syscall.SIGTERM); sigErr != nil {
+				slog.Debug("failed to send SIGTERM to syncthing process", "pid", pid, "error", sigErr)
+			}
 		}
 		deadline := time.Now().Add(syncthingShutdownWait)
 		for processAlive(pid) && time.Now().Before(deadline) {
@@ -212,7 +227,9 @@ func stopDetachedSyncthingSync(sessionName string) error {
 		}
 		if processAlive(pid) {
 			if p, err := os.FindProcess(pid); err == nil {
-				_ = p.Signal(syscall.SIGKILL)
+				if sigErr := p.Signal(syscall.SIGKILL); sigErr != nil {
+					slog.Debug("failed to send SIGKILL to syncthing process", "pid", pid, "error", sigErr)
+				}
 			}
 		}
 	}

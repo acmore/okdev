@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +21,7 @@ func newDownCmd(opts *Options) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ui := newUpUI(cmd.OutOrStdout(), cmd.ErrOrStderr())
 			ui.section("Validate")
-			cc, err := resolveCommandContext(opts, resolveManagedSessionName)
+			cc, err := resolveCommandContext(opts, resolveSessionName)
 			if err != nil {
 				return err
 			}
@@ -74,7 +75,9 @@ func newDownCmd(opts *Options) *cobra.Command {
 			} else {
 				ui.stepDone("syncthing", "stopped")
 			}
-			_ = stopManagedSSHForward(alias)
+			if err := stopManagedSSHForward(alias); err != nil {
+				slog.Debug("failed to stop managed SSH forward", "alias", alias, "error", err)
+			}
 			ui.stepDone("ssh forward", "stopped")
 			if err := removeSSHConfigEntry(alias); err != nil {
 				ui.warnf("failed to remove SSH config entry for %s: %v", alias, err)

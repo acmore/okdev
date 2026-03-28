@@ -2,7 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
+
 	"github.com/spf13/cobra"
 )
 
@@ -11,7 +13,7 @@ func newPortsCmd(opts *Options) *cobra.Command {
 		Use:   "ports",
 		Short: "Reconcile managed SSH port forwards for configured ports",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cc, err := resolveCommandContext(opts, resolveManagedSessionName)
+			cc, err := resolveCommandContext(opts, resolveSessionName)
 			if err != nil {
 				return err
 			}
@@ -63,7 +65,9 @@ func newPortsCmd(opts *Options) *cobra.Command {
 				return nil
 			}
 			if running {
-				_ = stopManagedSSHForward(alias)
+				if err := stopManagedSSHForward(alias); err != nil {
+					slog.Debug("failed to stop managed SSH forward", "alias", alias, "error", err)
+				}
 			}
 			if err := startManagedSSHForwardWithForwards(alias, cc.cfg.Spec.Ports, cc.cfg.Spec.SSH); err != nil {
 				return fmt.Errorf("start managed SSH forwards: %w", err)

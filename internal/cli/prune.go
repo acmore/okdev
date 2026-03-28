@@ -93,7 +93,9 @@ func newPruneCmd(opts *Options) *cobra.Command {
 					return err
 				}
 				if includePVC {
-					_ = cc.kube.Delete(ctx, view.Namespace, "pvc", "okdev-"+sessionName+"-workspace", true)
+					if err := cc.kube.Delete(ctx, view.Namespace, "pvc", "okdev-"+sessionName+"-workspace", true); err != nil {
+						slog.Warn("failed to delete PVC during prune", "pvc", "okdev-"+sessionName+"-workspace", "namespace", view.Namespace, "error", err)
+					}
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Pruned session %s in namespace %s (%s)\n", sessionName, view.Namespace, reason)
 				deleted++

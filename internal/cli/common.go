@@ -260,14 +260,6 @@ func resolveSessionName(opts *Options, cfg *config.DevEnvironment, namespace str
 	return resolveSessionNameWithState(opts, cfg, namespace, true)
 }
 
-func resolveManagedSessionName(opts *Options, cfg *config.DevEnvironment, namespace string) (string, error) {
-	return resolveSessionNameWithState(opts, cfg, namespace, true)
-}
-
-func resolveSessionNameForUpDown(opts *Options, cfg *config.DevEnvironment, namespace string) (string, error) {
-	return resolveManagedSessionName(opts, cfg, namespace)
-}
-
 func resolveSessionNameWithState(opts *Options, cfg *config.DevEnvironment, namespace string, inferExisting bool) (string, error) {
 	return resolveSessionNameWithReader(opts, cfg, namespace, inferExisting, newKubeClient(opts))
 }

@@ -118,7 +118,7 @@ func runUp(cmd *cobra.Command, opts *Options, flags upOptions) error {
 func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, error) {
 	ui := newUpUI(cmd.OutOrStdout(), cmd.ErrOrStderr())
 	ui.section("Validate")
-	cc, err := resolveCommandContext(opts, resolveManagedSessionName)
+	cc, err := resolveCommandContext(opts, resolveSessionName)
 	if err != nil {
 		return nil, err
 	}
@@ -286,7 +286,9 @@ func upSetup(state *upState) error {
 	if _, cfgErr := ensureSSHConfigEntry(alias, state.command.sessionName, state.command.namespace, state.command.cfg.Spec.SSH.User, sshPort, keyPath, state.command.cfgPath, state.command.cfg.Spec.Ports); cfgErr != nil {
 		return fmt.Errorf("update ~/.ssh/config: %w", cfgErr)
 	}
-	_ = stopManagedSSHForward(alias)
+	if err := stopManagedSSHForward(alias); err != nil {
+		slog.Debug("failed to stop managed SSH forward", "alias", alias, "error", err)
+	}
 	if err := startManagedSSHForwardWithForwards(alias, state.command.cfg.Spec.Ports, state.command.cfg.Spec.SSH); err != nil {
 		return fmt.Errorf("start managed SSH/port-forwards: %w", err)
 	}

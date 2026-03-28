@@ -19,7 +19,7 @@ func newListCmd(opts *Options) *cobra.Command {
 		Use:   "list",
 		Short: "List dev sessions",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cc := &commandContext{opts: opts, kube: newKubeClient(opts)}
+			cc := &commandContext{opts: opts}
 			ns := opts.Namespace
 			activeSession, activeErr := session.LoadActiveSession()
 			if activeErr != nil {

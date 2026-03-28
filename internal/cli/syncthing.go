@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
+	"github.com/acmore/okdev/internal/kube"
 	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/acmore/okdev/internal/syncthing"
 	"github.com/spf13/cobra"
@@ -35,7 +36,7 @@ const (
 
 var syncthingHTTPClient = &http.Client{Timeout: syncthingHTTPClientTimeout}
 
-func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironment, namespace, sessionName, mode string, pairs []syncengine.Pair) error {
+func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironment, namespace, sessionName, mode string, pairs []syncengine.Pair, k *kube.Client) error {
 	if len(pairs) != 1 {
 		return fmt.Errorf("syncthing engine currently supports exactly one sync path mapping")
 	}
@@ -47,7 +48,6 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		return fmt.Errorf("prepare local syncthing binary: %w", err)
 	}
 
-	k := newKubeClient(opts)
 	target, err := resolveTargetRef(cmd.Context(), opts, cfg, namespace, sessionName, k)
 	if err != nil {
 		return err
@@ -252,11 +252,17 @@ func startLocalSyncthing(binary, home, localGUIAddr string) error {
 	cmd.Stdin = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
-		_ = logFile.Close()
+		if closeErr := logFile.Close(); closeErr != nil {
+			slog.Debug("failed to close syncthing log file after start failure", "error", closeErr)
+		}
 		return fmt.Errorf("start local syncthing: %w", err)
 	}
-	_ = cmd.Process.Release()
-	_ = logFile.Close()
+	if releaseErr := cmd.Process.Release(); releaseErr != nil {
+		slog.Debug("failed to release syncthing process", "error", releaseErr)
+	}
+	if closeErr := logFile.Close(); closeErr != nil {
+		slog.Debug("failed to close syncthing log file", "error", closeErr)
+	}
 	return nil
 }
 
