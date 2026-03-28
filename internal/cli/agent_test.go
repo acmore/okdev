@@ -96,6 +96,9 @@ func TestEnsureConfiguredAgentsInstalled(t *testing.T) {
 			"command -v npm >/dev/null 2>&1":    nil,
 			"npm install -g @openai/codex":      nil,
 		},
+		outputs: map[string][]byte{
+			`node -p 'process.versions.node.split(".")[0]'`: []byte("20\n"),
+		},
 	}
 	var warnings []string
 	results := ensureConfiguredAgentsInstalled(
@@ -123,7 +126,8 @@ func TestEnsureConfiguredAgentsInstalledWarnsWhenNpmMissing(t *testing.T) {
 			"command -v npm >/dev/null 2>&1":   errors.New("exit status 1"),
 		},
 		outputs: map[string][]byte{
-			agentNPMDetectScript: []byte("unavailable:none\n"),
+			`node -p 'process.versions.node.split(".")[0]'`: []byte("0\n"),
+			agentNPMDetectScript:                            []byte("unavailable:none\n"),
 		},
 	}
 	var warnings []string
@@ -149,11 +153,11 @@ func TestEnsureConfiguredAgentsInstalledBootstrapsNPM(t *testing.T) {
 	client := &fakeAgentExecClient{
 		results: map[string]error{
 			"command -v codex >/dev/null 2>&1": errors.New("exit status 1"),
-			"command -v npm >/dev/null 2>&1":   errors.New("exit status 1"),
 			"npm install -g @openai/codex":     nil,
 		},
 		outputs: map[string][]byte{
-			agentNPMDetectScript: []byte("install:apk\n"),
+			`node -p 'process.versions.node.split(".")[0]'`: []byte("12\n"),
+			agentNPMDetectScript:                            []byte("install:apk\n"),
 		},
 	}
 	var warnings []string

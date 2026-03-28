@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 
 	agentcatalog "github.com/acmore/okdev/internal/agent"
@@ -135,13 +136,7 @@ func ensureConfiguredAgentsInstalled(ctx context.Context, client agentExecClient
 			results = append(results, spec.Name+": present")
 			continue
 		}
-		npmInstalled, err := agentBinaryInstalled(ctx, client, namespace, pod, container, "npm")
-		if err != nil {
-			warnf("failed to check npm before installing %s: %v", spec.Name, err)
-			results = append(results, spec.Name+": npm check failed")
-			continue
-		}
-		if !npmInstalled {
+		if agentInstallNeedsNPM(spec) {
 			npmResult, npmErr := ensureAgentNPMInstalled(ctx, client, namespace, pod, container)
 			if npmErr != nil {
 				warnf("skipping %s install: %v", spec.Name, npmErr)
@@ -170,6 +165,10 @@ func ensureConfiguredAgentsInstalled(ctx context.Context, client agentExecClient
 		results = append(results, spec.Name+": installed")
 	}
 	return results
+}
+
+func agentInstallNeedsNPM(spec agentcatalog.Spec) bool {
+	return strings.HasPrefix(strings.TrimSpace(spec.InstallCommand), "npm ")
 }
 
 const agentNPMDetectScript = `set -eu
@@ -217,6 +216,23 @@ apt_retry() {
   done
   return 1
 }
+node_major() {
+  if ! command -v node >/dev/null 2>&1; then
+    echo 0
+    return 0
+  fi
+  node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0
+}
+upgrade_node_apt() {
+  if ! command -v curl >/dev/null 2>&1; then
+    return 1
+  fi
+  export DEBIAN_FRONTEND=noninteractive
+  curl -fsSL https://deb.nodesource.com/setup_20.x -o /tmp/okdev-nodesource.sh >/dev/null 2>&1 || return 1
+  bash /tmp/okdev-nodesource.sh >/dev/null 2>&1 || return 1
+  apt_retry 12 apt-get -o DPkg::Lock::Timeout=10 install -y --no-install-recommends nodejs >/dev/null 2>&1 || return 1
+  return 0
+}
 if command -v npm >/dev/null 2>&1; then
   echo "__OKDEV_NPM_STATUS__=installed:${installer}"
   exit 0
@@ -240,6 +256,11 @@ elif [ "$installer" = "microdnf" ]; then
 elif [ "$installer" = "yum" ]; then
   yum install -y nodejs npm >/dev/null 2>&1 || true
 fi
+if [ "$(node_major)" -lt 16 ]; then
+  if [ "$installer" = "apt-get" ] || [ "$installer" = "apt" ]; then
+    upgrade_node_apt || true
+  fi
+fi
 if command -v npm >/dev/null 2>&1; then
   echo "__OKDEV_NPM_STATUS__=installed:${installer}"
   exit 0
@@ -248,6 +269,17 @@ echo "__OKDEV_NPM_STATUS__=unavailable:${installer}"
 `
 
 func ensureAgentNPMInstalled(ctx context.Context, client agentExecClient, namespace, pod, container string) (string, error) {
+	npmInstalled, err := agentBinaryInstalled(ctx, client, namespace, pod, container, "npm")
+	if err != nil {
+		return "", fmt.Errorf("check npm availability: %w", err)
+	}
+	nodeMajor, err := agentNodeMajorVersion(ctx, client, namespace, pod, container)
+	if err != nil {
+		return "", fmt.Errorf("check node version: %w", err)
+	}
+	if npmInstalled && nodeMajor >= 16 {
+		return "", nil
+	}
 	status, installer, err := detectAgentNPM(ctx, client, namespace, pod, container)
 	if err != nil {
 		return "", err
@@ -306,6 +338,26 @@ func parseAgentNPMStatus(raw string) (status, installer string) {
 		return strings.TrimSpace(status), strings.TrimSpace(installer)
 	}
 	return "", ""
+}
+
+func agentNodeMajorVersion(ctx context.Context, client agentExecClient, namespace, pod, container string) (int, error) {
+	out, err := client.ExecShInContainer(ctx, namespace, pod, container, `node -p 'process.versions.node.split(".")[0]'`)
+	if err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "exit code 127") || strings.Contains(msg, "exit status 127") || strings.Contains(msg, "not found") {
+			return 0, nil
+		}
+		return 0, err
+	}
+	value := strings.TrimSpace(string(out))
+	if value == "" {
+		return 0, nil
+	}
+	major, convErr := strconv.Atoi(value)
+	if convErr != nil {
+		return 0, fmt.Errorf("parse node major version %q: %w", value, convErr)
+	}
+	return major, nil
 }
 
 func ensureConfiguredAgentAuth(ctx context.Context, client agentExecClient, namespace, pod, container string, shareable bool, agents []config.AgentSpec, warnf func(string, ...any)) []string {
