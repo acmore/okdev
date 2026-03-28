@@ -11,6 +11,20 @@ import (
 	"github.com/acmore/okdev/internal/kube"
 )
 
+func stubPkill(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pkill")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write pkill stub: %v", err)
+	}
+	oldPath := os.Getenv("PATH")
+	if err := os.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath); err != nil {
+		t.Fatalf("set PATH: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Setenv("PATH", oldPath) })
+}
+
 type fakePodSummaryReader struct {
 	summary *kube.PodSummary
 	err     error
@@ -35,6 +49,7 @@ func TestNewSyncCmdDefaultsToBackground(t *testing.T) {
 }
 
 func TestResetSyncthingSessionStateRemovesLocalState(t *testing.T) {
+	stubPkill(t)
 	home := t.TempDir()
 	origHome := os.Getenv("HOME")
 	if err := os.Setenv("HOME", home); err != nil {
@@ -72,6 +87,7 @@ func TestResetSyncthingSessionStateRemovesLocalState(t *testing.T) {
 }
 
 func TestRefreshSyncthingSessionProcessesPreservesLocalState(t *testing.T) {
+	stubPkill(t)
 	home := t.TempDir()
 	origHome := os.Getenv("HOME")
 	if err := os.Setenv("HOME", home); err != nil {
@@ -162,6 +178,7 @@ func TestEnsureSyncthingTargetSessionStateInitialSaveDoesNotReset(t *testing.T) 
 }
 
 func TestEnsureSyncthingTargetSessionStateResetsWhenPodRecreated(t *testing.T) {
+	stubPkill(t)
 	home := t.TempDir()
 	origHome := os.Getenv("HOME")
 	if err := os.Setenv("HOME", home); err != nil {
