@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -266,6 +267,34 @@ func TestLocalSyncthingLogPath(t *testing.T) {
 func TestLocalSyncthingLogPathRejectsEmptyHome(t *testing.T) {
 	if _, err := localSyncthingLogPath("   "); err == nil {
 		t.Fatal("expected empty home error")
+	}
+}
+
+func TestOpenLocalSyncthingLogRotatesOversizedFile(t *testing.T) {
+	home := t.TempDir()
+	logPath, err := localSyncthingLogPath(home)
+	if err != nil {
+		t.Fatalf("localSyncthingLogPath: %v", err)
+	}
+	if err := os.WriteFile(logPath, bytes.Repeat([]byte("x"), 11*1024*1024), 0o644); err != nil {
+		t.Fatalf("seed oversized log: %v", err)
+	}
+
+	f, err := openLocalSyncthingLog(logPath)
+	if err != nil {
+		t.Fatalf("openLocalSyncthingLog: %v", err)
+	}
+	_ = f.Close()
+
+	if _, err := os.Stat(logPath + ".1"); err != nil {
+		t.Fatalf("expected rotated backup log: %v", err)
+	}
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatalf("stat active log: %v", err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("expected empty active log after rotation, got %d", info.Size())
 	}
 }
 
