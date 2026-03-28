@@ -30,9 +30,11 @@ import (
 const (
 	syncthingContainerName = "okdev-sidecar"
 )
-const (
-	syncthingPeerAddrDynamic = "dynamic"
-)
+
+// defaultSyncExcludes are applied when the user has not configured any
+// spec.sync.exclude patterns.  They prevent common large or noisy
+// directories from being synced by default.
+var defaultSyncExcludes = []string{".git", "node_modules", "vendor", "__pycache__", ".DS_Store"}
 
 var syncthingHTTPClient = &http.Client{Timeout: syncthingHTTPClientTimeout}
 
@@ -77,7 +79,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	if err := os.MkdirAll(absLocal, 0o755); err != nil {
 		return err
 	}
-	if err := writeSTIgnore(absLocal, cfg.Spec.Sync.Exclude); err != nil {
+	if err := writeLocalSTIgnore(absLocal, cfg.Spec.Sync.Exclude); err != nil {
 		return err
 	}
 	if _, err := execInSyncthingContainer(ctx, k, namespace, pod, fmt.Sprintf("mkdir -p %s", syncengine.ShellEscape(pair.Remote))); err != nil {
@@ -135,10 +137,10 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	folderTypeLocal, folderTypeRemote := folderTypesForMode(mode)
 	folderID := "okdev-" + sessionName
 
-	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds, cfg.Spec.Sync.Syncthing.RelaysEnabled); err != nil {
+	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds, cfg.Spec.Sync.Syncthing.RelaysEnabled, cfg.Spec.Sync.Syncthing.Compression); err != nil {
 		return fmt.Errorf("configure local syncthing: %w", err)
 	}
-	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, syncthingPeerAddrDynamic, folderID, pair.Remote, folderTypeRemote, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds, cfg.Spec.Sync.Syncthing.RelaysEnabled); err != nil {
+	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, localRemotePeerAddr, folderID, pair.Remote, folderTypeRemote, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds, cfg.Spec.Sync.Syncthing.RelaysEnabled, cfg.Spec.Sync.Syncthing.Compression); err != nil {
 		return fmt.Errorf("configure remote syncthing: %w", err)
 	}
 
@@ -167,6 +169,25 @@ func writeSTIgnore(localPath string, excludes []string) error {
 		return nil
 	}
 	return os.WriteFile(filepath.Join(localPath, ".stignore"), []byte(content), 0o644)
+}
+
+func writeLocalSTIgnore(localPath string, excludes []string) error {
+	if len(excludes) == 0 {
+		stignorePath := filepath.Join(localPath, ".stignore")
+		if _, err := os.Stat(stignorePath); err == nil {
+			return nil
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return writeSTIgnore(localPath, effectiveLocalExcludes(excludes))
+}
+
+func effectiveLocalExcludes(excludes []string) []string {
+	if len(excludes) == 0 {
+		return defaultSyncExcludes
+	}
+	return excludes
 }
 
 func buildSTIgnoreContent(excludes []string) (string, bool) {
@@ -539,12 +560,17 @@ func folderTypesForMode(mode string) (local, remote string) {
 	}
 }
 
-func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peerAddr, folderID, folderPath, folderType string, rescanIntervalSeconds int, relaysEnabled bool) error {
+func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peerAddr, folderID, folderPath, folderType string, rescanIntervalSeconds int, relaysEnabled, compression bool) error {
 	cfg, err := syncthingGetConfig(ctx, base, key)
 	if err != nil {
 		return err
 	}
 	applyManagedSyncthingGlobalDefaults(cfg, relaysEnabled)
+
+	compressionMode := "metadata"
+	if compression {
+		compressionMode = "always"
+	}
 
 	devices, err := syncthingObjectArray(cfg, "devices")
 	if err != nil {
@@ -558,6 +584,7 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 		}
 		if asString(m["deviceID"]) == peerID {
 			m["addresses"] = []any{peerAddr}
+			m["compression"] = compressionMode
 			devices[i] = m
 			foundDevice = true
 			break
@@ -565,9 +592,10 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 	}
 	if !foundDevice {
 		devices = append(devices, map[string]any{
-			"deviceID":  peerID,
-			"name":      "okdev-peer",
-			"addresses": []any{peerAddr},
+			"deviceID":    peerID,
+			"name":        "okdev-peer",
+			"addresses":   []any{peerAddr},
+			"compression": compressionMode,
 		})
 	}
 	cfg["devices"] = devices
@@ -634,6 +662,9 @@ func applyManagedSyncthingGlobalDefaults(cfg map[string]any, relaysEnabled bool)
 	options["upgradeToPreReleases"] = false
 	options["urAccepted"] = -1
 	options["relaysEnabled"] = relaysEnabled
+	options["globalAnnounceEnabled"] = false
+	options["localAnnounceEnabled"] = false
+	options["natEnabled"] = false
 	cfg["options"] = options
 }
 
