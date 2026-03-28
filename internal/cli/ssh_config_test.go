@@ -91,6 +91,9 @@ func TestEnsureSSHConfigEntryUsesProxyKeepaliveValues(t *testing.T) {
 	if !strings.Contains(text, "ServerAliveCountMax 10") {
 		t.Fatalf("expected ServerAliveCountMax 10, got: %s", text)
 	}
+	if _, err := os.Stat(cfgPath + ".okdev.lock"); !os.IsNotExist(err) {
+		t.Fatalf("expected ssh config lock file to be cleaned up, got err=%v", err)
+	}
 }
 
 func TestManagedSSHForwardArgs(t *testing.T) {

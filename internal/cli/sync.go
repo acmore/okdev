@@ -202,13 +202,11 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 		}
 		return "", false, err
 	}
-	// Guard against immediate child exit (common when sync init fails).
-	time.Sleep(syncthingDetachedStartupDelay)
-	if !processAlive(cmd.Process.Pid) || !processLooksLikeSyncthingSync(cmd.Process.Pid) {
+	if err := waitForDetachedSyncthingStart(cmd.Process.Pid, syncthingDetachedStartupDelay); err != nil {
 		if closeErr := logFile.Close(); closeErr != nil {
 			slog.Debug("failed to close log file after early exit", "path", logPath, "error", closeErr)
 		}
-		return "", false, fmt.Errorf("syncthing background process exited early; check logs: %s", logPath)
+		return "", false, fmt.Errorf("%w; check logs: %s", err, logPath)
 	}
 	if releaseErr := cmd.Process.Release(); releaseErr != nil {
 		slog.Debug("failed to release detached process", "pid", cmd.Process.Pid, "error", releaseErr)
@@ -217,6 +215,22 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 		slog.Debug("failed to close log file", "path", logPath, "error", closeErr)
 	}
 	return logPath, true, nil
+}
+
+func waitForDetachedSyncthingStart(pid int, maxWait time.Duration) error {
+	deadline := time.Now().Add(maxWait)
+	for {
+		if !processAlive(pid) {
+			return fmt.Errorf("syncthing background process exited early")
+		}
+		if processLooksLikeSyncthingSync(pid) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("syncthing background process did not become ready")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func syncthingPIDPath(sessionName string) (string, error) {

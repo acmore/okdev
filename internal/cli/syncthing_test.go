@@ -173,6 +173,9 @@ func TestWriteRemoteSTIgnoreInPod(t *testing.T) {
 	if !strings.Contains(rec.script, ".git/\nnode_modules/\n") {
 		t.Fatalf("expected ignore content in script, got %q", rec.script)
 	}
+	if strings.Contains(rec.script, "OKDEV_STIGNORE_EOF") {
+		t.Fatalf("did not expect heredoc sentinel in script, got %q", rec.script)
+	}
 }
 
 func TestWriteRemoteSTIgnoreInPodRejectsInvalidRemotePath(t *testing.T) {
