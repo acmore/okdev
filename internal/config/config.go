@@ -116,6 +116,7 @@ type SyncthingSpec struct {
 	Image                 string `yaml:"image"`
 	RescanIntervalSeconds int    `yaml:"rescanIntervalSeconds"`
 	RelaysEnabled         bool   `yaml:"relaysEnabled"`
+	Compression           bool   `yaml:"compression"`
 }
 
 type PortMapping struct {

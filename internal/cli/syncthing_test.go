@@ -88,6 +88,58 @@ func TestWriteSTIgnore(t *testing.T) {
 	}
 }
 
+func TestWriteLocalSTIgnoreWritesDefaultsWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeLocalSTIgnore(dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, ".stignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pattern := range defaultSyncExcludes {
+		if !strings.Contains(string(got), pattern) {
+			t.Fatalf("expected default exclude %q in stignore, got %q", pattern, got)
+		}
+	}
+}
+
+func TestWriteLocalSTIgnorePreservesExistingFileWhenDefaultsImplicit(t *testing.T) {
+	dir := t.TempDir()
+	stignorePath := filepath.Join(dir, ".stignore")
+	if err := os.WriteFile(stignorePath, []byte("custom/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeLocalSTIgnore(dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(stignorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "custom/\n" {
+		t.Fatalf("expected existing stignore to be preserved, got %q", got)
+	}
+}
+
+func TestWriteLocalSTIgnoreOverridesExistingFileWhenExcludesExplicit(t *testing.T) {
+	dir := t.TempDir()
+	stignorePath := filepath.Join(dir, ".stignore")
+	if err := os.WriteFile(stignorePath, []byte("custom/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeLocalSTIgnore(dir, []string{".git/"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(stignorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != ".git/\n" {
+		t.Fatalf("expected explicit excludes to replace file, got %q", got)
+	}
+}
+
 type syncthingExecRecorder struct {
 	namespace string
 	pod       string
@@ -188,6 +240,15 @@ func TestApplyManagedSyncthingGlobalDefaults(t *testing.T) {
 	}
 	if got := options["relaysEnabled"]; got != false {
 		t.Fatalf("expected relaysEnabled=false, got %#v", got)
+	}
+	if got := options["globalAnnounceEnabled"]; got != false {
+		t.Fatalf("expected globalAnnounceEnabled=false, got %#v", got)
+	}
+	if got := options["localAnnounceEnabled"]; got != false {
+		t.Fatalf("expected localAnnounceEnabled=false, got %#v", got)
+	}
+	if got := options["natEnabled"]; got != false {
+		t.Fatalf("expected natEnabled=false, got %#v", got)
 	}
 }
 
@@ -315,10 +376,10 @@ func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, false); err != nil {
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, false, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "dynamic", "okdev-test", "/tmp/updated", "sendonly", 120, false); err != nil {
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22001", "okdev-test", "/tmp/updated", "sendonly", 120, false, false); err != nil {
 		t.Fatal(err)
 	}
 	if len(putBodies) != 2 {
@@ -340,8 +401,11 @@ func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 		t.Fatalf("unexpected deviceID %q", got)
 	}
 	addresses, ok := device["addresses"].([]any)
-	if !ok || len(addresses) != 1 || addresses[0] != "dynamic" {
+	if !ok || len(addresses) != 1 || addresses[0] != "tcp://127.0.0.1:22001" {
 		t.Fatalf("unexpected device addresses %#v", device["addresses"])
+	}
+	if got := asString(device["compression"]); got != "metadata" {
+		t.Fatalf("expected compression=metadata, got %q", got)
 	}
 
 	folders, err := syncthingObjectArray(cfg, "folders")
@@ -382,5 +446,102 @@ func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	}
 	if got := options["relaysEnabled"]; got != false {
 		t.Fatalf("unexpected relaysEnabled %#v", got)
+	}
+	if got := options["globalAnnounceEnabled"]; got != false {
+		t.Fatalf("unexpected globalAnnounceEnabled %#v", got)
+	}
+	if got := options["localAnnounceEnabled"]; got != false {
+		t.Fatalf("unexpected localAnnounceEnabled %#v", got)
+	}
+	if got := options["natEnabled"]; got != false {
+		t.Fatalf("unexpected natEnabled %#v", got)
+	}
+}
+
+func TestEffectiveLocalExcludes(t *testing.T) {
+	got := effectiveLocalExcludes(nil)
+	if len(got) != len(defaultSyncExcludes) {
+		t.Fatalf("expected defaults, got %v", got)
+	}
+	for i, v := range defaultSyncExcludes {
+		if got[i] != v {
+			t.Fatalf("expected %q at index %d, got %q", v, i, got[i])
+		}
+	}
+	custom := []string{".idea", "build"}
+	got = effectiveLocalExcludes(custom)
+	if len(got) != 2 || got[0] != ".idea" || got[1] != "build" {
+		t.Fatalf("expected custom excludes, got %v", got)
+	}
+}
+
+func TestWriteSTIgnoreDefaultExcludes(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeSTIgnore(dir, effectiveLocalExcludes(nil)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, ".stignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pattern := range defaultSyncExcludes {
+		if !strings.Contains(string(got), pattern) {
+			t.Fatalf("expected default exclude %q in stignore, got %q", pattern, got)
+		}
+	}
+}
+
+func TestWriteLocalSTIgnorePropagatesStatError(t *testing.T) {
+	base := t.TempDir()
+	filePath := filepath.Join(base, "not-a-dir")
+	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeLocalSTIgnore(filePath, nil); err == nil {
+		t.Fatal("expected stat error for invalid local path")
+	}
+}
+
+func TestConfigureSyncthingPeerCompressionAlways(t *testing.T) {
+	cfg := map[string]any{
+		"devices": []any{},
+		"folders": []any{},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/rest/config":
+			_ = json.NewEncoder(w).Encode(cfg)
+		case r.Method == http.MethodPut && r.URL.Path == "/rest/config":
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(body, &cfg); err != nil {
+				t.Fatal(err)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, false, true); err != nil {
+		t.Fatal(err)
+	}
+
+	devices, err := syncthingObjectArray(cfg, "devices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("expected 1 device, got %d", len(devices))
+	}
+	device, err := syncthingObjectMap(devices[0], "devices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := asString(device["compression"]); got != "always" {
+		t.Fatalf("expected compression=always, got %q", got)
 	}
 }
