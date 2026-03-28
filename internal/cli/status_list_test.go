@@ -1,0 +1,188 @@
+package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestNewStatusCmdOutputsJSON(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/namespaces/demo/pods":
+			_, _ = io.WriteString(w, `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"namespace":"demo","name":"okdev-sess-a","creationTimestamp":"2026-03-29T00:00:00Z","labels":{"okdev.io/session":"sess-a","okdev.io/owner":"alice","okdev.io/workload-type":"pod"}},"status":{"phase":"Running","containerStatuses":[{"name":"dev","ready":true,"restartCount":1}]}}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("KUBECONFIG", writeCLITLSTestKubeconfig(t, server))
+	cfgPath := writeCLIConfig(t, "demo")
+	opts := &Options{ConfigPath: cfgPath, Context: "dev", Output: "json"}
+	cmd := newStatusCmd(opts)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--all", "--all-users"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status execute: %v", err)
+	}
+
+	var rows []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+		t.Fatalf("json unmarshal: %v\n%s", err, out.String())
+	}
+	if len(rows) != 1 || rows[0]["session"] != "sess-a" || rows[0]["phase"] != "Running" {
+		t.Fatalf("unexpected status rows: %#v", rows)
+	}
+}
+
+func TestNewListCmdOutputsJSON(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/namespaces/demo/pods":
+			_, _ = io.WriteString(w, `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"namespace":"demo","name":"okdev-sess-a","creationTimestamp":"2026-03-29T00:00:00Z","labels":{"okdev.io/session":"sess-a","okdev.io/owner":"alice","okdev.io/workload-type":"pod"}},"status":{"phase":"Running","containerStatuses":[{"name":"dev","ready":true,"restartCount":1}]}}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("KUBECONFIG", writeCLITLSTestKubeconfig(t, server))
+	opts := &Options{Namespace: "demo", Context: "dev", Output: "json"}
+	cmd := newListCmd(opts)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--all-users"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("list execute: %v", err)
+	}
+
+	var rows []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+		t.Fatalf("json unmarshal: %v\n%s", err, out.String())
+	}
+	if len(rows) != 1 || rows[0]["session"] != "sess-a" || rows[0]["namespace"] != "demo" {
+		t.Fatalf("unexpected list rows: %#v", rows)
+	}
+}
+
+func TestNewStatusCmdDetailsRequiresSingleSession(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/namespaces/demo/pods":
+			_, _ = io.WriteString(w, `{"kind":"PodList","apiVersion":"v1","items":[
+{"metadata":{"namespace":"demo","name":"okdev-sess-a","creationTimestamp":"2026-03-29T00:00:00Z","labels":{"okdev.io/session":"sess-a","okdev.io/owner":"alice","okdev.io/workload-type":"pod"}},"status":{"phase":"Running","containerStatuses":[{"name":"dev","ready":true}]}},
+{"metadata":{"namespace":"demo","name":"okdev-sess-b","creationTimestamp":"2026-03-29T00:01:00Z","labels":{"okdev.io/session":"sess-b","okdev.io/owner":"alice","okdev.io/workload-type":"pod"}},"status":{"phase":"Running","containerStatuses":[{"name":"dev","ready":true}]}}
+]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("KUBECONFIG", writeCLITLSTestKubeconfig(t, server))
+	cfgPath := writeCLIConfig(t, "demo")
+	opts := &Options{ConfigPath: cfgPath, Context: "dev"}
+	cmd := newStatusCmd(opts)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--all", "--all-users", "--details"})
+
+	err := cmd.Execute()
+	if err == nil || err.Error() != "--details requires a single session" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewAgentListCmdReportsNoConfiguredAgents(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/namespaces/demo/pods":
+			_, _ = io.WriteString(w, `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"namespace":"demo","name":"okdev-sess-a","creationTimestamp":"2026-03-29T00:00:00Z","labels":{"okdev.io/session":"sess-a","okdev.io/owner":"alice","okdev.io/workload-type":"pod"}},"status":{"phase":"Running","containerStatuses":[{"name":"dev","ready":true}]}}]}`)
+		case "/api/v1/namespaces/demo/pods/okdev-sess-a":
+			_, _ = io.WriteString(w, `{"kind":"Pod","apiVersion":"v1","metadata":{"namespace":"demo","name":"okdev-sess-a"},"status":{"phase":"Running","containerStatuses":[{"name":"dev","ready":true}]}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KUBECONFIG", writeCLITLSTestKubeconfig(t, server))
+	cfgPath := writeCLIConfig(t, "demo")
+	opts := &Options{ConfigPath: cfgPath, Context: "dev", Session: "sess-a", Owner: "alice"}
+	cmd := newAgentListCmd(opts)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("agent list execute: %v", err)
+	}
+	if got := out.String(); got != "No agents configured. Add spec.agents to .okdev.yaml to enable agent support.\n" {
+		t.Fatalf("unexpected output %q", got)
+	}
+}
+
+func writeCLIConfig(t *testing.T, namespace string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), ".okdev.yaml")
+	content := fmt.Sprintf(`apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: demo
+spec:
+  namespace: %s
+`, namespace)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeCLITLSTestKubeconfig(t *testing.T, srv *httptest.Server) string {
+	t.Helper()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse server url: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "config")
+	content := fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: %s
+    insecure-skip-tls-verify: true
+  name: dev
+contexts:
+- context:
+    cluster: dev
+    user: dev
+  name: dev
+current-context: dev
+users:
+- name: dev
+  user:
+    token: test
+`, (&url.URL{Scheme: u.Scheme, Host: u.Host}).String())
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}

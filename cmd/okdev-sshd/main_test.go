@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"errors"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -254,4 +257,114 @@ func contains(items []string, want string) bool {
 		}
 	}
 	return false
+}
+
+type fakeSessionRuntime struct {
+	raw       string
+	env       []string
+	stdin     *bytes.Buffer
+	stdout    bytes.Buffer
+	stderr    bytes.Buffer
+	exitCode  int
+	exitCalls int
+	pty       ssh.Pty
+	winCh     chan ssh.Window
+	isPty     bool
+}
+
+func newFakeSessionRuntime(raw string, input string) *fakeSessionRuntime {
+	return &fakeSessionRuntime{
+		raw:   raw,
+		stdin: bytes.NewBufferString(input),
+		winCh: make(chan ssh.Window),
+	}
+}
+
+func (s *fakeSessionRuntime) Read(p []byte) (int, error)         { return s.stdin.Read(p) }
+func (s *fakeSessionRuntime) Write(p []byte) (int, error)        { return s.stdout.Write(p) }
+func (s *fakeSessionRuntime) Close() error                       { return nil }
+func (s *fakeSessionRuntime) CloseWrite() error                  { return nil }
+func (s *fakeSessionRuntime) SendRequest(string, bool, []byte) (bool, error) {
+	return false, nil
+}
+func (s *fakeSessionRuntime) Stderr() io.ReadWriter              { return &s.stderr }
+func (s *fakeSessionRuntime) User() string                       { return "dev" }
+func (s *fakeSessionRuntime) RemoteAddr() net.Addr               { return dummyAddr("remote") }
+func (s *fakeSessionRuntime) LocalAddr() net.Addr                { return dummyAddr("local") }
+func (s *fakeSessionRuntime) Environ() []string                  { return s.env }
+func (s *fakeSessionRuntime) Exit(code int) error                { s.exitCode = code; s.exitCalls++; return nil }
+func (s *fakeSessionRuntime) Command() []string                  { return nil }
+func (s *fakeSessionRuntime) RawCommand() string                 { return s.raw }
+func (s *fakeSessionRuntime) Subsystem() string                  { return "" }
+func (s *fakeSessionRuntime) PublicKey() ssh.PublicKey           { return nil }
+func (s *fakeSessionRuntime) Context() ssh.Context               { return nil }
+func (s *fakeSessionRuntime) Permissions() ssh.Permissions       { return ssh.Permissions{} }
+func (s *fakeSessionRuntime) Pty() (ssh.Pty, <-chan ssh.Window, bool) {
+	return s.pty, s.winCh, s.isPty
+}
+func (s *fakeSessionRuntime) Signals(chan<- ssh.Signal)          {}
+func (s *fakeSessionRuntime) Break(chan<- bool)                  {}
+
+type dummyAddr string
+
+func (a dummyAddr) Network() string { return "tcp" }
+func (a dummyAddr) String() string  { return string(a) }
+
+func TestHandleNoPTYCopiesStdoutStderrAndStdin(t *testing.T) {
+	sess := newFakeSessionRuntime("", "hello\n")
+	cmd := exec.Command("/bin/sh", "-c", "read line; echo out:$line; echo err:$line >&2")
+
+	if err := handleNoPTY(cmd, sess); err != nil {
+		t.Fatalf("handleNoPTY: %v", err)
+	}
+	if got := sess.stdout.String(); !strings.Contains(got, "out:hello") {
+		t.Fatalf("expected stdout to contain command output, got %q", got)
+	}
+	if got := sess.stderr.String(); !strings.Contains(got, "err:hello") {
+		t.Fatalf("expected stderr to contain command output, got %q", got)
+	}
+}
+
+func TestSessionHandlerExecCommandExitsWithCommandStatus(t *testing.T) {
+	sess := newFakeSessionRuntime("printf hello; printf oops >&2; exit 7", "")
+
+	sessionHandler("/bin/sh")(sess)
+
+	if sess.exitCalls != 1 {
+		t.Fatalf("expected one exit call, got %d", sess.exitCalls)
+	}
+	if sess.exitCode != 7 {
+		t.Fatalf("expected exit status 7, got %d", sess.exitCode)
+	}
+	if got := sess.stdout.String(); !strings.Contains(got, "hello") {
+		t.Fatalf("expected stdout to contain hello, got %q", got)
+	}
+	if got := sess.stderr.String(); !strings.Contains(got, "oops") {
+		t.Fatalf("expected stderr to contain oops, got %q", got)
+	}
+}
+
+func TestSessionHandlerPTYStartFailureReturnsExitCode(t *testing.T) {
+	sess := newFakeSessionRuntime("", "")
+	sess.isPty = true
+	sess.pty = ssh.Pty{Term: "xterm-256color"}
+
+	sessionHandler("/definitely/missing/shell")(sess)
+
+	if sess.exitCalls != 1 {
+		t.Fatalf("expected one exit call, got %d", sess.exitCalls)
+	}
+	if sess.exitCode == 0 {
+		t.Fatalf("expected non-zero exit code for PTY start failure, got %d", sess.exitCode)
+	}
+}
+
+func TestSetWinsizeDoesNotPanic(t *testing.T) {
+	f, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open %s: %v", os.DevNull, err)
+	}
+	defer f.Close()
+
+	setWinsize(f, 120, 40)
 }
