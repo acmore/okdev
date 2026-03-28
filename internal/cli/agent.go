@@ -172,50 +172,19 @@ func agentInstallNeedsNPM(spec agentcatalog.Spec) bool {
 }
 
 const agentNPMDetectScript = `set -eu
-if command -v npm >/dev/null 2>&1; then
-  echo present:none
+if command -v bash >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+  echo install:nvm
   exit 0
 fi
 if [ "$(id -u)" != "0" ]; then
   echo no-root:none
   exit 0
 fi
-installer="none"
-if command -v apk >/dev/null 2>&1; then
-  installer="apk"
-elif command -v apt-get >/dev/null 2>&1; then
-  installer="apt-get"
-elif command -v apt >/dev/null 2>&1; then
-  installer="apt"
-elif command -v dnf >/dev/null 2>&1; then
-  installer="dnf"
-elif command -v microdnf >/dev/null 2>&1; then
-  installer="microdnf"
-elif command -v yum >/dev/null 2>&1; then
-  installer="yum"
-fi
-if [ "$installer" != "none" ]; then
-  echo install:${installer}
-else
-  echo unavailable:none
-fi
+echo unavailable:none
 `
 
 const agentNPMInstallScript = `set -eu
 installer="${OKDEV_NPM_INSTALLER:-none}"
-apt_retry() {
-  retries="${1:-12}"
-  shift
-  attempt=1
-  while [ "$attempt" -le "$retries" ]; do
-    if "$@"; then
-      return 0
-    fi
-    sleep 5
-    attempt=$((attempt + 1))
-  done
-  return 1
-}
 node_major() {
   if ! command -v node >/dev/null 2>&1; then
     echo 0
@@ -223,17 +192,27 @@ node_major() {
   fi
   node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0
 }
-upgrade_node_apt() {
-  if ! command -v curl >/dev/null 2>&1; then
+nvm_install() {
+  if ! command -v bash >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
     return 1
   fi
-  export DEBIAN_FRONTEND=noninteractive
-  curl -fsSL https://deb.nodesource.com/setup_20.x -o /tmp/okdev-nodesource.sh >/dev/null 2>&1 || return 1
-  bash /tmp/okdev-nodesource.sh >/dev/null 2>&1 || return 1
-  apt_retry 12 apt-get -o DPkg::Lock::Timeout=10 install -y --no-install-recommends nodejs >/dev/null 2>&1 || return 1
+  export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+  mkdir -p "$NVM_DIR"
+  curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh -o /tmp/okdev-nvm-install.sh >/dev/null 2>&1 || return 1
+  PROFILE=/dev/null bash /tmp/okdev-nvm-install.sh >/dev/null 2>&1 || return 1
+  . "$NVM_DIR/nvm.sh"
+  nvm install 20 >/dev/null 2>&1 || return 1
+  nvm alias default 20 >/dev/null 2>&1 || true
+  nvm use 20 >/dev/null 2>&1 || return 1
+  mkdir -p /usr/local/bin
+  ln -sfn "$NVM_BIN/node" /usr/local/bin/node
+  ln -sfn "$NVM_BIN/npm" /usr/local/bin/npm
+  if [ -x "$NVM_BIN/npx" ]; then
+    ln -sfn "$NVM_BIN/npx" /usr/local/bin/npx
+  fi
   return 0
 }
-if command -v npm >/dev/null 2>&1; then
+if command -v npm >/dev/null 2>&1 && [ "$(node_major)" -ge 16 ]; then
   echo "__OKDEV_NPM_STATUS__=installed:${installer}"
   exit 0
 fi
@@ -241,27 +220,10 @@ if [ "$(id -u)" != "0" ]; then
   echo "__OKDEV_NPM_STATUS__=no-root:none"
   exit 0
 fi
-if [ "$installer" = "apk" ]; then
-  apk add --no-cache nodejs npm >/dev/null 2>&1 || true
-elif [ "$installer" = "apt-get" ]; then
-  export DEBIAN_FRONTEND=noninteractive
-  apt_retry 12 apt-get -o DPkg::Lock::Timeout=10 update >/dev/null 2>&1 && apt_retry 12 apt-get -o DPkg::Lock::Timeout=10 install -y --no-install-recommends nodejs npm >/dev/null 2>&1 || true
-elif [ "$installer" = "apt" ]; then
-  export DEBIAN_FRONTEND=noninteractive
-  apt_retry 12 apt update >/dev/null 2>&1 && apt_retry 12 apt install -y --no-install-recommends nodejs npm >/dev/null 2>&1 || true
-elif [ "$installer" = "dnf" ]; then
-  dnf install -y nodejs npm >/dev/null 2>&1 || true
-elif [ "$installer" = "microdnf" ]; then
-  microdnf install -y nodejs npm >/dev/null 2>&1 || true
-elif [ "$installer" = "yum" ]; then
-  yum install -y nodejs npm >/dev/null 2>&1 || true
+if [ "$installer" = "nvm" ]; then
+  nvm_install || true
 fi
-if [ "$(node_major)" -lt 16 ]; then
-  if [ "$installer" = "apt-get" ] || [ "$installer" = "apt" ]; then
-    upgrade_node_apt || true
-  fi
-fi
-if command -v npm >/dev/null 2>&1; then
+if command -v npm >/dev/null 2>&1 && [ "$(node_major)" -ge 16 ]; then
   echo "__OKDEV_NPM_STATUS__=installed:${installer}"
   exit 0
 fi
@@ -285,12 +247,10 @@ func ensureAgentNPMInstalled(ctx context.Context, client agentExecClient, namesp
 		return "", err
 	}
 	switch status {
-	case "present":
-		return "", nil
 	case "no-root":
 		return "", fmt.Errorf("npm is unavailable and the dev container is not running as root")
 	case "unavailable":
-		return "", fmt.Errorf("npm is unavailable and no supported package manager was found")
+		return "", fmt.Errorf("npm is unavailable and nvm prerequisites (bash, curl) were not found")
 	case "install":
 	default:
 		return "", fmt.Errorf("unexpected npm prepare result %q", status)
@@ -302,6 +262,9 @@ func ensureAgentNPMInstalled(ctx context.Context, client agentExecClient, namesp
 	status, installer = parseAgentNPMStatus(string(out))
 	switch status {
 	case "installed":
+		if installer == "nvm" {
+			return "node/npm installed via nvm", nil
+		}
 		if installer != "" && installer != "none" {
 			return "npm installed via " + installer, nil
 		}
@@ -309,6 +272,9 @@ func ensureAgentNPMInstalled(ctx context.Context, client agentExecClient, namesp
 	case "no-root":
 		return "", fmt.Errorf("npm is unavailable and the dev container is not running as root")
 	case "unavailable":
+		if installer == "nvm" {
+			return "", fmt.Errorf("npm is unavailable after best-effort install via nvm")
+		}
 		if installer != "" && installer != "none" {
 			return "", fmt.Errorf("npm is unavailable after best-effort install via %s", installer)
 		}

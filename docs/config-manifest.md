@@ -63,7 +63,7 @@ spec:
 Phase 1 currently supports:
 
 - `okdev up` install checks for configured agent CLIs
-- `okdev up` best-effort installation of `npm`/Node.js first when a configured agent CLI needs it and the dev image has a supported package manager
+- `okdev up` best-effort installation of a modern Node/npm runtime via `nvm` first when a configured agent CLI needs it and the dev image has `bash` and `curl`
 - `okdev up` setup-time staging of local auth files into reserved runtime paths for dedicated sessions
 - `okdev down` best-effort cleanup of staged agent auth before session deletion
 - `okdev agent list` to show configured agents, install status, and whether auth is staged in the current session container

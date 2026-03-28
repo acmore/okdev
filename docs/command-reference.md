@@ -51,7 +51,7 @@
 ### `okdev agent list`
 
 - Shows configured coding agents, whether their CLI binary is installed, and whether auth is staged in the current session container.
-- `okdev up` performs best-effort install checks for configured agents, bootstraps `npm` when supported, and then installs missing CLIs.
+- `okdev up` performs best-effort install checks for configured agents, bootstraps a modern Node/npm runtime via `nvm` when supported, and then installs missing CLIs.
 - `okdev up` also stages local auth files for dedicated sessions when a configured local auth file exists.
 - `okdev down` removes staged agent auth symlinks/runtime files when it can still reach the target container.
 - `okdev` does not own agent process launch; users run `codex`, `claude`, or similar CLIs manually after connecting.

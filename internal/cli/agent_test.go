@@ -32,11 +32,9 @@ func (f *fakeAgentExecClient) ExecShInContainer(_ context.Context, _, _, _, scri
 	}
 	if strings.HasPrefix(script, "export OKDEV_NPM_INSTALLER=") && strings.Contains(script, "__OKDEV_NPM_STATUS__=installed:") {
 		delete(f.results, "command -v npm >/dev/null 2>&1")
-		if strings.Contains(script, "apk add --no-cache nodejs npm") {
-			return []byte("__OKDEV_NPM_STATUS__=installed:apk\n"), nil
-		}
-		if strings.Contains(script, "apt-get -o DPkg::Lock::Timeout=10 install -y --no-install-recommends nodejs npm") {
-			return []byte("__OKDEV_NPM_STATUS__=installed:apt-get\n"), nil
+		delete(f.results, "node -p 'process.versions.node.split(\".\")[0]'")
+		if strings.Contains(script, "nvm install 20") {
+			return []byte("__OKDEV_NPM_STATUS__=installed:nvm\n"), nil
 		}
 		return []byte("__OKDEV_NPM_STATUS__=installed:none\n"), nil
 	}
@@ -157,7 +155,7 @@ func TestEnsureConfiguredAgentsInstalledBootstrapsNPM(t *testing.T) {
 		},
 		outputs: map[string][]byte{
 			`node -p 'process.versions.node.split(".")[0]'`: []byte("12\n"),
-			agentNPMDetectScript:                            []byte("install:apk\n"),
+			agentNPMDetectScript:                            []byte("install:nvm\n"),
 		},
 	}
 	var warnings []string
@@ -174,7 +172,7 @@ func TestEnsureConfiguredAgentsInstalledBootstrapsNPM(t *testing.T) {
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings, got %#v", warnings)
 	}
-	if got := strings.Join(results, ", "); !strings.Contains(got, "codex: npm installed via apk") || !strings.Contains(got, "codex: installed") {
+	if got := strings.Join(results, ", "); !strings.Contains(got, "codex: node/npm installed via nvm") || !strings.Contains(got, "codex: installed") {
 		t.Fatalf("unexpected install summary %q", got)
 	}
 }
