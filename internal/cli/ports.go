@@ -32,10 +32,9 @@ func newPortsCmd(opts *Options) *cobra.Command {
 			}
 			validForwards := make([]string, 0, len(cc.cfg.Spec.Ports))
 			for _, p := range cc.cfg.Spec.Ports {
-				if p.Local <= 0 || p.Remote <= 0 {
-					continue
+				if summary, ok := portMappingSummary(p); ok {
+					validForwards = append(validForwards, summary)
 				}
-				validForwards = append(validForwards, fmt.Sprintf("%d:%d", p.Local, p.Remote))
 			}
 			if len(validForwards) == 0 {
 				return fmt.Errorf("no valid ports configured")

@@ -54,7 +54,7 @@
 - `--tmux`: explicitly enable tmux mode in the dev container.
 - `--no-tmux`: disable tmux mode for this pod.
 - When `sync.engine=syncthing`, `okdev up` refreshes the session's local Syncthing processes and starts background sync in bidirectional mode by default.
-- `spec.ports` is materialized as SSH `LocalForward`.
+- `spec.ports` is materialized as SSH `LocalForward` or `RemoteForward` based on `direction`.
 
 ### `okdev ssh [--setup-key] [--user root] [--cmd "..."] [--no-tmux]`
 
@@ -64,7 +64,7 @@
 
 ### `okdev ports`
 
-- Advanced/recovery command. Rebuilds managed SSH `LocalForward` state from `spec.ports` after disconnects or local port changes.
+- Advanced/recovery command. Rebuilds managed SSH `LocalForward` / `RemoteForward` state from `spec.ports` after disconnects or local port changes.
 - No-op when managed forwards are already healthy and config is unchanged.
 
 ### `okdev sync [--mode up|down|bi] [--foreground] [--reset] [--dry-run]`

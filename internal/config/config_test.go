@@ -163,6 +163,37 @@ func TestValidateRejectsDuplicateLocalPorts(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidPortDirection(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Ports = []PortMapping{{Name: "a", Local: 8080, Remote: 8080, Direction: "sideways"}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+
+func TestValidateRejectsDuplicateReverseRemotePorts(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Ports = []PortMapping{
+		{Name: "a", Local: 3000, Remote: 8080, Direction: PortDirectionReverse},
+		{Name: "b", Local: 3001, Remote: 8080, Direction: PortDirectionReverse},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+
+func TestValidateAllowsDuplicateLocalPortsForReverseMappings(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Ports = []PortMapping{
+		{Name: "a", Local: 3000, Remote: 8080, Direction: PortDirectionReverse},
+		{Name: "b", Local: 3000, Remote: 8081, Direction: PortDirectionReverse},
+	}
+	cfg.SetDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+}
+
 func TestValidateRejectsEmptySidecarImage(t *testing.T) {
 	cfg := validConfig()
 	cfg.SetDefaults()

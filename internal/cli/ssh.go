@@ -769,6 +769,15 @@ func startManagedSSHForwardWithForwards(hostAlias string, forwards []config.Port
 	if err := check.Run(); err == nil {
 		return nil
 	}
+	args := managedSSHForwardArgs(hostAlias, socketPath, forwards, sshSpec)
+	cmd := exec.Command(args[0], args[1:]...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("start managed ssh forward: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func managedSSHForwardArgs(hostAlias, socketPath string, forwards []config.PortMapping, sshSpec config.SSHSpec) []string {
 	args := []string{
 		"ssh",
 		"-fN",
@@ -785,14 +794,15 @@ func startManagedSSHForwardWithForwards(hostAlias string, forwards []config.Port
 		if p.Local <= 0 || p.Remote <= 0 {
 			continue
 		}
-		args = append(args, "-L", fmt.Sprintf("%d:127.0.0.1:%d", p.Local, p.Remote))
+		switch p.EffectiveDirection() {
+		case config.PortDirectionReverse:
+			args = append(args, "-R", fmt.Sprintf("%d:127.0.0.1:%d", p.Remote, p.Local))
+		default:
+			args = append(args, "-L", fmt.Sprintf("%d:127.0.0.1:%d", p.Local, p.Remote))
+		}
 	}
 	args = append(args, hostAlias)
-	cmd := exec.Command(args[0], args[1:]...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("start managed ssh forward: %w (%s)", err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	return args
 }
 
 func stopManagedSSHForward(hostAlias string) error {

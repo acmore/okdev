@@ -793,14 +793,9 @@ func (u *upUI) printReadyCard(sessionName, namespace, pod, sshSummary, syncSumma
 	if len(ports) > 0 {
 		fmt.Fprintln(u.out, "forwards:")
 		for _, p := range ports {
-			if p.Local <= 0 || p.Remote <= 0 {
-				continue
+			if summary, ok := portMappingSummary(p); ok {
+				fmt.Fprintf(u.out, "- %s\n", summary)
 			}
-			name := strings.TrimSpace(p.Name)
-			if name == "" {
-				name = "port"
-			}
-			fmt.Fprintf(u.out, "- %s: localhost:%d -> remote:%d\n", name, p.Local, p.Remote)
 		}
 	}
 	fmt.Fprintln(u.out, "next:")
@@ -848,6 +843,20 @@ func modeSymbol(mode string) string {
 	default:
 		return "->"
 	}
+}
+
+func portMappingSummary(p config.PortMapping) (string, bool) {
+	if p.Local <= 0 || p.Remote <= 0 {
+		return "", false
+	}
+	name := strings.TrimSpace(p.Name)
+	if name == "" {
+		name = "port"
+	}
+	if p.EffectiveDirection() == config.PortDirectionReverse {
+		return fmt.Sprintf("%s: remote:%d -> localhost:%d", name, p.Remote, p.Local), true
+	}
+	return fmt.Sprintf("%s: localhost:%d -> remote:%d", name, p.Local, p.Remote), true
 }
 
 type upWarnSink struct {

@@ -99,6 +99,7 @@ func TestUpUIPrintReadyCard(t *testing.T) {
 		"running",
 		[]config.PortMapping{
 			{Name: "http", Local: 8080, Remote: 80},
+			{Name: "api-reverse", Local: 3000, Remote: 3000, Direction: config.PortDirectionReverse},
 			{Name: "", Local: 9000, Remote: 9000},
 			{Name: "bad", Local: 0, Remote: 80},
 		},
@@ -114,6 +115,7 @@ func TestUpUIPrintReadyCard(t *testing.T) {
 		"<-> /workspace",
 		"forwards:",
 		"http: localhost:8080 -> remote:80",
+		"api-reverse: remote:3000 -> localhost:3000",
 		"port: localhost:9000 -> remote:9000",
 		"- ssh okdev-sess",
 	} {
@@ -123,6 +125,18 @@ func TestUpUIPrintReadyCard(t *testing.T) {
 	}
 	if strings.Contains(got, "bad") {
 		t.Fatalf("did not expect invalid port mapping in output: %q", got)
+	}
+}
+
+func TestPortMappingSummary(t *testing.T) {
+	if got, ok := portMappingSummary(config.PortMapping{Name: "fwd", Local: 8080, Remote: 80}); !ok || got != "fwd: localhost:8080 -> remote:80" {
+		t.Fatalf("unexpected forward summary ok=%v got=%q", ok, got)
+	}
+	if got, ok := portMappingSummary(config.PortMapping{Name: "rev", Local: 3000, Remote: 3000, Direction: config.PortDirectionReverse}); !ok || got != "rev: remote:3000 -> localhost:3000" {
+		t.Fatalf("unexpected reverse summary ok=%v got=%q", ok, got)
+	}
+	if _, ok := portMappingSummary(config.PortMapping{Name: "bad"}); ok {
+		t.Fatal("expected invalid mapping to be skipped")
 	}
 }
 
