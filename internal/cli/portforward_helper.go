@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-const portForwardShutdownWait = 2 * time.Second
-
 func startManagedPortForward(opts *Options, namespace, pod string, forwards []string) (context.CancelFunc, error) {
 	return startManagedPortForwardWithClient(newKubeClient(opts), namespace, pod, forwards)
 }
@@ -47,9 +45,9 @@ func startManagedPortForwardWithClient(k interface {
 	}
 
 	ports := localPortsFromForwards(forwards)
-	readinessTicker := time.NewTicker(200 * time.Millisecond)
+	readinessTicker := time.NewTicker(portForwardPollInterval)
 	defer readinessTicker.Stop()
-	timeout := time.NewTimer(10 * time.Second)
+	timeout := time.NewTimer(portForwardReadinessTimeout)
 	defer timeout.Stop()
 	for {
 		select {
@@ -94,7 +92,7 @@ func startManagedPortForwardNoProbeWithClient(k interface {
 		case <-time.After(portForwardShutdownWait):
 		}
 	}
-	timer := time.NewTimer(500 * time.Millisecond)
+	timer := time.NewTimer(portForwardNoProbeGrace)
 	defer timer.Stop()
 	select {
 	case err := <-errCh:
@@ -129,7 +127,7 @@ func allPortsReachable(ports []int) bool {
 		return false
 	}
 	for _, p := range ports {
-		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", p), 200*time.Millisecond)
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", p), portForwardDialTimeout)
 		if err != nil {
 			return false
 		}
@@ -174,7 +172,7 @@ func startPortForwardKeepalive(ctx context.Context, localPort int, interval time
 }
 
 func probePortForward(localPort int) bool {
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", localPort), 2*time.Second)
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", localPort), portForwardKeepaliveDialTimeout)
 	if err != nil {
 		slog.Debug("port-forward keepalive dial failed", "port", localPort, "error", err)
 		return false

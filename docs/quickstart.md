@@ -126,6 +126,7 @@ okdev sync --mode down
 ```
 
 Local Syncthing is auto-installed when `sync.engine=syncthing`.
+If your local filesystem watcher occasionally misses changes, set `spec.sync.syncthing.rescanIntervalSeconds` to a lower value such as `300` for a faster fallback rescan.
 
 ## Port Forwarding
 

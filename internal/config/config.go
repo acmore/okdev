@@ -19,6 +19,7 @@ func (e *MigrationEligibleError) Unwrap() error { return e.Err }
 
 const (
 	DefaultSyncthingVersion       = "v1.29.7"
+	DefaultSyncthingRescanSeconds = 300
 	DefaultSidecarImageRepository = "ghcr.io/acmore/okdev"
 	DefaultSidecarImageFallback   = "edge"
 	DefaultWorkspacePVCSize       = "50Gi"
@@ -110,9 +111,11 @@ type SyncSpec struct {
 }
 
 type SyncthingSpec struct {
-	Version     string `yaml:"version"`
-	AutoInstall *bool  `yaml:"autoInstall"`
-	Image       string `yaml:"image"`
+	Version               string `yaml:"version"`
+	AutoInstall           *bool  `yaml:"autoInstall"`
+	Image                 string `yaml:"image"`
+	RescanIntervalSeconds int    `yaml:"rescanIntervalSeconds"`
+	RelaysEnabled         bool   `yaml:"relaysEnabled"`
 }
 
 type PortMapping struct {
@@ -161,6 +164,9 @@ func (d *DevEnvironment) SetDefaults() {
 	}
 	if d.Spec.Sync.Syncthing.Image == "" {
 		d.Spec.Sync.Syncthing.Image = DefaultSidecarImageForBinaryVersion(version.Version)
+	}
+	if d.Spec.Sync.Syncthing.RescanIntervalSeconds == 0 {
+		d.Spec.Sync.Syncthing.RescanIntervalSeconds = DefaultSyncthingRescanSeconds
 	}
 	if d.Spec.SSH.User == "" {
 		d.Spec.SSH.User = "root"
@@ -236,6 +242,9 @@ func (d *DevEnvironment) Validate() error {
 	}
 	if d.Spec.Sync.Engine != "syncthing" {
 		return fmt.Errorf("spec.sync.engine must be syncthing, got %q", d.Spec.Sync.Engine)
+	}
+	if d.Spec.Sync.Syncthing.RescanIntervalSeconds < 0 {
+		return errors.New("spec.sync.syncthing.rescanIntervalSeconds must be >= 0")
 	}
 	if d.Spec.Session.TTLHours < 0 {
 		return errors.New("spec.session.ttlHours must be >= 0")

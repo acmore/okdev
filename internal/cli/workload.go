@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
@@ -122,7 +121,7 @@ type kubeClientTargetGetter interface {
 }
 
 func validatePinnedTarget(ctx context.Context, k kubeClientTargetGetter, namespace string, target workload.TargetRef) error {
-	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	checkCtx, cancel := context.WithTimeout(ctx, targetValidationTimeout)
 	defer cancel()
 	summary, err := k.GetPodSummary(checkCtx, namespace, target.PodName)
 	if err != nil {

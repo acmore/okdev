@@ -43,6 +43,12 @@ func TestSetDefaults(t *testing.T) {
 	if !cfg.Spec.Sync.Syncthing.AutoInstallEnabled() {
 		t.Fatal("expected syncthing autoinstall default true")
 	}
+	if cfg.Spec.Sync.Syncthing.RescanIntervalSeconds != DefaultSyncthingRescanSeconds {
+		t.Fatalf("expected syncthing rescan default %d, got %d", DefaultSyncthingRescanSeconds, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds)
+	}
+	if cfg.Spec.Sync.Syncthing.RelaysEnabled {
+		t.Fatal("expected syncthing relays to default disabled")
+	}
 	if cfg.Spec.SSH.User != "root" {
 		t.Fatalf("ssh user default not set: %+v", cfg.Spec.SSH)
 	}
@@ -97,6 +103,14 @@ func TestSetDefaultsPersistentSessionExplicit(t *testing.T) {
 func TestValidateRejectsInvalidEngine(t *testing.T) {
 	cfg := validConfig()
 	cfg.Spec.Sync.Engine = "native"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+
+func TestValidateRejectsNegativeSyncthingRescanInterval(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Sync.Syncthing.RescanIntervalSeconds = -1
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error")
 	}

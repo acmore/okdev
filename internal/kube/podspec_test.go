@@ -181,3 +181,118 @@ func TestPreparePodSpecForTargetUsesNamedContainer(t *testing.T) {
 		t.Fatal("expected prestop lifecycle on trainer container")
 	}
 }
+
+func TestPreparePodSpecDefaultsWorkspacePathAndTargetContainer(t *testing.T) {
+	spec, err := PreparePodSpecForTarget(corev1.PodSpec{
+		Containers: []corev1.Container{
+			{Name: "dev", Image: "ubuntu"},
+		},
+	}, nil, "", "ghcr.io/acmore/okdev-sidecar:edge", false, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev := findContainer(spec.Containers, "dev")
+	if dev == nil {
+		t.Fatal("dev container not found")
+	}
+	foundWorkspace := false
+	for _, mount := range dev.VolumeMounts {
+		if mount.Name == "workspace" && mount.MountPath == "/workspace" {
+			foundWorkspace = true
+		}
+	}
+	if !foundWorkspace {
+		t.Fatalf("expected default workspace mount, got %+v", dev.VolumeMounts)
+	}
+}
+
+func TestPreparePodSpecFallsBackToFirstContainerWhenTargetMissing(t *testing.T) {
+	spec, err := PreparePodSpecForTarget(corev1.PodSpec{
+		Containers: []corev1.Container{
+			{Name: "first", Image: "ubuntu"},
+			{Name: "second", Image: "ubuntu"},
+		},
+	}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "", "missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := findContainer(spec.Containers, "first")
+	second := findContainer(spec.Containers, "second")
+	if first == nil || second == nil {
+		t.Fatal("expected both containers to exist")
+	}
+	if len(first.VolumeMounts) == 0 {
+		t.Fatal("expected first container to receive mounts")
+	}
+	if len(second.VolumeMounts) != 0 {
+		t.Fatalf("did not expect second container mounts, got %+v", second.VolumeMounts)
+	}
+}
+
+func TestPreparePodSpecDoesNotDuplicateExistingSidecar(t *testing.T) {
+	spec, err := PreparePodSpec(corev1.PodSpec{
+		Containers: []corev1.Container{
+			{Name: "dev", Image: "ubuntu"},
+			{Name: "okdev-sidecar", Image: "existing"},
+		},
+	}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, c := range spec.Containers {
+		if c.Name == "okdev-sidecar" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected one sidecar container, got %d", count)
+	}
+}
+
+func TestEnsureHelpers(t *testing.T) {
+	volumes := ensureVolume([]corev1.Volume{{Name: "existing"}}, corev1.Volume{Name: "existing"})
+	if len(volumes) != 1 {
+		t.Fatalf("expected no duplicate volume, got %d", len(volumes))
+	}
+
+	mounts := ensureVolumeMount([]corev1.VolumeMount{{Name: "workspace"}}, corev1.VolumeMount{Name: "workspace", MountPath: "/workspace"})
+	if mounts[0].MountPath != "/workspace" {
+		t.Fatalf("expected missing mount path to be filled, got %+v", mounts[0])
+	}
+	mounts = ensureVolumeMount([]corev1.VolumeMount{{Name: "workspace", MountPath: "/custom"}}, corev1.VolumeMount{Name: "workspace", MountPath: "/workspace"})
+	if mounts[0].MountPath != "/custom" {
+		t.Fatalf("expected existing mount path to win, got %+v", mounts[0])
+	}
+
+	envs := ensureEnvVar([]corev1.EnvVar{{Name: "OKDEV_WORKSPACE"}}, corev1.EnvVar{Name: "OKDEV_WORKSPACE", Value: "/workspace"})
+	if envs[0].Value != "/workspace" {
+		t.Fatalf("expected empty env value to be filled, got %+v", envs[0])
+	}
+	envs = ensureEnvVar([]corev1.EnvVar{{Name: "OKDEV_WORKSPACE", Value: "/custom"}}, corev1.EnvVar{Name: "OKDEV_WORKSPACE", Value: "/workspace"})
+	if envs[0].Value != "/custom" {
+		t.Fatalf("expected existing env value to win, got %+v", envs[0])
+	}
+
+	if !hasContainer([]corev1.Container{{Name: "dev"}}, "dev") {
+		t.Fatal("expected container lookup success")
+	}
+	if hasContainer([]corev1.Container{{Name: "dev"}}, "sidecar") {
+		t.Fatal("did not expect missing container to be reported present")
+	}
+}
+
+func TestImageTag(t *testing.T) {
+	cases := map[string]string{
+		"ghcr.io/acmore/okdev:edge":            "edge",
+		"ghcr.io/acmore/okdev":                 "",
+		"localhost:5000/okdev:latest":          "latest",
+		"ghcr.io/acmore/okdev@sha256:deadbeef": "deadbeef",
+		"ghcr.io/acmore/okdev:1.2.3-alpine":    "1.2.3-alpine",
+	}
+	for image, want := range cases {
+		if got := imageTag(image); got != want {
+			t.Fatalf("image %q: got %q want %q", image, got, want)
+		}
+	}
+}

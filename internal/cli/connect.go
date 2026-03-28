@@ -17,23 +17,18 @@ func newConnectCmd(opts *Options) *cobra.Command {
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			applySessionArg(opts, args)
-			cfg, ns, err := loadConfigAndNamespace(opts)
+			cc, err := resolveCommandContext(opts, resolveSessionName)
 			if err != nil {
 				return err
 			}
-			sn, err := resolveSessionName(opts, cfg, ns)
+			if err := ensureExistingSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName, true); err != nil {
+				return err
+			}
+			target, err := resolveTargetRef(cmd.Context(), opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
 			if err != nil {
 				return err
 			}
-			k := newKubeClient(opts)
-			if err := ensureExistingSessionOwnership(opts, k, ns, sn, true); err != nil {
-				return err
-			}
-			target, err := resolveTargetRef(cmd.Context(), opts, cfg, ns, sn, k)
-			if err != nil {
-				return err
-			}
-			stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), true, true)
+			stopMaintenance := startSessionMaintenance(opts, cc.namespace, cc.sessionName, cmd.OutOrStdout(), true)
 			defer stopMaintenance()
 
 			execCmd := []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}
@@ -49,7 +44,7 @@ func newConnectCmd(opts *Options) *cobra.Command {
 			if len(execCmd) == 1 && strings.TrimSpace(execCmd[0]) == "" {
 				execCmd = []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}
 			}
-			return runConnectWithClient(k, ns, target, execCmd, !noTTY)
+			return runConnectWithClient(cc.kube, cc.namespace, target, execCmd, !noTTY)
 		},
 	}
 	cmd.Flags().StringVar(&shell, "shell", "", "Shell to start (default auto-detects bash/sh)")

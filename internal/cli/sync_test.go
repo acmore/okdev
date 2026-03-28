@@ -95,3 +95,47 @@ func TestRefreshSyncthingSessionProcessesPreservesLocalState(t *testing.T) {
 		t.Fatalf("expected stale pid file to be removed, got err=%v", err)
 	}
 }
+
+func TestReadSyncthingPID(t *testing.T) {
+	dir := t.TempDir()
+	pidPath := filepath.Join(dir, "sync.pid")
+	if err := os.WriteFile(pidPath, []byte("12345\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := readSyncthingPID(pidPath)
+	if !ok || got != 12345 {
+		t.Fatalf("unexpected pid parse result pid=%d ok=%v", got, ok)
+	}
+}
+
+func TestReadSyncthingPIDRejectsInvalidValue(t *testing.T) {
+	dir := t.TempDir()
+	pidPath := filepath.Join(dir, "sync.pid")
+	if err := os.WriteFile(pidPath, []byte("abc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := readSyncthingPID(pidPath); ok {
+		t.Fatal("expected invalid pid to be rejected")
+	}
+}
+
+func TestProcStatIsZombie(t *testing.T) {
+	if !procStatIsZombie([]byte("123 (okdev) Z 1 2 3")) {
+		t.Fatal("expected zombie proc stat to be detected")
+	}
+	if procStatIsZombie([]byte("123 (okdev) S 1 2 3")) {
+		t.Fatal("did not expect running proc stat to be zombie")
+	}
+	if procStatIsZombie([]byte("malformed")) {
+		t.Fatal("did not expect malformed proc stat to be zombie")
+	}
+}
+
+func TestPSStatIsZombie(t *testing.T) {
+	if !psStatIsZombie("Z+") {
+		t.Fatal("expected ps zombie state to be detected")
+	}
+	if psStatIsZombie("Ss") {
+		t.Fatal("did not expect normal ps state to be zombie")
+	}
+}

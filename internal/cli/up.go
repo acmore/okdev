@@ -24,6 +24,35 @@ import (
 
 const upDefaultSyncMode = "bi"
 
+type upOptions struct {
+	waitTimeout            time.Duration
+	dryRun                 bool
+	reconcile              bool
+	tmux                   bool
+	noTmux                 bool
+	createMissingPVC       bool
+	missingPVCSize         string
+	missingPVCStorageClass string
+}
+
+type upState struct {
+	cmd          *cobra.Command
+	opts         *Options
+	flags        upOptions
+	ui           *upUI
+	command      *commandContext
+	ctx          context.Context
+	cancel       context.CancelFunc
+	labels       map[string]string
+	annotations  map[string]string
+	volumes      []corev1.Volume
+	syncPairs    []syncengine.Pair
+	enableTmux   bool
+	runtime      workload.Runtime
+	workloadName string
+	target       workload.TargetRef
+}
+
 func newUpCmd(opts *Options) *cobra.Command {
 	var waitTimeout time.Duration
 	var dryRun bool
@@ -38,268 +67,20 @@ func newUpCmd(opts *Options) *cobra.Command {
 		Use:   "up",
 		Short: "Create or resume a dev session",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ui := newUpUI(cmd.OutOrStdout(), cmd.ErrOrStderr())
-			// Keep legacy config-path announce quiet for this command; we render it in staged output.
-			prevQuiet, hadQuiet := os.LookupEnv("OKDEV_QUIET_CONFIG_ANNOUNCE")
-			_ = os.Setenv("OKDEV_QUIET_CONFIG_ANNOUNCE", "1")
-			defer func() {
-				if hadQuiet {
-					_ = os.Setenv("OKDEV_QUIET_CONFIG_ANNOUNCE", prevQuiet)
-				} else {
-					_ = os.Unsetenv("OKDEV_QUIET_CONFIG_ANNOUNCE")
-				}
-			}()
-
-			ui.section("Validate")
-			cfg, ns, err := loadConfigAndNamespace(opts)
-			if err != nil {
-				return err
-			}
-			cfgPath, pathErr := config.ResolvePath(opts.ConfigPath)
-			if pathErr != nil {
-				return pathErr
-			}
-			ui.stepDone("config", cfgPath)
-			k := newKubeClient(opts)
-			sn, err := resolveSessionNameForUpDown(opts, cfg, ns)
-			if err != nil {
-				return err
-			}
-			ui.stepDone("session", sn)
-			ui.stepDone("namespace", ns)
-			labels := labelsForSession(opts, cfg, sn)
-			annotations := annotationsForSession(cfg)
-			volumes := cfg.EffectiveVolumes()
-			syncPairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.WorkspaceMountPath())
-			if err != nil {
-				return err
-			}
-			ui.section("Reconcile")
-			if err := ensureSessionOwnership(opts, k, ns, sn, true); err != nil {
-				return err
-			}
-			ui.stepDone("ownership", "ok")
-			ctx, cancel := upCommandContext(waitTimeout)
-			defer cancel()
-			if createMissingPVC {
-				createdPVCs, err := reconcileMissingPVCs(ctx, k, ns, volumes, missingPVCSize, missingPVCStorageClass, labels, annotations)
-				if err != nil {
-					return err
-				}
-				if len(createdPVCs) == 0 {
-					ui.stepDone("pvc", "all referenced claims already exist")
-				} else {
-					ui.stepDone("pvc", "created: "+strings.Join(createdPVCs, ", "))
-				}
-			} else {
-				ui.stepDone("pvc", "not managed (use pre-created PVCs in spec.volumes)")
-			}
-
-			if cmd.Flags().Changed("tmux") && cmd.Flags().Changed("no-tmux") {
-				return fmt.Errorf("--tmux and --no-tmux cannot be used together")
-			}
-			enableTmux := cfg.Spec.SSH.PersistentSessionEnabled()
-			if cmd.Flags().Changed("tmux") {
-				enableTmux = tmux
-			}
-			if noTmux {
-				enableTmux = false
-			}
-			preStopCmd := resolvePreStopCommand(cfg, cfgPath)
-			runtime, err := sessionRuntime(cfg, cfgPath, sn, labels, annotations, cfg.Spec.PodTemplate.Spec, volumes, enableTmux, preStopCmd)
-			if err != nil {
-				return err
-			}
-			workloadName := runtime.WorkloadName()
-
-			if dryRun {
-				ui.section("Dry Run")
-				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: session=%s namespace=%s\n", sn, ns)
-				fmt.Fprintf(cmd.OutOrStdout(), "- using %d configured volume(s)\n", len(volumes))
-				if createMissingPVC {
-					fmt.Fprintf(cmd.OutOrStdout(), "- would create missing PVC references (size=%s storageClass=%q)\n", missingPVCSize, missingPVCStorageClass)
-				}
-				if runtime.Kind() == workload.TypePod || reconcile {
-					fmt.Fprintf(cmd.OutOrStdout(), "- would reconcile %s/%s\n", runtime.Kind(), workloadName)
-				} else {
-					fmt.Fprintf(cmd.OutOrStdout(), "- would create or reuse %s/%s\n", runtime.Kind(), workloadName)
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "- would wait for workload readiness (timeout=%s)\n", waitTimeout)
-				fmt.Fprintln(cmd.OutOrStdout(), "- would setup SSH config + managed SSH/port-forwards")
-				for _, pair := range syncPairs {
-					fmt.Fprintf(cmd.OutOrStdout(), "- would sync %s -> %s\n", displayLocalSyncPath(pair.Local), pair.Remote)
-				}
-				fmt.Fprintln(cmd.OutOrStdout(), "- would start background sync (when sync.engine=syncthing)")
-				return nil
-			}
-			if warnErr := warnIfConfigNewerThanSession(opts, k, ns, sn, workloadName, ui.warnWriter()); warnErr != nil {
-				slog.Debug("skip config drift warning", "error", warnErr)
-			}
-
-			ui.stepRun(runtime.Kind(), workloadName)
-			reusedExisting, err := shouldReuseExistingWorkload(ctx, k, ns, runtime, reconcile)
-			if err != nil {
-				return err
-			}
-			if !reusedExisting {
-				if err := runtime.Apply(ctx, k, ns); err != nil {
-					return err
-				}
-			}
-			if reusedExisting {
-				ui.stepDone(runtime.Kind(), "reused existing")
-			} else {
-				ui.stepDone(runtime.Kind(), "applied")
-			}
-			ui.section("Wait")
-			progressPrinter := func(p kube.PodReadinessProgress) {
-				reason := strings.TrimSpace(p.Reason)
-				if reason == "" {
-					reason = "-"
-				}
-				ui.stepRun("pod readiness", fmt.Sprintf("%s %d/%d (%s)", p.Phase, p.ReadyContainers, p.TotalContainers, reason))
-			}
-			if err := runtime.WaitReady(ctx, k, ns, waitTimeout, progressPrinter); err != nil {
-				hints := fmt.Sprintf("next steps:\n- run `okdev status --session %s`\n- run `kubectl -n %s describe pod %s`", sn, ns, workloadName)
-				diag, derr := k.DescribePod(ctx, ns, workloadName)
-				if derr == nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "pod diagnostics:\n%s\n\n%s\n", diag, hints)
-					return fmt.Errorf("wait for %s/%s readiness failed: %w", runtime.Kind(), workloadName, err)
-				}
-				fmt.Fprintln(cmd.ErrOrStderr(), hints)
-				return fmt.Errorf("wait for %s/%s readiness failed: %w", runtime.Kind(), workloadName, err)
-			}
-			ui.stepDone("pod readiness", "ready")
-			target, err := runtime.SelectTarget(ctx, k, ns)
-			if err != nil {
-				return fmt.Errorf("select target: %w", err)
-			}
-			if err := persistTargetRef(sn, target); err != nil {
-				return fmt.Errorf("save target state: %w", err)
-			}
-			if err := k.AnnotatePod(ctx, ns, target.PodName, "okdev.io/last-attach", time.Now().UTC().Format(time.RFC3339)); err != nil {
-				slog.Debug("failed to set last-attach annotation", "error", err)
-			}
-			ui.stepDone("target", target.PodName+"/"+target.Container)
-
-			ui.section("Setup")
-			sshSummary := "disabled"
-			keyPath, keyErr := defaultSSHKeyPath(cfg)
-			if keyErr != nil {
-				return fmt.Errorf("resolve SSH key path: %w", keyErr)
-			}
-			target, err = refreshTargetRef(ctx, opts, cfg, ns, sn, k, target)
-			if err != nil {
-				return fmt.Errorf("refresh target before setup: %w", err)
-			}
-			if err := ensureSSHKeyOnPod(opts, ns, target.PodName, target.Container, keyPath); err != nil {
-				return fmt.Errorf("setup SSH key in pod: %w", err)
-			}
-			target, err = refreshTargetRef(ctx, opts, cfg, ns, sn, k, target)
-			if err != nil {
-				return fmt.Errorf("refresh target before sshd wait: %w", err)
-			}
-			if err := waitForSSHReady(opts, ns, target.PodName, target.Container, waitTimeout); err != nil {
-				return fmt.Errorf("wait for SSH service: %w", err)
-			}
-			alias := sshHostAlias(sn)
-			if _, cfgErr := ensureSSHConfigEntry(alias, sn, ns, cfg.Spec.SSH.User, sshPort, keyPath, cfgPath, cfg.Spec.Ports); cfgErr != nil {
-				return fmt.Errorf("update ~/.ssh/config: %w", cfgErr)
-			}
-			// Force-refresh managed master so forward rules are always current after `okdev up`.
-			_ = stopManagedSSHForward(alias)
-			if err := startManagedSSHForwardWithForwards(alias, cfg.Spec.Ports, cfg.Spec.SSH); err != nil {
-				return fmt.Errorf("start managed SSH/port-forwards: %w", err)
-			}
-			sshSummary = "ssh " + alias
-			ui.stepDone("ssh", sshSummary)
-
-			syncSummary := "disabled"
-			syncModeSymbol := ""
-			if cfg.Spec.Sync.Engine == "" || cfg.Spec.Sync.Engine == "syncthing" {
-				if err := refreshSyncthingSessionProcesses(sn); err != nil {
-					return fmt.Errorf("refresh local syncthing session state: %w", err)
-				}
-				logPath, started, err := startDetachedSyncthingSync(opts, upDefaultSyncMode, sn, ns, cfgPath)
-				if err != nil {
-					return fmt.Errorf("start syncthing background sync: %w", err)
-				} else {
-					syncModeSymbol = modeSymbol(upDefaultSyncMode)
-					syncPathSummary := syncPairsSummary(syncPairs, syncModeSymbol)
-					if started {
-						syncSummary = "active (" + syncModeSymbol + ")"
-						ui.stepDone("sync", fmt.Sprintf("active (%s), %s, logs: %s", syncModeSymbol, syncPathSummary, logPath))
-					} else {
-						syncSummary = "already active (" + syncModeSymbol + ")"
-						ui.stepDone("sync", fmt.Sprintf("already active (%s), %s, logs: %s", syncModeSymbol, syncPathSummary, logPath))
-					}
-				}
-			}
-			postCreateCmd := resolvePostCreateCommand(cfg, cfgPath)
-			if postCreateCmd != "" {
-				target, err = refreshTargetRef(ctx, opts, cfg, ns, sn, k, target)
-				if err != nil {
-					return fmt.Errorf("refresh target before postCreate: %w", err)
-				}
-				ran, err := runPostCreateIfNeeded(k, ns, target.PodName, target.Container, postCreateCmd, cmd.OutOrStdout(), ui.warnWriter())
-				if err != nil {
-					return err
-				}
-				if ran {
-					ui.stepDone("postCreate", "completed")
-				} else {
-					ui.stepDone("postCreate", "already done")
-				}
-			}
-			if enableTmux {
-				target, err = refreshTargetRef(ctx, opts, cfg, ns, sn, k, target)
-				if err != nil {
-					return fmt.Errorf("refresh target before tmux setup: %w", err)
-				}
-				ui.stepRun("tmux", "checking dev container")
-				status, installer, err := detectDevTmux(cmd.Context(), k, ns, target.PodName, target.Container)
-				if err != nil {
-					ui.warnf("failed to check tmux in dev container: %v", err)
-				} else if status == "install" {
-					ui.stepRun("tmux", fmt.Sprintf("installing via %s", installer))
-					_, detail, err := installDevTmux(cmd.Context(), k, ns, target.PodName, target.Container, installer, func(phase string) {
-						if strings.TrimSpace(phase) != "" {
-							ui.stepRun("tmux", phase)
-						}
-					})
-					if err != nil {
-						if recoveredDetail, ok := devTmuxDetailIfReady(cmd.Context(), k, ns, target.PodName, target.Container); ok {
-							ui.stepDone("tmux", recoveredDetail)
-						} else {
-							ui.warnf("tmux not ready in dev container: %v", err)
-						}
-					} else if strings.TrimSpace(detail) != "" {
-						ui.stepDone("tmux", detail)
-					}
-				} else {
-					_, detail, err := interpretTmuxStatus(status, installer, "")
-					if err != nil {
-						ui.warnf("tmux not ready in dev container: %v", err)
-					} else if strings.TrimSpace(detail) != "" {
-						ui.stepDone("tmux", detail)
-					}
-				}
-			}
-			if err := session.SaveActiveSession(sn); err != nil {
-				return err
-			}
-			ui.stepDone("active session", sn)
-			if err := session.ClearShutdownRequest(sn); err != nil {
-				ui.warnf("failed to clear prior shutdown request: %v", err)
-			}
-
-			ui.printWarnings()
-			ui.printReadyCard(sn, ns, target.PodName, sshSummary, syncSummary, cfg.Spec.Ports, syncPairs, syncModeSymbol)
-			return nil
+			return runUp(cmd, opts, upOptions{
+				waitTimeout:            waitTimeout,
+				dryRun:                 dryRun,
+				reconcile:              reconcile,
+				tmux:                   tmux,
+				noTmux:                 noTmux,
+				createMissingPVC:       createMissingPVC,
+				missingPVCSize:         missingPVCSize,
+				missingPVCStorageClass: missingPVCStorageClass,
+			})
 		},
 	}
 
-	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 10*time.Minute, "Wait timeout for pod readiness")
+	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", upDefaultWaitTimeout, "Wait timeout for pod readiness")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview actions without applying resources")
 	cmd.Flags().BoolVar(&reconcile, "reconcile", false, "Reapply controller-backed workloads instead of reusing an existing session workload")
 	cmd.Flags().BoolVar(&tmux, "tmux", false, "Enable tmux persistent shell sessions in the dev container")
@@ -308,6 +89,294 @@ func newUpCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&missingPVCSize, "missing-pvc-size", config.DefaultWorkspacePVCSize, "Size to use when creating a missing PVC")
 	cmd.Flags().StringVar(&missingPVCStorageClass, "missing-pvc-storage-class", "", "StorageClass to use when creating a missing PVC")
 	return cmd
+}
+
+func runUp(cmd *cobra.Command, opts *Options, flags upOptions) error {
+	return withQuietConfigAnnounce(func() error {
+		state, err := upValidate(cmd, opts, flags)
+		if err != nil {
+			return err
+		}
+		defer state.cancel()
+
+		if err := upReconcile(state, !flags.dryRun); err != nil {
+			return err
+		}
+		if flags.dryRun {
+			return upDryRun(state)
+		}
+		if warnErr := warnIfConfigNewerThanSession(opts, state.command.kube, state.command.namespace, state.command.sessionName, state.workloadName, state.ui.warnWriter()); warnErr != nil {
+			slog.Debug("skip config drift warning", "error", warnErr)
+		}
+		if err := upWait(state); err != nil {
+			return err
+		}
+		return upSetup(state)
+	})
+}
+
+func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, error) {
+	ui := newUpUI(cmd.OutOrStdout(), cmd.ErrOrStderr())
+	ui.section("Validate")
+	cc, err := resolveCommandContext(opts, resolveSessionName)
+	if err != nil {
+		return nil, err
+	}
+	ui.stepDone("config", cc.cfgPath)
+	ui.stepDone("session", cc.sessionName)
+	ui.stepDone("namespace", cc.namespace)
+	if cmd.Flags().Changed("tmux") && cmd.Flags().Changed("no-tmux") {
+		return nil, fmt.Errorf("--tmux and --no-tmux cannot be used together")
+	}
+	enableTmux := cc.cfg.Spec.SSH.PersistentSessionEnabled()
+	if cmd.Flags().Changed("tmux") {
+		enableTmux = flags.tmux
+	}
+	if flags.noTmux {
+		enableTmux = false
+	}
+	labels := labelsForSession(opts, cc.cfg, cc.sessionName)
+	annotations := annotationsForSession(cc.cfg)
+	volumes := cc.cfg.EffectiveVolumes()
+	syncPairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.WorkspaceMountPath())
+	if err != nil {
+		return nil, err
+	}
+	runtime, err := sessionRuntime(cc.cfg, cc.cfgPath, cc.sessionName, labels, annotations, cc.cfg.Spec.PodTemplate.Spec, volumes, enableTmux, resolvePreStopCommand(cc.cfg, cc.cfgPath))
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := upCommandContext(flags.waitTimeout)
+	return &upState{
+		cmd:          cmd,
+		opts:         opts,
+		flags:        flags,
+		ui:           ui,
+		command:      cc,
+		ctx:          ctx,
+		cancel:       cancel,
+		labels:       labels,
+		annotations:  annotations,
+		volumes:      volumes,
+		syncPairs:    syncPairs,
+		enableTmux:   enableTmux,
+		runtime:      runtime,
+		workloadName: runtime.WorkloadName(),
+	}, nil
+}
+
+func upReconcile(state *upState, applyWorkload bool) error {
+	state.ui.section("Reconcile")
+	if err := ensureSessionOwnership(state.opts, state.command.kube, state.command.namespace, state.command.sessionName, true); err != nil {
+		return err
+	}
+	state.ui.stepDone("ownership", "ok")
+	if state.flags.createMissingPVC {
+		createdPVCs, err := reconcileMissingPVCs(state.ctx, state.command.kube, state.command.namespace, state.volumes, state.flags.missingPVCSize, state.flags.missingPVCStorageClass, state.labels, state.annotations)
+		if err != nil {
+			return err
+		}
+		if len(createdPVCs) == 0 {
+			state.ui.stepDone("pvc", "all referenced claims already exist")
+		} else {
+			state.ui.stepDone("pvc", "created: "+strings.Join(createdPVCs, ", "))
+		}
+	} else {
+		state.ui.stepDone("pvc", "not managed (use pre-created PVCs in spec.volumes)")
+	}
+	if !applyWorkload {
+		return nil
+	}
+	state.ui.stepRun(state.runtime.Kind(), state.workloadName)
+	reusedExisting, err := shouldReuseExistingWorkload(state.ctx, state.command.kube, state.command.namespace, state.runtime, state.flags.reconcile)
+	if err != nil {
+		return err
+	}
+	if !reusedExisting {
+		if err := state.runtime.Apply(state.ctx, state.command.kube, state.command.namespace); err != nil {
+			return err
+		}
+	}
+	if reusedExisting {
+		state.ui.stepDone(state.runtime.Kind(), "reused existing")
+	} else {
+		state.ui.stepDone(state.runtime.Kind(), "applied")
+	}
+	return nil
+}
+
+func upDryRun(state *upState) error {
+	state.ui.section("Dry Run")
+	fmt.Fprintf(state.cmd.OutOrStdout(), "DRY RUN: session=%s namespace=%s\n", state.command.sessionName, state.command.namespace)
+	fmt.Fprintf(state.cmd.OutOrStdout(), "- using %d configured volume(s)\n", len(state.volumes))
+	if state.flags.createMissingPVC {
+		fmt.Fprintf(state.cmd.OutOrStdout(), "- would create missing PVC references (size=%s storageClass=%q)\n", state.flags.missingPVCSize, state.flags.missingPVCStorageClass)
+	}
+	if state.runtime.Kind() == workload.TypePod || state.flags.reconcile {
+		fmt.Fprintf(state.cmd.OutOrStdout(), "- would reconcile %s/%s\n", state.runtime.Kind(), state.workloadName)
+	} else {
+		fmt.Fprintf(state.cmd.OutOrStdout(), "- would create or reuse %s/%s\n", state.runtime.Kind(), state.workloadName)
+	}
+	fmt.Fprintf(state.cmd.OutOrStdout(), "- would wait for workload readiness (timeout=%s)\n", state.flags.waitTimeout)
+	fmt.Fprintln(state.cmd.OutOrStdout(), "- would setup SSH config + managed SSH/port-forwards")
+	for _, pair := range state.syncPairs {
+		fmt.Fprintf(state.cmd.OutOrStdout(), "- would sync %s -> %s\n", displayLocalSyncPath(pair.Local), pair.Remote)
+	}
+	fmt.Fprintln(state.cmd.OutOrStdout(), "- would start background sync (when sync.engine=syncthing)")
+	return nil
+}
+
+func upWait(state *upState) error {
+	state.ui.section("Wait")
+	progressPrinter := func(p kube.PodReadinessProgress) {
+		reason := strings.TrimSpace(p.Reason)
+		if reason == "" {
+			reason = "-"
+		}
+		state.ui.stepRun("pod readiness", fmt.Sprintf("%s %d/%d (%s)", p.Phase, p.ReadyContainers, p.TotalContainers, reason))
+	}
+	if err := state.runtime.WaitReady(state.ctx, state.command.kube, state.command.namespace, state.flags.waitTimeout, progressPrinter); err != nil {
+		hints := fmt.Sprintf("next steps:\n- run `okdev status --session %s`\n- run `kubectl -n %s describe pod %s`", state.command.sessionName, state.command.namespace, state.workloadName)
+		diag, derr := state.command.kube.DescribePod(state.ctx, state.command.namespace, state.workloadName)
+		if derr == nil {
+			fmt.Fprintf(state.cmd.ErrOrStderr(), "pod diagnostics:\n%s\n\n%s\n", diag, hints)
+			return fmt.Errorf("wait for %s/%s readiness failed: %w", state.runtime.Kind(), state.workloadName, err)
+		}
+		fmt.Fprintln(state.cmd.ErrOrStderr(), hints)
+		return fmt.Errorf("wait for %s/%s readiness failed: %w", state.runtime.Kind(), state.workloadName, err)
+	}
+	state.ui.stepDone("pod readiness", "ready")
+	target, err := state.runtime.SelectTarget(state.ctx, state.command.kube, state.command.namespace)
+	if err != nil {
+		return fmt.Errorf("select target: %w", err)
+	}
+	if err := persistTargetRef(state.command.sessionName, target); err != nil {
+		return fmt.Errorf("save target state: %w", err)
+	}
+	if err := state.command.kube.AnnotatePod(state.ctx, state.command.namespace, target.PodName, "okdev.io/last-attach", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		slog.Debug("failed to set last-attach annotation", "error", err)
+	}
+	state.target = target
+	state.ui.stepDone("target", target.PodName+"/"+target.Container)
+	return nil
+}
+
+func upSetup(state *upState) error {
+	state.ui.section("Setup")
+	sshSummary := "disabled"
+	keyPath, err := defaultSSHKeyPath(state.command.cfg)
+	if err != nil {
+		return fmt.Errorf("resolve SSH key path: %w", err)
+	}
+	target, err := refreshTargetRef(state.ctx, state.opts, state.command.cfg, state.command.namespace, state.command.sessionName, state.command.kube, state.target)
+	if err != nil {
+		return fmt.Errorf("refresh target before setup: %w", err)
+	}
+	if err := ensureSSHKeyOnPod(state.opts, state.command.namespace, target.PodName, target.Container, keyPath); err != nil {
+		return fmt.Errorf("setup SSH key in pod: %w", err)
+	}
+	target, err = refreshTargetRef(state.ctx, state.opts, state.command.cfg, state.command.namespace, state.command.sessionName, state.command.kube, target)
+	if err != nil {
+		return fmt.Errorf("refresh target before sshd wait: %w", err)
+	}
+	if err := waitForSSHReady(state.opts, state.command.namespace, target.PodName, target.Container, state.flags.waitTimeout); err != nil {
+		return fmt.Errorf("wait for SSH service: %w", err)
+	}
+	alias := sshHostAlias(state.command.sessionName)
+	if _, cfgErr := ensureSSHConfigEntry(alias, state.command.sessionName, state.command.namespace, state.command.cfg.Spec.SSH.User, sshPort, keyPath, state.command.cfgPath, state.command.cfg.Spec.Ports); cfgErr != nil {
+		return fmt.Errorf("update ~/.ssh/config: %w", cfgErr)
+	}
+	if err := stopManagedSSHForward(alias); err != nil {
+		slog.Debug("failed to stop managed SSH forward", "alias", alias, "error", err)
+	}
+	if err := startManagedSSHForwardWithForwards(alias, state.command.cfg.Spec.Ports, state.command.cfg.Spec.SSH); err != nil {
+		return fmt.Errorf("start managed SSH/port-forwards: %w", err)
+	}
+	sshSummary = "ssh " + alias
+	state.ui.stepDone("ssh", sshSummary)
+
+	syncSummary := "disabled"
+	syncModeSymbol := ""
+	if state.command.cfg.Spec.Sync.Engine == "" || state.command.cfg.Spec.Sync.Engine == "syncthing" {
+		if err := refreshSyncthingSessionProcesses(state.command.sessionName); err != nil {
+			return fmt.Errorf("refresh local syncthing session state: %w", err)
+		}
+		logPath, started, err := startDetachedSyncthingSync(state.opts, upDefaultSyncMode, state.command.sessionName, state.command.namespace, state.command.cfgPath)
+		if err != nil {
+			return fmt.Errorf("start syncthing background sync: %w", err)
+		}
+		syncModeSymbol = modeSymbol(upDefaultSyncMode)
+		syncPathSummary := syncPairsSummary(state.syncPairs, syncModeSymbol)
+		if started {
+			syncSummary = "active (" + syncModeSymbol + ")"
+			state.ui.stepDone("sync", fmt.Sprintf("active (%s), %s, logs: %s", syncModeSymbol, syncPathSummary, logPath))
+		} else {
+			syncSummary = "already active (" + syncModeSymbol + ")"
+			state.ui.stepDone("sync", fmt.Sprintf("already active (%s), %s, logs: %s", syncModeSymbol, syncPathSummary, logPath))
+		}
+	}
+
+	postCreateCmd := resolvePostCreateCommand(state.command.cfg, state.command.cfgPath)
+	if postCreateCmd != "" {
+		target, err = refreshTargetRef(state.ctx, state.opts, state.command.cfg, state.command.namespace, state.command.sessionName, state.command.kube, target)
+		if err != nil {
+			return fmt.Errorf("refresh target before postCreate: %w", err)
+		}
+		ran, err := runPostCreateIfNeeded(state.command.kube, state.command.namespace, target.PodName, target.Container, postCreateCmd, state.cmd.OutOrStdout(), state.ui.warnWriter())
+		if err != nil {
+			return err
+		}
+		if ran {
+			state.ui.stepDone("postCreate", "completed")
+		} else {
+			state.ui.stepDone("postCreate", "already done")
+		}
+	}
+	if state.enableTmux {
+		target, err = refreshTargetRef(state.ctx, state.opts, state.command.cfg, state.command.namespace, state.command.sessionName, state.command.kube, target)
+		if err != nil {
+			return fmt.Errorf("refresh target before tmux setup: %w", err)
+		}
+		state.ui.stepRun("tmux", "checking dev container")
+		status, installer, err := detectDevTmux(state.cmd.Context(), state.command.kube, state.command.namespace, target.PodName, target.Container)
+		if err != nil {
+			state.ui.warnf("failed to check tmux in dev container: %v", err)
+		} else if status == "install" {
+			state.ui.stepRun("tmux", fmt.Sprintf("installing via %s", installer))
+			_, detail, err := installDevTmux(state.cmd.Context(), state.command.kube, state.command.namespace, target.PodName, target.Container, installer, func(phase string) {
+				if strings.TrimSpace(phase) != "" {
+					state.ui.stepRun("tmux", phase)
+				}
+			})
+			if err != nil {
+				if recoveredDetail, ok := devTmuxDetailIfReady(state.cmd.Context(), state.command.kube, state.command.namespace, target.PodName, target.Container); ok {
+					state.ui.stepDone("tmux", recoveredDetail)
+				} else {
+					state.ui.warnf("tmux not ready in dev container: %v", err)
+				}
+			} else if strings.TrimSpace(detail) != "" {
+				state.ui.stepDone("tmux", detail)
+			}
+		} else {
+			_, detail, err := interpretTmuxStatus(status, installer, "")
+			if err != nil {
+				state.ui.warnf("tmux not ready in dev container: %v", err)
+			} else if strings.TrimSpace(detail) != "" {
+				state.ui.stepDone("tmux", detail)
+			}
+		}
+	}
+	if err := session.SaveActiveSession(state.command.sessionName); err != nil {
+		return err
+	}
+	state.ui.stepDone("active session", state.command.sessionName)
+	if err := session.ClearShutdownRequest(state.command.sessionName); err != nil {
+		state.ui.warnf("failed to clear prior shutdown request: %v", err)
+	}
+
+	state.ui.printWarnings()
+	state.ui.printReadyCard(state.command.sessionName, state.command.namespace, target.PodName, sshSummary, syncSummary, state.command.cfg.Spec.Ports, state.syncPairs, syncModeSymbol)
+	return nil
 }
 
 type workloadExistenceChecker interface {
@@ -334,8 +403,8 @@ func shouldReuseExistingWorkload(ctx context.Context, k workloadExistenceChecker
 }
 
 func upCommandContext(waitTimeout time.Duration) (context.Context, context.CancelFunc) {
-	timeout := 5 * time.Minute
-	needed := (2 * waitTimeout) + (2 * time.Minute)
+	timeout := defaultContextTimeout
+	needed := (2 * waitTimeout) + upContextBuffer
 	if needed > timeout {
 		timeout = needed
 	}
@@ -380,7 +449,7 @@ func reconcileMissingPVCs(ctx context.Context, k interface {
 }
 
 func runPostCreateIfNeeded(k *kube.Client, namespace, pod, container, command string, out io.Writer, errOut io.Writer) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), annotationTimeout)
 	annotation, err := k.GetPodAnnotation(ctx, namespace, pod, "okdev.io/post-create-done")
 	cancel()
 	if err != nil {
@@ -390,13 +459,13 @@ func runPostCreateIfNeeded(k *kube.Client, namespace, pod, container, command st
 		return false, nil
 	}
 	fmt.Fprintf(out, "Running postCreate: %s\n", command)
-	runCtx, runCancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	runCtx, runCancel := context.WithTimeout(context.Background(), postCreateTimeout)
 	_, runErr := k.ExecShInContainer(runCtx, namespace, pod, container, command)
 	runCancel()
 	if runErr != nil {
 		return true, fmt.Errorf("postCreate failed: %w", runErr)
 	}
-	annCtx, annCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	annCtx, annCancel := context.WithTimeout(context.Background(), annotationTimeout)
 	annErr := k.AnnotatePod(annCtx, namespace, pod, "okdev.io/post-create-done", "true")
 	annCancel()
 	if annErr != nil {
@@ -484,7 +553,7 @@ type devShellExecutor interface {
 const devTmuxLogPath = "/tmp/okdev-tmux-install.log"
 
 func detectDevTmux(ctx context.Context, k devShellExecutor, namespace, pod, container string) (status, installer string, err error) {
-	detectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	detectCtx, cancel := context.WithTimeout(ctx, execProbeTimeout)
 	defer cancel()
 	out, err := k.ExecShInContainer(detectCtx, namespace, pod, container, devTmuxDetectScript)
 	if err != nil {
@@ -498,7 +567,7 @@ func detectDevTmux(ctx context.Context, k devShellExecutor, namespace, pod, cont
 func installDevTmux(ctx context.Context, k devShellExecutor, namespace, pod, container, installer string, progress func(string)) (bool, string, error) {
 	installCtx := ctx
 	if progress != nil && installer != "" && installer != "none" {
-		ticker := time.NewTicker(10 * time.Second)
+		ticker := time.NewTicker(tmuxInstallProgressInterval)
 		defer ticker.Stop()
 		started := time.Now()
 		done := make(chan struct{})
@@ -599,7 +668,7 @@ func warnIfConfigNewerThanSession(opts *Options, k *kube.Client, namespace, sess
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), configDriftTimeout)
 	defer cancel()
 	podSummary, err := k.GetPodSummary(ctx, namespace, podName)
 	if err != nil {

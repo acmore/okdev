@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
+	"github.com/acmore/okdev/internal/kube"
 	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/acmore/okdev/internal/syncthing"
 	"github.com/spf13/cobra"
@@ -30,27 +31,23 @@ const (
 	syncthingContainerName = "okdev-sidecar"
 )
 const (
-	syncthingPeerAddrDynamic   = "dynamic"
-	syncthingAPIReadyTimeout   = 30 * time.Second
-	syncthingLocalLogPath      = "/tmp/okdev-syncthing-local.log"
-	syncthingHTTPClientTimeout = 15 * time.Second
+	syncthingPeerAddrDynamic = "dynamic"
 )
 
 var syncthingHTTPClient = &http.Client{Timeout: syncthingHTTPClientTimeout}
 
-func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironment, namespace, sessionName, mode string, pairs []syncengine.Pair) error {
+func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironment, namespace, sessionName, mode string, pairs []syncengine.Pair, k *kube.Client) error {
 	if len(pairs) != 1 {
 		return fmt.Errorf("syncthing engine currently supports exactly one sync path mapping")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), syncthingBootstrapTimeout)
 	defer cancel()
 	localBinary, err := syncthing.EnsureBinary(ctx, cfg.Spec.Sync.Syncthing.Version, cfg.Spec.Sync.Syncthing.AutoInstallEnabled())
 	if err != nil {
 		return fmt.Errorf("prepare local syncthing binary: %w", err)
 	}
 
-	k := newKubeClient(opts)
 	target, err := resolveTargetRef(cmd.Context(), opts, cfg, namespace, sessionName, k)
 	if err != nil {
 		return err
@@ -138,10 +135,10 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	folderTypeLocal, folderTypeRemote := folderTypesForMode(mode)
 	folderID := "okdev-" + sessionName
 
-	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal); err != nil {
+	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds, cfg.Spec.Sync.Syncthing.RelaysEnabled); err != nil {
 		return fmt.Errorf("configure local syncthing: %w", err)
 	}
-	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, syncthingPeerAddrDynamic, folderID, pair.Remote, folderTypeRemote); err != nil {
+	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, syncthingPeerAddrDynamic, folderID, pair.Remote, folderTypeRemote, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds, cfg.Spec.Sync.Syncthing.RelaysEnabled); err != nil {
 		return fmt.Errorf("configure remote syncthing: %w", err)
 	}
 
@@ -230,12 +227,41 @@ func startLocalSyncthing(binary, home, localGUIAddr string) error {
 		}
 	}
 
-	pattern := syncengine.ShellEscape(binary + " serve --home " + home)
-	binaryQ := syncengine.ShellEscape(binary)
-	homeQ := syncengine.ShellEscape(home)
-	cmd := exec.Command("sh", "-lc", fmt.Sprintf("pkill -f %s >/dev/null 2>&1 || true; nohup %s serve --home %s --no-browser --gui-address=http://%s --no-restart --skip-port-probing >%s 2>&1 &", pattern, binaryQ, homeQ, syncengine.ShellEscape(localGUIAddr), syncengine.ShellEscape(syncthingLocalLogPath)))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("start local syncthing: %w (%s)", err, strings.TrimSpace(string(out)))
+	if err := stopLocalSyncthingForHome(home); err != nil {
+		return err
+	}
+	logPath, err := localSyncthingLogPath(home)
+	if err != nil {
+		return err
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open local syncthing log: %w", err)
+	}
+	cmd := exec.Command(
+		binary,
+		"serve",
+		"--home", home,
+		"--no-browser",
+		"--gui-address=http://"+localGUIAddr,
+		"--no-restart",
+		"--skip-port-probing",
+	)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.Stdin = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		if closeErr := logFile.Close(); closeErr != nil {
+			slog.Debug("failed to close syncthing log file after start failure", "error", closeErr)
+		}
+		return fmt.Errorf("start local syncthing: %w", err)
+	}
+	if releaseErr := cmd.Process.Release(); releaseErr != nil {
+		slog.Debug("failed to release syncthing process", "error", releaseErr)
+	}
+	if closeErr := logFile.Close(); closeErr != nil {
+		slog.Debug("failed to close syncthing log file", "error", closeErr)
 	}
 	return nil
 }
@@ -256,7 +282,7 @@ func allocateLocalSyncthingAPIEndpoint() (guiAddr, apiBase string, err error) {
 }
 
 func stopLocalSyncthing(binary, home string) error {
-	if err := pkillByPattern(binary + " serve --home " + home); err != nil {
+	if err := stopLocalSyncthingForHome(home); err != nil {
 		return fmt.Errorf("stop local syncthing: %w", err)
 	}
 	return nil
@@ -271,10 +297,21 @@ func stopLocalSyncthingForSession(sessionName string) error {
 	if err != nil {
 		return err
 	}
-	if err := pkillByPattern("serve --home " + home); err != nil {
+	if err := stopLocalSyncthingForHome(home); err != nil {
 		return fmt.Errorf("stop local syncthing for session %s: %w", sessionName, err)
 	}
 	return nil
+}
+
+func stopLocalSyncthingForHome(home string) error {
+	return pkillByPattern("serve --home " + home)
+}
+
+func localSyncthingLogPath(home string) (string, error) {
+	if strings.TrimSpace(home) == "" {
+		return "", errors.New("syncthing home is empty")
+	}
+	return filepath.Join(home, "local.log"), nil
 }
 
 func pkillByPattern(pattern string) error {
@@ -393,7 +430,7 @@ func execInSyncthingContainer(ctx context.Context, k interface {
 
 func waitSyncthingAPI(ctx context.Context, base, key string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(syncthingAPIReadyPollInterval)
 	defer ticker.Stop()
 	for time.Now().Before(deadline) {
 		select {
@@ -441,7 +478,7 @@ func syncthingDeviceID(ctx context.Context, base, key string) (string, error) {
 }
 
 func runSyncthingProgressReporter(ctx context.Context, out io.Writer, localBase, localKey, remoteBase, remoteKey, folderID, localID, remoteID string) {
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(syncthingProgressInterval)
 	defer ticker.Stop()
 	emit := func() bool {
 		upPct, upNeed, err := syncthingCompletion(ctx, localBase, localKey, folderID, remoteID)
@@ -502,11 +539,12 @@ func folderTypesForMode(mode string) (local, remote string) {
 	}
 }
 
-func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peerAddr, folderID, folderPath, folderType string) error {
+func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peerAddr, folderID, folderPath, folderType string, rescanIntervalSeconds int, relaysEnabled bool) error {
 	cfg, err := syncthingGetConfig(ctx, base, key)
 	if err != nil {
 		return err
 	}
+	applyManagedSyncthingGlobalDefaults(cfg, relaysEnabled)
 
 	devices, err := syncthingObjectArray(cfg, "devices")
 	if err != nil {
@@ -552,13 +590,14 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 				map[string]any{"deviceID": selfID},
 				map[string]any{"deviceID": peerID},
 			}
+			applyManagedSyncthingFolderDefaults(fm, rescanIntervalSeconds)
 			folders[i] = fm
 			foundFolder = true
 			break
 		}
 	}
 	if !foundFolder {
-		folders = append(folders, map[string]any{
+		folder := map[string]any{
 			"id":         folderID,
 			"label":      folderID,
 			"path":       folderPath,
@@ -568,7 +607,9 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 				map[string]any{"deviceID": selfID},
 				map[string]any{"deviceID": peerID},
 			},
-		})
+		}
+		applyManagedSyncthingFolderDefaults(folder, rescanIntervalSeconds)
+		folders = append(folders, folder)
 	}
 	cfg["folders"] = folders
 
@@ -576,6 +617,24 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 		return err
 	}
 	return nil
+}
+
+func applyManagedSyncthingFolderDefaults(folder map[string]any, rescanIntervalSeconds int) {
+	folder["fsWatcherEnabled"] = true
+	folder["fsWatcherDelayS"] = syncthingWatcherDelayS
+	folder["rescanIntervalS"] = rescanIntervalSeconds
+}
+
+func applyManagedSyncthingGlobalDefaults(cfg map[string]any, relaysEnabled bool) {
+	options, err := syncthingObjectMap(cfg["options"], "options")
+	if err != nil {
+		options = map[string]any{}
+	}
+	options["autoUpgradeIntervalH"] = 0
+	options["upgradeToPreReleases"] = false
+	options["urAccepted"] = -1
+	options["relaysEnabled"] = relaysEnabled
+	cfg["options"] = options
 }
 
 func syncthingGetConfig(ctx context.Context, base, key string) (map[string]any, error) {

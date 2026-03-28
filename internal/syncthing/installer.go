@@ -21,12 +21,14 @@ import (
 
 const releaseBaseURL = "https://github.com/syncthing/syncthing/releases/download"
 const installerHTTPTimeout = 60 * time.Second
+const installerChecksumMaxBytes int64 = 1 << 20
 
 type httpDoer interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
 var installerHTTPClient httpDoer = &http.Client{Timeout: installerHTTPTimeout}
+var installerArchiveMaxBytes int64 = 512 << 20
 
 func EnsureBinary(ctx context.Context, version string, autoInstall bool) (string, error) {
 	if !autoInstall {
@@ -132,7 +134,7 @@ func httpGet(ctx context.Context, url string) ([]byte, error) {
 	if resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("%s returned %s", url, resp.Status)
 	}
-	return io.ReadAll(resp.Body)
+	return io.ReadAll(io.LimitReader(resp.Body, installerChecksumMaxBytes))
 }
 
 func checksumForArchive(checksums string, archiveName string) (string, error) {
@@ -290,9 +292,15 @@ func downloadArchiveToTemp(ctx context.Context, archiveURL, archiveName string) 
 	}()
 
 	hasher := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(tmpFile, hasher), resp.Body); err != nil {
+	limitedBody := io.LimitReader(resp.Body, installerArchiveMaxBytes+1)
+	written, err := io.Copy(io.MultiWriter(tmpFile, hasher), limitedBody)
+	if err != nil {
 		_ = os.Remove(tmpName)
 		return "", "", err
+	}
+	if written > installerArchiveMaxBytes {
+		_ = os.Remove(tmpName)
+		return "", "", fmt.Errorf("archive %s exceeds download limit of %d bytes", archiveName, installerArchiveMaxBytes)
 	}
 	if err := tmpFile.Close(); err != nil {
 		_ = os.Remove(tmpName)

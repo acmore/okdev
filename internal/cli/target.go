@@ -26,23 +26,18 @@ func newTargetShowCmd(opts *Options) *cobra.Command {
 		Use:   "show",
 		Short: "Show the pinned target for the current session",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, ns, err := loadConfigAndNamespace(opts)
+			cc, err := resolveCommandContext(opts, resolveSessionName)
 			if err != nil {
 				return err
 			}
-			sn, err := resolveSessionName(opts, cfg, ns)
+			if err := ensureSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName, true); err != nil {
+				return err
+			}
+			view, err := loadCurrentSessionView(cmd, cc.kube, cc.namespace, cc.sessionName)
 			if err != nil {
 				return err
 			}
-			k := newKubeClient(opts)
-			if err := ensureSessionOwnership(opts, k, ns, sn, true); err != nil {
-				return err
-			}
-			view, err := loadCurrentSessionView(cmd, opts, ns, sn)
-			if err != nil {
-				return err
-			}
-			target, err := resolveTargetRef(cmd.Context(), opts, cfg, ns, sn, k)
+			target, err := resolveTargetRef(cmd.Context(), opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
 			if err != nil {
 				return err
 			}
@@ -89,19 +84,14 @@ func newTargetSetCmd(opts *Options) *cobra.Command {
 			if strings.TrimSpace(podName) != "" && strings.TrimSpace(role) != "" {
 				return fmt.Errorf("--pod and --role cannot be used together")
 			}
-			cfg, ns, err := loadConfigAndNamespace(opts)
+			cc, err := resolveCommandContext(opts, resolveSessionName)
 			if err != nil {
 				return err
 			}
-			sn, err := resolveSessionName(opts, cfg, ns)
-			if err != nil {
+			if err := ensureSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName, true); err != nil {
 				return err
 			}
-			k := newKubeClient(opts)
-			if err := ensureSessionOwnership(opts, k, ns, sn, true); err != nil {
-				return err
-			}
-			view, err := loadCurrentSessionView(cmd, opts, ns, sn)
+			view, err := loadCurrentSessionView(cmd, cc.kube, cc.namespace, cc.sessionName)
 			if err != nil {
 				return err
 			}
@@ -111,13 +101,13 @@ func newTargetSetCmd(opts *Options) *cobra.Command {
 			}
 			target := workload.TargetRef{
 				PodName:   targetPod.Name,
-				Container: resolveTargetContainer(cfg),
+				Container: resolveTargetContainer(cc.cfg),
 				Role:      targetRole,
 			}
-			if err := persistTargetRef(sn, target); err != nil {
+			if err := persistTargetRef(cc.sessionName, target); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Pinned target for session %s: %s", sn, target.PodName)
+			fmt.Fprintf(cmd.OutOrStdout(), "Pinned target for session %s: %s", cc.sessionName, target.PodName)
 			if target.Role != "" {
 				fmt.Fprintf(cmd.OutOrStdout(), " (%s)", target.Role)
 			}
@@ -130,9 +120,9 @@ func newTargetSetCmd(opts *Options) *cobra.Command {
 	return cmd
 }
 
-func loadCurrentSessionView(cmd *cobra.Command, opts *Options, namespace, sessionName string) (sessionView, error) {
+func loadCurrentSessionView(cmd *cobra.Command, k *kube.Client, namespace, sessionName string) (sessionView, error) {
 	label := "okdev.io/managed=true,okdev.io/session=" + sessionName
-	pods, err := newKubeClient(opts).ListPods(cmd.Context(), namespace, false, label)
+	pods, err := k.ListPods(cmd.Context(), namespace, false, label)
 	if err != nil {
 		return sessionView{}, err
 	}

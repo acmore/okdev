@@ -113,6 +113,31 @@ func findNamedSequenceItem(seq *yaml.Node, name string) *yaml.Node {
 	return nil
 }
 
+func ensureWorkspaceMount(existingContainers, containerSeq, vmSeq, vmMapping *yaml.Node) {
+	if existingContainers == nil || existingContainers.Kind != yaml.SequenceNode {
+		return
+	}
+	for _, c := range existingContainers.Content {
+		if c == nil || c.Kind != yaml.MappingNode {
+			continue
+		}
+		_, nameNode := findKey(c, "name")
+		if nameNode == nil || nameNode.Value != "dev" {
+			continue
+		}
+		_, existingMounts := findKey(c, "volumeMounts")
+		if existingMounts != nil && existingMounts.Kind == yaml.SequenceNode {
+			if findNamedSequenceItem(existingMounts, "workspace") == nil {
+				existingMounts.Content = append(existingMounts.Content, vmMapping)
+			}
+			return
+		}
+		setKey(c, "volumeMounts", vmSeq)
+		return
+	}
+	existingContainers.Content = append(existingContainers.Content, containerSeq)
+}
+
 // DefaultMigrations is the ordered list of all config migrations.
 var DefaultMigrations = []Migration{
 	workspaceToVolumesMigration(),
@@ -223,25 +248,7 @@ func workspaceToVolumesMigration() Migration {
 				if existingPTSpec != nil && existingPTSpec.Kind == yaml.MappingNode {
 					_, existingContainers := findKey(existingPTSpec, "containers")
 					if existingContainers != nil && existingContainers.Kind == yaml.SequenceNode {
-						// Find the "dev" container and add volumeMounts
-						for _, c := range existingContainers.Content {
-							if c.Kind == yaml.MappingNode {
-								_, nameNode := findKey(c, "name")
-								if nameNode != nil && nameNode.Value == "dev" {
-									_, existingMounts := findKey(c, "volumeMounts")
-									if existingMounts != nil && existingMounts.Kind == yaml.SequenceNode {
-										if findNamedSequenceItem(existingMounts, "workspace") == nil {
-											existingMounts.Content = append(existingMounts.Content, vmMapping)
-										}
-									} else {
-										setKey(c, "volumeMounts", vmSeq)
-									}
-									goto podTemplateDone
-								}
-							}
-						}
-						// No "dev" container found, add one
-						existingContainers.Content = append(existingContainers.Content, containerMapping)
+						ensureWorkspaceMount(existingContainers, containerMapping, vmSeq, vmMapping)
 					} else {
 						setKey(existingPTSpec, "containers", containerSeq)
 					}
@@ -251,8 +258,6 @@ func workspaceToVolumesMigration() Migration {
 			} else {
 				setKey(spec, "podTemplate", podTemplate)
 			}
-		podTemplateDone:
-
 			// Add YAML comments and warnings for fields that need manual review
 			if size != "" {
 				volumeMapping.HeadComment = fmt.Sprintf("TODO: PVC size was %q -- set resources.requests.storage on the PVC object if needed", size)
