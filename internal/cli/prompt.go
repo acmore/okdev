@@ -136,6 +136,8 @@ func promptInteractive(vars *config.TemplateVars, overrides InitOverrides, in io
 		}
 	}
 
+	applyWorkloadDefaults(vars)
+
 	if vars.WorkloadType == "generic" && !overrides.hasManifestPath() {
 		input, err := promptString(reader, out, "Generic manifest path", vars.ManifestPath)
 		if err != nil {

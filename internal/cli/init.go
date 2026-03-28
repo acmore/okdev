@@ -184,6 +184,10 @@ func applyWorkloadDefaults(vars *config.TemplateVars) {
 	}
 }
 
+var knownGenericPresets = map[string]bool{
+	"deployment": true,
+}
+
 func validateInitWorkloadVars(vars *config.TemplateVars) error {
 	switch strings.TrimSpace(vars.WorkloadType) {
 	case "pod", "job", "pytorchjob", "generic":
@@ -197,6 +201,9 @@ func validateInitWorkloadVars(vars *config.TemplateVars) error {
 		if len(vars.InjectPaths) == 0 {
 			return fmt.Errorf("at least one --inject-path is required when --workload=generic")
 		}
+	}
+	if preset := strings.TrimSpace(vars.GenericPreset); preset != "" && !knownGenericPresets[preset] {
+		return fmt.Errorf("unknown --generic-preset %q; known presets: deployment", preset)
 	}
 	return nil
 }

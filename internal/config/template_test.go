@@ -210,6 +210,50 @@ func TestBuiltinTemplateNames(t *testing.T) {
 	}
 }
 
+func TestUserTemplateNamesEmptyDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	names, err := UserTemplateNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 0 {
+		t.Fatalf("expected no user templates, got %v", names)
+	}
+}
+
+func TestUserTemplateNamesFiltersNonTemplates(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	registryDir := filepath.Join(home, ".okdev", "templates")
+	if err := os.MkdirAll(registryDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(registryDir, "valid.yaml.tmpl"), "ok")
+	writeFile(t, filepath.Join(registryDir, "readme.md"), "skip")
+	writeFile(t, filepath.Join(registryDir, "backup.yaml.bak"), "skip")
+
+	names, err := UserTemplateNames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(names, []string{"valid"}) {
+		t.Fatalf("expected [valid], got %v", names)
+	}
+}
+
+func TestResolveUserTemplateRejectsTraversal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	_, err := resolveUserTemplate("../../../etc/passwd")
+	if err == nil {
+		t.Fatal("expected path traversal error")
+	}
+	if !strings.Contains(err.Error(), "resolves outside registry") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestRenderEmbeddedTemplate(t *testing.T) {
 	vars := NewTemplateVars()
 	vars.Name = "demo"

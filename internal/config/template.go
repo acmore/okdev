@@ -272,6 +272,10 @@ func resolveUserTemplate(name string) (string, error) {
 		return "", err
 	}
 	path := filepath.Join(dir, name+".yaml.tmpl")
+	rel, err := filepath.Rel(dir, path)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("template name %q resolves outside registry", name)
+	}
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
