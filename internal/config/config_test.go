@@ -74,18 +74,23 @@ func TestSetDefaultsAppliesAgentConventionDefaults(t *testing.T) {
 	cfg.Spec.Agents = []AgentSpec{
 		{Name: "claude-code"},
 		{Name: "codex"},
+		{Name: "gemini"},
+		{Name: "opencode"},
 	}
 
 	cfg.SetDefaults()
 
-	if got := cfg.Spec.Agents[0].Auth.Env; got != "ANTHROPIC_API_KEY" {
-		t.Fatalf("expected claude env default, got %q", got)
-	}
-	if got := cfg.Spec.Agents[0].Auth.LocalPath; got != "~/.claude/.credentials.json" {
-		t.Fatalf("expected claude local path default, got %q", got)
+	if cfg.Spec.Agents[0].Auth != nil {
+		t.Fatalf("expected no default claude auth config, got %#v", cfg.Spec.Agents[0].Auth)
 	}
 	if got := cfg.Spec.Agents[1].Auth.LocalPath; got != "~/.codex/auth.json" {
 		t.Fatalf("expected codex local path default, got %q", got)
+	}
+	if cfg.Spec.Agents[2].Auth != nil {
+		t.Fatalf("expected no default gemini auth config, got %#v", cfg.Spec.Agents[2].Auth)
+	}
+	if cfg.Spec.Agents[3].Auth != nil {
+		t.Fatalf("expected no default opencode auth config, got %#v", cfg.Spec.Agents[3].Auth)
 	}
 }
 
@@ -158,7 +163,7 @@ func TestValidateRejectsNegativeTTL(t *testing.T) {
 
 func TestValidateRejectsUnknownAgent(t *testing.T) {
 	cfg := validConfig()
-	cfg.Spec.Agents = []AgentSpec{{Name: "gemini"}}
+	cfg.Spec.Agents = []AgentSpec{{Name: "cursor"}}
 	cfg.SetDefaults()
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected unknown agent validation error")

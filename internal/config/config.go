@@ -218,6 +218,9 @@ func (d *DevEnvironment) SetDefaults() {
 		if !ok {
 			continue
 		}
+		if d.Spec.Agents[i].Auth == nil && spec.DefaultAuthEnv == "" && spec.DefaultLocalPath == "" {
+			continue
+		}
 		if d.Spec.Agents[i].Auth == nil {
 			d.Spec.Agents[i].Auth = &AgentAuth{}
 		}

@@ -54,7 +54,7 @@
 - `okdev up` performs best-effort install checks for configured agents, bootstraps a modern Node/npm runtime via `nvm` when supported, and then installs missing CLIs.
 - `okdev up` also stages local auth files for dedicated sessions when a configured local auth file exists.
 - `okdev down` removes staged agent auth symlinks/runtime files when it can still reach the target container.
-- `okdev` does not own agent process launch; users run `codex`, `claude`, or similar CLIs manually after connecting.
+- `okdev` does not own agent process launch; users run `codex`, `claude`, `gemini`, `opencode`, or similar CLIs manually after connecting.
 - shareable sessions skip auth staging by default.
 
 ### `okdev init [--template basic|gpu|llm-stack] [--stignore-preset default|python|node|go|rust] [--force]`

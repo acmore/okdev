@@ -16,12 +16,9 @@ type Spec struct {
 
 var supported = map[string]Spec{
 	"claude-code": {
-		Name:             "claude-code",
-		Binary:           "claude",
-		DefaultAuthEnv:   "ANTHROPIC_API_KEY",
-		DefaultLocalPath: "~/.claude/.credentials.json",
-		RemoteAuthPath:   "$HOME/.claude/.credentials.json",
-		InstallCommand:   "npm install -g @anthropic-ai/claude-code",
+		Name:           "claude-code",
+		Binary:         "claude",
+		InstallCommand: "npm install -g @anthropic-ai/claude-code",
 	},
 	"codex": {
 		Name:             "codex",
@@ -29,6 +26,16 @@ var supported = map[string]Spec{
 		DefaultLocalPath: "~/.codex/auth.json",
 		RemoteAuthPath:   "$HOME/.codex/auth.json",
 		InstallCommand:   "npm install -g @openai/codex",
+	},
+	"gemini": {
+		Name:           "gemini",
+		Binary:         "gemini",
+		InstallCommand: "npm install -g @google/gemini-cli",
+	},
+	"opencode": {
+		Name:           "opencode",
+		Binary:         "opencode",
+		InstallCommand: "npm install -g opencode-ai",
 	},
 }
 

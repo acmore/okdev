@@ -27,6 +27,8 @@ func (f *fakeAgentExecClient) ExecShInContainer(_ context.Context, _, _, _, scri
 	switch script {
 	case "npm install -g @openai/codex":
 	case "npm install -g @anthropic-ai/claude-code":
+	case "npm install -g @google/gemini-cli":
+	case "npm install -g opencode-ai":
 	case `set -eu
 node_path="$(readlink -f "$(command -v node)")"
 node_bin_dir="$(dirname "$node_path")"
@@ -43,6 +45,22 @@ if [ -x "$node_bin_dir/claude" ]; then
 fi
 `:
 		delete(f.results, "command -v claude >/dev/null 2>&1")
+	case `set -eu
+node_path="$(readlink -f "$(command -v node)")"
+node_bin_dir="$(dirname "$node_path")"
+if [ -x "$node_bin_dir/gemini" ]; then
+  ln -sfn "$node_bin_dir/gemini" /usr/local/bin/gemini
+fi
+`:
+		delete(f.results, "command -v gemini >/dev/null 2>&1")
+	case `set -eu
+node_path="$(readlink -f "$(command -v node)")"
+node_bin_dir="$(dirname "$node_path")"
+if [ -x "$node_bin_dir/opencode" ]; then
+  ln -sfn "$node_bin_dir/opencode" /usr/local/bin/opencode
+fi
+`:
+		delete(f.results, "command -v opencode >/dev/null 2>&1")
 	}
 	if strings.HasPrefix(script, "export OKDEV_NPM_INSTALLER=") && strings.Contains(script, "__OKDEV_NPM_STATUS__=installed:") {
 		delete(f.results, "command -v npm >/dev/null 2>&1")
@@ -71,31 +89,34 @@ func (f *fakeAgentExecClient) CopyToPodInContainer(_ context.Context, _, localPa
 func TestConfiguredAgentStatusRows(t *testing.T) {
 	client := &fakeAgentExecClient{
 		results: map[string]error{
-			"command -v claude >/dev/null 2>&1":         nil,
-			"command -v codex >/dev/null 2>&1":          errors.New("exit status 1"),
-			`test -f "$HOME"/.claude/.credentials.json`: nil,
-			`test -f "$HOME"/.codex/auth.json`:          errors.New("exit status 1"),
+			"command -v claude >/dev/null 2>&1":   nil,
+			"command -v codex >/dev/null 2>&1":    errors.New("exit status 1"),
+			"command -v gemini >/dev/null 2>&1":   nil,
+			"command -v opencode >/dev/null 2>&1": nil,
+			`test -f "$HOME"/.codex/auth.json`:    errors.New("exit status 1"),
 		},
 	}
 	agents := []config.AgentSpec{
-		{Name: "claude-code", Auth: &config.AgentAuth{Env: "ANTHROPIC_API_KEY"}},
+		{Name: "claude-code"},
 		{Name: "codex", Auth: &config.AgentAuth{LocalPath: "~/.codex/auth.json"}},
+		{Name: "gemini"},
+		{Name: "opencode"},
 	}
 
 	rows, err := configuredAgentStatusRows(context.Background(), client, "default", "pod", "dev", agents)
 	if err != nil {
 		t.Fatalf("configuredAgentStatusRows: %v", err)
 	}
-	if len(rows) != 2 {
-		t.Fatalf("expected 2 rows, got %d", len(rows))
+	if len(rows) != 4 {
+		t.Fatalf("expected 4 rows, got %d", len(rows))
 	}
-	if !rows[0].Installed || rows[1].Installed {
+	if !rows[0].Installed || rows[1].Installed || !rows[2].Installed || !rows[3].Installed {
 		t.Fatalf("unexpected install states: %#v", rows)
 	}
-	if rows[0].AuthEnv != "ANTHROPIC_API_KEY" || rows[1].AuthPath != "~/.codex/auth.json" {
+	if rows[0].AuthEnv != "" || rows[0].AuthPath != "" || rows[1].AuthPath != "~/.codex/auth.json" || rows[2].AuthEnv != "" || rows[2].AuthPath != "" || rows[3].AuthEnv != "" || rows[3].AuthPath != "" {
 		t.Fatalf("unexpected auth fields: %#v", rows)
 	}
-	if !rows[0].AuthStaged || rows[1].AuthStaged {
+	if rows[0].AuthStaged || rows[1].AuthStaged || rows[2].AuthStaged || rows[3].AuthStaged {
 		t.Fatalf("unexpected auth staged states: %#v", rows)
 	}
 }
@@ -103,10 +124,14 @@ func TestConfiguredAgentStatusRows(t *testing.T) {
 func TestEnsureConfiguredAgentsInstalled(t *testing.T) {
 	client := &fakeAgentExecClient{
 		results: map[string]error{
-			"command -v claude >/dev/null 2>&1": nil,
-			"command -v codex >/dev/null 2>&1":  errors.New("exit status 1"),
-			"command -v npm >/dev/null 2>&1":    nil,
-			"npm install -g @openai/codex":      nil,
+			"command -v claude >/dev/null 2>&1":   nil,
+			"command -v codex >/dev/null 2>&1":    errors.New("exit status 1"),
+			"command -v gemini >/dev/null 2>&1":   errors.New("exit status 1"),
+			"command -v opencode >/dev/null 2>&1": errors.New("exit status 1"),
+			"command -v npm >/dev/null 2>&1":      nil,
+			"npm install -g @openai/codex":        nil,
+			"npm install -g @google/gemini-cli":   nil,
+			"npm install -g opencode-ai":          nil,
 		},
 		outputs: map[string][]byte{
 			`node -p 'process.versions.node.split(".")[0]'`: []byte("20\n"),
@@ -119,14 +144,14 @@ func TestEnsureConfiguredAgentsInstalled(t *testing.T) {
 		"default",
 		"pod",
 		"dev",
-		[]config.AgentSpec{{Name: "claude-code"}, {Name: "codex"}},
+		[]config.AgentSpec{{Name: "claude-code"}, {Name: "codex"}, {Name: "gemini"}, {Name: "opencode"}},
 		func(format string, args ...any) { warnings = append(warnings, format) },
 	)
 
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings, got %#v", warnings)
 	}
-	if got := strings.Join(results, ", "); !strings.Contains(got, "claude-code: present") || !strings.Contains(got, "codex: installed") {
+	if got := strings.Join(results, ", "); !strings.Contains(got, "claude-code: present") || !strings.Contains(got, "codex: installed") || !strings.Contains(got, "gemini: installed") || !strings.Contains(got, "opencode: installed") {
 		t.Fatalf("unexpected install summary %q", got)
 	}
 }

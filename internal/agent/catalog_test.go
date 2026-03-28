@@ -25,4 +25,13 @@ func TestSupportedNamesMatchesCatalog(t *testing.T) {
 	if len(names) >= 2 && names[0] > names[1] {
 		t.Fatalf("expected sorted names, got %#v", names)
 	}
+	want := []string{"claude-code", "codex", "gemini", "opencode"}
+	if len(names) != len(want) {
+		t.Fatalf("expected %#v, got %#v", want, names)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("expected %#v, got %#v", want, names)
+		}
+	}
 }

@@ -40,7 +40,7 @@ Configures supported coding-agent CLIs for the session container.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name` | `string` | — | Supported agent name: `claude-code` or `codex` |
+| `name` | `string` | — | Supported agent name: `claude-code`, `codex`, `gemini`, or `opencode` |
 | `auth.env` | `string` | convention | Local env var to check during setup-time auth preparation |
 | `auth.localPath` | `string` | convention | Local auth file path to stage into the session container |
 
@@ -50,14 +50,18 @@ Convention defaults:
 
 | Agent | Default `auth.env` | Default `auth.localPath` |
 |-------|--------------------|--------------------------|
-| `claude-code` | `ANTHROPIC_API_KEY` | `~/.claude/.credentials.json` |
+| `claude-code` | — | — |
 | `codex` | — | `~/.codex/auth.json` |
+| `gemini` | — | — |
+| `opencode` | — | — |
 
 ```yaml
 spec:
   agents:
     - name: claude-code
     - name: codex
+    - name: gemini
+    - name: opencode
 ```
 
 Phase 1 currently supports:
