@@ -230,6 +230,25 @@ func TestBuildPodLogOptions(t *testing.T) {
 	}
 }
 
+func TestTempDownloadPath(t *testing.T) {
+	dir := t.TempDir()
+	localPath := filepath.Join(dir, "artifact.txt")
+
+	tempPath, err := tempDownloadPath(localPath)
+	if err != nil {
+		t.Fatalf("tempDownloadPath: %v", err)
+	}
+	if tempPath == localPath {
+		t.Fatal("expected temp path to differ from final path")
+	}
+	if filepath.Dir(tempPath) != dir {
+		t.Fatalf("expected temp file in %q, got %q", dir, filepath.Dir(tempPath))
+	}
+	if _, err := os.Stat(tempPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected temp file to be removed after reservation, got err=%v", err)
+	}
+}
+
 func TestBuildPodLogOptionsRoundsShortDurationsUpToOneSecond(t *testing.T) {
 	got := buildPodLogOptions(LogStreamOptions{Since: 500 * time.Millisecond})
 	if got.SinceSeconds == nil || *got.SinceSeconds != 1 {

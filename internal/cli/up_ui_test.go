@@ -67,6 +67,22 @@ func TestUpUIStepDoneHighlightsReusedWorkloadInteractively(t *testing.T) {
 	}
 }
 
+func TestUpUIStepDonePrefixesReusedWorkloadNonInteractively(t *testing.T) {
+	var out bytes.Buffer
+	ui := &upUI{
+		out:         &out,
+		errOut:      &out,
+		interactive: false,
+	}
+
+	ui.stepDone("pod", "reused existing workload (run `okdev down` then `okdev up` to recreate)")
+
+	got := out.String()
+	if !strings.Contains(got, "[NOTE] reused existing workload") {
+		t.Fatalf("expected note prefix in non-interactive output, got %q", got)
+	}
+}
+
 func TestSyncHelpers(t *testing.T) {
 	relPath := "testdata"
 	if got := displayLocalSyncPath(relPath); got != filepath.Join(mustAbs("."), relPath) {

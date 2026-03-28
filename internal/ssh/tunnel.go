@@ -103,6 +103,10 @@ func (tm *TunnelManager) dialSSH(host string, port int) (*xssh.Client, error) {
 	clientConfig := &xssh.ClientConfig{
 		User:            tm.SSHUser,
 		Auth:            []xssh.AuthMethod{xssh.PublicKeys(signer)},
+		// okdev always dials the SSH server through a local port-forwarded loopback
+		// endpoint, so host-key verification would not add meaningful protection here.
+		// If this ever starts dialing non-loopback or non-port-forwarded targets,
+		// this must be replaced with real host-key verification.
 		HostKeyCallback: xssh.InsecureIgnoreHostKey(),
 		Timeout:         10 * time.Second,
 	}
