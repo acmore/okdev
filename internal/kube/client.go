@@ -8,12 +8,12 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -22,6 +22,7 @@ import (
 	"github.com/acmore/okdev/internal/shellutil"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	meta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -55,6 +56,7 @@ type Client struct {
 	cachedDynamic dynamic.Interface
 	cachedMapper  meta.RESTMapper
 	cachedConfig  *rest.Config
+	cachedKey     string
 }
 
 type PodSummary struct {
@@ -99,7 +101,11 @@ func (c *Client) restConfig() (*rest.Config, error) {
 func (c *Client) clients() (*kubernetes.Clientset, dynamic.Interface, meta.RESTMapper, *rest.Config, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.cachedSet != nil && c.cachedConfig != nil && c.cachedDynamic != nil && c.cachedMapper != nil {
+	cacheKey, err := c.cacheKey()
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if c.cachedSet != nil && c.cachedConfig != nil && c.cachedDynamic != nil && c.cachedMapper != nil && c.cachedKey == cacheKey {
 		return c.cachedSet, c.cachedDynamic, c.cachedMapper, c.cachedConfig, nil
 	}
 	restCfg, err := c.restConfig()
@@ -123,7 +129,26 @@ func (c *Client) clients() (*kubernetes.Clientset, dynamic.Interface, meta.RESTM
 	c.cachedDynamic = dc
 	c.cachedMapper = mapper
 	c.cachedConfig = restCfg
+	c.cachedKey = cacheKey
 	return cs, dc, mapper, restCfg, nil
+}
+
+func (c *Client) cacheKey() (string, error) {
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	parts := []string{strings.TrimSpace(c.Context)}
+	for _, path := range loadingRules.Precedence {
+		info, err := os.Stat(path)
+		if err == nil {
+			parts = append(parts, fmt.Sprintf("%s:%d:%d", path, info.ModTime().UnixNano(), info.Size()))
+			continue
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			parts = append(parts, path+":missing")
+			continue
+		}
+		return "", fmt.Errorf("stat kubeconfig %q: %w", path, err)
+	}
+	return strings.Join(parts, "|"), nil
 }
 
 func (c *Client) clientset() (*kubernetes.Clientset, *rest.Config, error) {
@@ -166,9 +191,9 @@ func (c *Client) Apply(ctx context.Context, namespace string, manifest []byte) e
 			_, err = cs.CoreV1().Pods(namespace).Create(ctx, &pod, metav1.CreateOptions{})
 			return err
 		}
-		if reflect.DeepEqual(existing.Spec, pod.Spec) &&
-			reflect.DeepEqual(existing.Labels, pod.Labels) &&
-			reflect.DeepEqual(existing.Annotations, pod.Annotations) {
+		if apiequality.Semantic.DeepEqual(existing.Spec, pod.Spec) &&
+			maps.Equal(existing.Labels, pod.Labels) &&
+			maps.Equal(existing.Annotations, pod.Annotations) {
 			return nil
 		}
 		if err := cs.CoreV1().Pods(namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil {
@@ -202,7 +227,7 @@ func (c *Client) Apply(ctx context.Context, namespace string, manifest []byte) e
 			return fmt.Errorf("pvc/%s has immutable spec changes; delete and recreate the PVC (or use --delete-pvc with `okdev down`) to apply", pvc.Name)
 		}
 
-		needsMetaUpdate := !reflect.DeepEqual(existing.Labels, pvc.Labels) || !reflect.DeepEqual(existing.Annotations, pvc.Annotations)
+		needsMetaUpdate := !maps.Equal(existing.Labels, pvc.Labels) || !maps.Equal(existing.Annotations, pvc.Annotations)
 		if !needsMetaUpdate && !mutableSpecChanged {
 			return nil
 		}
@@ -233,9 +258,9 @@ func (c *Client) Apply(ctx context.Context, namespace string, manifest []byte) e
 		}
 		normalizedExisting := existing.DeepCopy()
 		normalizeJobForApplyComparison(normalizedExisting)
-		if reflect.DeepEqual(normalizedExisting.Spec, job.Spec) &&
-			reflect.DeepEqual(normalizedExisting.Labels, job.Labels) &&
-			reflect.DeepEqual(normalizedExisting.Annotations, job.Annotations) {
+		if apiequality.Semantic.DeepEqual(normalizedExisting.Spec, job.Spec) &&
+			maps.Equal(normalizedExisting.Labels, job.Labels) &&
+			maps.Equal(normalizedExisting.Annotations, job.Annotations) {
 			return nil
 		}
 		propagation := metav1.DeletePropagationBackground
@@ -393,7 +418,7 @@ func normalizePodSpecDefaults(spec *corev1.PodSpec) {
 	if spec.SchedulerName == "default-scheduler" {
 		spec.SchedulerName = ""
 	}
-	if spec.SecurityContext != nil && reflect.DeepEqual(*spec.SecurityContext, corev1.PodSecurityContext{}) {
+	if spec.SecurityContext != nil && apiequality.Semantic.DeepEqual(*spec.SecurityContext, corev1.PodSecurityContext{}) {
 		spec.SecurityContext = nil
 	}
 	for i := range spec.Containers {
@@ -422,18 +447,18 @@ func normalizeContainerDefaults(c *corev1.Container) {
 }
 
 func pvcSpecDiff(existing, desired corev1.PersistentVolumeClaimSpec) (mutableChanged bool, immutableChanged bool) {
-	if reflect.DeepEqual(existing, desired) {
+	if apiequality.Semantic.DeepEqual(existing, desired) {
 		return false, false
 	}
-	mutableChanged = !reflect.DeepEqual(existing.Resources, desired.Resources) ||
-		!reflect.DeepEqual(existing.VolumeAttributesClassName, desired.VolumeAttributesClassName)
+	mutableChanged = !apiequality.Semantic.DeepEqual(existing.Resources, desired.Resources) ||
+		!apiequality.Semantic.DeepEqual(existing.VolumeAttributesClassName, desired.VolumeAttributesClassName)
 
 	existingComparable := existing.DeepCopy()
 	desiredComparable := desired.DeepCopy()
 	existingComparable.Resources = desiredComparable.Resources
 	existingComparable.VolumeAttributesClassName = desiredComparable.VolumeAttributesClassName
 	normalizeComparablePVCSpec(existingComparable, desiredComparable)
-	if reflect.DeepEqual(existingComparable, desiredComparable) {
+	if apiequality.Semantic.DeepEqual(existingComparable, desiredComparable) {
 		return mutableChanged, false
 	}
 	return mutableChanged, true

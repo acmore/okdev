@@ -31,6 +31,14 @@ See:
 - `docs/troubleshooting.md`
 - `docs/release.md`
 
+## Development
+
+Coverage on some Go 1.25 toolchains can fail under `go test ./... -cover` because the bundled `covdata` tool is missing for packages without tests. Use the repo helper instead:
+
+```bash
+./scripts/coverage.sh
+```
+
 ## GitHub Pages Docs
 
 Docs are published from `docs/` via GitHub Actions + MkDocs.

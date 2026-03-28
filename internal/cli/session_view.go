@@ -34,10 +34,16 @@ func buildSessionViews(pods []kube.PodSummary) []sessionView {
 
 	views := make([]sessionView, 0, len(grouped))
 	for _, group := range grouped {
+		if len(group) == 0 {
+			continue
+		}
 		sort.Slice(group, func(i, j int) bool {
 			return workload.ComparePodPriority(group[i], group[j])
 		})
-		target := selectTargetPod(group)
+		target, ok := selectTargetPod(group)
+		if !ok {
+			continue
+		}
 		summary := target
 		oldest := group[0].CreatedAt
 		for _, pod := range group[1:] {
@@ -66,7 +72,10 @@ func buildSessionViews(pods []kube.PodSummary) []sessionView {
 	return views
 }
 
-func selectTargetPod(pods []kube.PodSummary) kube.PodSummary {
+func selectTargetPod(pods []kube.PodSummary) (kube.PodSummary, bool) {
+	if len(pods) == 0 {
+		return kube.PodSummary{}, false
+	}
 	var chosen *kube.PodSummary
 	var chosenAttach time.Time
 	for i := range pods {
@@ -84,7 +93,7 @@ func selectTargetPod(pods []kube.PodSummary) kube.PodSummary {
 		}
 	}
 	if chosen != nil {
-		return *chosen
+		return *chosen, true
 	}
-	return pods[0]
+	return pods[0], true
 }

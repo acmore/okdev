@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/logx"
 	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
@@ -27,23 +27,14 @@ func newSyncCmd(opts *Options) *cobra.Command {
 		Use:   "sync",
 		Short: "Start syncthing sync for session pod",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, ns, err := loadConfigAndNamespace(opts)
+			cc, err := resolveCommandContext(opts, resolveSessionName)
 			if err != nil {
 				return err
 			}
-			cfgPath, err := config.ResolvePath(opts.ConfigPath)
-			if err != nil {
+			if err := ensureExistingSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName, true); err != nil {
 				return err
 			}
-			sn, err := resolveSessionNameForUpDown(opts, cfg, ns)
-			if err != nil {
-				return err
-			}
-			k := newKubeClient(opts)
-			if err := ensureExistingSessionOwnership(opts, k, ns, sn, true); err != nil {
-				return err
-			}
-			engine := cfg.Spec.Sync.Engine
+			engine := cc.cfg.Spec.Sync.Engine
 			if engine == "" {
 				engine = "syncthing"
 			}
@@ -56,12 +47,12 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if foreground {
 				background = false
 			}
-			pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.WorkspaceMountPath())
+			pairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.WorkspaceMountPath())
 			if err != nil {
 				return err
 			}
 			if dryRun {
-				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: sync session=%s namespace=%s engine=%s mode=%s\n", sn, ns, engine, mode)
+				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: sync session=%s namespace=%s engine=%s mode=%s\n", cc.sessionName, cc.namespace, engine, mode)
 				fmt.Fprintf(cmd.OutOrStdout(), "- paths: %v\n", pairs)
 				if reset {
 					fmt.Fprintln(cmd.OutOrStdout(), "- would reset local sync state for this session before setup")
@@ -71,39 +62,39 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				}
 				return nil
 			}
-			stopMaintenance := startSessionMaintenance(opts, cfg, ns, sn, cmd.OutOrStdout(), false, true)
+			stopMaintenance := startSessionMaintenance(opts, cc.namespace, cc.sessionName, cmd.OutOrStdout(), true)
 			defer stopMaintenance()
 
 			if reset {
-				if err := resetSyncthingSessionState(sn); err != nil {
+				if err := resetSyncthingSessionState(cc.sessionName); err != nil {
 					return err
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Reset local sync state for session %s\n", sn)
+				fmt.Fprintf(cmd.OutOrStdout(), "Reset local sync state for session %s\n", cc.sessionName)
 			}
 
 			if !background && mode == "bi" && os.Getenv("OKDEV_SYNCTHING_BACKGROUND_CHILD") != "1" {
-				if pidPath, err := syncthingPIDPath(sn); err == nil {
+				if pidPath, err := syncthingPIDPath(cc.sessionName); err == nil {
 					if pid, ok := readSyncthingPID(pidPath); ok && processAlive(pid) && processLooksLikeSyncthingSync(pid) {
-						fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync already active in background for session %s\n", sn)
+						fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync already active in background for session %s\n", cc.sessionName)
 						return nil
 					}
 				}
 			}
 
 			if background && os.Getenv("OKDEV_SYNCTHING_BACKGROUND_CHILD") != "1" {
-				logPath, started, err := startDetachedSyncthingSync(opts, mode, sn, ns, cfgPath)
+				logPath, started, err := startDetachedSyncthingSync(opts, mode, cc.sessionName, cc.namespace, cc.cfgPath)
 				if err != nil {
 					return err
 				}
 				if started {
-					fmt.Fprintf(cmd.OutOrStdout(), "Started syncthing sync in background for session %s\n", sn)
+					fmt.Fprintf(cmd.OutOrStdout(), "Started syncthing sync in background for session %s\n", cc.sessionName)
 				} else {
-					fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync already running in background for session %s\n", sn)
+					fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync already running in background for session %s\n", cc.sessionName)
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Logs: %s\n", logPath)
 				return nil
 			}
-			return runSyncthingSync(cmd, opts, cfg, ns, sn, mode, pairs)
+			return runSyncthingSync(cmd, opts, cc.cfg, cc.namespace, cc.sessionName, mode, pairs, cc.kube)
 		},
 	}
 
@@ -137,7 +128,9 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 		if processAlive(pid) && processLooksLikeSyncthingSync(pid) {
 			return logPath, false, nil
 		}
-		_ = os.Remove(pidPath)
+		if rmErr := os.Remove(pidPath); rmErr != nil {
+			slog.Debug("failed to remove stale PID file", "path", pidPath, "error", rmErr)
+		}
 	}
 	logFile, err := logx.OpenRotatingLog(logPath)
 	if err != nil {
@@ -169,21 +162,31 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 	cmd.Stdin = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
-		_ = logFile.Close()
+		if closeErr := logFile.Close(); closeErr != nil {
+			slog.Debug("failed to close log file after start failure", "path", logPath, "error", closeErr)
+		}
 		return "", false, err
 	}
 	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)+"\n"), 0o644); err != nil {
-		_ = logFile.Close()
+		if closeErr := logFile.Close(); closeErr != nil {
+			slog.Debug("failed to close log file after PID write failure", "path", logPath, "error", closeErr)
+		}
 		return "", false, err
 	}
 	// Guard against immediate child exit (common when sync init fails).
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(syncthingDetachedStartupDelay)
 	if !processAlive(cmd.Process.Pid) || !processLooksLikeSyncthingSync(cmd.Process.Pid) {
-		_ = logFile.Close()
+		if closeErr := logFile.Close(); closeErr != nil {
+			slog.Debug("failed to close log file after early exit", "path", logPath, "error", closeErr)
+		}
 		return "", false, fmt.Errorf("syncthing background process exited early; check logs: %s", logPath)
 	}
-	_ = cmd.Process.Release()
-	_ = logFile.Close()
+	if releaseErr := cmd.Process.Release(); releaseErr != nil {
+		slog.Debug("failed to release detached process", "pid", cmd.Process.Pid, "error", releaseErr)
+	}
+	if closeErr := logFile.Close(); closeErr != nil {
+		slog.Debug("failed to close log file", "path", logPath, "error", closeErr)
+	}
 	return logPath, true, nil
 }
 
@@ -214,15 +217,19 @@ func stopDetachedSyncthingSync(sessionName string) error {
 	if processAlive(pid) && processLooksLikeSyncthingSync(pid) {
 		p, err := os.FindProcess(pid)
 		if err == nil {
-			_ = p.Signal(syscall.SIGTERM)
+			if sigErr := p.Signal(syscall.SIGTERM); sigErr != nil {
+				slog.Debug("failed to send SIGTERM to syncthing process", "pid", pid, "error", sigErr)
+			}
 		}
-		deadline := time.Now().Add(3 * time.Second)
+		deadline := time.Now().Add(syncthingShutdownWait)
 		for processAlive(pid) && time.Now().Before(deadline) {
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(syncthingShutdownPollInterval)
 		}
 		if processAlive(pid) {
 			if p, err := os.FindProcess(pid); err == nil {
-				_ = p.Signal(syscall.SIGKILL)
+				if sigErr := p.Signal(syscall.SIGKILL); sigErr != nil {
+					slog.Debug("failed to send SIGKILL to syncthing process", "pid", pid, "error", sigErr)
+				}
 			}
 		}
 	}
@@ -252,28 +259,59 @@ func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	if statOut, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "stat=").CombinedOutput(); err == nil {
-		stat := strings.TrimSpace(string(statOut))
-		if stat == "" || strings.Contains(stat, "Z") {
-			return false
-		}
-	}
 	p, err := os.FindProcess(pid)
 	if err != nil {
 		return false
 	}
-	err = p.Signal(syscall.Signal(0))
-	return err == nil
+	if err := p.Signal(syscall.Signal(0)); err != nil {
+		return false
+	}
+	// Signal(0) succeeds for zombies on Unix. Check process state to
+	// reject them so stale PID files don't block new sync starts.
+	if isZombie(pid) {
+		return false
+	}
+	return true
+}
+
+func isZombie(pid int) bool {
+	// Try /proc/<pid>/stat first (Linux, no subprocess needed).
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err == nil {
+		return procStatIsZombie(data)
+	}
+	// /proc unavailable (macOS); fall back to ps.
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "stat=").CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return psStatIsZombie(string(out))
+}
+
+func procStatIsZombie(data []byte) bool {
+	// Format: "<pid> (comm) <state> ..."  — state is the third field.
+	fields := strings.SplitAfterN(string(data), ") ", 2)
+	return len(fields) == 2 && len(fields[1]) > 0 && fields[1][0] == 'Z'
+}
+
+func psStatIsZombie(stat string) bool {
+	return strings.Contains(strings.TrimSpace(stat), "Z")
 }
 
 func processLooksLikeSyncthingSync(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").CombinedOutput()
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 	if err != nil {
-		return false
+		// /proc not available (e.g. macOS); fall back to ps.
+		out, psErr := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").CombinedOutput()
+		if psErr != nil {
+			return false
+		}
+		cmdline := string(out)
+		return strings.Contains(cmdline, "okdev") && strings.Contains(cmdline, "sync")
 	}
-	cmdline := string(out)
+	cmdline := strings.ReplaceAll(string(data), "\x00", " ")
 	return strings.Contains(cmdline, "okdev") && strings.Contains(cmdline, "sync")
 }

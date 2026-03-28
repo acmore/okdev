@@ -24,12 +24,12 @@ func newPruneCmd(opts *Options) *cobra.Command {
 		Use:   "prune",
 		Short: "Delete expired sessions by TTL",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, ns, err := loadConfigAndNamespace(opts)
+			cc, err := resolveCommandContext(opts, nil)
 			if err != nil {
 				return err
 			}
 			if ttlHours <= 0 {
-				ttlHours = cfg.Spec.Session.TTLHours
+				ttlHours = cc.cfg.Spec.Session.TTLHours
 			}
 			if ttlHours <= 0 {
 				ttlHours = 72
@@ -37,12 +37,11 @@ func newPruneCmd(opts *Options) *cobra.Command {
 
 			ctx, cancel := defaultContext()
 			defer cancel()
-			k := newKubeClient(opts)
 			label := "okdev.io/managed=true"
 			if !allUsers {
 				label = label + "," + ownerLabelSelector(opts)
 			}
-			pods, err := k.ListPods(ctx, ns, allNamespaces, label)
+			pods, err := cc.kube.ListPods(ctx, cc.namespace, allNamespaces, label)
 			if err != nil {
 				return err
 			}
@@ -62,11 +61,9 @@ func newPruneCmd(opts *Options) *cobra.Command {
 				if idleRaw := targetPod.Annotations["okdev.io/idle-timeout-minutes"]; idleRaw != "" {
 					idleMinutes, err := strconv.Atoi(idleRaw)
 					if err == nil && idleMinutes > 0 {
-						lastActive := targetPod.CreatedAt
-						if ts := targetPod.Annotations["okdev.io/last-attach"]; ts != "" {
-							if parsed, parseErr := time.Parse(time.RFC3339, ts); parseErr == nil {
-								lastActive = parsed
-							}
+						lastActive, warned := sessionLastActive(targetPod)
+						if warned {
+							slog.Warn("invalid session last-attach annotation; falling back to pod creation time", "session", view.Session, "namespace", view.Namespace, "pod", targetPod.Name, "value", targetPod.Annotations["okdev.io/last-attach"])
 						}
 						if now.Sub(lastActive) >= time.Duration(idleMinutes)*time.Minute {
 							idleExpired = true
@@ -92,11 +89,13 @@ func newPruneCmd(opts *Options) *cobra.Command {
 					}
 					continue
 				}
-				if err := deleteSessionWorkload(ctx, k, view, targetPod); err != nil {
+				if err := deleteSessionWorkload(ctx, cc.kube, view, targetPod); err != nil {
 					return err
 				}
 				if includePVC {
-					_ = k.Delete(ctx, view.Namespace, "pvc", "okdev-"+sessionName+"-workspace", true)
+					if err := cc.kube.Delete(ctx, view.Namespace, "pvc", "okdev-"+sessionName+"-workspace", true); err != nil {
+						slog.Warn("failed to delete PVC during prune", "pvc", "okdev-"+sessionName+"-workspace", "namespace", view.Namespace, "error", err)
+					}
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Pruned session %s in namespace %s (%s)\n", sessionName, view.Namespace, reason)
 				deleted++
@@ -128,6 +127,19 @@ func sessionTargetPod(view sessionView) (kube.PodSummary, bool) {
 		return kube.PodSummary{}, false
 	}
 	return view.Pods[0], true
+}
+
+func sessionLastActive(pod kube.PodSummary) (time.Time, bool) {
+	lastActive := pod.CreatedAt
+	ts := strings.TrimSpace(pod.Annotations["okdev.io/last-attach"])
+	if ts == "" {
+		return lastActive, false
+	}
+	parsed, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return lastActive, true
+	}
+	return parsed, false
 }
 
 func deleteSessionWorkload(ctx context.Context, k *kube.Client, view sessionView, targetPod kube.PodSummary) error {

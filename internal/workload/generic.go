@@ -14,6 +14,7 @@ import (
 	"github.com/acmore/okdev/internal/kube"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/yaml"
 )
 
@@ -32,6 +33,13 @@ type GenericRuntime struct {
 
 	loadMu     sync.Mutex
 	loadedBase *unstructured.Unstructured
+	loadedFrom manifestCacheStamp
+}
+
+type manifestCacheStamp struct {
+	path    string
+	modTime time.Time
+	size    int64
 }
 
 func (r *GenericRuntime) Kind() string {
@@ -165,7 +173,11 @@ func (r *GenericRuntime) interactiveContainer() string {
 func (r *GenericRuntime) load() (*unstructured.Unstructured, error) {
 	r.loadMu.Lock()
 	defer r.loadMu.Unlock()
-	if r.loadedBase != nil {
+	stamp, err := manifestStamp(r.ManifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat generic manifest %q: %w", r.ManifestPath, err)
+	}
+	if r.loadedBase != nil && r.loadedFrom == stamp {
 		return r.loadedBase.DeepCopy(), nil
 	}
 	raw, err := os.ReadFile(r.ManifestPath)
@@ -184,7 +196,20 @@ func (r *GenericRuntime) load() (*unstructured.Unstructured, error) {
 		return nil, fmt.Errorf("generic manifest %q is missing metadata.name", r.ManifestPath)
 	}
 	r.loadedBase = u.DeepCopy()
+	r.loadedFrom = stamp
 	return u.DeepCopy(), nil
+}
+
+func manifestStamp(path string) (manifestCacheStamp, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return manifestCacheStamp{}, err
+	}
+	return manifestCacheStamp{
+		path:    path,
+		modTime: info.ModTime(),
+		size:    info.Size(),
+	}, nil
 }
 
 // resolveMapPath descends into all path segments and returns the nested map
@@ -232,24 +257,16 @@ func writeMapPath(root map[string]any, path string, value map[string]any) error 
 }
 
 func decodePodTemplateSpec(src map[string]any) (corev1.PodTemplateSpec, error) {
-	raw, err := yaml.Marshal(src)
-	if err != nil {
-		return corev1.PodTemplateSpec{}, err
-	}
 	var template corev1.PodTemplateSpec
-	if err := yaml.Unmarshal(raw, &template); err != nil {
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(src, &template); err != nil {
 		return corev1.PodTemplateSpec{}, err
 	}
 	return template, nil
 }
 
 func encodePodTemplateSpec(template corev1.PodTemplateSpec) (map[string]any, error) {
-	raw, err := yaml.Marshal(template)
+	out, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&template)
 	if err != nil {
-		return nil, err
-	}
-	var out map[string]any
-	if err := yaml.Unmarshal(raw, &out); err != nil {
 		return nil, err
 	}
 	return out, nil

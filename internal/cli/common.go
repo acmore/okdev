@@ -25,10 +25,18 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
-const sessionHeartbeatInterval = 5 * time.Minute
-const sshPort = 2222
-
 var invalidOwnerChars = regexp.MustCompile(`[^a-z0-9._-]`)
+
+type sessionResolver func(*Options, *config.DevEnvironment, string) (string, error)
+
+type commandContext struct {
+	opts        *Options
+	cfg         *config.DevEnvironment
+	cfgPath     string
+	namespace   string
+	sessionName string
+	kube        *kube.Client
+}
 
 func loadConfigAndNamespace(opts *Options) (*config.DevEnvironment, string, error) {
 	path, err := config.ResolvePath(opts.ConfigPath)
@@ -54,6 +62,33 @@ func loadConfigAndNamespace(opts *Options) (*config.DevEnvironment, string, erro
 		ns = "default"
 	}
 	return cfg, ns, nil
+}
+
+func resolveCommandContext(opts *Options, resolver sessionResolver) (*commandContext, error) {
+	cfg, namespace, err := loadConfigAndNamespace(opts)
+	if err != nil {
+		return nil, err
+	}
+	cfgPath, err := config.ResolvePath(opts.ConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	cc := &commandContext{
+		opts:      opts,
+		cfg:       cfg,
+		cfgPath:   cfgPath,
+		namespace: namespace,
+		kube:      newKubeClient(opts),
+	}
+	if resolver == nil {
+		return cc, nil
+	}
+	sessionName, err := resolver(opts, cfg, namespace)
+	if err != nil {
+		return nil, err
+	}
+	cc.sessionName = sessionName
+	return cc, nil
 }
 
 func withQuietConfigAnnounce(fn func() error) error {
@@ -139,7 +174,7 @@ func newTransientStatusWithMode(w io.Writer, message string, interactive bool) *
 	s.enabled = true
 	s.stopCh = make(chan struct{})
 	s.doneCh = make(chan struct{})
-	go s.run(120 * time.Millisecond)
+	go s.run(statusSpinnerInterval)
 	return s
 }
 
@@ -225,10 +260,6 @@ func resolveSessionName(opts *Options, cfg *config.DevEnvironment, namespace str
 	return resolveSessionNameWithState(opts, cfg, namespace, true)
 }
 
-func resolveSessionNameForUpDown(opts *Options, cfg *config.DevEnvironment, namespace string) (string, error) {
-	return resolveSessionNameWithState(opts, cfg, namespace, true)
-}
-
 func resolveSessionNameWithState(opts *Options, cfg *config.DevEnvironment, namespace string, inferExisting bool) (string, error) {
 	return resolveSessionNameWithReader(opts, cfg, namespace, inferExisting, newKubeClient(opts))
 }
@@ -251,7 +282,9 @@ func resolveSessionNameWithReader(opts *Options, cfg *config.DevEnvironment, nam
 			if exists {
 				return resolvedActive, nil
 			}
-			_ = session.ClearActiveSession()
+			if clearErr := session.ClearActiveSession(); clearErr != nil {
+				slog.Debug("failed to clear stale active session", "session", resolvedActive, "error", clearErr)
+			}
 		} else {
 			slog.Debug("failed to verify active session pod", "session", resolvedActive, "namespace", namespace, "error", existsErr)
 			return resolvedActive, nil
@@ -270,7 +303,7 @@ func resolveSessionNameWithReader(opts *Options, cfg *config.DevEnvironment, nam
 }
 
 func sessionPodExists(k sessionAccessReader, namespace, sessionName string) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), sessionExistsTimeout)
 	defer cancel()
 	pods, err := k.ListPods(ctx, namespace, false, "okdev.io/managed=true,okdev.io/session="+sessionName)
 	if err == nil {
@@ -303,7 +336,7 @@ func inferExistingSessionForRepo(opts *Options, cfg *config.DevEnvironment, name
 	if strings.TrimSpace(cfg.Metadata.Name) != "" {
 		label = append(label, "okdev.io/name="+cfg.Metadata.Name)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), sessionExistsTimeout)
 	defer cancel()
 	pods, err := newKubeClient(opts).ListPods(ctx, namespace, false, strings.Join(label, ","))
 	if err != nil {
@@ -376,7 +409,7 @@ func newKubeClient(opts *Options) *kube.Client {
 }
 
 func defaultContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), 5*time.Minute)
+	return context.WithTimeout(context.Background(), defaultContextTimeout)
 }
 
 func interactiveContext() (context.Context, context.CancelFunc) {
@@ -394,13 +427,11 @@ func runConnectWithClient(k *kube.Client, namespace string, target workload.Targ
 	return connect.Run(ctx, k, namespace, target.PodName, command, tty, os.Stdin, os.Stdout, os.Stderr)
 }
 
-func startSessionMaintenance(opts *Options, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer, renewLock bool, emitHeartbeat bool) func() {
-	return startSessionMaintenanceWithClient(newKubeClient(opts), cfg, namespace, sessionName, out, renewLock, emitHeartbeat)
+func startSessionMaintenance(opts *Options, namespace, sessionName string, out io.Writer, emitHeartbeat bool) func() {
+	return startSessionMaintenanceWithClient(newKubeClient(opts), namespace, sessionName, out, emitHeartbeat)
 }
 
-func startSessionMaintenanceWithClient(k *kube.Client, cfg *config.DevEnvironment, namespace, sessionName string, out io.Writer, renewLock bool, emitHeartbeat bool) func() {
-	_ = cfg
-	_ = renewLock
+func startSessionMaintenanceWithClient(k *kube.Client, namespace, sessionName string, out io.Writer, emitHeartbeat bool) func() {
 	if !emitHeartbeat {
 		return func() {}
 	}
@@ -410,13 +441,15 @@ func startSessionMaintenanceWithClient(k *kube.Client, cfg *config.DevEnvironmen
 		pod = target.PodName
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 
 	go func() {
+		defer close(done)
 		heartbeatTicker := time.NewTicker(sessionHeartbeatInterval)
 		defer heartbeatTicker.Stop()
 
 		doHeartbeat := func() {
-			beatCtx, beatCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			beatCtx, beatCancel := context.WithTimeout(context.Background(), heartbeatWriteTimeout)
 			err := k.TouchPodActivity(beatCtx, namespace, pod)
 			beatCancel()
 			if err != nil {
@@ -436,7 +469,10 @@ func startSessionMaintenanceWithClient(k *kube.Client, cfg *config.DevEnvironmen
 		}
 	}()
 
-	return cancel
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 func currentOwner(opts *Options) string {
@@ -487,7 +523,7 @@ type sessionAccessReader interface {
 }
 
 func ensureSessionAccess(opts *Options, k sessionAccessReader, namespace, sessionName string, allowShareable bool, requireExisting bool) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), sessionAccessTimeout)
 	defer cancel()
 	pods, err := k.ListPods(ctx, namespace, false, "okdev.io/managed=true,okdev.io/session="+sessionName)
 	if err != nil {

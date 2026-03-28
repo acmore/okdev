@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"fmt"
 	"io"
@@ -11,6 +12,10 @@ import (
 	"text/template"
 	"time"
 )
+
+type templateHTTPDoer interface {
+	Do(*http.Request) (*http.Response, error)
+}
 
 //go:embed templates/*.yaml.tmpl
 var embeddedTemplates embed.FS
@@ -24,41 +29,54 @@ var builtinNames = map[string]string{
 	"multi-container": "templates/llm-stack.yaml.tmpl",
 }
 
-var builtinTemplateLocalIgnores = map[string][]string{
-	"basic": {
+var stignorePresets = map[string][]string{
+	"default": {
 		".git/",
 		".venv/",
 		"node_modules/",
+		".DS_Store",
 	},
-	"gpu": {
+	"python": {
 		".git/",
 		".venv/",
-		"node_modules/",
-		"checkpoints/",
-		"data/",
+		"__pycache__/",
+		".pytest_cache/",
+		".mypy_cache/",
+		".ruff_cache/",
+		".DS_Store",
 	},
-	"llm-gpu": {
+	"node": {
 		".git/",
-		".venv/",
 		"node_modules/",
-		"checkpoints/",
-		"data/",
+		".next/",
+		"dist/",
+		"coverage/",
+		".DS_Store",
 	},
-	"llm-stack": {
+	"go": {
 		".git/",
-		".venv/",
-		"node_modules/",
-		"checkpoints/",
-		"data/",
+		"bin/",
+		"dist/",
+		".coverprofile",
+		"coverage.out",
+		".DS_Store",
 	},
-	"multi-container": {
+	"rust": {
 		".git/",
-		".venv/",
-		"node_modules/",
-		"checkpoints/",
-		"data/",
+		"target/",
+		".DS_Store",
 	},
 }
+
+var builtinTemplateStignorePreset = map[string]string{
+	"basic":           "default",
+	"gpu":             "default",
+	"llm-gpu":         "default",
+	"llm-stack":       "default",
+	"multi-container": "default",
+}
+
+var templateHTTPClient templateHTTPDoer = &http.Client{Timeout: 30 * time.Second}
 
 // TemplateVars holds all variables available to templates.
 type TemplateVars struct {
@@ -99,6 +117,11 @@ func NewTemplateVars() *TemplateVars {
 
 // ResolveTemplate loads raw template content from a built-in name, file path, or URL.
 func ResolveTemplate(ref string) (string, error) {
+	return ResolveTemplateContext(context.Background(), ref)
+}
+
+// ResolveTemplateContext loads raw template content from a built-in name, file path, or URL.
+func ResolveTemplateContext(ctx context.Context, ref string) (string, error) {
 	hasPathIndicator := strings.Contains(ref, "/") ||
 		strings.HasSuffix(ref, ".yaml") ||
 		strings.HasSuffix(ref, ".yml") ||
@@ -127,12 +150,15 @@ func ResolveTemplate(ref string) (string, error) {
 	}
 
 	// Treat as URL
-	return fetchTemplateURL(ref)
+	return fetchTemplateURL(ctx, ref)
 }
 
-func fetchTemplateURL(url string) (string, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(url) //nolint:gosec // user-provided URL is intentional
+func fetchTemplateURL(ctx context.Context, url string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("build request for template %q: %w", url, err)
+	}
+	resp, err := templateHTTPClient.Do(req) //nolint:gosec // user-provided URL is intentional
 	if err != nil {
 		return "", fmt.Errorf("fetch template from %q: %w", url, err)
 	}
@@ -149,7 +175,12 @@ func fetchTemplateURL(url string) (string, error) {
 
 // RenderTemplate resolves a template by ref and renders it with the given vars.
 func RenderTemplate(ref string, vars *TemplateVars) (string, error) {
-	raw, err := ResolveTemplate(ref)
+	return RenderTemplateContext(context.Background(), ref, vars)
+}
+
+// RenderTemplateContext resolves a template by ref and renders it with the given vars.
+func RenderTemplateContext(ctx context.Context, ref string, vars *TemplateVars) (string, error) {
+	raw, err := ResolveTemplateContext(ctx, ref)
 	if err != nil {
 		return "", err
 	}
@@ -180,7 +211,15 @@ func BuiltinTemplateNames() []string {
 }
 
 func BuiltinTemplateLocalIgnores(ref string) []string {
-	patterns, ok := builtinTemplateLocalIgnores[ref]
+	preset, ok := builtinTemplateStignorePreset[ref]
+	if !ok {
+		return nil
+	}
+	return STIgnorePreset(preset)
+}
+
+func STIgnorePreset(name string) []string {
+	patterns, ok := stignorePresets[name]
 	if !ok {
 		return nil
 	}

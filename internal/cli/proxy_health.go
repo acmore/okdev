@@ -73,7 +73,7 @@ func setTCPKeepAliveProxyTuning(conn net.Conn) {
 		return
 	}
 	_ = tc.SetKeepAlive(true)
-	_ = tc.SetKeepAlivePeriod(5 * time.Second)
+	_ = tc.SetKeepAlivePeriod(proxySocketKeepAlivePeriod)
 
 	// Try to set TCP_KEEPCNT=2 via syscall. This is best-effort.
 	raw, err := tc.SyscallConn()
