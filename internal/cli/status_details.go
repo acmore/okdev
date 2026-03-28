@@ -123,7 +123,7 @@ func gatherDetailedStatus(ctx context.Context, cfg *config.DevEnvironment, names
 func buildDetailedTarget(view sessionView, cfg *config.DevEnvironment) (detailedStatusTarget, []detailedStatusPod) {
 	pinned, _ := session.LoadTarget(view.Session)
 	selectedContainer := resolveTargetContainer(cfg)
-	if strings.TrimSpace(pinned.Container) != "" {
+	if strings.TrimSpace(pinned.Container) != "" && strings.TrimSpace(pinned.PodName) == strings.TrimSpace(view.TargetPod) {
 		selectedContainer = strings.TrimSpace(pinned.Container)
 	}
 
@@ -153,7 +153,7 @@ func buildDetailedTarget(view sessionView, cfg *config.DevEnvironment) (detailed
 
 func buildDetailedSSH(sessionName string, forwards []config.PortMapping) detailedStatusSSH {
 	alias := sshHostAlias(sessionName)
-	socketPath, socketErr := sshControlSocketPath(alias)
+	socketPath, socketErr := sshControlSocketStatusPath(alias)
 
 	detail := detailedStatusSSH{
 		HostAlias: alias,
@@ -194,7 +194,7 @@ func buildDetailedSync(sessionName string, cfg *config.DevEnvironment) detailedS
 		return detail
 	}
 
-	pidPath, err := syncthingPIDPath(sessionName)
+	pidPath, err := syncthingPIDStatusPath(sessionName)
 	if err == nil {
 		detail.PIDPath = pidPath
 		if pid, ok := readSyncthingPID(pidPath); ok {
@@ -209,7 +209,7 @@ func buildDetailedSync(sessionName string, cfg *config.DevEnvironment) detailedS
 		}
 	}
 
-	if home, err := localSyncthingHome(sessionName); err == nil {
+	if home, err := localSyncthingStatusHome(sessionName); err == nil {
 		detail.LocalHome = home
 		if logPath, logErr := localSyncthingLogPath(home); logErr == nil {
 			detail.LocalDaemonLogPath = logPath
@@ -355,6 +355,30 @@ func syncthingBackgroundLogPath(sessionName string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, ".okdev", "logs", "syncthing-"+sessionName+".log"), nil
+}
+
+func sshControlSocketStatusPath(hostAlias string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".okdev", "ssh", hostAlias+".sock"), nil
+}
+
+func syncthingPIDStatusPath(sessionName string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".okdev", "syncthing", sessionName, "sync.pid"), nil
+}
+
+func localSyncthingStatusHome(sessionName string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".okdev", "syncthing", sessionName), nil
 }
 
 func managedSSHConfigPresent(hostAlias string) (bool, error) {

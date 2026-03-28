@@ -78,14 +78,21 @@ func TestGatherDetailedStatusIncludesDiagnostics(t *testing.T) {
 		},
 	}
 
-	pidPath, err := syncthingPIDPath("sess1")
-	if err != nil {
-		t.Fatalf("syncthingPIDPath: %v", err)
-	}
+	pidPath := filepath.Join(t.TempDir(), "sync.pid")
 	if err := os.WriteFile(pidPath, []byte("not-a-pid\n"), 0o644); err != nil {
 		t.Fatalf("write pid: %v", err)
 	}
-
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("user home dir: %v", err)
+	}
+	statusPIDPath := filepath.Join(home, ".okdev", "syncthing", "sess1", "sync.pid")
+	if err := os.MkdirAll(filepath.Dir(statusPIDPath), 0o755); err != nil {
+		t.Fatalf("mkdir status pid dir: %v", err)
+	}
+	if err := os.WriteFile(statusPIDPath, []byte("not-a-pid\n"), 0o644); err != nil {
+		t.Fatalf("write status pid: %v", err)
+	}
 	detail := gatherDetailedStatus(context.Background(), cfg, "default", view, fakeStatusDetailsClient{describe: "details"})
 
 	if detail.Target.SelectedPod != "worker-0" || detail.Target.SelectedContainer != "trainer" {
@@ -108,6 +115,64 @@ func TestGatherDetailedStatusIncludesDiagnostics(t *testing.T) {
 	}
 	if !strings.Contains(detail.TargetPodDetails, "details default/worker-0") {
 		t.Fatalf("unexpected target pod details %q", detail.TargetPodDetails)
+	}
+}
+
+func TestGatherDetailedStatusDoesNotCreateRuntimeDirectories(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	origForward := sshForwardStatusFunc
+	origConfig := sshConfigPresentFunc
+	sshForwardStatusFunc = func(string) (bool, error) { return false, nil }
+	sshConfigPresentFunc = func(string) (bool, error) { return false, nil }
+	t.Cleanup(func() {
+		sshForwardStatusFunc = origForward
+		sshConfigPresentFunc = origConfig
+	})
+
+	cfg := &config.DevEnvironment{}
+	view := sessionView{
+		Namespace: "default",
+		Session:   "sess-no-side-effects",
+		TargetPod: "pod-1",
+		Pods:      []kube.PodSummary{{Name: "pod-1", Namespace: "default"}},
+	}
+
+	_ = gatherDetailedStatus(context.Background(), cfg, "default", view, nil)
+
+	for _, path := range []string{
+		filepath.Join(home, ".okdev", "ssh"),
+		filepath.Join(home, ".okdev", "syncthing", "sess-no-side-effects"),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to remain absent, got err=%v", path, err)
+		}
+	}
+}
+
+func TestBuildDetailedTargetDoesNotMixSelectedPodWithStalePinnedContainer(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := session.SaveTarget("sess1", workload.TargetRef{PodName: "old-pod", Container: "old-container"}); err != nil {
+		t.Fatalf("save target: %v", err)
+	}
+
+	cfg := &config.DevEnvironment{}
+	cfg.Spec.Workload.Attach.Container = "dev"
+	view := sessionView{
+		Session:   "sess1",
+		TargetPod: "new-pod",
+		Pods:      []kube.PodSummary{{Name: "new-pod"}},
+	}
+
+	target, _ := buildDetailedTarget(view, cfg)
+	if target.SelectedPod != "new-pod" {
+		t.Fatalf("unexpected selected pod: %+v", target)
+	}
+	if target.SelectedContainer != "dev" {
+		t.Fatalf("expected selected container to fall back to config target, got %+v", target)
+	}
+	if target.PinnedContainer != "old-container" {
+		t.Fatalf("expected pinned target to remain visible, got %+v", target)
 	}
 }
 
