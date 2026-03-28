@@ -12,8 +12,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/acmore/okdev/internal/config"
 )
 
 func TestChecksumForArchive(t *testing.T) {
@@ -86,6 +89,82 @@ func TestHTTPGetUsesInjectableClient(t *testing.T) {
 	}
 	if string(got) != "ok" {
 		t.Fatalf("unexpected body %q", string(got))
+	}
+}
+
+func TestEnsureBinaryUsesPATHWhenAutoInstallDisabled(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "syncthing")
+	if err := os.WriteFile(binPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	origPath := os.Getenv("PATH")
+	if err := os.Setenv("PATH", dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Setenv("PATH", origPath) })
+
+	got, err := EnsureBinary(context.Background(), "", false)
+	if err != nil {
+		t.Fatalf("unexpected ensure binary error: %v", err)
+	}
+	if got != binPath {
+		t.Fatalf("unexpected binary path %q", got)
+	}
+}
+
+func TestEnsureBinaryFailsWithoutPATHWhenAutoInstallDisabled(t *testing.T) {
+	origPath := os.Getenv("PATH")
+	if err := os.Setenv("PATH", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Setenv("PATH", origPath) })
+
+	_, err := EnsureBinary(context.Background(), "", false)
+	if err == nil || !strings.Contains(err.Error(), "autoInstall is disabled") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEnsureBinaryUsesExistingInstalledBinary(t *testing.T) {
+	oldClient := installerHTTPClient
+	t.Cleanup(func() { installerHTTPClient = oldClient })
+	installerHTTPClient = fakeHTTPDoer{err: fmt.Errorf("unexpected download")}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	platform, _, err := platformArchiveNames(config.DefaultSyncthingVersion)
+	if err != nil {
+		t.Skipf("platform unsupported in test environment: %v", err)
+	}
+	binPath := filepath.Join(home, ".okdev", "bin", "syncthing", config.DefaultSyncthingVersion, platform, "syncthing")
+	if err := os.MkdirAll(filepath.Dir(binPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binPath, []byte("existing"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := EnsureBinary(context.Background(), "", true)
+	if err != nil {
+		t.Fatalf("unexpected ensure binary error: %v", err)
+	}
+	if got != binPath {
+		t.Fatalf("unexpected binary path %q", got)
+	}
+}
+
+func TestPlatformArchiveNames(t *testing.T) {
+	platform, names, err := platformArchiveNames("v1.2.3")
+	if err != nil {
+		t.Fatalf("unexpected platform error: %v", err)
+	}
+	if !strings.Contains(platform, runtime.GOOS) || !strings.Contains(platform, runtime.GOARCH) {
+		t.Fatalf("unexpected platform %q", platform)
+	}
+	if len(names) == 0 {
+		t.Fatal("expected at least one archive candidate")
 	}
 }
 
@@ -180,6 +259,38 @@ func TestExtractSyncthingBinaryFromZipToPath(t *testing.T) {
 	}
 	if info.Size() != 2<<20 {
 		t.Fatalf("unexpected extracted size %d", info.Size())
+	}
+}
+
+func TestExtractSyncthingBinaryFromFileToPathZip(t *testing.T) {
+	dir := t.TempDir()
+	archivePath := filepath.Join(dir, "syncthing.zip")
+	if err := writeZipArchive(archivePath, "syncthing-macos-arm64-v1.2.3/syncthing", bytes.Repeat([]byte("z"), 2<<20)); err != nil {
+		t.Fatal(err)
+	}
+
+	outPath := filepath.Join(dir, "syncthing")
+	if err := extractSyncthingBinaryFromFileToPath(archivePath, filepath.Base(archivePath), outPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExtractSyncthingBinaryFromFileToPathTarGz(t *testing.T) {
+	dir := t.TempDir()
+	archivePath := filepath.Join(dir, "syncthing.tar.gz")
+	if err := writeTarGzArchive(archivePath, "syncthing-linux-amd64-v1.2.3/syncthing", bytes.Repeat([]byte("x"), 2<<20)); err != nil {
+		t.Fatal(err)
+	}
+
+	outPath := filepath.Join(dir, "syncthing")
+	if err := extractSyncthingBinaryFromFileToPath(archivePath, filepath.Base(archivePath), outPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(outPath); err != nil {
+		t.Fatal(err)
 	}
 }
 

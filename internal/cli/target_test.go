@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -88,5 +89,49 @@ func TestResolveTargetCandidateAllowsPodSelectionWithoutAttachableLabels(t *test
 	}
 	if role != "" {
 		t.Fatalf("expected empty role, got %q", role)
+	}
+}
+
+func TestResolveTargetCandidateErrors(t *testing.T) {
+	view := sessionView{
+		Session: "sess1",
+		Pods: []kube.PodSummary{
+			{
+				Name: "master-0",
+				Labels: map[string]string{
+					"okdev.io/workload-role": "Master",
+					"okdev.io/attachable":    "true",
+				},
+			},
+		},
+	}
+
+	if _, _, err := resolveTargetCandidate(view, "", ""); err == nil || !strings.Contains(err.Error(), "empty role") {
+		t.Fatalf("expected empty role error, got %v", err)
+	}
+	if _, _, err := resolveTargetCandidate(view, "missing-pod", ""); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected pod not found error, got %v", err)
+	}
+	if _, _, err := resolveTargetCandidate(view, "", "worker"); err == nil || !strings.Contains(err.Error(), "no pods found") {
+		t.Fatalf("expected role not found error, got %v", err)
+	}
+}
+
+func TestSortedSessionPods(t *testing.T) {
+	now := time.Now()
+	pods := []kube.PodSummary{
+		{Name: "old-pending", Phase: "Pending", CreatedAt: now.Add(-time.Minute)},
+		{Name: "new-running", Phase: "Running", Ready: "1/1", CreatedAt: now},
+	}
+
+	got := sortedSessionPods(pods)
+	if len(got) != 2 {
+		t.Fatalf("unexpected pod count %d", len(got))
+	}
+	if got[0].Name != "new-running" {
+		t.Fatalf("expected running pod first, got %q", got[0].Name)
+	}
+	if pods[0].Name != "old-pending" {
+		t.Fatal("expected original slice to remain unchanged")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -229,4 +230,93 @@ func TestClientCacheKeyChangesWhenKubeconfigChanges(t *testing.T) {
 	if first == second {
 		t.Fatalf("expected cache key to change after kubeconfig update: %q", first)
 	}
+}
+
+func TestClientCacheKeyMarksMissingKubeconfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing-config")
+	t.Setenv("KUBECONFIG", path)
+
+	key, err := (&Client{}).cacheKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(key, path+":missing") {
+		t.Fatalf("expected missing kubeconfig marker, got %q", key)
+	}
+}
+
+func TestClientRestConfigUsesContextOverride(t *testing.T) {
+	kubeconfig := writeTestKubeconfig(t)
+	t.Setenv("KUBECONFIG", kubeconfig)
+
+	cfg, err := (&Client{Context: "dev"}).restConfig()
+	if err != nil {
+		t.Fatalf("unexpected rest config error: %v", err)
+	}
+	if cfg.Host != "https://127.0.0.1:6443" {
+		t.Fatalf("unexpected host %q", cfg.Host)
+	}
+	if cfg.Timeout != 0 {
+		t.Fatalf("expected timeout to be disabled, got %s", cfg.Timeout)
+	}
+}
+
+func TestClientClientsReusesCache(t *testing.T) {
+	kubeconfig := writeTestKubeconfig(t)
+	t.Setenv("KUBECONFIG", kubeconfig)
+
+	client := &Client{Context: "dev"}
+	cs1, dc1, mapper1, cfg1, err := client.clients()
+	if err != nil {
+		t.Fatalf("unexpected first clients error: %v", err)
+	}
+	cs2, dc2, mapper2, cfg2, err := client.clients()
+	if err != nil {
+		t.Fatalf("unexpected second clients error: %v", err)
+	}
+	if cs1 != cs2 || dc1 != dc2 || mapper1 != mapper2 || cfg1 != cfg2 {
+		t.Fatal("expected cached client instances to be reused")
+	}
+}
+
+func TestClientResourceExistsValidatesRequiredName(t *testing.T) {
+	exists, err := (&Client{}).ResourceExists(t.Context(), "default", "v1", "Pod", " ")
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if exists {
+		t.Fatal("expected false when validation fails")
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	if got := shellQuote("a'b"); got != `'a'\''b'` {
+		t.Fatalf("unexpected quoted string: %s", got)
+	}
+}
+
+func writeTestKubeconfig(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config")
+	content := `apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://127.0.0.1:6443
+  name: dev
+contexts:
+- context:
+    cluster: dev
+    user: dev
+  name: dev
+current-context: dev
+users:
+- name: dev
+  user:
+    token: fake
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
