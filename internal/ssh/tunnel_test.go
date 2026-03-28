@@ -137,6 +137,16 @@ func TestSortedPorts(t *testing.T) {
 	}
 }
 
+type closeWriteConn struct {
+	net.Conn
+	called bool
+}
+
+func (c *closeWriteConn) CloseWrite() error {
+	c.called = true
+	return nil
+}
+
 func TestTunnelManagerCallbacksAndWaitConnected(t *testing.T) {
 	tm := &TunnelManager{}
 	stateCh := make(chan ConnectionState, 1)
@@ -261,6 +271,62 @@ func TestContextDoneClosedWithoutManagerContext(t *testing.T) {
 	case <-tm.contextDone():
 	default:
 		t.Fatal("expected closed channel when no manager context exists")
+	}
+}
+
+func TestTunnelManagerIsConnected(t *testing.T) {
+	tm := &TunnelManager{}
+	if tm.IsConnected() {
+		t.Fatal("expected disconnected manager")
+	}
+	tm.client = &xssh.Client{}
+	if !tm.IsConnected() {
+		t.Fatal("expected connected manager")
+	}
+}
+
+func TestTunnelManagerWaitConnectedReturnsImmediatelyWhenConnected(t *testing.T) {
+	tm := &TunnelManager{client: &xssh.Client{}}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if !tm.WaitConnected(ctx) {
+		t.Fatal("expected immediate success for connected manager")
+	}
+}
+
+func TestCloseWriteUsesOptionalInterface(t *testing.T) {
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+	conn := &closeWriteConn{Conn: left}
+	closeWrite(conn)
+	if !conn.called {
+		t.Fatal("expected CloseWrite to be called when available")
+	}
+}
+
+func TestCloseWriteNoopWithoutInterface(t *testing.T) {
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+	closeWrite(left)
+}
+
+func TestTunnelManagerForceReconnectWithoutClientIsNoop(t *testing.T) {
+	tm := &TunnelManager{}
+	tm.ForceReconnect()
+	if tm.reconnecting {
+		t.Fatal("did not expect reconnect state without a client")
+	}
+}
+
+func TestTunnelManagerDisconnectClientIgnoresMismatchedClient(t *testing.T) {
+	current := &xssh.Client{}
+	other := &xssh.Client{}
+	tm := &TunnelManager{client: current}
+	tm.disconnectClient(other)
+	if tm.client != current {
+		t.Fatal("expected current client to remain unchanged")
 	}
 }
 
