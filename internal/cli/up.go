@@ -298,6 +298,11 @@ func upSetup(state *upState) error {
 	syncSummary := "disabled"
 	syncModeSymbol := ""
 	if state.command.cfg.Spec.Sync.Engine == "" || state.command.cfg.Spec.Sync.Engine == "syncthing" {
+		if reset, err := ensureSyncthingTargetSessionState(state.ctx, state.command.kube, state.command.namespace, state.command.sessionName, target.PodName); err != nil {
+			return fmt.Errorf("reconcile local syncthing session state: %w", err)
+		} else if reset {
+			state.ui.stepDone("sync state", "reset after target pod recreation")
+		}
 		if err := refreshSyncthingSessionProcesses(state.command.sessionName); err != nil {
 			return fmt.Errorf("refresh local syncthing session state: %w", err)
 		}

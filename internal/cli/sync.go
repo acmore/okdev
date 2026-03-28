@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,10 +13,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/logx"
 	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
 )
+
+type syncthingSessionTargetState struct {
+	PodName   string `json:"podName"`
+	CreatedAt string `json:"createdAt"`
+}
 
 func newSyncCmd(opts *Options) *cobra.Command {
 	var mode string
@@ -65,8 +73,19 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			stopMaintenance := startSessionMaintenance(opts, cc.namespace, cc.sessionName, cmd.OutOrStdout(), true)
 			defer stopMaintenance()
 
+			target, err := resolveTargetRef(cmd.Context(), opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
+			if err != nil {
+				return err
+			}
+			if _, err := ensureSyncthingTargetSessionState(cmd.Context(), cc.kube, cc.namespace, cc.sessionName, target.PodName); err != nil {
+				return err
+			}
+
 			if reset {
 				if err := resetSyncthingSessionState(cc.sessionName); err != nil {
+					return err
+				}
+				if err := saveSyncthingTargetSessionState(cc.sessionName, syncthingSessionTargetState{}); err != nil {
 					return err
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Reset local sync state for session %s\n", cc.sessionName)
@@ -237,6 +256,87 @@ func stopDetachedSyncthingSync(sessionName string) error {
 		return err
 	}
 	return nil
+}
+
+func syncthingTargetStatePath(sessionName string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".okdev", "syncthing", sessionName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "target.json"), nil
+}
+
+func loadSyncthingTargetSessionState(sessionName string) (syncthingSessionTargetState, error) {
+	path, err := syncthingTargetStatePath(sessionName)
+	if err != nil {
+		return syncthingSessionTargetState{}, err
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return syncthingSessionTargetState{}, nil
+		}
+		return syncthingSessionTargetState{}, err
+	}
+	var state syncthingSessionTargetState
+	if err := json.Unmarshal(b, &state); err != nil {
+		return syncthingSessionTargetState{}, err
+	}
+	return state, nil
+}
+
+func saveSyncthingTargetSessionState(sessionName string, state syncthingSessionTargetState) error {
+	path, err := syncthingTargetStatePath(sessionName)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(state.PodName) == "" && strings.TrimSpace(state.CreatedAt) == "" {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	b, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(b, '\n'), 0o644)
+}
+
+type podSummaryReader interface {
+	GetPodSummary(context.Context, string, string) (*kube.PodSummary, error)
+}
+
+func ensureSyncthingTargetSessionState(ctx context.Context, k podSummaryReader, namespace, sessionName, podName string) (bool, error) {
+	if strings.TrimSpace(sessionName) == "" || strings.TrimSpace(podName) == "" {
+		return false, nil
+	}
+	summary, err := k.GetPodSummary(ctx, namespace, podName)
+	if err != nil {
+		return false, fmt.Errorf("get target pod summary: %w", err)
+	}
+	current := syncthingSessionTargetState{
+		PodName:   strings.TrimSpace(summary.Name),
+		CreatedAt: summary.CreatedAt.UTC().Format(time.RFC3339Nano),
+	}
+	previous, err := loadSyncthingTargetSessionState(sessionName)
+	if err != nil {
+		return false, err
+	}
+	resetNeeded := previous.PodName != "" && (previous.PodName != current.PodName || previous.CreatedAt != current.CreatedAt)
+	if resetNeeded {
+		if err := resetSyncthingSessionState(sessionName); err != nil {
+			return false, err
+		}
+	}
+	if err := saveSyncthingTargetSessionState(sessionName, current); err != nil {
+		return false, err
+	}
+	return resetNeeded, nil
 }
 
 func readSyncthingPID(path string) (int, bool) {
