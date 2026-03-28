@@ -10,6 +10,7 @@ import (
 func newStatusCmd(opts *Options) *cobra.Command {
 	var all bool
 	var allUsers bool
+	var details bool
 
 	cmd := &cobra.Command{
 		Use:   "status [session]",
@@ -44,6 +45,17 @@ func newStatusCmd(opts *Options) *cobra.Command {
 				return nil
 			}
 			views := buildSessionViews(pods)
+			if details {
+				if all || len(views) != 1 {
+					return fmt.Errorf("--details requires a single session")
+				}
+				detail := gatherDetailedStatus(cmd.Context(), cc.cfg, cc.namespace, views[0], cc.kube)
+				if opts.Output == "json" {
+					return outputJSON(cmd.OutOrStdout(), detail)
+				}
+				printDetailedStatus(cmd.OutOrStdout(), detail)
+				return nil
+			}
 			if opts.Output == "json" {
 				type statusRow struct {
 					Session   string `json:"session"`
@@ -116,5 +128,6 @@ func newStatusCmd(opts *Options) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "Show all sessions in namespace")
 	cmd.Flags().BoolVar(&allUsers, "all-users", false, "Show sessions for all owners")
+	cmd.Flags().BoolVar(&details, "details", false, "Show detailed diagnostics for a single session")
 	return cmd
 }

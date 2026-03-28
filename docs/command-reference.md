@@ -17,7 +17,7 @@
 - `okdev validate`
 - `okdev up [--wait-timeout 10m] [--dry-run]`
 - `okdev down [--delete-pvc] [--dry-run]`
-- `okdev status [--all] [--all-users]`
+- `okdev status [--all] [--all-users] [--details]`
 - `okdev list [--all-namespaces] [--all-users]`
 - `okdev use <session>`
 - `okdev target show`
@@ -28,6 +28,12 @@
 - `okdev ports`
 - `okdev sync [--mode up|down|bi] [--foreground] [--reset] [--dry-run]`
 - `okdev prune [--ttl-hours 72] [--all-namespaces] [--all-users] [--include-pvc] [--dry-run]`
+
+### `okdev status [--all] [--all-users] [--details]`
+
+- Shows session status for the current or selected session.
+- `--details`: prints a single-session diagnostic view with target selection, pod list, managed SSH state, sync state, key local paths, and target pod details.
+- `--details` is only valid when exactly one session is selected.
 
 ### `okdev target show`
 
