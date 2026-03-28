@@ -884,6 +884,10 @@ func (c *Client) portForwardOnce(ctx context.Context, namespace, pod string, for
 }
 
 func (c *Client) CopyToPod(ctx context.Context, namespace, localPath, podName, remotePath string) error {
+	return c.CopyToPodInContainer(ctx, namespace, localPath, podName, "", remotePath)
+}
+
+func (c *Client) CopyToPodInContainer(ctx context.Context, namespace, localPath, podName, container, remotePath string) error {
 	cs, cfg, err := c.clientset()
 	if err != nil {
 		return err
@@ -894,7 +898,7 @@ func (c *Client) CopyToPod(ctx context.Context, namespace, localPath, podName, r
 	}
 	defer f.Close()
 	cmd := []string{"sh", "-lc", fmt.Sprintf("cat > %s", shellQuote(remotePath))}
-	return c.execStream(ctx, cs, cfg, namespace, podName, "", cmd, f, io.Discard, io.Discard, false)
+	return c.execStream(ctx, cs, cfg, namespace, podName, container, cmd, f, io.Discard, io.Discard, false)
 }
 
 func (c *Client) ExtractTarToPod(ctx context.Context, namespace, podName, remoteDir string, tarStream io.Reader) error {

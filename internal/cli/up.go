@@ -198,7 +198,7 @@ func upReconcile(state *upState, applyWorkload bool) error {
 		}
 	}
 	if reusedExisting {
-		state.ui.stepDone(state.runtime.Kind(), "reused existing")
+		state.ui.stepDone(state.runtime.Kind(), "reused existing workload (run `okdev down` then `okdev up` to recreate)")
 	} else {
 		state.ui.stepDone(state.runtime.Kind(), "applied")
 	}
@@ -212,10 +212,11 @@ func upDryRun(state *upState) error {
 	if state.flags.createMissingPVC {
 		fmt.Fprintf(state.cmd.OutOrStdout(), "- would create missing PVC references (size=%s storageClass=%q)\n", state.flags.missingPVCSize, state.flags.missingPVCStorageClass)
 	}
-	if state.runtime.Kind() == workload.TypePod || state.flags.reconcile {
+	if state.flags.reconcile {
 		fmt.Fprintf(state.cmd.OutOrStdout(), "- would reconcile %s/%s\n", state.runtime.Kind(), state.workloadName)
 	} else {
 		fmt.Fprintf(state.cmd.OutOrStdout(), "- would create or reuse %s/%s\n", state.runtime.Kind(), state.workloadName)
+		fmt.Fprintln(state.cmd.OutOrStdout(), "- if the workload already exists, okdev up will reuse it; run `okdev down` then `okdev up` to recreate it")
 	}
 	fmt.Fprintf(state.cmd.OutOrStdout(), "- would wait for workload readiness (timeout=%s)\n", state.flags.waitTimeout)
 	fmt.Fprintln(state.cmd.OutOrStdout(), "- would setup SSH config + managed SSH/port-forwards")
@@ -298,6 +299,11 @@ func upSetup(state *upState) error {
 	syncSummary := "disabled"
 	syncModeSymbol := ""
 	if state.command.cfg.Spec.Sync.Engine == "" || state.command.cfg.Spec.Sync.Engine == "syncthing" {
+		if reset, err := ensureSyncthingTargetSessionState(state.ctx, state.command.kube, state.command.namespace, state.command.sessionName, target.PodName); err != nil {
+			return fmt.Errorf("reconcile local syncthing session state: %w", err)
+		} else if reset {
+			state.ui.stepDone("sync state", "reset after target pod recreation")
+		}
 		if err := refreshSyncthingSessionProcesses(state.command.sessionName); err != nil {
 			return fmt.Errorf("refresh local syncthing session state: %w", err)
 		}
@@ -313,6 +319,21 @@ func upSetup(state *upState) error {
 		} else {
 			syncSummary = "already active (" + syncModeSymbol + ")"
 			state.ui.stepDone("sync", fmt.Sprintf("already active (%s), %s, logs: %s", syncModeSymbol, syncPathSummary, logPath))
+		}
+	}
+	if len(state.command.cfg.Spec.Agents) > 0 {
+		target, err = refreshTargetRef(state.ctx, state.opts, state.command.cfg, state.command.namespace, state.command.sessionName, state.command.kube, target)
+		if err != nil {
+			return fmt.Errorf("refresh target before agent install checks: %w", err)
+		}
+		state.ui.stepRun("agents", "checking configured CLIs and auth")
+		results := ensureConfiguredAgentsInstalled(state.ctx, state.command.kube, state.command.namespace, target.PodName, target.Container, state.command.cfg.Spec.Agents, state.ui.warnf)
+		authResults := ensureConfiguredAgentAuth(state.ctx, state.command.kube, state.command.namespace, target.PodName, target.Container, state.command.cfg.Spec.Session.Shareable, state.command.cfg.Spec.Agents, state.ui.warnf)
+		results = append(results, authResults...)
+		if len(results) == 0 {
+			state.ui.stepDone("agents", "no configured agents")
+		} else {
+			state.ui.stepDone("agents", strings.Join(results, ", "))
 		}
 	}
 
@@ -384,7 +405,7 @@ type workloadExistenceChecker interface {
 }
 
 func shouldReuseExistingWorkload(ctx context.Context, k workloadExistenceChecker, namespace string, runtime workload.Runtime, reconcile bool) (bool, error) {
-	if runtime.Kind() == workload.TypePod || reconcile {
+	if reconcile {
 		return false, nil
 	}
 	refProvider, ok := runtime.(workload.RefProvider)
@@ -689,6 +710,9 @@ type upUI struct {
 	active      *transientStatus
 }
 
+const ansiReset = "\033[0m"
+const ansiYellow = "\033[33m"
+
 func newUpUI(out, errOut io.Writer) *upUI {
 	return &upUI{
 		out:         out,
@@ -735,7 +759,7 @@ func (u *upUI) stepDone(step, detail string) {
 		fmt.Fprintf(u.out, "✔ %s\n", step)
 		return
 	}
-	fmt.Fprintf(u.out, "✔ %s: %s\n", step, detail)
+	fmt.Fprintf(u.out, "✔ %s: %s\n", step, u.formatStepDetail(step, detail))
 }
 
 func (u *upUI) stepMessage(step, detail string) string {
@@ -743,6 +767,16 @@ func (u *upUI) stepMessage(step, detail string) string {
 		return step
 	}
 	return step + ": " + detail
+}
+
+func (u *upUI) formatStepDetail(step, detail string) string {
+	if !u.interactive {
+		return detail
+	}
+	if step == workload.TypePod && strings.Contains(detail, "reused existing workload") {
+		return ansiYellow + detail + ansiReset
+	}
+	return detail
 }
 
 func (u *upUI) stopActive() {

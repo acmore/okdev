@@ -69,6 +69,31 @@ func TestSetDefaults(t *testing.T) {
 	}
 }
 
+func TestSetDefaultsAppliesAgentConventionDefaults(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Agents = []AgentSpec{
+		{Name: "claude-code"},
+		{Name: "codex"},
+		{Name: "gemini"},
+		{Name: "opencode"},
+	}
+
+	cfg.SetDefaults()
+
+	if cfg.Spec.Agents[0].Auth != nil {
+		t.Fatalf("expected no default claude auth config, got %#v", cfg.Spec.Agents[0].Auth)
+	}
+	if got := cfg.Spec.Agents[1].Auth.LocalPath; got != "~/.codex/auth.json" {
+		t.Fatalf("expected codex local path default, got %q", got)
+	}
+	if cfg.Spec.Agents[2].Auth != nil {
+		t.Fatalf("expected no default gemini auth config, got %#v", cfg.Spec.Agents[2].Auth)
+	}
+	if cfg.Spec.Agents[3].Auth != nil {
+		t.Fatalf("expected no default opencode auth config, got %#v", cfg.Spec.Agents[3].Auth)
+	}
+}
+
 func TestSetDefaultsAutoDetectPortsFalse(t *testing.T) {
 	cfg := &DevEnvironment{
 		APIVersion: "okdev.io/v1alpha1",
@@ -133,6 +158,42 @@ func TestValidateRejectsNegativeTTL(t *testing.T) {
 	cfg.Spec.Session.TTLHours = -1
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error")
+	}
+}
+
+func TestValidateRejectsUnknownAgent(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Agents = []AgentSpec{{Name: "cursor"}}
+	cfg.SetDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected unknown agent validation error")
+	}
+}
+
+func TestValidateRejectsDuplicateAgents(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Agents = []AgentSpec{{Name: "codex"}, {Name: "codex"}}
+	cfg.SetDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected duplicate agent validation error")
+	}
+}
+
+func TestValidateRejectsInvalidAgentEnv(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Agents = []AgentSpec{{Name: "claude-code", Auth: &AgentAuth{Env: "bad-name"}}}
+	cfg.SetDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid agent env validation error")
+	}
+}
+
+func TestValidateAcceptsAgentLocalPathWithTilde(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Agents = []AgentSpec{{Name: "codex", Auth: &AgentAuth{LocalPath: "~/.codex/auth.json"}}}
+	cfg.SetDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
 	}
 }
 

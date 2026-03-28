@@ -3,8 +3,12 @@ package config
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 
+	agentcatalog "github.com/acmore/okdev/internal/agent"
 	"github.com/acmore/okdev/internal/version"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -43,6 +47,7 @@ type DevEnvSpec struct {
 	Namespace   string           `yaml:"namespace"`
 	KubeContext string           `yaml:"kubeContext"`
 	Session     SessionSpec      `yaml:"session"`
+	Agents      []AgentSpec      `yaml:"agents,omitempty"`
 	Workload    WorkloadSpec     `yaml:"workload"`
 	Volumes     []corev1.Volume  `yaml:"volumes"`
 	Workspace   *LegacyWorkspace `yaml:"workspace,omitempty"`
@@ -146,6 +151,18 @@ type SSHSpec struct {
 	KeepAliveCountMax int    `yaml:"keepAliveCountMax"`
 }
 
+type AgentSpec struct {
+	Name string     `yaml:"name"`
+	Auth *AgentAuth `yaml:"auth,omitempty"`
+}
+
+type AgentAuth struct {
+	Env       string `yaml:"env,omitempty"`
+	LocalPath string `yaml:"localPath,omitempty"`
+}
+
+var agentEnvVarPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 func (d *DevEnvironment) SetDefaults() {
 	if d == nil {
 		return
@@ -193,6 +210,26 @@ func (d *DevEnvironment) SetDefaults() {
 	}
 	if d.Spec.Sidecar.Image == "" {
 		d.Spec.Sidecar.Image = DefaultSidecarImageForBinaryVersion(version.Version)
+	}
+	for i := range d.Spec.Agents {
+		name := strings.TrimSpace(d.Spec.Agents[i].Name)
+		d.Spec.Agents[i].Name = name
+		spec, ok := agentcatalog.Lookup(name)
+		if !ok {
+			continue
+		}
+		if d.Spec.Agents[i].Auth == nil && spec.DefaultAuthEnv == "" && spec.DefaultLocalPath == "" {
+			continue
+		}
+		if d.Spec.Agents[i].Auth == nil {
+			d.Spec.Agents[i].Auth = &AgentAuth{}
+		}
+		if d.Spec.Agents[i].Auth.Env == "" && spec.DefaultAuthEnv != "" {
+			d.Spec.Agents[i].Auth.Env = spec.DefaultAuthEnv
+		}
+		if d.Spec.Agents[i].Auth.LocalPath == "" && spec.DefaultLocalPath != "" {
+			d.Spec.Agents[i].Auth.LocalPath = spec.DefaultLocalPath
+		}
 	}
 }
 
@@ -282,6 +319,9 @@ func (d *DevEnvironment) Validate() error {
 	}
 	if strings.TrimSpace(d.Spec.Sidecar.Image) == "" {
 		return errors.New("spec.sidecar.image is required")
+	}
+	if err := validateAgents(d.Spec.Agents); err != nil {
+		return err
 	}
 	return nil
 }
@@ -411,4 +451,57 @@ func DefaultSidecarImageForBinaryVersion(binaryVersion string) string {
 		tag = DefaultSidecarImageFallback
 	}
 	return DefaultSidecarImageRepository + ":" + tag
+}
+
+func validateAgents(agents []AgentSpec) error {
+	seen := map[string]struct{}{}
+	for i, agent := range agents {
+		spec, ok := agentcatalog.Lookup(agent.Name)
+		if !ok {
+			return fmt.Errorf("spec.agents[%d].name must be one of %s, got %q", i, strings.Join(agentcatalog.SupportedNames(), ", "), agent.Name)
+		}
+		if _, exists := seen[spec.Name]; exists {
+			return fmt.Errorf("spec.agents has duplicate name %q", spec.Name)
+		}
+		seen[spec.Name] = struct{}{}
+		if agent.Auth == nil {
+			continue
+		}
+		if env := strings.TrimSpace(agent.Auth.Env); env != "" && !agentEnvVarPattern.MatchString(env) {
+			return fmt.Errorf("spec.agents[%d].auth.env must be a valid env var name, got %q", i, agent.Auth.Env)
+		}
+		if path := strings.TrimSpace(agent.Auth.LocalPath); path != "" {
+			if _, err := ResolveLocalAgentPath(path); err != nil {
+				return fmt.Errorf("spec.agents[%d].auth.localPath: %w", i, err)
+			}
+		}
+	}
+	return nil
+}
+
+func ResolveLocalAgentPath(path string) (string, error) {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return "", errors.New("path is empty")
+	}
+	switch {
+	case trimmed == "~":
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		return home, nil
+	case strings.HasPrefix(trimmed, "~/"):
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		return filepath.Join(home, strings.TrimPrefix(trimmed, "~/")), nil
+	default:
+		abs, err := filepath.Abs(trimmed)
+		if err != nil {
+			return "", fmt.Errorf("resolve absolute path: %w", err)
+		}
+		return abs, nil
+	}
 }

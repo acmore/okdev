@@ -48,6 +48,17 @@ func newDownCmd(opts *Options) *cobra.Command {
 				return nil
 			}
 
+			if len(cc.cfg.Spec.Agents) > 0 {
+				if target, err := resolveTargetRef(ctx, opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube); err != nil {
+					ui.warnf("failed to resolve target before agent auth cleanup: %v", err)
+				} else {
+					results := cleanupConfiguredAgentAuth(ctx, cc.kube, cc.namespace, target.PodName, target.Container, cc.cfg.Spec.Agents, ui.warnf)
+					if len(results) > 0 {
+						ui.stepDone("agent auth", strings.Join(results, ", "))
+					}
+				}
+			}
+
 			ui.section("Delete")
 			ui.stepRun(runtime.Kind(), runtime.WorkloadName())
 			if err := runtime.Delete(ctx, cc.kube, cc.namespace, true); err != nil {
