@@ -246,3 +246,120 @@ func TestInitReportsDetectedSTIgnorePreset(t *testing.T) {
 		t.Fatalf("expected detected preset in output, got %q", out.String())
 	}
 }
+
+func TestInitScaffoldsJobManifest(t *testing.T) {
+	tmp := t.TempDir()
+	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev.yaml")}
+	cmd := newInitCmd(opts)
+	cmd.SetArgs([]string{"--yes", "--workload", "job"})
+	cmd.SetIn(strings.NewReader(""))
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init execute: %v", err)
+	}
+
+	manifestPath := filepath.Join(tmp, ".okdev", "job.yaml")
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read job manifest: %v", err)
+	}
+	if !strings.Contains(string(raw), "kind: Job") {
+		t.Fatalf("expected job scaffold, got %q", string(raw))
+	}
+	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev.yaml"))
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(cfgRaw), "type: job") {
+		t.Fatalf("expected job workload block, got %q", string(cfgRaw))
+	}
+	if !strings.Contains(string(cfgRaw), "manifestPath: .okdev/job.yaml") {
+		t.Fatalf("expected job manifest path, got %q", string(cfgRaw))
+	}
+}
+
+func TestInitScaffoldsGenericDeploymentPreset(t *testing.T) {
+	tmp := t.TempDir()
+	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev.yaml")}
+	cmd := newInitCmd(opts)
+	cmd.SetArgs([]string{"--yes", "--workload", "generic", "--generic-preset", "deployment"})
+	cmd.SetIn(strings.NewReader(""))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init execute: %v", err)
+	}
+
+	manifestPath := filepath.Join(tmp, ".okdev", "deployment.yaml")
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read deployment manifest: %v", err)
+	}
+	if !strings.Contains(string(raw), "kind: Deployment") {
+		t.Fatalf("expected deployment scaffold, got %q", string(raw))
+	}
+	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev.yaml"))
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(cfgRaw), "type: generic") {
+		t.Fatalf("expected generic workload block, got %q", string(cfgRaw))
+	}
+	if !strings.Contains(string(cfgRaw), "manifestPath: .okdev/deployment.yaml") {
+		t.Fatalf("expected deployment manifest path, got %q", string(cfgRaw))
+	}
+}
+
+func TestInitRejectsGenericWithoutManifestPath(t *testing.T) {
+	tmp := t.TempDir()
+	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev.yaml")}
+	cmd := newInitCmd(opts)
+	cmd.SetArgs([]string{"--yes", "--workload", "generic", "--inject-path", "spec.template"})
+	cmd.SetIn(strings.NewReader(""))
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected generic manifest path error")
+	}
+	if !strings.Contains(err.Error(), "--manifest-path is required") {
+		t.Fatalf("unexpected error %v", err)
+	}
+}
+
+func TestInitRejectsCustomTemplateWithoutRenderedWorkload(t *testing.T) {
+	tmp := t.TempDir()
+	tmplPath := filepath.Join(tmp, "custom.yaml.tmpl")
+	if err := os.WriteFile(tmplPath, []byte(`apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: {{ .Name }}
+spec:
+  namespace: {{ .Namespace }}
+  sync:
+    engine: syncthing
+    paths:
+      - ".:/workspace"
+  ssh:
+    user: root
+  sidecar:
+    image: ghcr.io/acmore/okdev:edge
+`), 0o644); err != nil {
+		t.Fatalf("write template: %v", err)
+	}
+
+	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev.yaml")}
+	cmd := newInitCmd(opts)
+	cmd.SetArgs([]string{"--yes", "--template", tmplPath, "--workload", "job"})
+	cmd.SetIn(strings.NewReader(""))
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected custom workload validation error")
+	}
+	if !strings.Contains(err.Error(), "custom template must render spec.workload") {
+		t.Fatalf("unexpected error %v", err)
+	}
+}

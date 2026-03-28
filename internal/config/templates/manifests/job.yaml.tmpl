@@ -1,0 +1,18 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Name }}
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: dev
+          image: # TODO: replace with your image
+          command: ["sleep", "infinity"]
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+      volumes:
+        - name: workspace
+          emptyDir: {}

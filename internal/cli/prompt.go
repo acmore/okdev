@@ -13,12 +13,16 @@ import (
 
 // InitOverrides holds flag-provided values that skip prompting.
 type InitOverrides struct {
-	Name         string
-	Namespace    string
-	SidecarImage string
-	SyncLocal    string
-	SyncRemote   string
-	SSHUser      string
+	Name          string
+	Namespace     string
+	WorkloadType  string
+	ManifestPath  string
+	InjectPaths   []string
+	GenericPreset string
+	SidecarImage  string
+	SyncLocal     string
+	SyncRemote    string
+	SSHUser       string
 }
 
 // applyOverrides applies non-empty flag values to template vars.
@@ -28,6 +32,18 @@ func applyOverrides(vars *config.TemplateVars, o InitOverrides) {
 	}
 	if o.Namespace != "" {
 		vars.Namespace = o.Namespace
+	}
+	if o.WorkloadType != "" {
+		vars.WorkloadType = o.WorkloadType
+	}
+	if o.ManifestPath != "" {
+		vars.ManifestPath = o.ManifestPath
+	}
+	if len(o.InjectPaths) > 0 {
+		vars.InjectPaths = append([]string(nil), o.InjectPaths...)
+	}
+	if o.GenericPreset != "" {
+		vars.GenericPreset = o.GenericPreset
 	}
 	if o.SidecarImage != "" {
 		vars.SidecarImage = o.SidecarImage
@@ -53,12 +69,16 @@ func detectDefaultName() string {
 	return filepath.Base(wd)
 }
 
-func (o InitOverrides) hasName() bool         { return o.Name != "" }
-func (o InitOverrides) hasNamespace() bool    { return o.Namespace != "" }
-func (o InitOverrides) hasSidecarImage() bool { return o.SidecarImage != "" }
-func (o InitOverrides) hasSyncLocal() bool    { return o.SyncLocal != "" }
-func (o InitOverrides) hasSyncRemote() bool   { return o.SyncRemote != "" }
-func (o InitOverrides) hasSSHUser() bool      { return o.SSHUser != "" }
+func (o InitOverrides) hasName() bool          { return o.Name != "" }
+func (o InitOverrides) hasNamespace() bool     { return o.Namespace != "" }
+func (o InitOverrides) hasWorkloadType() bool  { return o.WorkloadType != "" }
+func (o InitOverrides) hasManifestPath() bool  { return o.ManifestPath != "" }
+func (o InitOverrides) hasInjectPaths() bool   { return len(o.InjectPaths) > 0 }
+func (o InitOverrides) hasGenericPreset() bool { return o.GenericPreset != "" }
+func (o InitOverrides) hasSidecarImage() bool  { return o.SidecarImage != "" }
+func (o InitOverrides) hasSyncLocal() bool     { return o.SyncLocal != "" }
+func (o InitOverrides) hasSyncRemote() bool    { return o.SyncRemote != "" }
+func (o InitOverrides) hasSSHUser() bool       { return o.SSHUser != "" }
 
 // promptInteractive runs interactive prompts to fill in template vars.
 // Only prompts for values not already set by flags.
@@ -93,6 +113,46 @@ func promptInteractive(vars *config.TemplateVars, overrides InitOverrides, in io
 		}
 		if input != "" {
 			vars.Namespace = input
+		}
+	}
+
+	if !overrides.hasWorkloadType() {
+		input, err := promptWorkloadType(reader, out, vars.WorkloadType)
+		if err != nil {
+			return err
+		}
+		if input != "" {
+			vars.WorkloadType = input
+		}
+	}
+
+	if vars.WorkloadType == "generic" && !overrides.hasGenericPreset() {
+		input, err := promptString(reader, out, "Generic scaffold preset (optional)", vars.GenericPreset)
+		if err != nil {
+			return err
+		}
+		if input != "" {
+			vars.GenericPreset = input
+		}
+	}
+
+	if vars.WorkloadType == "generic" && !overrides.hasManifestPath() {
+		input, err := promptString(reader, out, "Generic manifest path", vars.ManifestPath)
+		if err != nil {
+			return err
+		}
+		if input != "" {
+			vars.ManifestPath = input
+		}
+	}
+
+	if vars.WorkloadType == "generic" && !overrides.hasInjectPaths() {
+		input, err := promptString(reader, out, "Generic inject paths (comma-separated)", strings.Join(vars.InjectPaths, ","))
+		if err != nil {
+			return err
+		}
+		if input != "" {
+			vars.InjectPaths = splitCommaList(input)
 		}
 	}
 
@@ -150,4 +210,36 @@ func promptString(reader *bufio.Reader, out io.Writer, label, defaultVal string)
 		return "", fmt.Errorf("read %s: %w", strings.ToLower(label), err)
 	}
 	return strings.TrimSpace(line), nil
+}
+
+func promptWorkloadType(reader *bufio.Reader, out io.Writer, defaultVal string) (string, error) {
+	for {
+		input, err := promptString(reader, out, "Workload type", defaultVal)
+		if err != nil {
+			return "", err
+		}
+		if input == "" {
+			return defaultVal, nil
+		}
+		switch strings.TrimSpace(input) {
+		case "pod", "job", "pytorchjob", "generic":
+			return strings.TrimSpace(input), nil
+		default:
+			if _, err := fmt.Fprintf(out, "invalid workload type %q; choose pod, job, pytorchjob, or generic\n", input); err != nil {
+				return "", err
+			}
+		}
+	}
+}
+
+func splitCommaList(input string) []string {
+	parts := strings.Split(input, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
