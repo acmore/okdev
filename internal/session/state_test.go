@@ -125,3 +125,48 @@ func TestShutdownRequestLifecycle(t *testing.T) {
 		t.Fatal("expected shutdown request to be cleared")
 	}
 }
+
+func TestRepoStateKeyIncludesSanitizedBaseAndHash(t *testing.T) {
+	got := repoStateKey("/tmp/My Repo")
+	if !strings.HasPrefix(got, "my-repo-") {
+		t.Fatalf("unexpected repo state key prefix %q", got)
+	}
+	if len(got) <= len("my-repo-") {
+		t.Fatalf("expected hashed suffix in repo state key %q", got)
+	}
+}
+
+func TestSaveActiveSessionRemovesLegacyState(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	repo := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, ".okdev"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	origWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+	if err := os.Chdir(repo); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	resetRepoRootCache()
+
+	legacy := filepath.Join(repo, ".okdev", "active_session")
+	if err := os.WriteFile(legacy, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SaveActiveSession("new-session"); err != nil {
+		t.Fatalf("SaveActiveSession error: %v", err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy state to be removed, got err=%v", err)
+	}
+	got, err := LoadActiveSession()
+	if err != nil {
+		t.Fatalf("LoadActiveSession error: %v", err)
+	}
+	if got != "new-session" {
+		t.Fatalf("unexpected active session %q", got)
+	}
+}

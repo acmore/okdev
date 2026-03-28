@@ -67,6 +67,41 @@ func TestNormalizePodSpecDefaults(t *testing.T) {
 	}
 }
 
+func TestNormalizePodSpecDefaultsPreservesNonDefaultValues(t *testing.T) {
+	grace := int64(45)
+	spec := corev1.PodSpec{
+		TerminationGracePeriodSeconds: &grace,
+		DNSPolicy:                     corev1.DNSDefault,
+		SchedulerName:                 "custom-scheduler",
+		Containers: []corev1.Container{{
+			Name:                     "dev",
+			ImagePullPolicy:          corev1.PullAlways,
+			TerminationMessagePath:   "/tmp/custom",
+			TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
+			Ports:                    []corev1.ContainerPort{{ContainerPort: 53, Protocol: corev1.ProtocolUDP}},
+		}},
+	}
+
+	normalizePodSpecDefaults(&spec)
+
+	if spec.TerminationGracePeriodSeconds == nil || *spec.TerminationGracePeriodSeconds != grace {
+		t.Fatalf("expected custom termination grace period to be preserved: %+v", spec.TerminationGracePeriodSeconds)
+	}
+	if spec.DNSPolicy != corev1.DNSDefault {
+		t.Fatalf("expected custom DNS policy to be preserved, got %q", spec.DNSPolicy)
+	}
+	if spec.SchedulerName != "custom-scheduler" {
+		t.Fatalf("expected custom scheduler to be preserved, got %q", spec.SchedulerName)
+	}
+	container := spec.Containers[0]
+	if container.ImagePullPolicy != corev1.PullAlways || container.TerminationMessagePath != "/tmp/custom" || container.TerminationMessagePolicy != corev1.TerminationMessageFallbackToLogsOnError {
+		t.Fatalf("expected non-default container fields to be preserved: %+v", container)
+	}
+	if got := container.Ports[0].Protocol; got != corev1.ProtocolUDP {
+		t.Fatalf("expected non-default protocol to be preserved, got %q", got)
+	}
+}
+
 func TestNormalizeJobForApplyComparison(t *testing.T) {
 	parallelism := int32(1)
 	completions := int32(1)
@@ -230,6 +265,19 @@ func TestBuildPodLogOptions(t *testing.T) {
 	}
 }
 
+func TestBuildPodLogOptionsOmitsUnsetFields(t *testing.T) {
+	got := buildPodLogOptions(LogStreamOptions{})
+	if got.Container != "" {
+		t.Fatalf("expected empty container, got %q", got.Container)
+	}
+	if got.Follow || got.Previous {
+		t.Fatalf("expected follow/previous false, got %+v", got)
+	}
+	if got.TailLines != nil || got.SinceSeconds != nil {
+		t.Fatalf("expected nil optional fields, got %+v", got)
+	}
+}
+
 func TestTempDownloadPath(t *testing.T) {
 	dir := t.TempDir()
 	localPath := filepath.Join(dir, "artifact.txt")
@@ -271,6 +319,35 @@ func TestPodContainerNames(t *testing.T) {
 	want := []string{"dev", "okdev-sidecar"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected container names: got %#v want %#v", got, want)
+	}
+}
+
+func TestPreferredContainerFromExecErrReturnsEmptyWithoutChoices(t *testing.T) {
+	if got := preferredContainerFromExecErr(errors.New("permission denied")); got != "" {
+		t.Fatalf("expected empty preferred container, got %q", got)
+	}
+}
+
+func TestPodSummaryFromPodPrefersPodReason(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "ns",
+			Name:      "pod",
+		},
+		Status: corev1.PodStatus{
+			Phase:  corev1.PodFailed,
+			Reason: "Evicted",
+			ContainerStatuses: []corev1.ContainerStatus{
+				{Name: "dev", RestartCount: 2, State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}}},
+			},
+		},
+	}
+	summary := podSummaryFromPod(pod)
+	if summary.Reason != "Evicted" {
+		t.Fatalf("expected pod-level reason to win, got %+v", summary)
+	}
+	if summary.Restarts != 2 {
+		t.Fatalf("expected restart count, got %+v", summary)
 	}
 }
 

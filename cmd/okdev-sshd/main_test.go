@@ -129,6 +129,85 @@ func TestBuildInteractiveLoginScriptSkipsTmuxWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestBuildInteractiveLoginScriptWithoutWorkspaceOrTmux(t *testing.T) {
+	script := buildInteractiveLoginScript(
+		map[string]string{},
+		"/bin/sh",
+		"",
+		"",
+	)
+	if strings.Contains(script, "post-attach.sh") {
+		t.Fatalf("did not expect post-attach hook in script: %s", script)
+	}
+	if strings.Contains(script, "tmux") {
+		t.Fatalf("did not expect tmux bootstrap in script: %s", script)
+	}
+	if !strings.Contains(script, "exec '/bin/sh' -l") {
+		t.Fatalf("expected login shell exec: %s", script)
+	}
+}
+
+func TestDevTmuxBootstrapScriptIncludesFallbackWarning(t *testing.T) {
+	script := devTmuxBootstrapScript()
+	for _, want := range []string{"xterm-ghostty", "tmux", "warning: tmux not available"} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("expected tmux bootstrap script to contain %q: %s", want, script)
+		}
+	}
+}
+
+type fakeSessionEnv struct {
+	ssh.Session
+	env []string
+}
+
+func (s fakeSessionEnv) Environ() []string { return s.env }
+
+type fakeSessionCmd struct {
+	ssh.Session
+	raw string
+	env []string
+}
+
+func (s fakeSessionCmd) RawCommand() string { return s.raw }
+func (s fakeSessionCmd) Environ() []string  { return s.env }
+
+func TestSessionEnvMap(t *testing.T) {
+	env := sessionEnvMap(fakeSessionEnv{env: []string{
+		"FOO=bar",
+		"EMPTY=",
+		"INVALID",
+	}})
+	if env["FOO"] != "bar" {
+		t.Fatalf("expected FOO env, got %#v", env)
+	}
+	if v, ok := env["EMPTY"]; !ok || v != "" {
+		t.Fatalf("expected EMPTY env, got %#v", env)
+	}
+	if _, ok := env["INVALID"]; ok {
+		t.Fatalf("did not expect malformed env entry, got %#v", env)
+	}
+}
+
+func TestBuildCmdInteractiveShell(t *testing.T) {
+	t.Setenv("OKDEV_WORKSPACE", "")
+	t.Setenv("OKDEV_TMUX", "")
+	cmd := buildCmd(fakeSessionCmd{}, "/bin/sh")
+	if got := strings.Join(cmd.Args, " "); got != "/bin/sh -lc exec '/bin/sh' -l" {
+		t.Fatalf("unexpected interactive args: %q", got)
+	}
+}
+
+func TestBuildCmdRawCommandUsesLoginShellCommandMode(t *testing.T) {
+	cmd := buildCmd(fakeSessionCmd{raw: "echo hi", env: []string{"A=B"}}, "/bin/bash")
+	if got := strings.Join(cmd.Args, " "); got != "/bin/bash -lc echo hi" {
+		t.Fatalf("unexpected raw command args: %q", got)
+	}
+	if !contains(cmd.Env, "A=B") {
+		t.Fatalf("expected session env to be appended: %#v", cmd.Env)
+	}
+}
+
 func TestShellQuoteEscapesSingleQuotes(t *testing.T) {
 	if got := shellQuote("a'b"); got != `'a'"'"'b'` {
 		t.Fatalf("unexpected quoted string: %s", got)
@@ -155,4 +234,24 @@ func TestExitStatus(t *testing.T) {
 	if got := exitStatus(err); got != 7 {
 		t.Fatalf("unexpected exit status: got %d want 7", got)
 	}
+}
+
+func TestExitStatusSignalReturnsNonZero(t *testing.T) {
+	cmd := exec.Command("/bin/sh", "-c", "kill -TERM $$")
+	err := cmd.Run()
+	if err == nil {
+		t.Fatal("expected signal exit error")
+	}
+	if got := exitStatus(err); got == 0 {
+		t.Fatalf("expected signal exit to be non-zero, got %d", got)
+	}
+}
+
+func contains(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
