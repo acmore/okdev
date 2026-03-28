@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"text/template"
 	"time"
@@ -17,16 +19,12 @@ type templateHTTPDoer interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
-//go:embed templates/*.yaml.tmpl
+//go:embed templates/*.yaml.tmpl templates/manifests/*.yaml.tmpl
 var embeddedTemplates embed.FS
 
 // builtinNames maps template names to their embedded file paths.
 var builtinNames = map[string]string{
-	"basic":           "templates/basic.yaml.tmpl",
-	"gpu":             "templates/gpu.yaml.tmpl",
-	"llm-gpu":         "templates/gpu.yaml.tmpl",
-	"llm-stack":       "templates/llm-stack.yaml.tmpl",
-	"multi-container": "templates/llm-stack.yaml.tmpl",
+	"basic": "templates/basic.yaml.tmpl",
 }
 
 var stignorePresets = map[string][]string{
@@ -69,11 +67,7 @@ var stignorePresets = map[string][]string{
 }
 
 var builtinTemplateStignorePreset = map[string]string{
-	"basic":           "default",
-	"gpu":             "default",
-	"llm-gpu":         "default",
-	"llm-stack":       "default",
-	"multi-container": "default",
+	"basic": "default",
 }
 
 var templateHTTPClient templateHTTPDoer = &http.Client{Timeout: 30 * time.Second}
@@ -88,8 +82,11 @@ type TemplateVars struct {
 	SyncRemote       string
 	SSHUser          string
 	Ports            []PortVar
-	BaseImage        string
-	GPUCount         string
+	WorkloadType     string
+	ManifestPath     string
+	InjectPaths      []string
+	AttachContainer  string
+	GenericPreset    string
 	TTLHours         int
 }
 
@@ -109,8 +106,7 @@ func NewTemplateVars() *TemplateVars {
 		SyncLocal:        ".",
 		SyncRemote:       "/workspace",
 		SSHUser:          "root",
-		BaseImage:        "nvidia/cuda:12.4.1-devel-ubuntu22.04",
-		GPUCount:         "1",
+		WorkloadType:     "pod",
 		TTLHours:         72,
 	}
 }
@@ -122,6 +118,10 @@ func ResolveTemplate(ref string) (string, error) {
 
 // ResolveTemplateContext loads raw template content from a built-in name, file path, or URL.
 func ResolveTemplateContext(ctx context.Context, ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		ref = "basic"
+	}
 	hasPathIndicator := strings.Contains(ref, "/") ||
 		strings.HasSuffix(ref, ".yaml") ||
 		strings.HasSuffix(ref, ".yml") ||
@@ -130,6 +130,12 @@ func ResolveTemplateContext(ctx context.Context, ref string) (string, error) {
 	if hasPathIndicator {
 		if content, err := os.ReadFile(ref); err == nil {
 			return string(content), nil
+		}
+	}
+
+	if !hasPathIndicator {
+		if content, err := resolveUserTemplate(ref); err == nil {
+			return content, nil
 		}
 	}
 
@@ -199,15 +205,39 @@ func RenderTemplateContext(ctx context.Context, ref string, vars *TemplateVars) 
 
 // BuiltinTemplateNames returns the list of available built-in template names.
 func BuiltinTemplateNames() []string {
-	seen := map[string]bool{}
 	var names []string
 	for name := range builtinNames {
-		if !seen[name] {
-			seen[name] = true
-			names = append(names, name)
-		}
+		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
+}
+
+func UserTemplateNames() ([]string, error) {
+	dir, err := userTemplateDir()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read user template registry: %w", err)
+	}
+	var names []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".yaml.tmpl") {
+			continue
+		}
+		names = append(names, strings.TrimSuffix(name, ".yaml.tmpl"))
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 func BuiltinTemplateLocalIgnores(ref string) []string {
@@ -226,4 +256,45 @@ func STIgnorePreset(name string) []string {
 	out := make([]string, len(patterns))
 	copy(out, patterns)
 	return out
+}
+
+func userTemplateDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user home for template registry: %w", err)
+	}
+	return filepath.Join(home, ".okdev", "templates"), nil
+}
+
+func resolveUserTemplate(name string) (string, error) {
+	dir, err := userTemplateDir()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, name+".yaml.tmpl")
+	rel, err := filepath.Rel(dir, path)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("template name %q resolves outside registry", name)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return string(content), nil
+}
+
+func RenderEmbeddedTemplate(path string, vars *TemplateVars) (string, error) {
+	raw, err := embeddedTemplates.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read embedded template %q: %w", path, err)
+	}
+	tmpl, err := template.New(filepath.Base(path)).Parse(string(raw))
+	if err != nil {
+		return "", fmt.Errorf("parse embedded template %q: %w", path, err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, vars); err != nil {
+		return "", fmt.Errorf("render embedded template %q: %w", path, err)
+	}
+	return buf.String(), nil
 }

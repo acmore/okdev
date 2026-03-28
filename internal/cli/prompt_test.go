@@ -65,8 +65,9 @@ func TestPromptInteractiveRequiresTTYUnlessYes(t *testing.T) {
 func TestPromptInteractiveSkipsOverriddenFields(t *testing.T) {
 	vars := config.NewTemplateVars()
 	overrides := InitOverrides{
-		Name:      "flag-name",
-		Namespace: "flag-ns",
+		Name:         "flag-name",
+		Namespace:    "flag-ns",
+		WorkloadType: "pod",
 	}
 	applyOverrides(vars, overrides)
 
