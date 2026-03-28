@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/acmore/okdev/internal/config"
+	"github.com/acmore/okdev/internal/kube"
 )
 
 func TestLoadOptionalConfigForListAnnouncesAndStops(t *testing.T) {
@@ -51,5 +52,20 @@ spec:
 	}
 	if !doneSuccess {
 		t.Fatal("expected announce completion callback to report success")
+	}
+}
+
+func TestSessionNameFromPodSummary(t *testing.T) {
+	if got := sessionNameFromPodSummary(kube.PodSummary{
+		Name:   "okdev-demo",
+		Labels: map[string]string{"okdev.io/session": "from-label"},
+	}); got != "from-label" {
+		t.Fatalf("expected label session name, got %q", got)
+	}
+	if got := sessionNameFromPodSummary(kube.PodSummary{Name: "okdev-demo"}); got != "demo" {
+		t.Fatalf("expected okdev- prefix to be trimmed, got %q", got)
+	}
+	if got := sessionNameFromPodSummary(kube.PodSummary{Name: "plain"}); got != "plain" {
+		t.Fatalf("expected plain pod name, got %q", got)
 	}
 }

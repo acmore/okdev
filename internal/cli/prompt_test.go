@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"strings"
 	"testing"
@@ -97,5 +98,34 @@ func TestPromptInteractiveSkipsOverriddenFields(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "Environment name") || strings.Contains(out.String(), "Namespace") {
 		t.Fatalf("expected overridden fields to be skipped, got prompts:\n%s", out.String())
+	}
+}
+
+func TestSplitCommaList(t *testing.T) {
+	got := splitCommaList(" a, ,b ,, c ")
+	want := []string{"a", "b", "c"}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected split result %#v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("unexpected split result %#v", got)
+		}
+	}
+}
+
+func TestPromptWorkloadTypeRejectsInvalidThenAcceptsValid(t *testing.T) {
+	in := strings.NewReader("deployment\njob\n")
+	reader := bufio.NewReader(in)
+	var out bytes.Buffer
+	got, err := promptWorkloadType(reader, &out, "pod")
+	if err != nil {
+		t.Fatalf("promptWorkloadType error: %v", err)
+	}
+	if got != "job" {
+		t.Fatalf("expected job, got %q", got)
+	}
+	if !strings.Contains(out.String(), "invalid workload type") {
+		t.Fatalf("expected invalid-workload warning, got %q", out.String())
 	}
 }
