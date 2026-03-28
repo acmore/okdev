@@ -238,3 +238,9 @@ func TestReportSyncthingTargetReset(t *testing.T) {
 		t.Fatalf("expected no output when reset is false, got %q", out.String())
 	}
 }
+
+func TestWaitForDetachedSyncthingStartRejectsDeadProcess(t *testing.T) {
+	if err := waitForDetachedSyncthingStart(999999, 10*time.Millisecond); err == nil {
+		t.Fatal("expected dead process to be rejected")
+	}
+}

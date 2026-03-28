@@ -13,6 +13,25 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type pruneAction struct {
+	Session   string `json:"session"`
+	Namespace string `json:"namespace"`
+	Reason    string `json:"reason"`
+	DeletePVC bool   `json:"deletePVC"`
+	DryRun    bool   `json:"dryRun"`
+}
+
+type pruneOutput struct {
+	DryRun        bool          `json:"dryRun"`
+	TTLHours      int           `json:"ttlHours"`
+	IncludePVC    bool          `json:"includePVC"`
+	AllNamespaces bool          `json:"allNamespaces"`
+	AllUsers      bool          `json:"allUsers"`
+	Candidates    int           `json:"candidates"`
+	Deleted       int           `json:"deleted"`
+	Actions       []pruneAction `json:"actions"`
+}
+
 func newPruneCmd(opts *Options) *cobra.Command {
 	var allNamespaces bool
 	var allUsers bool
@@ -50,6 +69,7 @@ func newPruneCmd(opts *Options) *cobra.Command {
 			now := time.Now()
 			deleted := 0
 			candidates := 0
+			actions := make([]pruneAction, 0)
 			for _, view := range views {
 				targetPod, ok := sessionTargetPod(view)
 				if !ok || targetPod.CreatedAt.IsZero() {
@@ -82,10 +102,19 @@ func newPruneCmd(opts *Options) *cobra.Command {
 				} else if idleReason != "" && ttlExpired {
 					reason = reason + "," + idleReason
 				}
+				actions = append(actions, pruneAction{
+					Session:   sessionName,
+					Namespace: view.Namespace,
+					Reason:    reason,
+					DeletePVC: includePVC,
+					DryRun:    dryRun,
+				})
 				if dryRun {
-					fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: would prune session %s in namespace %s (%s)\n", sessionName, view.Namespace, reason)
-					if includePVC {
-						fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: would delete pvc/okdev-%s-workspace in namespace %s\n", sessionName, view.Namespace)
+					if opts.Output != "json" {
+						fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: would prune session %s in namespace %s (%s)\n", sessionName, view.Namespace, reason)
+						if includePVC {
+							fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: would delete pvc/okdev-%s-workspace in namespace %s\n", sessionName, view.Namespace)
+						}
 					}
 					continue
 				}
@@ -97,8 +126,22 @@ func newPruneCmd(opts *Options) *cobra.Command {
 						slog.Warn("failed to delete PVC during prune", "pvc", "okdev-"+sessionName+"-workspace", "namespace", view.Namespace, "error", err)
 					}
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Pruned session %s in namespace %s (%s)\n", sessionName, view.Namespace, reason)
+				if opts.Output != "json" {
+					fmt.Fprintf(cmd.OutOrStdout(), "Pruned session %s in namespace %s (%s)\n", sessionName, view.Namespace, reason)
+				}
 				deleted++
+			}
+			if opts.Output == "json" {
+				return outputJSON(cmd.OutOrStdout(), pruneOutput{
+					DryRun:        dryRun,
+					TTLHours:      ttlHours,
+					IncludePVC:    includePVC,
+					AllNamespaces: allNamespaces,
+					AllUsers:      allUsers,
+					Candidates:    candidates,
+					Deleted:       deleted,
+					Actions:       actions,
+				})
 			}
 			if dryRun {
 				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: prune candidate count=%d\n", candidates)

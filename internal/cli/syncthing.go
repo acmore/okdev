@@ -224,7 +224,7 @@ func writeRemoteSTIgnoreInPod(ctx context.Context, k interface {
 	if ignorePath == "/.stignore" || strings.TrimSpace(ignorePath) == "" {
 		return fmt.Errorf("invalid remote sync path %q for remoteExclude", remotePath)
 	}
-	cmd := fmt.Sprintf("cat > %s <<'OKDEV_STIGNORE_EOF'\n%sOKDEV_STIGNORE_EOF\n", syncengine.ShellEscape(ignorePath), content)
+	cmd := fmt.Sprintf("printf %%s %s > %s", syncengine.ShellEscape(content), syncengine.ShellEscape(ignorePath))
 	_, err := execInSyncthingContainer(ctx, k, namespace, pod, cmd)
 	return err
 }

@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/acmore/okdev/internal/kube"
+	"github.com/acmore/okdev/internal/workload"
 )
 
 func TestResolveTargetCandidateByRolePrefersEligiblePod(t *testing.T) {
@@ -133,5 +135,44 @@ func TestSortedSessionPods(t *testing.T) {
 	}
 	if pods[0].Name != "old-pending" {
 		t.Fatal("expected original slice to remain unchanged")
+	}
+}
+
+func TestBuildTargetShowOutput(t *testing.T) {
+	view := sessionView{
+		Session:      "sess1",
+		WorkloadType: "pod",
+		Pods: []kube.PodSummary{
+			{
+				Name:  "pod-a",
+				Phase: "Running",
+				Ready: "1/1",
+				Labels: map[string]string{
+					"okdev.io/workload-role": "worker",
+					"okdev.io/attachable":    "true",
+				},
+			},
+		},
+	}
+	target := workload.TargetRef{PodName: "pod-a", Container: "dev", Role: "worker"}
+
+	got := buildTargetShowOutput(view, target)
+	want := targetShowOutput{
+		Session:   "sess1",
+		Workload:  "pod",
+		Target:    "pod-a",
+		Container: "dev",
+		Role:      "worker",
+		Pods: []targetShowPod{{
+			Selected:   true,
+			Pod:        "pod-a",
+			Role:       "worker",
+			Attachable: "true",
+			Phase:      "Running",
+			Ready:      "1/1",
+		}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpected target show output:\n got: %#v\nwant: %#v", got, want)
 	}
 }
