@@ -8,6 +8,7 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -222,6 +223,18 @@ func TestTunnelManagerResolveReconnectTargetUnavailable(t *testing.T) {
 	}
 }
 
+func TestReconnectWithBackoffHonorsContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := reconnectWithBackoff(ctx, func() error {
+		t.Fatal("connectFn should not be called when context is already canceled")
+		return nil
+	}, 3, 5*time.Millisecond, 20*time.Millisecond)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
+	}
+}
+
 func TestTunnelManagerCloseWakesWaitersAndClosesListeners(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -256,6 +269,35 @@ func TestTunnelManagerCloseWakesWaitersAndClosesListeners(t *testing.T) {
 	}
 }
 
+type errListener struct {
+	net.Listener
+	closeErr error
+	closed   bool
+}
+
+func (l *errListener) Close() error {
+	l.closed = true
+	return l.closeErr
+}
+
+func TestTunnelManagerCloseReturnsListenerError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ln := &errListener{closeErr: errors.New("close failed")}
+	tm := &TunnelManager{
+		ctx:       ctx,
+		cancel:    cancel,
+		listeners: map[int]net.Listener{1: ln},
+	}
+	err := tm.Close()
+	if err == nil || !strings.Contains(err.Error(), "close failed") {
+		t.Fatalf("expected listener close error, got %v", err)
+	}
+	if !ln.closed {
+		t.Fatal("expected listener to be closed")
+	}
+}
+
 func TestTunnelManagerManagerContextDefaultsToBackground(t *testing.T) {
 	tm := &TunnelManager{}
 	select {
@@ -271,6 +313,17 @@ func TestContextDoneClosedWithoutManagerContext(t *testing.T) {
 	case <-tm.contextDone():
 	default:
 		t.Fatal("expected closed channel when no manager context exists")
+	}
+}
+
+func TestContextDoneUsesManagerContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	tm := &TunnelManager{ctx: ctx}
+	cancel()
+	select {
+	case <-tm.contextDone():
+	case <-time.After(time.Second):
+		t.Fatal("expected manager context done channel to close")
 	}
 }
 
@@ -384,4 +437,21 @@ func TestCopyBothWaysCopiesTraffic(t *testing.T) {
 	_ = leftPeer.Close()
 	_ = rightPeer.Close()
 	wg.Wait()
+}
+
+func TestParseSSListeningPortsSkipsInvalidLines(t *testing.T) {
+	raw := `
+garbage
+LISTEN 0 1 missing
+LISTEN 0 4096 127.0.0.1:notaport 0.0.0.0:*
+`
+	if got := parseSSListeningPorts(raw); len(got) != 0 {
+		t.Fatalf("expected no parsed ports, got %v", got)
+	}
+}
+
+func TestSortedPortsEmpty(t *testing.T) {
+	if got := sortedPorts(nil); len(got) != 0 {
+		t.Fatalf("expected empty result, got %v", got)
+	}
 }
