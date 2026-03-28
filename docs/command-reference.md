@@ -23,6 +23,7 @@
 - `okdev target show`
 - `okdev target set [--pod <name> | --role <role>]`
 - `okdev connect [--shell /bin/bash] [--cmd "..."] [--no-tty]`
+- `okdev logs [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
 - `okdev ssh [--setup-key] [--user root] [--cmd "..."] [--no-tmux]`
 - `okdev ports`
 - `okdev sync [--mode up|down|bi] [--foreground] [--reset] [--dry-run]`
@@ -61,6 +62,15 @@
 - Targets `okdev-sshd` in the `dev` container.
 - Maintains managed host alias in `~/.ssh/config` as `okdev-<session>`.
 - `--no-tmux`: bypass tmux for this SSH session when tmux mode is enabled.
+
+### `okdev logs [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
+
+- Streams logs from the resolved target pod for the current session.
+- Defaults to the pinned target container when `--container` is omitted.
+- `--all`: streams all regular containers in the target pod and prefixes each line with `[container]`.
+- `--follow`: follows logs by default; use `--follow=false` for a bounded dump.
+- `--tail` and `--since` mirror the usual Kubernetes log filters.
+- `--previous`: reads the previous instance logs for the selected container(s).
 
 ### `okdev ports`
 

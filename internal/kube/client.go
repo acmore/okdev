@@ -79,6 +79,14 @@ type PodReadinessProgress struct {
 	Reason          string
 }
 
+type LogStreamOptions struct {
+	Container string
+	Follow    bool
+	Previous  bool
+	TailLines *int64
+	Since     time.Duration
+}
+
 func (c *Client) restConfig() (*rest.Config, error) {
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	overrides := &clientcmd.ConfigOverrides{}
@@ -956,6 +964,32 @@ func (c *Client) DescribePod(ctx context.Context, namespace, pod string) (string
 	return b.String(), nil
 }
 
+func (c *Client) PodContainerNames(ctx context.Context, namespace, pod string) ([]string, error) {
+	cs, _, err := c.clientset()
+	if err != nil {
+		return nil, err
+	}
+	p, err := cs.CoreV1().Pods(namespace).Get(ctx, pod, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return podContainerNames(p), nil
+}
+
+func (c *Client) StreamPodLogs(ctx context.Context, namespace, pod string, opts LogStreamOptions, stdout io.Writer) error {
+	cs, _, err := c.clientset()
+	if err != nil {
+		return err
+	}
+	stream, err := cs.CoreV1().Pods(namespace).GetLogs(pod, buildPodLogOptions(opts)).Stream(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stream.Close() }()
+	_, err = io.Copy(stdout, stream)
+	return err
+}
+
 func (c *Client) ExecSh(ctx context.Context, namespace, pod string, script string) ([]byte, error) {
 	return c.execCapture(ctx, namespace, pod, "", []string{"sh", "-lc", script})
 }
@@ -995,6 +1029,37 @@ func (c *Client) execCapture(ctx context.Context, namespace, pod, container stri
 		return nil, err
 	}
 	return out.Bytes(), nil
+}
+
+func buildPodLogOptions(opts LogStreamOptions) *corev1.PodLogOptions {
+	logOpts := &corev1.PodLogOptions{
+		Container: strings.TrimSpace(opts.Container),
+		Follow:    opts.Follow,
+		Previous:  opts.Previous,
+		TailLines: opts.TailLines,
+	}
+	if opts.Since > 0 {
+		sinceSeconds := int64(opts.Since / time.Second)
+		if sinceSeconds < 1 {
+			sinceSeconds = 1
+		}
+		logOpts.SinceSeconds = &sinceSeconds
+	}
+	return logOpts
+}
+
+func podContainerNames(p *corev1.Pod) []string {
+	if p == nil {
+		return nil
+	}
+	names := make([]string, 0, len(p.Spec.Containers))
+	for _, container := range p.Spec.Containers {
+		name := strings.TrimSpace(container.Name)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 func (c *Client) execStream(ctx context.Context, cs *kubernetes.Clientset, cfg *rest.Config, namespace, pod, container string, command []string, stdin io.Reader, stdout, stderr io.Writer, tty bool) error {
