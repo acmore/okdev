@@ -118,6 +118,7 @@ func newDownCmd(opts *Options) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&deletePVC, "delete-pvc", false, "Delete workspace PVC for this session")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview actions without deleting resources")
+	_ = cmd.Flags().MarkDeprecated("delete-pvc", "PVC lifecycle is no longer managed; delete PVCs manually if needed")
 	return cmd
 }
 

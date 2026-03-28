@@ -771,6 +771,9 @@ func (u *upUI) stepMessage(step, detail string) string {
 
 func (u *upUI) formatStepDetail(step, detail string) string {
 	if !u.interactive {
+		if step == workload.TypePod && strings.Contains(detail, "reused existing workload") {
+			return "[NOTE] " + detail
+		}
 		return detail
 	}
 	if step == workload.TypePod && strings.Contains(detail, "reused existing workload") {

@@ -574,3 +574,12 @@ func TestConfigureSyncthingPeerCompressionAlways(t *testing.T) {
 		t.Fatalf("expected compression=always, got %q", got)
 	}
 }
+
+func TestSyncthingServeHomePatternEscapesRegexMeta(t *testing.T) {
+	home := `/tmp/okdev/sync.[test]+(demo)?`
+	got := syncthingServeHomePattern(home)
+	want := `serve --home /tmp/okdev/sync\.\[test\]\+\(demo\)\?`
+	if got != want {
+		t.Fatalf("syncthingServeHomePattern() = %q, want %q", got, want)
+	}
+}
