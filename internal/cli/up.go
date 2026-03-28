@@ -25,14 +25,14 @@ import (
 const upDefaultSyncMode = "bi"
 
 type upOptions struct {
-	waitTimeout             time.Duration
-	dryRun                  bool
-	reconcile               bool
-	tmux                    bool
-	noTmux                  bool
-	createMissingPVC        bool
-	missingPVCSize          string
-	missingPVCStorageClass  string
+	waitTimeout            time.Duration
+	dryRun                 bool
+	reconcile              bool
+	tmux                   bool
+	noTmux                 bool
+	createMissingPVC       bool
+	missingPVCSize         string
+	missingPVCStorageClass string
 }
 
 type upState struct {
