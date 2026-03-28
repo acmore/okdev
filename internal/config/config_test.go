@@ -49,6 +49,9 @@ func TestSetDefaults(t *testing.T) {
 	if cfg.Spec.Sync.Syncthing.RelaysEnabled {
 		t.Fatal("expected syncthing relays to default disabled")
 	}
+	if cfg.Spec.Sync.Syncthing.Compression {
+		t.Fatal("expected syncthing compression to default disabled")
+	}
 	if cfg.Spec.SSH.User != "root" {
 		t.Fatalf("ssh user default not set: %+v", cfg.Spec.SSH)
 	}
@@ -113,6 +116,15 @@ func TestValidateRejectsNegativeSyncthingRescanInterval(t *testing.T) {
 	cfg.Spec.Sync.Syncthing.RescanIntervalSeconds = -1
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error")
+	}
+}
+
+func TestSetDefaultsPreservesExplicitSyncthingCompression(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Sync.Syncthing.Compression = true
+	cfg.SetDefaults()
+	if !cfg.Spec.Sync.Syncthing.Compression {
+		t.Fatal("expected explicit syncthing compression to be preserved")
 	}
 }
 

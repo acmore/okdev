@@ -167,6 +167,7 @@ spec:
 | `syncthing.image` | `string` | `ghcr.io/acmore/okdev:<version>` | Sidecar image (fallback: `edge`) |
 | `syncthing.rescanIntervalSeconds` | `int` | `300` | Fallback full rescan interval; `0` disables periodic rescans |
 | `syncthing.relaysEnabled` | `bool` | `false` | Allow Syncthing relay fallback when direct connectivity is unavailable |
+| `syncthing.compression` | `bool` | `false` | Use Syncthing `always` compression for peer connections instead of the default `metadata` mode |
 
 **Validation:** `engine` must be `syncthing`; each `paths[]` entry must be `local:remote`.
 
@@ -181,6 +182,7 @@ spec:
       autoInstall: true
       rescanIntervalSeconds: 300
       relaysEnabled: false
+      compression: false
     paths:
       - .:/workspace
     remoteExclude:
