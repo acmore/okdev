@@ -85,7 +85,7 @@ ssh -tt okdev-<session>
 
 ## Remote Coding Tools
 
-`okdev` does not have first-class coding-agent commands yet, but the SSH workflow already works with remote development tools that can connect over SSH.
+`okdev` now has first-class config for supported coding-agent CLIs and setup-time auth staging from local auth files for dedicated sessions.
 
 Examples:
 
@@ -93,7 +93,10 @@ Examples:
 # Open a plain remote shell and install tools in the container
 ssh okdev-<session>
 
-# Then inside the container, install or run the tools you want
+# Check configured agent install/auth status
+okdev agent list
+
+# Then inside the container, run the tools you want
 codex
 claude
 ```
@@ -103,9 +106,19 @@ Cursor and similar editors can use the managed `okdev-<session>` SSH host direct
 Typical flow:
 
 1. `okdev up`
-2. Open your editor's SSH remote connection to `okdev-<session>`
-3. Install `codex`, `claude`, or other CLI tools inside the container if needed
-4. Use the editor remote session or `ssh okdev-<session>` as your entry point
+2. Optional: configure `spec.agents` and let `okdev up` perform best-effort CLI install checks plus local auth-file staging
+3. Run `okdev agent list` to confirm install/auth status
+4. Open your editor's SSH remote connection to `okdev-<session>`
+5. Use the editor remote session or `ssh okdev-<session>` as your entry point
+
+Current scope:
+
+- `okdev up` checks/install configured `claude-code` and `codex` CLIs when possible
+- `okdev up` stages configured local auth files into reserved runtime paths for dedicated sessions
+- `okdev down` cleans that staged runtime auth up before session deletion when the target is still reachable
+- `okdev agent list` reports configured agents, install status, and auth staging status
+- users still launch agent CLIs manually through `okdev ssh`, plain SSH, or editor remote sessions
+- shareable sessions skip auth staging and warn instead
 
 Use `okdev ssh` when you want the tmux-backed interactive shell managed by okdev. Use `ssh okdev-<session>` when you want a plain SSH session for editors, remote IDEs, or direct tool execution.
 

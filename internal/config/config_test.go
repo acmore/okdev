@@ -69,6 +69,26 @@ func TestSetDefaults(t *testing.T) {
 	}
 }
 
+func TestSetDefaultsAppliesAgentConventionDefaults(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Agents = []AgentSpec{
+		{Name: "claude-code"},
+		{Name: "codex"},
+	}
+
+	cfg.SetDefaults()
+
+	if got := cfg.Spec.Agents[0].Auth.Env; got != "ANTHROPIC_API_KEY" {
+		t.Fatalf("expected claude env default, got %q", got)
+	}
+	if got := cfg.Spec.Agents[0].Auth.LocalPath; got != "~/.claude/.credentials.json" {
+		t.Fatalf("expected claude local path default, got %q", got)
+	}
+	if got := cfg.Spec.Agents[1].Auth.LocalPath; got != "~/.codex/auth.json" {
+		t.Fatalf("expected codex local path default, got %q", got)
+	}
+}
+
 func TestSetDefaultsAutoDetectPortsFalse(t *testing.T) {
 	cfg := &DevEnvironment{
 		APIVersion: "okdev.io/v1alpha1",
@@ -133,6 +153,42 @@ func TestValidateRejectsNegativeTTL(t *testing.T) {
 	cfg.Spec.Session.TTLHours = -1
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error")
+	}
+}
+
+func TestValidateRejectsUnknownAgent(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Agents = []AgentSpec{{Name: "gemini"}}
+	cfg.SetDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected unknown agent validation error")
+	}
+}
+
+func TestValidateRejectsDuplicateAgents(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Agents = []AgentSpec{{Name: "codex"}, {Name: "codex"}}
+	cfg.SetDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected duplicate agent validation error")
+	}
+}
+
+func TestValidateRejectsInvalidAgentEnv(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Agents = []AgentSpec{{Name: "claude-code", Auth: &AgentAuth{Env: "bad-name"}}}
+	cfg.SetDefaults()
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid agent env validation error")
+	}
+}
+
+func TestValidateAcceptsAgentLocalPathWithTilde(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Agents = []AgentSpec{{Name: "codex", Auth: &AgentAuth{LocalPath: "~/.codex/auth.json"}}}
+	cfg.SetDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
 	}
 }
 

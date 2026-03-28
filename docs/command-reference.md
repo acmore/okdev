@@ -22,6 +22,7 @@
 - `okdev use <session>`
 - `okdev target show`
 - `okdev target set [--pod <name> | --role <role>]`
+- `okdev agent list`
 - `okdev connect [--shell /bin/bash] [--cmd "..."] [--no-tty]`
 - `okdev logs [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
 - `okdev ssh [--setup-key] [--user root] [--cmd "..."] [--no-tmux]`
@@ -46,6 +47,15 @@
 - `--pod` selects one concrete session pod.
 - `--role` selects the highest-priority eligible pod with the matching `okdev.io/workload-role`.
 - When attachable pods are defined, repinning is restricted to those pods.
+
+### `okdev agent list`
+
+- Shows configured coding agents, whether their CLI binary is installed, and whether auth is staged in the current session container.
+- `okdev up` performs best-effort install checks for configured agents and tries to install missing CLIs when `npm` is available.
+- `okdev up` also stages local auth files for dedicated sessions when a configured local auth file exists.
+- `okdev down` removes staged agent auth symlinks/runtime files when it can still reach the target container.
+- `okdev` does not own agent process launch; users run `codex`, `claude`, or similar CLIs manually after connecting.
+- shareable sessions skip auth staging by default.
 
 ### `okdev init [--template basic|gpu|llm-stack] [--stignore-preset default|python|node|go|rust] [--force]`
 

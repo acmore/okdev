@@ -40,6 +40,7 @@ type detailedStatus struct {
 	Pods             []detailedStatusPod  `json:"pods"`
 	SSH              detailedStatusSSH    `json:"ssh"`
 	Sync             detailedStatusSync   `json:"sync"`
+	Agents           []agentListRow       `json:"agents,omitempty"`
 	Logs             detailedStatusLogs   `json:"logs"`
 	TargetPodDetails string               `json:"targetPodDetails,omitempty"`
 }
@@ -109,6 +110,11 @@ func gatherDetailedStatus(ctx context.Context, cfg *config.DevEnvironment, names
 	detail.Pods = pods
 	detail.SSH = buildDetailedSSH(view.Session, cfg.Spec.Ports)
 	detail.Sync = buildDetailedSync(view.Session, cfg)
+	if agentClient, ok := client.(agentExecClient); ok && len(cfg.Spec.Agents) > 0 && strings.TrimSpace(view.TargetPod) != "" && strings.TrimSpace(target.SelectedContainer) != "" {
+		if rows, err := configuredAgentStatusRows(ctx, agentClient, namespace, view.TargetPod, target.SelectedContainer, cfg.Spec.Agents); err == nil {
+			detail.Agents = rows
+		}
+	}
 	detail.Logs = buildDetailedLogs()
 
 	if client != nil && strings.TrimSpace(view.TargetPod) != "" {
@@ -313,6 +319,21 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 	} {
 		if line.value != "" {
 			fmt.Fprintf(w, "- %s: %s\n", line.label, line.value)
+		}
+	}
+
+	if len(detail.Agents) > 0 {
+		fmt.Fprintln(w, "\nAgents:")
+		for _, agent := range detail.Agents {
+			installed := "no"
+			if agent.Installed {
+				installed = "yes"
+			}
+			authStaged := "no"
+			if agent.AuthStaged {
+				authStaged = "yes"
+			}
+			fmt.Fprintf(w, "- %s: installed=%s authStaged=%s\n", agent.Name, installed, authStaged)
 		}
 	}
 

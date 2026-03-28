@@ -17,10 +17,22 @@ import (
 
 type fakeStatusDetailsClient struct {
 	describe string
+	results  map[string]error
 }
 
 func (f fakeStatusDetailsClient) DescribePod(_ context.Context, namespace, pod string) (string, error) {
 	return f.describe + " " + namespace + "/" + pod, nil
+}
+
+func (f fakeStatusDetailsClient) ExecShInContainer(_ context.Context, _, _, _, script string) ([]byte, error) {
+	if err, ok := f.results[script]; ok {
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (f fakeStatusDetailsClient) CopyToPodInContainer(context.Context, string, string, string, string, string) error {
+	return nil
 }
 
 func TestGatherDetailedStatusIncludesDiagnostics(t *testing.T) {
@@ -38,6 +50,7 @@ func TestGatherDetailedStatusIncludesDiagnostics(t *testing.T) {
 	cfg.Spec.Workload.Attach.Container = "dev"
 	cfg.Spec.Sync.Paths = []string{".:/workspace"}
 	cfg.Spec.Ports = []config.PortMapping{{Name: "http", Local: 8080, Remote: 80}}
+	cfg.Spec.Agents = []config.AgentSpec{{Name: "codex", Auth: &config.AgentAuth{LocalPath: "~/.codex/auth.json"}}}
 
 	if err := session.SaveTarget("sess1", workload.TargetRef{PodName: "worker-0", Container: "trainer"}); err != nil {
 		t.Fatalf("save target: %v", err)
@@ -93,7 +106,13 @@ func TestGatherDetailedStatusIncludesDiagnostics(t *testing.T) {
 	if err := os.WriteFile(statusPIDPath, []byte("not-a-pid\n"), 0o644); err != nil {
 		t.Fatalf("write status pid: %v", err)
 	}
-	detail := gatherDetailedStatus(context.Background(), cfg, "default", view, fakeStatusDetailsClient{describe: "details"})
+	detail := gatherDetailedStatus(context.Background(), cfg, "default", view, fakeStatusDetailsClient{
+		describe: "details",
+		results: map[string]error{
+			"command -v codex >/dev/null 2>&1": nil,
+			`test -f "$HOME"/.codex/auth.json`: nil,
+		},
+	})
 
 	if detail.Target.SelectedPod != "worker-0" || detail.Target.SelectedContainer != "trainer" {
 		t.Fatalf("unexpected selected target: %+v", detail.Target)
@@ -112,6 +131,9 @@ func TestGatherDetailedStatusIncludesDiagnostics(t *testing.T) {
 	}
 	if len(detail.Sync.ConfiguredPaths) != 1 || !strings.Contains(detail.Sync.ConfiguredPaths[0], "/workspace") {
 		t.Fatalf("unexpected sync paths: %#v", detail.Sync.ConfiguredPaths)
+	}
+	if len(detail.Agents) != 1 || detail.Agents[0].Name != "codex" || !detail.Agents[0].Installed || !detail.Agents[0].AuthStaged {
+		t.Fatalf("unexpected agents: %#v", detail.Agents)
 	}
 	if !strings.Contains(detail.TargetPodDetails, "details default/worker-0") {
 		t.Fatalf("unexpected target pod details %q", detail.TargetPodDetails)
@@ -209,6 +231,7 @@ func TestPrintDetailedStatusIncludesSections(t *testing.T) {
 			LocalHome:          "/tmp/syncthing-home",
 			LocalDaemonLogPath: "/tmp/local.log",
 		},
+		Agents:           []agentListRow{{Name: "codex", Installed: true, AuthStaged: true}},
 		Logs:             detailedStatusLogs{OKDevLog: "/tmp/okdev.log"},
 		TargetPodDetails: "Pod: default/worker-0\nPhase: Running\n",
 	})
@@ -222,6 +245,8 @@ func TestPrintDetailedStatusIncludesSections(t *testing.T) {
 		"managed forward: running",
 		"Sync:",
 		"background: running (pid 123)",
+		"Agents:",
+		"codex: installed=yes authStaged=yes",
 		"Logs:",
 		"Target Pod Details:",
 		"  Pod: default/worker-0",
