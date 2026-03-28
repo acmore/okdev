@@ -152,6 +152,9 @@ func ensureConfiguredAgentsInstalled(ctx context.Context, client agentExecClient
 			results = append(results, spec.Name+": install failed")
 			continue
 		}
+		if err := linkAgentBinary(ctx, client, namespace, pod, container, spec); err != nil {
+			warnf("failed to expose %s binary in PATH: %v", spec.Name, err)
+		}
 		installed, err = agentBinaryInstalled(ctx, client, namespace, pod, container, spec.Binary)
 		if err != nil || !installed {
 			if err != nil {
@@ -169,6 +172,21 @@ func ensureConfiguredAgentsInstalled(ctx context.Context, client agentExecClient
 
 func agentInstallNeedsNPM(spec agentcatalog.Spec) bool {
 	return strings.HasPrefix(strings.TrimSpace(spec.InstallCommand), "npm ")
+}
+
+func linkAgentBinary(ctx context.Context, client agentExecClient, namespace, pod, container string, spec agentcatalog.Spec) error {
+	if !agentInstallNeedsNPM(spec) || strings.TrimSpace(spec.Binary) == "" {
+		return nil
+	}
+	script := fmt.Sprintf(`set -eu
+node_path="$(readlink -f "$(command -v node)")"
+node_bin_dir="$(dirname "$node_path")"
+if [ -x "$node_bin_dir/%s" ]; then
+  ln -sfn "$node_bin_dir/%s" /usr/local/bin/%s
+fi
+`, spec.Binary, spec.Binary, spec.Binary)
+	_, err := client.ExecShInContainer(ctx, namespace, pod, container, script)
+	return err
 }
 
 const agentNPMDetectScript = `set -eu
@@ -222,16 +240,21 @@ nvm_install() {
   mkdir -p "$NVM_DIR"
   curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh -o /tmp/okdev-nvm-install.sh >/dev/null 2>&1 || return 1
   PROFILE=/dev/null bash /tmp/okdev-nvm-install.sh >/dev/null 2>&1 || return 1
-  . "$NVM_DIR/nvm.sh"
-  nvm install 20 >/dev/null 2>&1 || return 1
-  nvm alias default 20 >/dev/null 2>&1 || true
-  nvm use 20 >/dev/null 2>&1 || return 1
-  mkdir -p /usr/local/bin
-  ln -sfn "$NVM_BIN/node" /usr/local/bin/node
-  ln -sfn "$NVM_BIN/npm" /usr/local/bin/npm
-  if [ -x "$NVM_BIN/npx" ]; then
-    ln -sfn "$NVM_BIN/npx" /usr/local/bin/npx
-  fi
+  cat >/tmp/okdev-nvm-bootstrap.sh <<'OKDEV_NVM_BOOTSTRAP'
+set -e
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+. "$NVM_DIR/nvm.sh"
+nvm install 20 >/dev/null 2>&1
+nvm alias default 20 >/dev/null 2>&1 || true
+nvm use 20 >/dev/null 2>&1
+mkdir -p /usr/local/bin
+ln -sfn "$NVM_BIN/node" /usr/local/bin/node
+ln -sfn "$NVM_BIN/npm" /usr/local/bin/npm
+if [ -x "$NVM_BIN/npx" ]; then
+  ln -sfn "$NVM_BIN/npx" /usr/local/bin/npx
+fi
+OKDEV_NVM_BOOTSTRAP
+  NVM_DIR="$NVM_DIR" bash /tmp/okdev-nvm-bootstrap.sh >/dev/null 2>&1 || return 1
   return 0
 }
 install_curl() {

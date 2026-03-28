@@ -26,8 +26,22 @@ func (f *fakeAgentExecClient) ExecShInContainer(_ context.Context, _, _, _, scri
 	f.scripts = append(f.scripts, script)
 	switch script {
 	case "npm install -g @openai/codex":
-		delete(f.results, "command -v codex >/dev/null 2>&1")
 	case "npm install -g @anthropic-ai/claude-code":
+	case `set -eu
+node_path="$(readlink -f "$(command -v node)")"
+node_bin_dir="$(dirname "$node_path")"
+if [ -x "$node_bin_dir/codex" ]; then
+  ln -sfn "$node_bin_dir/codex" /usr/local/bin/codex
+fi
+`:
+		delete(f.results, "command -v codex >/dev/null 2>&1")
+	case `set -eu
+node_path="$(readlink -f "$(command -v node)")"
+node_bin_dir="$(dirname "$node_path")"
+if [ -x "$node_bin_dir/claude" ]; then
+  ln -sfn "$node_bin_dir/claude" /usr/local/bin/claude
+fi
+`:
 		delete(f.results, "command -v claude >/dev/null 2>&1")
 	}
 	if strings.HasPrefix(script, "export OKDEV_NPM_INSTALLER=") && strings.Contains(script, "__OKDEV_NPM_STATUS__=installed:") {
