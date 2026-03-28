@@ -284,11 +284,11 @@ func TestEnsureHelpers(t *testing.T) {
 
 func TestImageTag(t *testing.T) {
 	cases := map[string]string{
-		"ghcr.io/acmore/okdev:edge":              "edge",
-		"ghcr.io/acmore/okdev":                   "",
-		"localhost:5000/okdev:latest":            "latest",
-		"ghcr.io/acmore/okdev@sha256:deadbeef":   "deadbeef",
-		"ghcr.io/acmore/okdev:1.2.3-alpine":      "1.2.3-alpine",
+		"ghcr.io/acmore/okdev:edge":            "edge",
+		"ghcr.io/acmore/okdev":                 "",
+		"localhost:5000/okdev:latest":          "latest",
+		"ghcr.io/acmore/okdev@sha256:deadbeef": "deadbeef",
+		"ghcr.io/acmore/okdev:1.2.3-alpine":    "1.2.3-alpine",
 	}
 	for image, want := range cases {
 		if got := imageTag(image); got != want {
