@@ -67,6 +67,8 @@
 ### `okdev up [--wait-timeout 10m] [--dry-run]`
 
 - Reconciles Pod/PVC resources, updates SSH config, initializes managed forwarding/sync, then exits.
+- If the session workload already exists, `okdev up` reuses it and only reruns setup.
+- To force a fresh workload, run `okdev down` and then `okdev up`.
 - tmux-backed persistent interactive shells are enabled by default.
 - `--tmux`: explicitly enable tmux mode in the dev container.
 - `--no-tmux`: disable tmux mode for this pod.

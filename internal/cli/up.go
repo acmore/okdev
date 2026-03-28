@@ -198,7 +198,7 @@ func upReconcile(state *upState, applyWorkload bool) error {
 		}
 	}
 	if reusedExisting {
-		state.ui.stepDone(state.runtime.Kind(), "reused existing")
+		state.ui.stepDone(state.runtime.Kind(), "reused existing workload (run `okdev down` then `okdev up` to recreate)")
 	} else {
 		state.ui.stepDone(state.runtime.Kind(), "applied")
 	}
@@ -212,10 +212,11 @@ func upDryRun(state *upState) error {
 	if state.flags.createMissingPVC {
 		fmt.Fprintf(state.cmd.OutOrStdout(), "- would create missing PVC references (size=%s storageClass=%q)\n", state.flags.missingPVCSize, state.flags.missingPVCStorageClass)
 	}
-	if state.runtime.Kind() == workload.TypePod || state.flags.reconcile {
+	if state.flags.reconcile {
 		fmt.Fprintf(state.cmd.OutOrStdout(), "- would reconcile %s/%s\n", state.runtime.Kind(), state.workloadName)
 	} else {
 		fmt.Fprintf(state.cmd.OutOrStdout(), "- would create or reuse %s/%s\n", state.runtime.Kind(), state.workloadName)
+		fmt.Fprintln(state.cmd.OutOrStdout(), "- if the workload already exists, okdev up will reuse it; run `okdev down` then `okdev up` to recreate it")
 	}
 	fmt.Fprintf(state.cmd.OutOrStdout(), "- would wait for workload readiness (timeout=%s)\n", state.flags.waitTimeout)
 	fmt.Fprintln(state.cmd.OutOrStdout(), "- would setup SSH config + managed SSH/port-forwards")
@@ -404,7 +405,7 @@ type workloadExistenceChecker interface {
 }
 
 func shouldReuseExistingWorkload(ctx context.Context, k workloadExistenceChecker, namespace string, runtime workload.Runtime, reconcile bool) (bool, error) {
-	if runtime.Kind() == workload.TypePod || reconcile {
+	if reconcile {
 		return false, nil
 	}
 	refProvider, ok := runtime.(workload.RefProvider)
@@ -709,6 +710,9 @@ type upUI struct {
 	active      *transientStatus
 }
 
+const ansiReset = "\033[0m"
+const ansiYellow = "\033[33m"
+
 func newUpUI(out, errOut io.Writer) *upUI {
 	return &upUI{
 		out:         out,
@@ -755,7 +759,7 @@ func (u *upUI) stepDone(step, detail string) {
 		fmt.Fprintf(u.out, "✔ %s\n", step)
 		return
 	}
-	fmt.Fprintf(u.out, "✔ %s: %s\n", step, detail)
+	fmt.Fprintf(u.out, "✔ %s: %s\n", step, u.formatStepDetail(step, detail))
 }
 
 func (u *upUI) stepMessage(step, detail string) string {
@@ -763,6 +767,16 @@ func (u *upUI) stepMessage(step, detail string) string {
 		return step
 	}
 	return step + ": " + detail
+}
+
+func (u *upUI) formatStepDetail(step, detail string) string {
+	if !u.interactive {
+		return detail
+	}
+	if step == workload.TypePod && strings.Contains(detail, "reused existing workload") {
+		return ansiYellow + detail + ansiReset
+	}
+	return detail
 }
 
 func (u *upUI) stopActive() {
