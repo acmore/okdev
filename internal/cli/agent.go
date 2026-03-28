@@ -179,17 +179,29 @@ func linkAgentBinary(ctx context.Context, client agentExecClient, namespace, pod
 		return nil
 	}
 	script := fmt.Sprintf(`set -eu
+binary=%s
 node_path="$(readlink -f "$(command -v node)")"
 node_bin_dir="$(dirname "$node_path")"
-if [ -x "$node_bin_dir/%s" ]; then
-  ln -sfn "$node_bin_dir/%s" /usr/local/bin/%s
+if [ -x "$node_bin_dir/$binary" ]; then
+  ln -sfn "$node_bin_dir/$binary" /usr/local/bin/"$binary"
 fi
-`, spec.Binary, spec.Binary, spec.Binary)
+`, shellQuote(spec.Binary))
 	_, err := client.ExecShInContainer(ctx, namespace, pod, container, script)
 	return err
 }
 
 const agentNPMDetectScript = `set -eu
+node_major() {
+  if ! command -v node >/dev/null 2>&1; then
+    echo 0
+    return 0
+  fi
+  node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0
+}
+if command -v npm >/dev/null 2>&1 && [ "$(node_major)" -ge 16 ]; then
+  echo installed:none
+  exit 0
+fi
 if command -v bash >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
   echo install:nvm
   exit 0
@@ -585,16 +597,8 @@ func agentRemotePathExpr(remotePath string) string {
 	case trimmed == "$HOME":
 		return "\"$HOME\""
 	case strings.HasPrefix(trimmed, "$HOME/"):
-		return "\"$HOME\"/" + shellEscapeBare(strings.TrimPrefix(trimmed, "$HOME/"))
+		return "\"$HOME\"/" + syncengine.ShellEscape(strings.TrimPrefix(trimmed, "$HOME/"))
 	default:
 		return syncengine.ShellEscape(trimmed)
 	}
-}
-
-func shellEscapeBare(v string) string {
-	escaped := syncengine.ShellEscape(v)
-	if len(escaped) >= 2 && escaped[0] == '\'' && escaped[len(escaped)-1] == '\'' {
-		return escaped[1 : len(escaped)-1]
-	}
-	return escaped
 }

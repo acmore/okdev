@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	agentcatalog "github.com/acmore/okdev/internal/agent"
 	"github.com/acmore/okdev/internal/config"
 )
 
@@ -29,37 +30,16 @@ func (f *fakeAgentExecClient) ExecShInContainer(_ context.Context, _, _, _, scri
 	case "npm install -g @anthropic-ai/claude-code":
 	case "npm install -g @google/gemini-cli":
 	case "npm install -g opencode-ai":
-	case `set -eu
-node_path="$(readlink -f "$(command -v node)")"
-node_bin_dir="$(dirname "$node_path")"
-if [ -x "$node_bin_dir/codex" ]; then
-  ln -sfn "$node_bin_dir/codex" /usr/local/bin/codex
-fi
-`:
+	case agentNPMDetectScript:
+	}
+	switch {
+	case strings.Contains(script, "binary='codex'"):
 		delete(f.results, "command -v codex >/dev/null 2>&1")
-	case `set -eu
-node_path="$(readlink -f "$(command -v node)")"
-node_bin_dir="$(dirname "$node_path")"
-if [ -x "$node_bin_dir/claude" ]; then
-  ln -sfn "$node_bin_dir/claude" /usr/local/bin/claude
-fi
-`:
+	case strings.Contains(script, "binary='claude'"):
 		delete(f.results, "command -v claude >/dev/null 2>&1")
-	case `set -eu
-node_path="$(readlink -f "$(command -v node)")"
-node_bin_dir="$(dirname "$node_path")"
-if [ -x "$node_bin_dir/gemini" ]; then
-  ln -sfn "$node_bin_dir/gemini" /usr/local/bin/gemini
-fi
-`:
+	case strings.Contains(script, "binary='gemini'"):
 		delete(f.results, "command -v gemini >/dev/null 2>&1")
-	case `set -eu
-node_path="$(readlink -f "$(command -v node)")"
-node_bin_dir="$(dirname "$node_path")"
-if [ -x "$node_bin_dir/opencode" ]; then
-  ln -sfn "$node_bin_dir/opencode" /usr/local/bin/opencode
-fi
-`:
+	case strings.Contains(script, "binary='opencode'"):
 		delete(f.results, "command -v opencode >/dev/null 2>&1")
 	}
 	if strings.HasPrefix(script, "export OKDEV_NPM_INSTALLER=") && strings.Contains(script, "__OKDEV_NPM_STATUS__=installed:") {
@@ -93,7 +73,7 @@ func TestConfiguredAgentStatusRows(t *testing.T) {
 			"command -v codex >/dev/null 2>&1":    errors.New("exit status 1"),
 			"command -v gemini >/dev/null 2>&1":   nil,
 			"command -v opencode >/dev/null 2>&1": nil,
-			`test -f "$HOME"/.codex/auth.json`:    errors.New("exit status 1"),
+			`test -f "$HOME"/'.codex/auth.json'`:  errors.New("exit status 1"),
 		},
 	}
 	agents := []config.AgentSpec{
@@ -256,6 +236,38 @@ func TestEnsureConfiguredAgentsInstalledBootstrapsCurlThenNVM(t *testing.T) {
 	}
 }
 
+func TestEnsureConfiguredAgentsInstalledSkipsBootstrapWhenNodeAndNpmAlreadyPresent(t *testing.T) {
+	client := &fakeAgentExecClient{
+		results: map[string]error{
+			"command -v codex >/dev/null 2>&1": errors.New("exit status 1"),
+			"command -v npm >/dev/null 2>&1":   nil,
+			"npm install -g @openai/codex":     nil,
+		},
+		outputs: map[string][]byte{
+			`node -p 'process.versions.node.split(".")[0]'`: []byte("20\n"),
+		},
+	}
+
+	results := ensureConfiguredAgentsInstalled(
+		context.Background(),
+		client,
+		"default",
+		"pod",
+		"dev",
+		[]config.AgentSpec{{Name: "codex"}},
+		func(string, ...any) {},
+	)
+
+	if got := strings.Join(results, ", "); strings.Contains(got, "node/npm installed via") || !strings.Contains(got, "codex: installed") {
+		t.Fatalf("unexpected install summary %q", got)
+	}
+	for _, script := range client.scripts {
+		if script == agentNPMDetectScript {
+			t.Fatalf("did not expect npm detect script when node/npm are already present")
+		}
+	}
+}
+
 func TestEnsureConfiguredAgentAuthStagesLocalFile(t *testing.T) {
 	localDir := t.TempDir()
 	localAuth := filepath.Join(localDir, "auth.json")
@@ -265,7 +277,7 @@ func TestEnsureConfiguredAgentAuthStagesLocalFile(t *testing.T) {
 	client := &fakeAgentExecClient{
 		results: map[string]error{},
 		outputs: map[string][]byte{
-			`if [ -L "$HOME"/.codex/auth.json ]; then printf symlink; elif [ -e "$HOME"/.codex/auth.json ]; then printf file; else printf missing; fi`: []byte("missing"),
+			`if [ -L "$HOME"/'.codex/auth.json' ]; then printf symlink; elif [ -e "$HOME"/'.codex/auth.json' ]; then printf file; else printf missing; fi`: []byte("missing"),
 		},
 	}
 
@@ -289,10 +301,10 @@ func TestEnsureConfiguredAgentAuthStagesLocalFile(t *testing.T) {
 	if len(client.scripts) != 3 {
 		t.Fatalf("expected 3 scripts, got %#v", client.scripts)
 	}
-	if !strings.Contains(client.scripts[1], `mkdir -p '/run/okdev/agents/codex' "$HOME"/.codex`) {
+	if !strings.Contains(client.scripts[1], `mkdir -p '/run/okdev/agents/codex' "$HOME"/'.codex'`) {
 		t.Fatalf("unexpected setup script %q", client.scripts[1])
 	}
-	if !strings.Contains(client.scripts[2], `ln -sfn '/run/okdev/agents/codex/auth' "$HOME"/.codex/auth.json`) {
+	if !strings.Contains(client.scripts[2], `ln -sfn '/run/okdev/agents/codex/auth' "$HOME"/'.codex/auth.json'`) {
 		t.Fatalf("unexpected finalize script %q", client.scripts[2])
 	}
 }
@@ -306,7 +318,7 @@ func TestEnsureConfiguredAgentAuthDoesNotClobberExistingRemoteFile(t *testing.T)
 	client := &fakeAgentExecClient{
 		results: map[string]error{},
 		outputs: map[string][]byte{
-			`if [ -L "$HOME"/.codex/auth.json ]; then printf symlink; elif [ -e "$HOME"/.codex/auth.json ]; then printf file; else printf missing; fi`: []byte("file"),
+			`if [ -L "$HOME"/'.codex/auth.json' ]; then printf symlink; elif [ -e "$HOME"/'.codex/auth.json' ]; then printf file; else printf missing; fi`: []byte("file"),
 		},
 	}
 
@@ -400,7 +412,57 @@ func TestCleanupConfiguredAgentAuth(t *testing.T) {
 	if len(client.scripts) != 1 {
 		t.Fatalf("expected one cleanup script, got %#v", client.scripts)
 	}
-	if !strings.Contains(client.scripts[0], `if [ -L "$HOME"/.codex/auth.json ]; then rm -f "$HOME"/.codex/auth.json; fi && rm -rf '/run/okdev/agents/codex'`) {
+	if !strings.Contains(client.scripts[0], `if [ -L "$HOME"/'.codex/auth.json' ]; then rm -f "$HOME"/'.codex/auth.json'; fi && rm -rf '/run/okdev/agents/codex'`) {
 		t.Fatalf("unexpected cleanup script %q", client.scripts[0])
+	}
+}
+
+func TestAgentRemotePathExprEscapesHomeSuffix(t *testing.T) {
+	got := agentRemotePathExpr("$HOME/my dir/auth.json")
+	want := `"$HOME"/'my dir/auth.json'`
+	if got != want {
+		t.Fatalf("agentRemotePathExpr() = %q, want %q", got, want)
+	}
+}
+
+func TestCleanupAgentAuthEscapesHomeSuffix(t *testing.T) {
+	client := &fakeAgentExecClient{results: map[string]error{}}
+
+	if err := cleanupAgentAuth(
+		context.Background(),
+		client,
+		"default",
+		"pod",
+		"dev",
+		agentcatalog.Spec{Name: "custom", RemoteAuthPath: "$HOME/my dir/auth.json"},
+	); err != nil {
+		t.Fatalf("cleanupAgentAuth: %v", err)
+	}
+	if len(client.scripts) != 1 {
+		t.Fatalf("expected one cleanup script, got %#v", client.scripts)
+	}
+	if !strings.Contains(client.scripts[0], `if [ -L "$HOME"/'my dir/auth.json' ]; then rm -f "$HOME"/'my dir/auth.json'; fi`) {
+		t.Fatalf("unexpected cleanup script %q", client.scripts[0])
+	}
+}
+
+func TestLinkAgentBinaryQuotesBinaryName(t *testing.T) {
+	client := &fakeAgentExecClient{results: map[string]error{}}
+
+	if err := linkAgentBinary(
+		context.Background(),
+		client,
+		"default",
+		"pod",
+		"dev",
+		agentcatalog.Spec{Name: "custom", Binary: "my tool", InstallCommand: "npm install -g custom"},
+	); err != nil {
+		t.Fatalf("linkAgentBinary: %v", err)
+	}
+	if len(client.scripts) != 1 {
+		t.Fatalf("expected one script, got %#v", client.scripts)
+	}
+	if !strings.Contains(client.scripts[0], "binary='my tool'") {
+		t.Fatalf("unexpected link script %q", client.scripts[0])
 	}
 }

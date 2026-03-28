@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -77,8 +78,10 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if _, err := ensureSyncthingTargetSessionState(cmd.Context(), cc.kube, cc.namespace, cc.sessionName, target.PodName); err != nil {
+			if reset, err := ensureSyncthingTargetSessionState(cmd.Context(), cc.kube, cc.namespace, cc.sessionName, target.PodName); err != nil {
 				return err
+			} else {
+				reportSyncthingTargetReset(cmd.OutOrStdout(), cc.sessionName, reset)
 			}
 
 			if reset {
@@ -123,6 +126,13 @@ func newSyncCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&reset, "reset", false, "Stop existing local sync state for this session and bootstrap again")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview sync actions without transferring files")
 	return cmd
+}
+
+func reportSyncthingTargetReset(w io.Writer, sessionName string, reset bool) {
+	if !reset {
+		return
+	}
+	fmt.Fprintf(w, "Reset local sync state for session %s: target pod was recreated\n", sessionName)
 }
 
 func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfgPath string) (string, bool, error) {
