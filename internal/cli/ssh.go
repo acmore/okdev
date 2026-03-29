@@ -102,7 +102,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				stopSSHDReady := startTransientStatus(errOut, "Waiting for SSH service")
 				if err := waitForSSHReady(opts, cc.namespace, target.PodName, target.Container, sshServiceWaitTimeout); err != nil {
 					stopSSHDReady()
-					fmt.Fprintf(errOut, "warning: ssh service not ready yet: %v\n", err)
+					fmt.Fprintf(errOut, "warning: ssh service not ready yet (%v); continuing with SSH tunnel setup anyway\n", err)
 				} else {
 					stopSSHDReady()
 				}
