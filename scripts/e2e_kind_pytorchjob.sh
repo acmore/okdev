@@ -8,13 +8,14 @@ NAMESPACE="${NAMESPACE:-default}"
 WORKDIR="$(mktemp -d)"
 HOME_DIR="${HOME_DIR:-$WORKDIR/home}"
 CFG_PATH="$WORKDIR/.okdev.yaml"
+SYNC_DIR="$WORKDIR/workspace"
 MANIFEST_DIR="$WORKDIR/.okdev"
 MANIFEST_PATH="$MANIFEST_DIR/pytorchjob.yaml"
 ORIG_HOME="${HOME}"
 ORIG_KUBECONFIG="${KUBECONFIG:-}"
 KUBECONFIG_PATH="$HOME_DIR/.kube/config"
 
-mkdir -p "$HOME_DIR" "$MANIFEST_DIR" "$HOME_DIR/.kube"
+mkdir -p "$HOME_DIR" "$SYNC_DIR" "$MANIFEST_DIR" "$HOME_DIR/.kube"
 if [[ -n "$ORIG_KUBECONFIG" ]]; then
   cp "$ORIG_KUBECONFIG" "$KUBECONFIG_PATH"
 elif [[ -f "$ORIG_HOME/.kube/config" ]]; then
@@ -76,6 +77,10 @@ spec:
       - path: "spec.pytorchReplicaSpecs.Master.template"
     attach:
       container: dev
+  sync:
+    engine: syncthing
+    paths:
+      - ${SYNC_DIR}:/workspace
   ssh:
     user: root
     persistentSession: false
@@ -83,11 +88,31 @@ spec:
     image: ${SIDECAR_IMAGE}
 EOF
 
+echo "hello from pytorchjob e2e" >"$SYNC_DIR/hello.txt"
+
 echo "Starting PyTorchJob smoke session"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m
 
 echo "Checking status"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details
+
+echo "Waiting for synced file to appear remotely with correct content"
+SYNC_OK=false
+for i in $(seq 1 30); do
+  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --setup-key --cmd 'cat /workspace/hello.txt 2>/dev/null' || true)
+  if [[ "$REMOTE_CONTENT" == "hello from pytorchjob e2e" ]]; then
+    SYNC_OK=true
+    echo "Sync verified on attempt $i"
+    break
+  fi
+  echo "Sync poll attempt $i/30: file not ready yet"
+  sleep 2
+done
+
+if [[ "$SYNC_OK" != "true" ]]; then
+  echo "ERROR: synced file content did not match after 30 attempts" >&2
+  exit 1
+fi
 
 echo "Verifying SSH into master pod"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --setup-key --cmd 'echo pytorchjob-ssh-ok'
