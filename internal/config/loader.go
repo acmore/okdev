@@ -79,6 +79,43 @@ func RootDir(configPath string) string {
 	return dir
 }
 
+func ManifestDir(configPath string) string {
+	p := strings.TrimSpace(configPath)
+	if p == "" {
+		return ""
+	}
+	return filepath.Dir(p)
+}
+
+func ResolveWorkloadManifestPath(configPath, manifestPath string) string {
+	p := strings.TrimSpace(manifestPath)
+	if p == "" {
+		return ""
+	}
+	if filepath.IsAbs(p) {
+		return p
+	}
+
+	manifestDir := ManifestDir(configPath)
+	if strings.TrimSpace(manifestDir) == "" {
+		manifestDir = filepath.Dir(configPath)
+	}
+	manifestCandidate := filepath.Clean(filepath.Join(manifestDir, p))
+	if _, err := os.Stat(manifestCandidate); err == nil {
+		return manifestCandidate
+	}
+
+	rootDir := RootDir(configPath)
+	if strings.TrimSpace(rootDir) != "" {
+		rootCandidate := filepath.Clean(filepath.Join(rootDir, p))
+		if _, err := os.Stat(rootCandidate); err == nil {
+			return rootCandidate
+		}
+	}
+
+	return manifestCandidate
+}
+
 func discoverInParents(start, stopAt string, names ...string) (string, error) {
 	current := start
 	for {

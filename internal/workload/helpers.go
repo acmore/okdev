@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -19,14 +18,7 @@ type podLister interface {
 }
 
 func ResolveManifestPath(configPath, manifestPath string) string {
-	if filepath.IsAbs(manifestPath) {
-		return manifestPath
-	}
-	base := config.RootDir(configPath)
-	if strings.TrimSpace(base) == "" {
-		base = filepath.Dir(configPath)
-	}
-	return filepath.Clean(filepath.Join(base, manifestPath))
+	return config.ResolveWorkloadManifestPath(configPath, manifestPath)
 }
 
 func mergeStringMaps(base map[string]string, extra map[string]string) map[string]string {

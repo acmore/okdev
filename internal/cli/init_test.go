@@ -272,6 +272,13 @@ func TestInitUsesFolderConfigWhenScaffoldingWorkload(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(tmp, ".stignore")); err != nil {
 		t.Fatalf("expected root .stignore, got err=%v", err)
 	}
+	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev", "okdev.yaml"))
+	if err != nil {
+		t.Fatalf("read folder config: %v", err)
+	}
+	if !strings.Contains(string(cfgRaw), "manifestPath: job.yaml") {
+		t.Fatalf("expected folder config manifest path to stay relative to .okdev, got %q", string(cfgRaw))
+	}
 }
 
 func TestInitUsesRootConfigForPod(t *testing.T) {

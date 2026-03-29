@@ -68,7 +68,7 @@
 - `--dev-image`: sets the dev container image for pod workloads. When provided, the generated config includes a `podTemplate` with the given image.
 - `--template`: accepts built-in `basic`, a user template name from `~/.okdev/templates/`, a file path, or a URL.
 - For built-in templates, it also writes a starter local `.stignore` file for the initialized sync root.
-- For built-in `basic`, `job` and `pytorchjob` scaffold `.okdev/job.yaml` or `.okdev/pytorchjob.yaml`. `generic --generic-preset deployment` scaffolds `.okdev/deployment.yaml` while still using `spec.workload.type=generic`.
+- For built-in `basic`, `job` and `pytorchjob` scaffold `.okdev/job.yaml` or `.okdev/pytorchjob.yaml`. When the config itself is `.okdev/okdev.yaml`, the generated `manifestPath` stays relative to that directory, for example `job.yaml` or `pytorchjob.yaml`. okdev resolves those paths from `.okdev/` first and falls back to the project root for compatibility with older layouts. `generic --generic-preset deployment` scaffolds `.okdev/deployment.yaml` while still using `spec.workload.type=generic`.
 - `--stignore-preset`: override the starter `.stignore` patterns with a project-oriented preset.
 - When `--stignore-preset` is omitted, `okdev init` tries to detect a preset from common repo markers like `go.mod`, `package.json`, `Cargo.toml`, and `pyproject.toml`.
 

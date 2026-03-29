@@ -85,6 +85,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 			if _, err := os.Stat(abs); err == nil && !force {
 				return fmt.Errorf("config already exists at %q (use --force to overwrite)", abs)
 			}
+			normalizeInitManifestPathForTarget(abs, vars, overrides.hasManifestPath())
 
 			rendered, err := config.RenderTemplateContext(context.Background(), templateRef, vars)
 			if err != nil {
@@ -162,6 +163,31 @@ func defaultInitTargetPath(templateRef string, vars *config.TemplateVars) string
 		return config.FolderFile
 	}
 	return config.DefaultFile
+}
+
+func normalizeInitManifestPathForTarget(configPath string, vars *config.TemplateVars, explicit bool) {
+	if explicit || !isFolderConfigPath(configPath) {
+		return
+	}
+
+	switch strings.TrimSpace(vars.WorkloadType) {
+	case "job":
+		if vars.ManifestPath == ".okdev/job.yaml" {
+			vars.ManifestPath = "job.yaml"
+		}
+	case "pytorchjob":
+		if vars.ManifestPath == ".okdev/pytorchjob.yaml" {
+			vars.ManifestPath = "pytorchjob.yaml"
+		}
+	case "generic":
+		if strings.TrimSpace(vars.GenericPreset) == "deployment" && vars.ManifestPath == ".okdev/deployment.yaml" {
+			vars.ManifestPath = "deployment.yaml"
+		}
+	}
+}
+
+func isFolderConfigPath(configPath string) bool {
+	return filepath.Base(configPath) == "okdev.yaml" && filepath.Base(filepath.Dir(configPath)) == ".okdev"
 }
 
 func applyWorkloadDefaults(vars *config.TemplateVars) {
@@ -265,7 +291,7 @@ func scaffoldInitWorkload(configPath, templateRef string, vars *config.TemplateV
 	}
 	target := vars.ManifestPath
 	if !filepath.IsAbs(target) {
-		target = filepath.Join(config.RootDir(configPath), target)
+		target = filepath.Join(config.ManifestDir(configPath), target)
 	}
 	target = filepath.Clean(target)
 	if _, err := os.Stat(target); err == nil && !force {
