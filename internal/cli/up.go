@@ -422,11 +422,19 @@ func upSetup(state *upState) error {
 		}); err != nil {
 			return fmt.Errorf("wait for initial sync: %w", err)
 		}
-		state.ui.stepRun("postSync", "running on all pods")
-		if err := runPostSyncOnAllPods(state.ctx, state.command.kube, state.command.namespace, state.labels, target.Container, postSyncCmd, state.cmd.OutOrStdout(), state.ui.warnWriter()); err != nil {
+		state.ui.stepRun("postSync", "running on all pods with shared workspace")
+		summary, err := runPostSyncOnAllPods(state.ctx, state.command.kube, state.command.namespace, state.labels, target.Container, postSyncCmd, state.ui.warnWriter())
+		if err != nil {
 			return err
 		}
-		state.ui.stepDone("postSync", "completed on all pods")
+		detail := fmt.Sprintf("workspace synced; ran on %d pod(s)", summary.Ran)
+		if summary.Skipped > 0 {
+			detail = fmt.Sprintf("%s, skipped %d already done", detail, summary.Skipped)
+		}
+		if summary.NotRunning > 0 {
+			state.ui.warnf("postSync skipped %d pod(s) that were not Running", summary.NotRunning)
+		}
+		state.ui.stepDone("postSync", detail)
 	}
 
 	if len(state.command.cfg.Spec.Agents) > 0 {
@@ -664,30 +672,48 @@ func runPostCreateIfNeeded(k *kube.Client, namespace, pod, container, command st
 	return true, nil
 }
 
+type postSyncClient interface {
+	ListPods(context.Context, string, bool, string) ([]kube.PodSummary, error)
+	GetPodSummary(context.Context, string, string) (*kube.PodSummary, error)
+	GetPodAnnotation(context.Context, string, string, string) (string, error)
+	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+	AnnotatePod(context.Context, string, string, string, string) error
+}
+
+type postSyncSummary struct {
+	Ran        int
+	Skipped    int
+	NotRunning int
+}
+
 // runPostSyncOnAllPods discovers all session pods and runs the postSync
-// command on each pod's target container. Pods that have already completed
-// postSync (tracked via annotation) are skipped. For pods not yet in
-// Running phase, it polls until they are ready before executing.
-// Execution across pods is parallel.
-func runPostSyncOnAllPods(ctx context.Context, k *kube.Client, namespace string, labels map[string]string, container, command string, out io.Writer, errOut io.Writer) error {
+// command on each pod's target container. This assumes the synced workspace
+// is shared across pods, so a single initial sync gate is sufficient before
+// fanout. Pods that have already completed postSync (tracked via annotation)
+// are skipped. Execution across pods is parallel.
+func runPostSyncOnAllPods(ctx context.Context, k postSyncClient, namespace string, labels map[string]string, container, command string, errOut io.Writer) (postSyncSummary, error) {
 	selector := workload.DiscoveryLabelSelector(labels)
 	pods, err := k.ListPods(ctx, namespace, false, selector)
 	if err != nil {
-		return fmt.Errorf("discover pods for postSync: %w", err)
+		return postSyncSummary{}, fmt.Errorf("discover pods for postSync: %w", err)
 	}
 	if len(pods) == 0 {
 		fmt.Fprintln(errOut, "warning: no pods found for postSync")
-		return nil
+		return postSyncSummary{}, nil
 	}
 
 	type result struct {
-		pod string
-		err error
+		pod     string
+		ran     bool
+		skipped bool
+		err     error
 	}
 	results := make(chan result, len(pods))
 	var wg sync.WaitGroup
+	summary := postSyncSummary{}
 	for _, pod := range pods {
 		if pod.Deleting {
+			summary.NotRunning++
 			continue
 		}
 		wg.Add(1)
@@ -697,15 +723,12 @@ func runPostSyncOnAllPods(ctx context.Context, k *kube.Client, namespace string,
 				results <- result{pod: podName, err: fmt.Errorf("pod did not reach Running phase: %w", waitErr)}
 				return
 			}
-			ran, runErr := runPostSyncIfNeeded(k, namespace, podName, container, command, out, errOut)
+			ran, runErr := runPostSyncIfNeeded(ctx, k, namespace, podName, container, command, errOut)
 			if runErr != nil {
 				results <- result{pod: podName, err: runErr}
 				return
 			}
-			if ran {
-				fmt.Fprintf(out, "postSync completed on pod %s\n", podName)
-			}
-			results <- result{pod: podName}
+			results <- result{pod: podName, ran: ran, skipped: !ran}
 		}(pod.Name)
 	}
 	wg.Wait()
@@ -715,17 +738,25 @@ func runPostSyncOnAllPods(ctx context.Context, k *kube.Client, namespace string,
 	for r := range results {
 		if r.err != nil {
 			errs = append(errs, fmt.Sprintf("pod %s: %v", r.pod, r.err))
+			continue
+		}
+		if r.ran {
+			summary.Ran++
+			continue
+		}
+		if r.skipped {
+			summary.Skipped++
 		}
 	}
 	if len(errs) > 0 {
-		return fmt.Errorf("postSync failed on pods: %s", strings.Join(errs, "; "))
+		return summary, fmt.Errorf("postSync failed on pods: %s", strings.Join(errs, "; "))
 	}
-	return nil
+	return summary, nil
 }
 
 // waitForPodRunning polls until the named pod reaches the Running phase
 // or the timeout expires.
-func waitForPodRunning(ctx context.Context, k *kube.Client, namespace, pod string, timeout time.Duration) error {
+func waitForPodRunning(ctx context.Context, k postSyncClient, namespace, pod string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -750,8 +781,8 @@ func waitForPodRunning(ctx context.Context, k *kube.Client, namespace, pod strin
 	}
 }
 
-func runPostSyncIfNeeded(k *kube.Client, namespace, pod, container, command string, out io.Writer, errOut io.Writer) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), annotationTimeout)
+func runPostSyncIfNeeded(parent context.Context, k postSyncClient, namespace, pod, container, command string, errOut io.Writer) (bool, error) {
+	ctx, cancel := context.WithTimeout(parent, annotationTimeout)
 	annotation, err := k.GetPodAnnotation(ctx, namespace, pod, "okdev.io/post-sync-done")
 	cancel()
 	if err != nil {
@@ -760,14 +791,13 @@ func runPostSyncIfNeeded(k *kube.Client, namespace, pod, container, command stri
 	if annotation == "true" {
 		return false, nil
 	}
-	fmt.Fprintf(out, "Running postSync on pod %s: %s\n", pod, command)
-	runCtx, runCancel := context.WithTimeout(context.Background(), postSyncTimeout)
+	runCtx, runCancel := context.WithTimeout(parent, postSyncTimeout)
 	_, runErr := k.ExecShInContainer(runCtx, namespace, pod, container, command)
 	runCancel()
 	if runErr != nil {
 		return true, fmt.Errorf("postSync failed on pod %s: %w", pod, runErr)
 	}
-	annCtx, annCancel := context.WithTimeout(context.Background(), annotationTimeout)
+	annCtx, annCancel := context.WithTimeout(parent, annotationTimeout)
 	annErr := k.AnnotatePod(annCtx, namespace, pod, "okdev.io/post-sync-done", "true")
 	annCancel()
 	if annErr != nil {

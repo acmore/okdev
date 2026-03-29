@@ -309,15 +309,17 @@ spec:
 | Field | Type | Description |
 |-------|------|-------------|
 | `postCreate` | `string` | Command run once on the target pod after environment creation |
-| `postSync` | `string` | Command run once on **all** pods after initial file sync completes |
+| `postSync` | `string` | Command run once on **all** pods after initial shared-workspace sync completes |
 | `preStop` | `string` | Command run before pod termination |
 
 `postSync` is useful for multi-pod workloads where every pod needs code-dependent
-setup (e.g. editable Python installs). It blocks `okdev up` until the initial
-syncthing sync finishes, then executes the command on every running session pod
-in parallel. Each pod is tracked via the `okdev.io/post-sync-done` annotation to
-prevent re-execution. Falls back to `.okdev/post-sync.sh` if no explicit command
-is configured.
+setup (e.g. editable Python installs). It assumes the synced workspace is
+shared across pods, typically via a common PVC mounted at the workspace path.
+`okdev up` blocks until the initial syncthing sync finishes for that shared
+workspace, then executes the command on every running session pod in parallel.
+Each pod is tracked via the `okdev.io/post-sync-done` annotation to prevent
+re-execution. Falls back to `.okdev/post-sync.sh` if no explicit command is
+configured.
 
 ```yaml
 spec:
