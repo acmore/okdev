@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/acmore/okdev/internal/kube"
 )
 
 type fakePostSyncClient struct {
+	mu            sync.Mutex
 	pods          []kube.PodSummary
 	annotations   map[string]string
 	execErr       map[string]error
@@ -40,19 +42,25 @@ func (f *fakePostSyncClient) GetPodAnnotation(_ context.Context, _ string, pod, 
 }
 
 func (f *fakePostSyncClient) ExecShInContainer(ctx context.Context, _ string, pod, _ string, _ string) ([]byte, error) {
+	f.mu.Lock()
 	f.execCalls = append(f.execCalls, pod)
 	if err := ctx.Err(); err != nil {
 		f.execCtxErr = err
+		f.mu.Unlock()
 		return nil, err
 	}
 	if err := f.execErr[pod]; err != nil {
+		f.mu.Unlock()
 		return nil, err
 	}
+	f.mu.Unlock()
 	return nil, nil
 }
 
 func (f *fakePostSyncClient) AnnotatePod(_ context.Context, _ string, pod, key, value string) error {
+	f.mu.Lock()
 	f.annotateCalls = append(f.annotateCalls, pod+":"+key+"="+value)
+	f.mu.Unlock()
 	return nil
 }
 
@@ -85,6 +93,8 @@ func TestRunPostSyncOnAllPodsSummarizesSharedWorkspaceFanout(t *testing.T) {
 	if summary.Ran != 2 || summary.Skipped != 1 || summary.NotRunning != 1 {
 		t.Fatalf("unexpected summary: %+v", summary)
 	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
 	if len(client.execCalls) != 2 {
 		t.Fatalf("expected 2 exec calls, got %#v", client.execCalls)
 	}
@@ -113,6 +123,8 @@ func TestRunPostSyncIfNeededHonorsParentCancellation(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context cancellation, got %v", err)
 	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
 	if !errors.Is(client.execCtxErr, context.Canceled) {
 		t.Fatalf("expected exec context cancellation, got %v", client.execCtxErr)
 	}
