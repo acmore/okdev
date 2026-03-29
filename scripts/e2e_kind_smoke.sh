@@ -74,7 +74,7 @@ echo "Checking status"
 echo "Waiting for synced file to appear remotely with correct content"
 SYNC_OK=false
 for i in $(seq 1 30); do
-  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --setup-key --cmd 'cat /workspace/hello.txt 2>/dev/null' 2>/dev/null || true)
+  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --setup-key --cmd 'sh -lc "if [ -f /workspace/hello.txt ]; then cat /workspace/hello.txt; fi"' || true)
   if [[ "$REMOTE_CONTENT" == "hello from okdev e2e" ]]; then
     SYNC_OK=true
     echo "Sync verified on attempt $i"
