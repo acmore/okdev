@@ -68,7 +68,7 @@ jobs:
 
       - name: Install Kubeflow Training Operator
         run: |
-          kubectl apply --server-side -f https://github.com/kubeflow/training-operator/releases/latest/download/manifests.yaml
+          kubectl apply --server-side -k "https://github.com/kubeflow/training-operator.git/manifests/overlays/standalone?ref=v1.8.1"
           echo "Waiting for training-operator controller to be ready"
           kubectl -n kubeflow wait --for=condition=Available deployment/training-operator --timeout=120s
 
