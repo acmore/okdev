@@ -87,4 +87,10 @@ jobs:
             echo "--- $pod logs (dev) ---"
             kubectl -n default logs "$pod" -c dev || true
           done
+          MASTER_POD=$(kubectl -n default get pods -l training.kubeflow.org/job-name=e2e-ptjob,training.kubeflow.org/replica-type=master -o name 2>/dev/null | head -1)
+          if [[ -n "$MASTER_POD" ]]; then
+            echo "--- syncthing state (master) ---"
+            kubectl -n default exec "$MASTER_POD" -c okdev-sidecar -- sh -c 'cat /var/okdev/syncthing/config.xml 2>/dev/null || true'
+            kubectl -n default exec "$MASTER_POD" -c okdev-sidecar -- sh -c 'ls -la /var/okdev/syncthing/ 2>/dev/null || true'
+          fi
           kubectl -n kubeflow logs deployment/training-operator --tail=100 || true
