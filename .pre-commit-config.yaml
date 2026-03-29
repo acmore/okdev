@@ -1,0 +1,9 @@
+repos:
+  - repo: local
+    hooks:
+      - id: okdev-gofmt
+        name: okdev gofmt
+        entry: ./scripts/check_fmt.sh
+        language: system
+        pass_filenames: false
+        stages: [pre-push, manual]

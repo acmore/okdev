@@ -13,11 +13,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Install pre-commit
+        run: python3 -m pip install --user pre-commit
       - name: Vet
         run: go vet ./...
       - name: Test
         run: go test -race ./...
       - name: Fmt
-        run: test -z "$(gofmt -l .)"
+        run: ~/.local/bin/pre-commit run --all-files --hook-stage manual okdev-gofmt
       - name: Build
         run: go build ./cmd/okdev

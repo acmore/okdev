@@ -39,6 +39,19 @@ Coverage on some Go 1.25 toolchains can fail under `go test ./... -cover` becaus
 ./scripts/coverage.sh
 ```
 
+Formatting is enforced through `pre-commit` and CI. To enable the local pre-push check:
+
+```bash
+python3 -m pip install --user pre-commit
+pre-commit install --hook-type pre-push
+```
+
+You can run the same formatter check on demand with:
+
+```bash
+pre-commit run --all-files --hook-stage manual okdev-gofmt
+```
+
 ## GitHub Pages Docs
 
 Docs are published from `docs/` via GitHub Actions + MkDocs.

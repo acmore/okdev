@@ -10,10 +10,10 @@ import (
 )
 
 type fakeSessionPodEventWatcher struct {
-	mu        sync.Mutex
-	listCalls int
+	mu         sync.Mutex
+	listCalls  int
 	podsByCall [][]kube.PodSummary
-	watched   []string
+	watched    []string
 }
 
 func (f *fakeSessionPodEventWatcher) ListPods(_ context.Context, _ string, _ bool, _ string) ([]kube.PodSummary, error) {
