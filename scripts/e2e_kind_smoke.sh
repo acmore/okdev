@@ -9,9 +9,21 @@ WORKDIR="$(mktemp -d)"
 HOME_DIR="${HOME_DIR:-$WORKDIR/home}"
 CFG_PATH="$WORKDIR/.okdev.yaml"
 SYNC_DIR="$WORKDIR/workspace"
+ORIG_HOME="${HOME}"
+ORIG_KUBECONFIG="${KUBECONFIG:-}"
+KUBECONFIG_PATH="$HOME_DIR/.kube/config"
 
-mkdir -p "$HOME_DIR" "$SYNC_DIR"
+mkdir -p "$HOME_DIR" "$SYNC_DIR" "$HOME_DIR/.kube"
+if [[ -n "$ORIG_KUBECONFIG" ]]; then
+  cp "$ORIG_KUBECONFIG" "$KUBECONFIG_PATH"
+elif [[ -f "$ORIG_HOME/.kube/config" ]]; then
+  cp "$ORIG_HOME/.kube/config" "$KUBECONFIG_PATH"
+else
+  echo "kubeconfig not found" >&2
+  exit 1
+fi
 export HOME="$HOME_DIR"
+export KUBECONFIG="$KUBECONFIG_PATH"
 
 cleanup() {
   "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes >/dev/null 2>&1 || true
