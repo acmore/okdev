@@ -99,6 +99,7 @@ func TestEnsureSSHConfigEntryUsesProxyKeepaliveValues(t *testing.T) {
 func TestManagedSSHForwardArgs(t *testing.T) {
 	args := managedSSHForwardArgs(
 		"okdev-test",
+		"/tmp/ssh-config",
 		"/tmp/okdev.sock",
 		[]config.PortMapping{
 			{Name: "app", Local: 8080, Remote: 80},
@@ -109,6 +110,7 @@ func TestManagedSSHForwardArgs(t *testing.T) {
 
 	want := []string{
 		"ssh",
+		"-F", "/tmp/ssh-config",
 		"-fN",
 		"-M",
 		"-S", "/tmp/okdev.sock",
