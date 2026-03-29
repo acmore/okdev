@@ -23,6 +23,21 @@ func resolvePostCreateCommand(cfg *config.DevEnvironment, configPath string) str
 	return ""
 }
 
+func resolvePostSyncCommand(cfg *config.DevEnvironment, configPath string) string {
+	if cfg != nil && strings.TrimSpace(cfg.Spec.Lifecycle.PostSync) != "" {
+		return strings.TrimSpace(cfg.Spec.Lifecycle.PostSync)
+	}
+	root := configRootFromPath(configPath)
+	if root == "" || cfg == nil {
+		return ""
+	}
+	script := filepath.Join(root, ".okdev", "post-sync.sh")
+	if st, err := os.Stat(script); err == nil && !st.IsDir() {
+		return filepath.Join(cfg.EffectiveWorkspaceMountPath(configPath), ".okdev", "post-sync.sh")
+	}
+	return ""
+}
+
 func resolvePreStopCommand(cfg *config.DevEnvironment, configPath string) string {
 	if cfg != nil && strings.TrimSpace(cfg.Spec.Lifecycle.PreStop) != "" {
 		return strings.TrimSpace(cfg.Spec.Lifecycle.PreStop)

@@ -139,6 +139,7 @@ const (
 
 type LifecycleSpec struct {
 	PostCreate string `yaml:"postCreate"`
+	PostSync   string `yaml:"postSync"`
 	PreStop    string `yaml:"preStop"`
 }
 

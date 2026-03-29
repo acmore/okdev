@@ -164,6 +164,12 @@ const (
 	// Delay used to confirm a detached Syncthing child stayed up.
 	syncthingDetachedStartupDelay = 300 * time.Millisecond
 
+	// Timeout for waiting for Syncthing initial sync completion.
+	initialSyncTimeout = 30 * time.Minute
+
+	// Timeout for postSync command execution on a single pod.
+	postSyncTimeout = 30 * time.Minute
+
 	// Grace period for Syncthing child shutdown after SIGTERM.
 	syncthingShutdownWait = 3 * time.Second
 

@@ -55,6 +55,38 @@ func TestResolveLifecycleScriptsFromConfigRoot(t *testing.T) {
 	}
 }
 
+func TestResolvePostSyncCommandPrefersExplicit(t *testing.T) {
+	cfg := testLifecycleCfg()
+	cfg.Spec.Lifecycle.PostSync = "pip install -e ."
+	got := resolvePostSyncCommand(cfg, "/tmp/.okdev.yaml")
+	if got != "pip install -e ." {
+		t.Fatalf("unexpected command: %q", got)
+	}
+}
+
+func TestResolvePostSyncCommandFallsBackToScript(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".okdev"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".okdev", "post-sync.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testLifecycleCfg()
+	cfgPath := filepath.Join(tmp, ".okdev.yaml")
+	if got := resolvePostSyncCommand(cfg, cfgPath); got != "/workspace/.okdev/post-sync.sh" {
+		t.Fatalf("unexpected postSync: %q", got)
+	}
+}
+
+func TestResolvePostSyncCommandReturnsEmptyWhenNotConfigured(t *testing.T) {
+	cfg := testLifecycleCfg()
+	got := resolvePostSyncCommand(cfg, "/tmp/.okdev.yaml")
+	if got != "" {
+		t.Fatalf("expected empty, got: %q", got)
+	}
+}
+
 func TestResolveLifecycleScriptsFromFolderConfig(t *testing.T) {
 	tmp := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(tmp, ".okdev"), 0o755); err != nil {

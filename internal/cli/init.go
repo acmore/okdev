@@ -212,7 +212,10 @@ func applyWorkloadDefaults(vars *config.TemplateVars) {
 			vars.ManifestPath = ".okdev/pytorchjob.yaml"
 		}
 		if len(vars.InjectPaths) == 0 {
-			vars.InjectPaths = []string{"spec.pytorchReplicaSpecs.Master.template"}
+			vars.InjectPaths = []string{
+				"spec.pytorchReplicaSpecs.Master.template",
+				"spec.pytorchReplicaSpecs.Worker.template",
+			}
 		}
 		if strings.TrimSpace(vars.AttachContainer) == "" {
 			vars.AttachContainer = "dev"
