@@ -45,10 +45,13 @@ cd "$WORKDIR"
 # The training-operator webhook requires a container named "pytorch".
 # The scaffold uses "dev", so patch the manifest and config.
 MANIFEST_PATH="$WORKDIR/.okdev/pytorchjob.yaml"
-sed -i 's/name: dev/name: pytorch/' "$MANIFEST_PATH"
-sed -i 's/image: # TODO:.*/image: ubuntu:22.04/' "$MANIFEST_PATH"
-sed -i 's/command: \["sleep", "infinity"\]/command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]/' "$MANIFEST_PATH"
+sed -i 's/name: dev/name: pytorch/g' "$MANIFEST_PATH"
+sed -i 's/image: # TODO:.*/image: ubuntu:22.04/g' "$MANIFEST_PATH"
+sed -i 's/command: \["sleep", "infinity"\]/command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]/g' "$MANIFEST_PATH"
 sed -i 's/container: dev/container: pytorch/' "$CFG_PATH"
+
+# Set 2 worker replicas for multi-pod testing (1 master + 2 workers = 3 pods).
+sed -i '/Worker:/,/replicas:/ s/replicas: 1/replicas: 2/' "$MANIFEST_PATH"
 
 # Disable persistent SSH sessions for CI
 sed -i '/ssh:/a\    persistentSession: false' "$CFG_PATH"
@@ -70,7 +73,7 @@ cat "$MANIFEST_PATH"
 
 echo "hello from pytorchjob e2e" >"$SYNC_DIR/hello.txt"
 
-echo "Starting PyTorchJob smoke session"
+echo "Starting PyTorchJob smoke session (1 master + 2 workers)"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m
 
 echo "Checking status"
@@ -105,19 +108,42 @@ MASTER_POD=$(kubectl -n "$NAMESPACE" get pods \
   -o jsonpath='{.items[0].metadata.name}')
 echo "Master pod: $MASTER_POD"
 
+WORKER_PODS=$(kubectl -n "$NAMESPACE" get pods \
+  -l "training.kubeflow.org/job-name=$SESSION_NAME,training.kubeflow.org/replica-type=worker" \
+  -o jsonpath='{.items[*].metadata.name}')
+echo "Worker pods: $WORKER_PODS"
+
+WORKER_COUNT=$(echo "$WORKER_PODS" | wc -w | tr -d ' ')
+if [[ "$WORKER_COUNT" -ne 2 ]]; then
+  echo "ERROR: expected 2 worker pods, found $WORKER_COUNT" >&2
+  exit 1
+fi
+echo "Worker pod count verified: $WORKER_COUNT"
+
+# -- postCreate: runs only on the target (master) pod --
 echo "Verifying postCreate ran on master pod"
 kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- test -f /tmp/post-create-marker
-echo "postCreate marker verified"
+echo "postCreate marker verified on master"
 
 echo "Verifying postCreate annotation on master pod"
 POST_CREATE_ANN=$(kubectl -n "$NAMESPACE" get pod "$MASTER_POD" \
   -o jsonpath='{.metadata.annotations.okdev\.io/post-create-done}')
 if [[ "$POST_CREATE_ANN" != "true" ]]; then
-  echo "ERROR: okdev.io/post-create-done annotation missing or not true (got: '$POST_CREATE_ANN')" >&2
+  echo "ERROR: okdev.io/post-create-done annotation missing or not true on master (got: '$POST_CREATE_ANN')" >&2
   exit 1
 fi
-echo "postCreate annotation verified"
+echo "postCreate annotation verified on master"
 
+echo "Verifying postCreate did NOT run on worker pods"
+for WPOD in $WORKER_PODS; do
+  if kubectl -n "$NAMESPACE" exec "$WPOD" -c pytorch -- test -f /tmp/post-create-marker 2>/dev/null; then
+    echo "ERROR: postCreate marker unexpectedly found on worker pod $WPOD" >&2
+    exit 1
+  fi
+  echo "postCreate correctly absent on $WPOD"
+done
+
+# -- postSync: runs on ALL pods after initial sync --
 echo "Verifying postSync ran on master pod"
 kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- test -f /tmp/post-sync-marker
 echo "postSync marker verified on master"
@@ -126,19 +152,45 @@ echo "Verifying postSync annotation on master pod"
 POST_SYNC_ANN=$(kubectl -n "$NAMESPACE" get pod "$MASTER_POD" \
   -o jsonpath='{.metadata.annotations.okdev\.io/post-sync-done}')
 if [[ "$POST_SYNC_ANN" != "true" ]]; then
-  echo "ERROR: okdev.io/post-sync-done annotation missing or not true (got: '$POST_SYNC_ANN')" >&2
+  echo "ERROR: okdev.io/post-sync-done annotation missing or not true on master (got: '$POST_SYNC_ANN')" >&2
   exit 1
 fi
-echo "postSync annotation verified"
+echo "postSync annotation verified on master"
 
-echo "Verifying preStop lifecycle handler is injected on master pod"
+echo "Verifying postSync ran on all worker pods"
+for WPOD in $WORKER_PODS; do
+  kubectl -n "$NAMESPACE" exec "$WPOD" -c pytorch -- test -f /tmp/post-sync-marker
+  echo "postSync marker verified on $WPOD"
+
+  WANN=$(kubectl -n "$NAMESPACE" get pod "$WPOD" \
+    -o jsonpath='{.metadata.annotations.okdev\.io/post-sync-done}')
+  if [[ "$WANN" != "true" ]]; then
+    echo "ERROR: okdev.io/post-sync-done annotation missing or not true on $WPOD (got: '$WANN')" >&2
+    exit 1
+  fi
+  echo "postSync annotation verified on $WPOD"
+done
+
+# -- preStop: Kubernetes lifecycle handler injected on all pods --
+echo "Verifying preStop lifecycle handler on master pod"
 PRESTOP_CMD=$(kubectl -n "$NAMESPACE" get pod "$MASTER_POD" \
   -o jsonpath='{.spec.containers[?(@.name=="pytorch")].lifecycle.preStop.exec.command}')
 if [[ "$PRESTOP_CMD" != *"pre-stop-marker"* ]]; then
-  echo "ERROR: preStop lifecycle handler not found or unexpected (got: '$PRESTOP_CMD')" >&2
+  echo "ERROR: preStop lifecycle handler not found on master (got: '$PRESTOP_CMD')" >&2
   exit 1
 fi
-echo "preStop lifecycle handler verified"
+echo "preStop handler verified on master"
+
+echo "Verifying preStop lifecycle handler on worker pods"
+for WPOD in $WORKER_PODS; do
+  WPRESTOP=$(kubectl -n "$NAMESPACE" get pod "$WPOD" \
+    -o jsonpath='{.spec.containers[?(@.name=="pytorch")].lifecycle.preStop.exec.command}')
+  if [[ "$WPRESTOP" != *"pre-stop-marker"* ]]; then
+    echo "ERROR: preStop lifecycle handler not found on worker $WPOD (got: '$WPRESTOP')" >&2
+    exit 1
+  fi
+  echo "preStop handler verified on $WPOD"
+done
 
 echo "Testing explicit okdev down"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes
@@ -156,4 +208,4 @@ for i in $(seq 1 15); do
   sleep 2
 done
 
-echo "PyTorchJob smoke test completed"
+echo "PyTorchJob smoke test completed (1 master + 2 workers, all lifecycle hooks verified)"

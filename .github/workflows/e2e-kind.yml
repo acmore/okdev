@@ -81,24 +81,24 @@ jobs:
           kubectl get pods -A -o wide || true
           kubectl get pytorchjobs -A -o wide || true
           kubectl get events -A --sort-by=.lastTimestamp | tail -n 200 || true
-          for pod in $(kubectl -n default get pods -l training.kubeflow.org/job-name=e2e-ptjob -o name 2>/dev/null); do
+          for pod in $(kubectl -n default get pods -l training.kubeflow.org/job-name=e2e-ptjob -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
             echo "--- $pod logs (okdev-sidecar) ---"
             kubectl -n default logs "$pod" -c okdev-sidecar || true
-            echo "--- $pod logs (dev) ---"
-            kubectl -n default logs "$pod" -c dev || true
+            echo "--- $pod logs (pytorch) ---"
+            kubectl -n default logs "$pod" -c pytorch || true
+            echo "--- $pod lifecycle markers ---"
+            kubectl -n default exec "$pod" -c pytorch -- sh -c 'ls -la /tmp/post-create-marker /tmp/post-sync-marker 2>&1 || true'
+            echo "--- $pod annotations ---"
+            kubectl -n default get pod "$pod" -o jsonpath='{.metadata.annotations}' 2>/dev/null || true
+            echo ""
+            echo "--- $pod preStop handler ---"
+            kubectl -n default get pod "$pod" -o jsonpath='{.spec.containers[?(@.name=="pytorch")].lifecycle}' 2>/dev/null || true
+            echo ""
           done
-          MASTER_POD=$(kubectl -n default get pods -l training.kubeflow.org/job-name=e2e-ptjob,training.kubeflow.org/replica-type=master -o name 2>/dev/null | head -1)
+          MASTER_POD=$(kubectl -n default get pods -l training.kubeflow.org/job-name=e2e-ptjob,training.kubeflow.org/replica-type=master -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
           if [[ -n "$MASTER_POD" ]]; then
             echo "--- syncthing state (master) ---"
             kubectl -n default exec "$MASTER_POD" -c okdev-sidecar -- sh -c 'cat /var/okdev/syncthing/config.xml 2>/dev/null || true'
             kubectl -n default exec "$MASTER_POD" -c okdev-sidecar -- sh -c 'ls -la /var/okdev/syncthing/ 2>/dev/null || true'
-            echo "--- lifecycle hook markers (master) ---"
-            kubectl -n default exec "$MASTER_POD" -c pytorch -- sh -c 'ls -la /tmp/post-create-marker /tmp/post-sync-marker 2>&1 || true'
-            echo "--- lifecycle annotations (master) ---"
-            kubectl -n default get "$MASTER_POD" -o jsonpath='{.metadata.annotations}' 2>/dev/null || true
-            echo ""
-            echo "--- preStop handler (master) ---"
-            kubectl -n default get "$MASTER_POD" -o jsonpath='{.spec.containers[?(@.name=="pytorch")].lifecycle}' 2>/dev/null || true
-            echo ""
           fi
           kubectl -n kubeflow logs deployment/training-operator --tail=100 || true
