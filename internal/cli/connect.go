@@ -14,7 +14,16 @@ func newConnectCmd(opts *Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "connect [session]",
 		Short: "Open shell or run command in session pod",
-		Args:  cobra.MaximumNArgs(1),
+		Long:  "Open a shell via kubectl exec. For persistent tmux sessions and port forwarding, use okdev ssh instead.",
+		Example: `  # Open an interactive shell
+  okdev connect
+
+  # Run a one-off command
+  okdev connect --cmd "cat /etc/os-release"
+
+  # Use a specific shell
+  okdev connect --shell /bin/zsh`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			applySessionArg(opts, args)
 			cc, err := resolveCommandContext(opts, resolveSessionName)

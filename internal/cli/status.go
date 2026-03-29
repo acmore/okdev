@@ -15,7 +15,18 @@ func newStatusCmd(opts *Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status [session]",
 		Short: "Show session status",
-		Args:  cobra.MaximumNArgs(1),
+		Example: `  # Show current session status
+  okdev status
+
+  # Show all sessions for this owner
+  okdev status --all
+
+  # Detailed diagnostics (SSH, sync, agents, pod events)
+  okdev status --details
+
+  # JSON output for scripting
+  okdev status --output json`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			applySessionArg(opts, args)
 			cc, err := resolveCommandContext(opts, nil)

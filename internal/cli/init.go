@@ -32,6 +32,20 @@ func newInitCmd(opts *Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Create a starter .okdev.yaml config",
+		Example: `  # Interactive setup (prompts for each field)
+  okdev init
+
+  # Scaffold a Job workload with starter manifest
+  okdev init --workload job
+
+  # Generic deployment with preset
+  okdev init --workload generic --generic-preset deployment
+
+  # Go project with Go-oriented sync ignores
+  okdev init --template basic --stignore-preset go
+
+  # Non-interactive with explicit values
+  okdev init --yes --name my-project --namespace dev`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := config.DefaultFile
 			if opts.ConfigPath != "" {
