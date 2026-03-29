@@ -64,6 +64,16 @@ spec:
     - name: opencode
 ```
 
+Override the Codex auth file when your environment uses a different local path:
+
+```yaml
+spec:
+  agents:
+    - name: codex
+      auth:
+        localPath: ~/.codex/company-auth.json
+```
+
 Phase 1 currently supports:
 
 - `okdev up` install checks for configured agent CLIs
