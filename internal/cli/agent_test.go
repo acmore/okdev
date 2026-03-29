@@ -122,14 +122,14 @@ func TestConfiguredAgentStatusRows(t *testing.T) {
 func TestEnsureConfiguredAgentsInstalled(t *testing.T) {
 	client := &fakeAgentExecClient{
 		results: map[string]error{
-			"command -v claude >/dev/null 2>&1":   nil,
-			"command -v codex >/dev/null 2>&1":    errors.New("exit status 1"),
-			"command -v gemini >/dev/null 2>&1":   errors.New("exit status 1"),
-			"command -v opencode >/dev/null 2>&1": errors.New("exit status 1"),
+			"command -v claude >/dev/null 2>&1":                               nil,
+			"command -v codex >/dev/null 2>&1":                                errors.New("exit status 1"),
+			"command -v gemini >/dev/null 2>&1":                               errors.New("exit status 1"),
+			"command -v opencode >/dev/null 2>&1":                             errors.New("exit status 1"),
 			"command -v npm >/dev/null 2>&1 && npm --version >/dev/null 2>&1": nil,
-			"npm install -g @openai/codex":        nil,
-			"npm install -g @google/gemini-cli":   nil,
-			"npm install -g opencode-ai":          nil,
+			"npm install -g @openai/codex":                                    nil,
+			"npm install -g @google/gemini-cli":                               nil,
+			"npm install -g opencode-ai":                                      nil,
 		},
 		outputs: map[string][]byte{
 			`node -p 'process.versions.node.split(".")[0]'`: []byte("20\n"),
@@ -199,7 +199,7 @@ func TestEnsureConfiguredAgentsInstalledBootstrapsNPMOnce(t *testing.T) {
 func TestEnsureConfiguredAgentsInstalledWarnsWhenNpmMissing(t *testing.T) {
 	client := &fakeAgentExecClient{
 		results: map[string]error{
-			"command -v codex >/dev/null 2>&1": errors.New("exit status 1"),
+			"command -v codex >/dev/null 2>&1":                                errors.New("exit status 1"),
 			"command -v npm >/dev/null 2>&1 && npm --version >/dev/null 2>&1": errors.New("exit status 1"),
 		},
 		outputs: map[string][]byte{
@@ -323,9 +323,9 @@ func TestEnsureConfiguredAgentsInstalledBootstrapsCurlThenNVM(t *testing.T) {
 func TestEnsureConfiguredAgentsInstalledSkipsBootstrapWhenNodeAndNpmAlreadyPresent(t *testing.T) {
 	client := &fakeAgentExecClient{
 		results: map[string]error{
-			"command -v codex >/dev/null 2>&1": errors.New("exit status 1"),
+			"command -v codex >/dev/null 2>&1":                                errors.New("exit status 1"),
 			"command -v npm >/dev/null 2>&1 && npm --version >/dev/null 2>&1": nil,
-			"npm install -g @openai/codex":     nil,
+			"npm install -g @openai/codex":                                    nil,
 		},
 		outputs: map[string][]byte{
 			`node -p 'process.versions.node.split(".")[0]'`: []byte("20\n"),
@@ -356,9 +356,9 @@ func TestEnsureConfiguredAgentsInstalledSkipsBootstrapWhenNodeAndNpmAlreadyPrese
 func TestEnsureConfiguredAgentsInstalledReinstallsBrokenNPMAfterInterruptedBootstrap(t *testing.T) {
 	client := &fakeAgentExecClient{
 		results: map[string]error{
-			"command -v codex >/dev/null 2>&1":                           errors.New("exit status 1"),
+			"command -v codex >/dev/null 2>&1":                                errors.New("exit status 1"),
 			"command -v npm >/dev/null 2>&1 && npm --version >/dev/null 2>&1": errors.New("exit status 1"),
-			"npm install -g @openai/codex":                               nil,
+			"npm install -g @openai/codex":                                    nil,
 		},
 		outputs: map[string][]byte{
 			`node -p 'process.versions.node.split(".")[0]'`: []byte("20\n"),
