@@ -52,6 +52,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newSyncCmd(opts))
 	cmd.AddCommand(newPruneCmd(opts))
 	cmd.AddCommand(newMigrateCmd(opts))
+	initRootCompletion(cmd)
 
 	return cmd
 }
