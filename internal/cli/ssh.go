@@ -438,9 +438,13 @@ func ensureSSHConfigEntry(hostAlias, sessionName, namespace, user string, remote
 	if err != nil {
 		return false, err
 	}
+	okdevExecPath, err := os.Executable()
+	if err != nil {
+		return false, err
+	}
 	begin := "# BEGIN OKDEV " + hostAlias
 	end := "# END OKDEV " + hostAlias
-	proxyInner := fmt.Sprintf("okdev --session %s -n %s ssh-proxy --remote-port %d", shellQuote(sessionName), shellQuote(namespace), remotePort)
+	proxyInner := fmt.Sprintf("%s --session %s -n %s ssh-proxy --remote-port %d", shellQuote(okdevExecPath), shellQuote(sessionName), shellQuote(namespace), remotePort)
 	if strings.TrimSpace(okdevConfigPath) != "" {
 		proxyInner += " -c " + shellQuote(okdevConfigPath)
 	}
