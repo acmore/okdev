@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
@@ -229,6 +230,14 @@ func upDryRun(state *upState) error {
 
 func upWait(state *upState) error {
 	state.ui.section("Wait")
+
+	// Start watching pod events in the background to surface image pulls, scheduling, etc.
+	eventCtx, eventCancel := context.WithCancel(state.ctx)
+	defer eventCancel()
+	go state.command.kube.WatchPodEvents(eventCtx, state.command.namespace, state.workloadName, func(reason, message string) {
+		state.ui.stepRun("pod event", fmt.Sprintf("[%s] %s", reason, message))
+	})
+
 	progressPrinter := func(p kube.PodReadinessProgress) {
 		reason := strings.TrimSpace(p.Reason)
 		if reason == "" {
@@ -264,7 +273,6 @@ func upWait(state *upState) error {
 
 func upSetup(state *upState) error {
 	state.ui.section("Setup")
-	sshSummary := "disabled"
 	keyPath, err := defaultSSHKeyPath(state.command.cfg)
 	if err != nil {
 		return fmt.Errorf("resolve SSH key path: %w", err)
@@ -273,53 +281,33 @@ func upSetup(state *upState) error {
 	if err != nil {
 		return fmt.Errorf("refresh target before setup: %w", err)
 	}
-	if err := ensureSSHKeyOnPod(state.opts, state.command.namespace, target.PodName, target.Container, keyPath); err != nil {
-		return fmt.Errorf("setup SSH key in pod: %w", err)
-	}
-	target, err = refreshTargetRef(state.ctx, state.opts, state.command.cfg, state.command.namespace, state.command.sessionName, state.command.kube, target)
-	if err != nil {
-		return fmt.Errorf("refresh target before sshd wait: %w", err)
-	}
-	if err := waitForSSHReady(state.opts, state.command.namespace, target.PodName, target.Container, state.flags.waitTimeout); err != nil {
-		return fmt.Errorf("wait for SSH service: %w", err)
-	}
-	alias := sshHostAlias(state.command.sessionName)
-	if _, cfgErr := ensureSSHConfigEntry(alias, state.command.sessionName, state.command.namespace, state.command.cfg.Spec.SSH.User, sshPort, keyPath, state.command.cfgPath, state.command.cfg.Spec.Ports); cfgErr != nil {
-		return fmt.Errorf("update ~/.ssh/config: %w", cfgErr)
-	}
-	if err := stopManagedSSHForward(alias); err != nil {
-		slog.Debug("failed to stop managed SSH forward", "alias", alias, "error", err)
-	}
-	if err := startManagedSSHForwardWithForwards(alias, state.command.cfg.Spec.Ports, state.command.cfg.Spec.SSH); err != nil {
-		return fmt.Errorf("start managed SSH/port-forwards: %w", err)
-	}
-	sshSummary = "ssh " + alias
-	state.ui.stepDone("ssh", sshSummary)
 
+	// Run SSH setup and sync setup in parallel — they have no dependencies on each other.
+	var wg sync.WaitGroup
+	var sshErr, syncErr error
+	sshSummary := "disabled"
 	syncSummary := "disabled"
 	syncModeSymbol := ""
-	if state.command.cfg.Spec.Sync.Engine == "" || state.command.cfg.Spec.Sync.Engine == "syncthing" {
-		if reset, err := ensureSyncthingTargetSessionState(state.ctx, state.command.kube, state.command.namespace, state.command.sessionName, target.PodName); err != nil {
-			return fmt.Errorf("reconcile local syncthing session state: %w", err)
-		} else if reset {
-			state.ui.stepDone("sync state", "reset after target pod recreation")
-		}
-		if err := refreshSyncthingSessionProcesses(state.command.sessionName); err != nil {
-			return fmt.Errorf("refresh local syncthing session state: %w", err)
-		}
-		logPath, started, err := startDetachedSyncthingSync(state.opts, upDefaultSyncMode, state.command.sessionName, state.command.namespace, state.command.cfgPath)
-		if err != nil {
-			return fmt.Errorf("start syncthing background sync: %w", err)
-		}
-		syncModeSymbol = modeSymbol(upDefaultSyncMode)
-		syncPathSummary := syncPairsSummary(state.syncPairs, syncModeSymbol)
-		if started {
-			syncSummary = "active (" + syncModeSymbol + ")"
-			state.ui.stepDone("sync", fmt.Sprintf("active (%s), %s, logs: %s", syncModeSymbol, syncPathSummary, logPath))
-		} else {
-			syncSummary = "already active (" + syncModeSymbol + ")"
-			state.ui.stepDone("sync", fmt.Sprintf("already active (%s), %s, logs: %s", syncModeSymbol, syncPathSummary, logPath))
-		}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		sshSummary, sshErr = upSetupSSH(state, target, keyPath)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		syncSummary, syncModeSymbol, syncErr = upSetupSync(state, target)
+	}()
+
+	wg.Wait()
+
+	if sshErr != nil {
+		return sshErr
+	}
+	if syncErr != nil {
+		return syncErr
 	}
 	if len(state.command.cfg.Spec.Agents) > 0 {
 		target, err = refreshTargetRef(state.ctx, state.opts, state.command.cfg, state.command.namespace, state.command.sessionName, state.command.kube, target)
@@ -397,6 +385,66 @@ func upSetup(state *upState) error {
 	state.ui.printWarnings()
 	state.ui.printReadyCard(state.command.sessionName, state.command.namespace, target.PodName, sshSummary, syncSummary, state.command.cfg.Spec.Ports, state.syncPairs, syncModeSymbol)
 	return nil
+}
+
+func upSetupSSH(state *upState, target workload.TargetRef, keyPath string) (string, error) {
+	state.ui.stepRun("ssh", "installing key")
+	if err := ensureSSHKeyOnPod(state.opts, state.command.namespace, target.PodName, target.Container, keyPath); err != nil {
+		return "", fmt.Errorf("setup SSH key in pod: %w", err)
+	}
+	target, err := refreshTargetRef(state.ctx, state.opts, state.command.cfg, state.command.namespace, state.command.sessionName, state.command.kube, target)
+	if err != nil {
+		return "", fmt.Errorf("refresh target before sshd wait: %w", err)
+	}
+	state.ui.stepRun("ssh", "waiting for sshd")
+	if err := waitForSSHReady(state.opts, state.command.namespace, target.PodName, target.Container, state.flags.waitTimeout); err != nil {
+		return "", fmt.Errorf("wait for SSH service: %w", err)
+	}
+	alias := sshHostAlias(state.command.sessionName)
+	if _, cfgErr := ensureSSHConfigEntry(alias, state.command.sessionName, state.command.namespace, state.command.cfg.Spec.SSH.User, sshPort, keyPath, state.command.cfgPath, state.command.cfg.Spec.Ports); cfgErr != nil {
+		return "", fmt.Errorf("update ~/.ssh/config: %w", cfgErr)
+	}
+	if err := stopManagedSSHForward(alias); err != nil {
+		slog.Debug("failed to stop managed SSH forward", "alias", alias, "error", err)
+	}
+	if err := startManagedSSHForwardWithForwards(alias, state.command.cfg.Spec.Ports, state.command.cfg.Spec.SSH); err != nil {
+		return "", fmt.Errorf("start managed SSH/port-forwards: %w", err)
+	}
+	summary := "ssh " + alias
+	state.ui.stepDone("ssh", summary)
+	return summary, nil
+}
+
+func upSetupSync(state *upState, target workload.TargetRef) (string, string, error) {
+	summary := "disabled"
+	modeSym := ""
+	if state.command.cfg.Spec.Sync.Engine != "" && state.command.cfg.Spec.Sync.Engine != "syncthing" {
+		return summary, modeSym, nil
+	}
+	state.ui.stepRun("sync", "reconciling state")
+	if reset, err := ensureSyncthingTargetSessionState(state.ctx, state.command.kube, state.command.namespace, state.command.sessionName, target.PodName); err != nil {
+		return "", "", fmt.Errorf("reconcile local syncthing session state: %w", err)
+	} else if reset {
+		state.ui.stepDone("sync state", "reset after target pod recreation")
+	}
+	if err := refreshSyncthingSessionProcesses(state.command.sessionName); err != nil {
+		return "", "", fmt.Errorf("refresh local syncthing session state: %w", err)
+	}
+	state.ui.stepRun("sync", "starting")
+	logPath, started, err := startDetachedSyncthingSync(state.opts, upDefaultSyncMode, state.command.sessionName, state.command.namespace, state.command.cfgPath)
+	if err != nil {
+		return "", "", fmt.Errorf("start syncthing background sync: %w", err)
+	}
+	modeSym = modeSymbol(upDefaultSyncMode)
+	syncPathSummary := syncPairsSummary(state.syncPairs, modeSym)
+	if started {
+		summary = "active (" + modeSym + ")"
+		state.ui.stepDone("sync", fmt.Sprintf("active (%s), %s, logs: %s", modeSym, syncPathSummary, logPath))
+	} else {
+		summary = "already active (" + modeSym + ")"
+		state.ui.stepDone("sync", fmt.Sprintf("already active (%s), %s, logs: %s", modeSym, syncPathSummary, logPath))
+	}
+	return summary, modeSym, nil
 }
 
 type workloadExistenceChecker interface {
@@ -707,25 +755,44 @@ type upUI struct {
 	interactive bool
 	activeStep  string
 	active      *transientStatus
+	mu          sync.Mutex
 }
 
 const ansiReset = "\033[0m"
 const ansiYellow = "\033[33m"
 
 func newUpUI(out, errOut io.Writer) *upUI {
+	sw := &syncWriter{w: out}
 	return &upUI{
-		out:         out,
+		out:         sw,
 		errOut:      errOut,
 		interactive: isTerminalWriter(out),
 	}
 }
 
+// syncWriter serializes all writes so concurrent goroutines (transientStatus
+// spinner, parallel stepRun/stepDone) don't interleave output.
+type syncWriter struct {
+	w  io.Writer
+	mu sync.Mutex
+}
+
+func (sw *syncWriter) Write(p []byte) (int, error) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return sw.w.Write(p)
+}
+
 func (u *upUI) section(name string) {
-	u.stopActive()
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.stopActiveLocked()
 	fmt.Fprintf(u.out, "\n== %s ==\n", name)
 }
 
 func (u *upUI) stepRun(step, detail string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	if u.interactive {
 		message := u.stepMessage(step, detail)
 		if u.active != nil && u.active.enabled {
@@ -733,7 +800,7 @@ func (u *upUI) stepRun(step, detail string) {
 				u.active.update(message)
 				return
 			}
-			u.stopActive()
+			u.stopActiveLocked()
 		}
 		u.activeStep = step
 		u.active = newTransientStatusWithMode(u.out, message, true)
@@ -751,8 +818,10 @@ func (u *upUI) stepRun(step, detail string) {
 }
 
 func (u *upUI) stepDone(step, detail string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	if u.activeStep == step {
-		u.stopActive()
+		u.stopActiveLocked()
 	}
 	if detail == "" {
 		fmt.Fprintf(u.out, "✔ %s\n", step)
@@ -782,6 +851,12 @@ func (u *upUI) formatStepDetail(step, detail string) string {
 }
 
 func (u *upUI) stopActive() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.stopActiveLocked()
+}
+
+func (u *upUI) stopActiveLocked() {
 	if u.active != nil {
 		u.active.stop()
 		u.active = nil
@@ -790,6 +865,8 @@ func (u *upUI) stopActive() {
 }
 
 func (u *upUI) warnf(format string, args ...any) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	msg := strings.TrimSpace(fmt.Sprintf(format, args...))
 	if msg == "" {
 		return

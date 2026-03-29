@@ -104,6 +104,9 @@ const (
 	// Transient status spinner frame interval.
 	statusSpinnerInterval = 120 * time.Millisecond
 
+	// Elapsed time is shown on spinners after this threshold.
+	statusElapsedThreshold = 3 * time.Second
+
 	// Default SSH port in dev containers.
 	sshPort = 2222
 
