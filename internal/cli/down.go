@@ -21,6 +21,17 @@ func newDownCmd(opts *Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "down",
 		Short: "Delete a dev session pod",
+		Example: `  # Delete the current session (prompts for confirmation)
+  okdev down
+
+  # Delete without confirmation (for scripts/CI)
+  okdev down --yes
+
+  # Preview what would be deleted
+  okdev down --dry-run
+
+  # Delete a specific session
+  okdev down --session my-feature -y`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ui := newUpUI(cmd.OutOrStdout(), cmd.ErrOrStderr())
 			ui.section("Validate")

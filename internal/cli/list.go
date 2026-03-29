@@ -18,6 +18,17 @@ func newListCmd(opts *Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List dev sessions",
+		Example: `  # List your sessions in the current namespace
+  okdev list
+
+  # List across all namespaces
+  okdev list --all-namespaces
+
+  # List all users' sessions
+  okdev list --all-users
+
+  # JSON output
+  okdev list --output json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc := &commandContext{opts: opts}
 			ns := opts.Namespace

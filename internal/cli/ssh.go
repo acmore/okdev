@@ -37,7 +37,21 @@ func newSSHCmd(opts *Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ssh [session]",
 		Short: "Connect to session pod over SSH",
-		Args:  cobra.MaximumNArgs(1),
+		Example: `  # Open a tmux-backed SSH shell
+  okdev ssh
+
+  # Connect to a specific session
+  okdev ssh my-feature
+
+  # Run a command over SSH
+  okdev ssh --cmd "ls -la /workspace"
+
+  # Plain shell without tmux
+  okdev ssh --no-tmux
+
+  # Or use the managed SSH host alias directly
+  ssh okdev-my-feature`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withQuietConfigAnnounce(func() error {
 				errOut := cmd.ErrOrStderr()

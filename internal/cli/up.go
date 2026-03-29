@@ -67,6 +67,17 @@ func newUpCmd(opts *Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "up",
 		Short: "Create or resume a dev session",
+		Example: `  # Start a session using .okdev.yaml in the current directory
+  okdev up
+
+  # Start a named session
+  okdev up --session my-feature
+
+  # Preview what would be created without modifying the cluster
+  okdev up --dry-run
+
+  # Start without tmux-backed persistent shell
+  okdev up --no-tmux`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runUp(cmd, opts, upOptions{
 				waitTimeout:            waitTimeout,
