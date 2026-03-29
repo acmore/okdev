@@ -89,7 +89,7 @@ type detailedStatusLogs struct {
 	OKDevLog string `json:"okdevLog,omitempty"`
 }
 
-func gatherDetailedStatus(ctx context.Context, cfg *config.DevEnvironment, namespace string, view sessionView, client statusDetailsClient) detailedStatus {
+func gatherDetailedStatus(ctx context.Context, cfg *config.DevEnvironment, cfgPath, namespace string, view sessionView, client statusDetailsClient) detailedStatus {
 	detail := detailedStatus{
 		Session:   view.Session,
 		Namespace: view.Namespace,
@@ -111,7 +111,7 @@ func gatherDetailedStatus(ctx context.Context, cfg *config.DevEnvironment, names
 	detail.Target = target
 	detail.Pods = pods
 	detail.SSH = buildDetailedSSH(view.Session, cfg.Spec.Ports)
-	detail.Sync = buildDetailedSync(view.Session, cfg)
+	detail.Sync = buildDetailedSync(view.Session, cfg, cfgPath)
 	if agentClient, ok := client.(agentExecClient); ok && len(cfg.Spec.Agents) > 0 && strings.TrimSpace(view.TargetPod) != "" && strings.TrimSpace(target.SelectedContainer) != "" {
 		if rows, err := configuredAgentStatusRows(ctx, agentClient, namespace, view.TargetPod, target.SelectedContainer, cfg.Spec.Agents); err == nil {
 			detail.Agents = rows
@@ -189,14 +189,14 @@ func buildDetailedSSH(sessionName string, forwards []config.PortMapping) detaile
 	return detail
 }
 
-func buildDetailedSync(sessionName string, cfg *config.DevEnvironment) detailedStatusSync {
+func buildDetailedSync(sessionName string, cfg *config.DevEnvironment, cfgPath string) detailedStatusSync {
 	engine := strings.TrimSpace(cfg.Spec.Sync.Engine)
 	if engine == "" {
 		engine = "syncthing"
 	}
 	detail := detailedStatusSync{
 		Engine:          engine,
-		ConfiguredPaths: summarizeConfiguredSyncPaths(cfg),
+		ConfiguredPaths: summarizeConfiguredSyncPaths(cfg, cfgPath),
 	}
 	if engine != "syncthing" {
 		return detail
@@ -227,7 +227,7 @@ func buildDetailedSync(sessionName string, cfg *config.DevEnvironment) detailedS
 	if logPath, err := syncthingBackgroundLogPath(sessionName); err == nil {
 		detail.LogPath = logPath
 	}
-	if pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.WorkspaceMountPath()); err == nil {
+	if pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.EffectiveWorkspaceMountPath(cfgPath)); err == nil {
 		if count, paths := localSyncConflictStatus(pairs); count > 0 {
 			detail.ConflictCount = count
 			detail.ConflictPaths = paths
@@ -372,8 +372,8 @@ func summarizeConfiguredPorts(forwards []config.PortMapping) []string {
 	return lines
 }
 
-func summarizeConfiguredSyncPaths(cfg *config.DevEnvironment) []string {
-	pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.WorkspaceMountPath())
+func summarizeConfiguredSyncPaths(cfg *config.DevEnvironment, cfgPath string) []string {
+	pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.EffectiveWorkspaceMountPath(cfgPath))
 	if err != nil {
 		return []string{"invalid sync config: " + err.Error()}
 	}

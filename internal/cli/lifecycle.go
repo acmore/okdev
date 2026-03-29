@@ -18,7 +18,7 @@ func resolvePostCreateCommand(cfg *config.DevEnvironment, configPath string) str
 	}
 	script := filepath.Join(root, ".okdev", "post-create.sh")
 	if st, err := os.Stat(script); err == nil && !st.IsDir() {
-		return filepath.Join(cfg.WorkspaceMountPath(), ".okdev", "post-create.sh")
+		return filepath.Join(cfg.EffectiveWorkspaceMountPath(configPath), ".okdev", "post-create.sh")
 	}
 	return ""
 }
@@ -33,19 +33,11 @@ func resolvePreStopCommand(cfg *config.DevEnvironment, configPath string) string
 	}
 	script := filepath.Join(root, ".okdev", "pre-stop.sh")
 	if st, err := os.Stat(script); err == nil && !st.IsDir() {
-		return filepath.Join(cfg.WorkspaceMountPath(), ".okdev", "pre-stop.sh")
+		return filepath.Join(cfg.EffectiveWorkspaceMountPath(configPath), ".okdev", "pre-stop.sh")
 	}
 	return ""
 }
 
 func configRootFromPath(configPath string) string {
-	p := strings.TrimSpace(configPath)
-	if p == "" {
-		return ""
-	}
-	dir := filepath.Dir(p)
-	if filepath.Base(dir) == ".okdev" && filepath.Base(p) == "okdev.yaml" {
-		return filepath.Dir(dir)
-	}
-	return dir
+	return config.RootDir(configPath)
 }

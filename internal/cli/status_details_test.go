@@ -114,7 +114,7 @@ func TestGatherDetailedStatusIncludesDiagnostics(t *testing.T) {
 	if err := os.WriteFile(statusPIDPath, []byte("not-a-pid\n"), 0o644); err != nil {
 		t.Fatalf("write status pid: %v", err)
 	}
-	detail := gatherDetailedStatus(context.Background(), cfg, "default", view, fakeStatusDetailsClient{
+	detail := gatherDetailedStatus(context.Background(), cfg, "/tmp/.okdev.yaml", "default", view, fakeStatusDetailsClient{
 		describe: "details",
 		results: map[string]error{
 			"command -v codex >/dev/null 2>&1": nil,
@@ -171,7 +171,7 @@ func TestGatherDetailedStatusDoesNotCreateRuntimeDirectories(t *testing.T) {
 		Pods:      []kube.PodSummary{{Name: "pod-1", Namespace: "default"}},
 	}
 
-	_ = gatherDetailedStatus(context.Background(), cfg, "default", view, nil)
+	_ = gatherDetailedStatus(context.Background(), cfg, "/tmp/.okdev.yaml", "default", view, nil)
 
 	for _, path := range []string{
 		filepath.Join(home, ".okdev", "ssh"),

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/acmore/okdev/internal/version"
@@ -304,6 +306,43 @@ func TestWorkspaceMountPathPrefersDevVolumeMount(t *testing.T) {
 	}}
 	if got := cfg.WorkspaceMountPath(); got != "/code" {
 		t.Fatalf("expected /code workspace mount path, got %q", got)
+	}
+}
+
+func TestEffectiveWorkspaceMountPathUsesInjectedManifest(t *testing.T) {
+	tmp := t.TempDir()
+	manifestDir := filepath.Join(tmp, ".okdev")
+	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
+		t.Fatalf("mkdir manifest dir: %v", err)
+	}
+	manifestPath := filepath.Join(manifestDir, "pytorchjob.yaml")
+	manifest := `apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: demo
+spec:
+  pytorchReplicaSpecs:
+    Master:
+      template:
+        spec:
+          containers:
+            - name: dev
+              volumeMounts:
+                - name: workspace
+                  mountPath: /train
+`
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	cfg := validConfig()
+	cfg.Spec.Workload.Type = "pytorchjob"
+	cfg.Spec.Workload.ManifestPath = ".okdev/pytorchjob.yaml"
+	cfg.Spec.Workload.Inject = []WorkloadInjectSpec{{Path: "spec.pytorchReplicaSpecs.Master.template"}}
+
+	configPath := filepath.Join(manifestDir, "okdev.yaml")
+	if got := cfg.EffectiveWorkspaceMountPath(configPath); got != "/train" {
+		t.Fatalf("expected manifest-derived workspace mount path /train, got %q", got)
 	}
 }
 

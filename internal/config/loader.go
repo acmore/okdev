@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"sigs.k8s.io/yaml"
 )
@@ -64,6 +65,18 @@ func ResolvePath(configPath string) (string, error) {
 		return "", err
 	}
 	return p, nil
+}
+
+func RootDir(configPath string) string {
+	p := strings.TrimSpace(configPath)
+	if p == "" {
+		return ""
+	}
+	dir := filepath.Dir(p)
+	if filepath.Base(dir) == ".okdev" && filepath.Base(p) == "okdev.yaml" {
+		return filepath.Dir(dir)
+	}
+	return dir
 }
 
 func discoverInParents(start, stopAt string, names ...string) (string, error) {
