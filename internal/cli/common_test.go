@@ -262,13 +262,13 @@ func TestWithQuietConfigAnnounceSetsAndRestoresEnv(t *testing.T) {
 func TestLoadConfigAndNamespaceAppliesOverrides(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, ".okdev.yaml")
-	if err := os.WriteFile(cfgPath, []byte("" +
-		"apiVersion: okdev.io/v1alpha1\n" +
-		"kind: DevEnvironment\n" +
-		"metadata:\n" +
-		"  name: demo\n" +
-		"spec:\n" +
-		"  namespace: team-a\n" +
+	if err := os.WriteFile(cfgPath, []byte(""+
+		"apiVersion: okdev.io/v1alpha1\n"+
+		"kind: DevEnvironment\n"+
+		"metadata:\n"+
+		"  name: demo\n"+
+		"spec:\n"+
+		"  namespace: team-a\n"+
 		"  kubeContext: cluster-a\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -292,12 +292,12 @@ func TestLoadConfigAndNamespaceAppliesOverrides(t *testing.T) {
 func TestResolveCommandContextUsesResolver(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, ".okdev.yaml")
-	if err := os.WriteFile(cfgPath, []byte("" +
-		"apiVersion: okdev.io/v1alpha1\n" +
-		"kind: DevEnvironment\n" +
-		"metadata:\n" +
-		"  name: demo\n" +
-		"spec:\n" +
+	if err := os.WriteFile(cfgPath, []byte(""+
+		"apiVersion: okdev.io/v1alpha1\n"+
+		"kind: DevEnvironment\n"+
+		"metadata:\n"+
+		"  name: demo\n"+
+		"spec:\n"+
 		"  namespace: team-a\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -280,30 +280,30 @@ func newFakeSessionRuntime(raw string, input string) *fakeSessionRuntime {
 	}
 }
 
-func (s *fakeSessionRuntime) Read(p []byte) (int, error)         { return s.stdin.Read(p) }
-func (s *fakeSessionRuntime) Write(p []byte) (int, error)        { return s.stdout.Write(p) }
-func (s *fakeSessionRuntime) Close() error                       { return nil }
-func (s *fakeSessionRuntime) CloseWrite() error                  { return nil }
+func (s *fakeSessionRuntime) Read(p []byte) (int, error)  { return s.stdin.Read(p) }
+func (s *fakeSessionRuntime) Write(p []byte) (int, error) { return s.stdout.Write(p) }
+func (s *fakeSessionRuntime) Close() error                { return nil }
+func (s *fakeSessionRuntime) CloseWrite() error           { return nil }
 func (s *fakeSessionRuntime) SendRequest(string, bool, []byte) (bool, error) {
 	return false, nil
 }
-func (s *fakeSessionRuntime) Stderr() io.ReadWriter              { return &s.stderr }
-func (s *fakeSessionRuntime) User() string                       { return "dev" }
-func (s *fakeSessionRuntime) RemoteAddr() net.Addr               { return dummyAddr("remote") }
-func (s *fakeSessionRuntime) LocalAddr() net.Addr                { return dummyAddr("local") }
-func (s *fakeSessionRuntime) Environ() []string                  { return s.env }
-func (s *fakeSessionRuntime) Exit(code int) error                { s.exitCode = code; s.exitCalls++; return nil }
-func (s *fakeSessionRuntime) Command() []string                  { return nil }
-func (s *fakeSessionRuntime) RawCommand() string                 { return s.raw }
-func (s *fakeSessionRuntime) Subsystem() string                  { return "" }
-func (s *fakeSessionRuntime) PublicKey() ssh.PublicKey           { return nil }
-func (s *fakeSessionRuntime) Context() ssh.Context               { return nil }
-func (s *fakeSessionRuntime) Permissions() ssh.Permissions       { return ssh.Permissions{} }
+func (s *fakeSessionRuntime) Stderr() io.ReadWriter        { return &s.stderr }
+func (s *fakeSessionRuntime) User() string                 { return "dev" }
+func (s *fakeSessionRuntime) RemoteAddr() net.Addr         { return dummyAddr("remote") }
+func (s *fakeSessionRuntime) LocalAddr() net.Addr          { return dummyAddr("local") }
+func (s *fakeSessionRuntime) Environ() []string            { return s.env }
+func (s *fakeSessionRuntime) Exit(code int) error          { s.exitCode = code; s.exitCalls++; return nil }
+func (s *fakeSessionRuntime) Command() []string            { return nil }
+func (s *fakeSessionRuntime) RawCommand() string           { return s.raw }
+func (s *fakeSessionRuntime) Subsystem() string            { return "" }
+func (s *fakeSessionRuntime) PublicKey() ssh.PublicKey     { return nil }
+func (s *fakeSessionRuntime) Context() ssh.Context         { return nil }
+func (s *fakeSessionRuntime) Permissions() ssh.Permissions { return ssh.Permissions{} }
 func (s *fakeSessionRuntime) Pty() (ssh.Pty, <-chan ssh.Window, bool) {
 	return s.pty, s.winCh, s.isPty
 }
-func (s *fakeSessionRuntime) Signals(chan<- ssh.Signal)          {}
-func (s *fakeSessionRuntime) Break(chan<- bool)                  {}
+func (s *fakeSessionRuntime) Signals(chan<- ssh.Signal) {}
+func (s *fakeSessionRuntime) Break(chan<- bool)         {}
 
 type dummyAddr string
 
