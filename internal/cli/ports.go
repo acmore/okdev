@@ -9,7 +9,8 @@ import (
 )
 
 func newPortsCmd(opts *Options) *cobra.Command {
-	return &cobra.Command{
+	var dryRun bool
+	cmd := &cobra.Command{
 		Use:   "ports",
 		Short: "Reconcile managed SSH port forwards for configured ports",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -25,8 +26,6 @@ func newPortsCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			effectiveSSHPort := sshPort
-			stopMaintenance := startSessionMaintenance(opts, cc.namespace, cc.sessionName, cmd.OutOrStdout(), true)
-			defer stopMaintenance()
 			if len(cc.cfg.Spec.Ports) == 0 {
 				return fmt.Errorf("no ports configured in config")
 			}
@@ -39,6 +38,18 @@ func newPortsCmd(opts *Options) *cobra.Command {
 			if len(validForwards) == 0 {
 				return fmt.Errorf("no valid ports configured")
 			}
+
+			if dryRun {
+				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: session=%s namespace=%s\n", cc.sessionName, cc.namespace)
+				fmt.Fprintf(cmd.OutOrStdout(), "- would reconcile managed forwards for %s\n", sshHostAlias(cc.sessionName))
+				for _, summary := range validForwards {
+					fmt.Fprintf(cmd.OutOrStdout(), "- %s\n", summary)
+				}
+				return nil
+			}
+
+			stopMaintenance := startSessionMaintenance(opts, cc.namespace, cc.sessionName, cmd.OutOrStdout(), true)
+			defer stopMaintenance()
 
 			keyPath, err := defaultSSHKeyPath(cc.cfg)
 			if err != nil {
@@ -79,4 +90,6 @@ func newPortsCmd(opts *Options) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview port-forward actions without changing SSH config or starting forwards")
+	return cmd
 }

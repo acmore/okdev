@@ -57,6 +57,7 @@ func TestUpUIStepDoneHighlightsReusedWorkloadInteractively(t *testing.T) {
 		out:         &out,
 		errOut:      &out,
 		interactive: true,
+		colors:      true,
 	}
 
 	ui.stepDone("pod", "reused existing workload (run `okdev down` then `okdev up` to recreate)")
@@ -64,6 +65,16 @@ func TestUpUIStepDoneHighlightsReusedWorkloadInteractively(t *testing.T) {
 	got := out.String()
 	if !strings.Contains(got, ansiYellow) || !strings.Contains(got, ansiReset) {
 		t.Fatalf("expected colored reused-workload detail, got %q", got)
+	}
+}
+
+func TestUpUIFormatStepDetailSkipsANSIWhenColorsDisabled(t *testing.T) {
+	ui := &upUI{interactive: true, colors: false}
+
+	got := ui.formatStepDetail("pod", "reused existing workload (run `okdev down` then `okdev up` to recreate)")
+
+	if strings.Contains(got, ansiYellow) || strings.Contains(got, ansiReset) {
+		t.Fatalf("expected plain reused-workload detail without ANSI, got %q", got)
 	}
 }
 
