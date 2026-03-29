@@ -24,10 +24,10 @@ jobs:
         run: go build -o bin/okdev ./cmd/okdev
 
       - name: Build sidecar image
-        run: docker build -f infra/sidecar/Dockerfile -t okdev-sidecar:e2e .
+        run: docker build -f infra/sidecar/Dockerfile -t okdev-sidecar:v0.0.0-e2e .
 
       - name: Load sidecar image into kind
-        run: kind load docker-image okdev-sidecar:e2e --name okdev-e2e
+        run: kind load docker-image okdev-sidecar:v0.0.0-e2e --name okdev-e2e
 
       - name: Run smoke test
         run: bash scripts/e2e_kind_smoke.sh
