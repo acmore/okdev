@@ -67,14 +67,14 @@
 
 /* ── Inline code ──────────────────────────────────────────────────── */
 
-.md-typeset code {
+.md-typeset :not(pre) > code {
   font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
   font-size: 0.82em;
   padding: 0.15em 0.4em;
   border-radius: 4px;
 }
 
-[data-md-color-scheme="slate"] .md-typeset code {
+[data-md-color-scheme="slate"] .md-typeset :not(pre) > code {
   background: var(--ok-surface-raised);
   border: 1px solid var(--ok-border);
   color: var(--ok-cyan);
@@ -82,12 +82,30 @@
 
 /* ── Code blocks ──────────────────────────────────────────────────── */
 
-.md-typeset pre {
+.md-typeset pre,
+.md-typeset .highlight pre {
   border-radius: 4px;
   border: 1px solid var(--ok-border);
 }
 
-[data-md-color-scheme="slate"] .md-typeset pre > code {
+[data-md-color-scheme="slate"] .md-typeset pre,
+[data-md-color-scheme="slate"] .md-typeset .highlight pre {
+  background: var(--ok-surface-raised);
+}
+
+.md-typeset pre code,
+.md-typeset .highlight code {
+  font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 0.82em;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code,
+[data-md-color-scheme="slate"] .md-typeset .highlight code {
   background: var(--ok-surface-raised);
   border: none;
   color: #e6edf3;
@@ -257,4 +275,3 @@
 .md-clipboard:hover {
   color: var(--ok-cyan);
 }
-
