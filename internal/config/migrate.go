@@ -141,6 +141,7 @@ func ensureWorkspaceMount(existingContainers, containerSeq, vmSeq, vmMapping *ya
 // DefaultMigrations is the ordered list of all config migrations.
 var DefaultMigrations = []Migration{
 	workspaceToVolumesMigration(),
+	pytorchjobWorkerInjectMigration(),
 }
 
 // knownPVCKeys are the workspace.pvc keys we know how to migrate.
@@ -148,6 +149,70 @@ var knownPVCKeys = map[string]bool{
 	"claimName":        true,
 	"size":             true,
 	"storageClassName": true,
+}
+
+// pytorchjobWorkerInjectMigration adds the Worker inject path to PyTorchJob
+// configs that only have the Master inject path. Earlier versions of
+// `okdev init --workload pytorchjob` only scaffolded the Master path.
+func pytorchjobWorkerInjectMigration() Migration {
+	const masterPath = "spec.pytorchReplicaSpecs.Master.template"
+	const workerPath = "spec.pytorchReplicaSpecs.Worker.template"
+
+	return Migration{
+		Name:        "pytorchjob-worker-inject",
+		Description: "Add Worker inject path to PyTorchJob configs that only inject into Master",
+		Applies: func(doc *yaml.Node) bool {
+			spec := findSpecNode(doc)
+			if spec == nil {
+				return false
+			}
+			_, wlNode := findKey(spec, "workload")
+			if wlNode == nil || wlNode.Kind != yaml.MappingNode {
+				return false
+			}
+			_, typeNode := findKey(wlNode, "type")
+			if typeNode == nil || typeNode.Value != "pytorchjob" {
+				return false
+			}
+			_, injectNode := findKey(wlNode, "inject")
+			if injectNode == nil || injectNode.Kind != yaml.SequenceNode {
+				return false
+			}
+			hasMaster := false
+			hasWorker := false
+			for _, item := range injectNode.Content {
+				_, pathNode := findKey(item, "path")
+				if pathNode == nil {
+					continue
+				}
+				if pathNode.Value == masterPath {
+					hasMaster = true
+				}
+				if pathNode.Value == workerPath {
+					hasWorker = true
+				}
+			}
+			return hasMaster && !hasWorker
+		},
+		Transform: func(doc *yaml.Node) ([]string, error) {
+			spec := findSpecNode(doc)
+			_, wlNode := findKey(spec, "workload")
+			_, injectNode := findKey(wlNode, "inject")
+
+			workerItem := &yaml.Node{Kind: yaml.MappingNode}
+			setKey(workerItem, "path", &yaml.Node{
+				Kind:  yaml.ScalarNode,
+				Value: workerPath,
+				Tag:   "!!str",
+				Style: yaml.DoubleQuotedStyle,
+			})
+			injectNode.Content = append(injectNode.Content, workerItem)
+
+			return []string{
+				"Added Worker inject path; ensure your PyTorchJob manifest has a Worker replica spec",
+			}, nil
+		},
+	}
 }
 
 func workspaceToVolumesMigration() Migration {
