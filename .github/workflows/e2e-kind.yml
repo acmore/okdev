@@ -37,3 +37,7 @@ jobs:
         run: |
           kubectl get pods -A -o wide || true
           kubectl get events -A --sort-by=.lastTimestamp | tail -n 200 || true
+          kubectl -n default logs okdev-e2e-smoke -c okdev-sidecar || true
+          kubectl -n default logs okdev-e2e-smoke -c dev || true
+          kubectl -n default exec okdev-e2e-smoke -c dev -- sh -lc 'ps aux || ps' || true
+          kubectl -n default exec okdev-e2e-smoke -c dev -- sh -lc 'ls -R /var/okdev /tmp 2>/dev/null | sed -n "1,200p"' || true
