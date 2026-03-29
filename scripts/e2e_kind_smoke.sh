@@ -52,7 +52,7 @@ spec:
     spec:
       containers:
         - name: dev
-          image: alpine:3.21
+          image: ubuntu:22.04
           command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]
 EOF
 
