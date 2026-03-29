@@ -105,6 +105,14 @@ func TestShutdownRequestLifecycle(t *testing.T) {
 		t.Fatalf("RequestShutdown error: %v", err)
 	}
 
+	p, err := ShutdownRequestPath("test-session")
+	if err != nil {
+		t.Fatalf("ShutdownRequestPath error: %v", err)
+	}
+	if !strings.HasPrefix(p, filepath.Join(home, ".okdev", shutdownRequestDirName)+string(os.PathSeparator)) {
+		t.Fatalf("expected global shutdown request path, got %q", p)
+	}
+
 	requested, err = ShutdownRequested("test-session")
 	if err != nil {
 		t.Fatalf("ShutdownRequested after request error: %v", err)
@@ -123,6 +131,51 @@ func TestShutdownRequestLifecycle(t *testing.T) {
 	}
 	if requested {
 		t.Fatal("expected shutdown request to be cleared")
+	}
+}
+
+func TestShutdownRequestedIgnoresLegacyRepoScopedMarker(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	repo := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	origWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+	if err := os.Chdir(repo); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	resetRepoRootCache()
+
+	legacy, err := legacyShutdownRequestPath("test-session")
+	if err != nil {
+		t.Fatalf("legacyShutdownRequestPath error: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	requested, err := ShutdownRequested("test-session")
+	if err != nil {
+		t.Fatalf("ShutdownRequested error: %v", err)
+	}
+	if requested {
+		t.Fatal("expected legacy repo-scoped shutdown marker to be ignored")
+	}
+
+	if err := ClearShutdownRequest("test-session"); err != nil {
+		t.Fatalf("ClearShutdownRequest error: %v", err)
+	}
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("expected ClearShutdownRequest to remove legacy marker, got err=%v", err)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -183,6 +184,10 @@ func upReconcile(state *upState, applyWorkload bool) error {
 		return err
 	}
 	state.ui.stepDone("ownership", "ok")
+	if err := ensureCompatibleExistingSessionWorkload(state.ctx, state.command.kube, state.command.namespace, state.command.sessionName, state.command.cfg.Spec.Workload.Type); err != nil {
+		return err
+	}
+	state.ui.stepDone("workload", normalizeWorkloadType(state.command.cfg.Spec.Workload.Type))
 	if state.flags.createMissingPVC {
 		createdPVCs, err := reconcileMissingPVCs(state.ctx, state.command.kube, state.command.namespace, state.volumes, state.flags.missingPVCSize, state.flags.missingPVCStorageClass, state.labels, state.annotations)
 		if err != nil {
@@ -215,6 +220,44 @@ func upReconcile(state *upState, applyWorkload bool) error {
 		state.ui.stepDone(state.runtime.Kind(), "applied")
 	}
 	return nil
+}
+
+func normalizeWorkloadType(workloadType string) string {
+	if strings.TrimSpace(workloadType) == "" {
+		return workload.TypePod
+	}
+	return strings.TrimSpace(workloadType)
+}
+
+func ensureCompatibleExistingSessionWorkload(ctx context.Context, k sessionAccessReader, namespace, sessionName, desiredType string) error {
+	pods, err := k.ListPods(ctx, namespace, false, "okdev.io/managed=true,okdev.io/session="+sessionName)
+	if err != nil {
+		return err
+	}
+	if len(pods) == 0 {
+		return nil
+	}
+
+	desired := normalizeWorkloadType(desiredType)
+	seen := map[string]struct{}{}
+	found := make([]string, 0, len(pods))
+	for _, pod := range pods {
+		workloadType := normalizeWorkloadType(pod.Labels["okdev.io/workload-type"])
+		if _, ok := seen[workloadType]; ok {
+			continue
+		}
+		seen[workloadType] = struct{}{}
+		found = append(found, workloadType)
+	}
+	sort.Strings(found)
+
+	if len(found) == 1 && found[0] == desired {
+		return nil
+	}
+	if len(found) == 1 {
+		return fmt.Errorf("session %q already exists in namespace %q with workload type %q; current config expects %q. Run `okdev down --session %s` before recreating it, or choose a different --session name", sessionName, namespace, found[0], desired, sessionName)
+	}
+	return fmt.Errorf("session %q already exists in namespace %q with multiple workload types (%s); run `okdev down --session %s` before recreating it, or choose a different --session name", sessionName, namespace, strings.Join(found, ", "), sessionName)
 }
 
 func upDryRun(state *upState) error {
@@ -596,6 +639,17 @@ fi
 const devTmuxInstallScript = `set -eu
 installer="${OKDEV_TMUX_INSTALLER:-none}"
 logfile="/tmp/okdev-tmux-install.log"
+apt_retry() {
+  tries=0
+  while [ "$tries" -lt 6 ]; do
+    if "$@"; then
+      return 0
+    fi
+    tries=$((tries+1))
+    sleep 2
+  done
+  return 1
+}
 mkdir -p /var/okdev >/dev/null 2>&1 || true
 touch /var/okdev/.tmux-install-attempted >/dev/null 2>&1 || true
 : > "$logfile" 2>/dev/null || true
@@ -611,10 +665,12 @@ if [ "$installer" = "apk" ]; then
   apk add --no-cache tmux >>"$logfile" 2>&1 || true
 elif [ "$installer" = "apt-get" ]; then
   export DEBIAN_FRONTEND=noninteractive
-  apt-get -o DPkg::Lock::Timeout=10 update >>"$logfile" 2>&1 && apt-get -o DPkg::Lock::Timeout=10 install -y --no-install-recommends tmux >>"$logfile" 2>&1 || true
+  apt_retry sh -lc 'apt-get -o DPkg::Lock::Timeout=10 update >>"$1" 2>&1' sh "$logfile" && \
+    apt_retry sh -lc 'apt-get -o DPkg::Lock::Timeout=10 install -y --no-install-recommends tmux >>"$1" 2>&1' sh "$logfile" || true
 elif [ "$installer" = "apt" ]; then
   export DEBIAN_FRONTEND=noninteractive
-  apt update >>"$logfile" 2>&1 && apt install -y --no-install-recommends tmux >>"$logfile" 2>&1 || true
+  apt_retry sh -lc 'apt update >>"$1" 2>&1' sh "$logfile" && \
+    apt_retry sh -lc 'apt install -y --no-install-recommends tmux >>"$1" 2>&1' sh "$logfile" || true
 elif [ "$installer" = "dnf" ]; then
   dnf install -y tmux >>"$logfile" 2>&1 || true
 elif [ "$installer" = "microdnf" ]; then

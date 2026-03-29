@@ -22,16 +22,15 @@ func Resolve(explicit string, template string) (string, error) {
 	if active != "" {
 		return sanitize(active), nil
 	}
-	repo, branch, user, err := contextValues()
+	repo, _, user, err := contextValues()
 	if err != nil {
 		return "", err
 	}
 	if template == "" {
-		template = "{{ .Repo }}-{{ .Branch }}-{{ .User }}"
+		template = "{{ .Repo }}-{{ .User }}"
 	}
 	r := strings.NewReplacer(
 		"{{ .Repo }}", repo,
-		"{{ .Branch }}", branch,
 		"{{ .User }}", user,
 	)
 	name := r.Replace(template)

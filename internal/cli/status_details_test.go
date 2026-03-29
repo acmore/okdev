@@ -48,7 +48,15 @@ func TestGatherDetailedStatusIncludesDiagnostics(t *testing.T) {
 
 	cfg := &config.DevEnvironment{}
 	cfg.Spec.Workload.Attach.Container = "dev"
-	cfg.Spec.Sync.Paths = []string{".:/workspace"}
+	syncRoot := filepath.Join(t.TempDir(), "sync")
+	if err := os.MkdirAll(syncRoot, 0o755); err != nil {
+		t.Fatalf("mkdir sync root: %v", err)
+	}
+	conflictPath := filepath.Join(syncRoot, "file.sync-conflict-20260329-123456-ABC.txt")
+	if err := os.WriteFile(conflictPath, []byte("conflict"), 0o644); err != nil {
+		t.Fatalf("write conflict file: %v", err)
+	}
+	cfg.Spec.Sync.Paths = []string{syncRoot + ":/workspace"}
 	cfg.Spec.Ports = []config.PortMapping{{Name: "http", Local: 8080, Remote: 80}}
 	cfg.Spec.Agents = []config.AgentSpec{{Name: "codex", Auth: &config.AgentAuth{LocalPath: "~/.codex/auth.json"}}}
 
@@ -131,6 +139,9 @@ func TestGatherDetailedStatusIncludesDiagnostics(t *testing.T) {
 	}
 	if len(detail.Sync.ConfiguredPaths) != 1 || !strings.Contains(detail.Sync.ConfiguredPaths[0], "/workspace") {
 		t.Fatalf("unexpected sync paths: %#v", detail.Sync.ConfiguredPaths)
+	}
+	if detail.Sync.ConflictCount != 1 || len(detail.Sync.ConflictPaths) != 1 || !strings.Contains(detail.Sync.ConflictPaths[0], "sync-conflict") {
+		t.Fatalf("unexpected sync conflicts: %+v", detail.Sync)
 	}
 	if len(detail.Agents) != 1 || detail.Agents[0].Name != "codex" || !detail.Agents[0].Installed || !detail.Agents[0].AuthStaged {
 		t.Fatalf("unexpected agents: %#v", detail.Agents)
@@ -230,6 +241,8 @@ func TestPrintDetailedStatusIncludesSections(t *testing.T) {
 			LogPath:            "/tmp/syncthing.log",
 			LocalHome:          "/tmp/syncthing-home",
 			LocalDaemonLogPath: "/tmp/local.log",
+			ConflictCount:      2,
+			ConflictPaths:      []string{"./a.sync-conflict-1", "./b.sync-conflict-2"},
 		},
 		Agents:           []agentListRow{{Name: "codex", Installed: true, AuthStaged: true}},
 		Logs:             detailedStatusLogs{OKDevLog: "/tmp/okdev.log"},
@@ -245,6 +258,8 @@ func TestPrintDetailedStatusIncludesSections(t *testing.T) {
 		"managed forward: running",
 		"Sync:",
 		"background: running (pid 123)",
+		"conflicts: 2",
+		"./a.sync-conflict-1",
 		"Agents:",
 		"codex: installed=yes authStaged=yes",
 		"Logs:",

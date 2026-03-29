@@ -81,6 +81,8 @@ type detailedStatusSync struct {
 	LogPath            string   `json:"logPath,omitempty"`
 	LocalHome          string   `json:"localHome,omitempty"`
 	LocalDaemonLogPath string   `json:"localDaemonLogPath,omitempty"`
+	ConflictCount      int      `json:"conflictCount,omitempty"`
+	ConflictPaths      []string `json:"conflictPaths,omitempty"`
 }
 
 type detailedStatusLogs struct {
@@ -225,6 +227,12 @@ func buildDetailedSync(sessionName string, cfg *config.DevEnvironment) detailedS
 	if logPath, err := syncthingBackgroundLogPath(sessionName); err == nil {
 		detail.LogPath = logPath
 	}
+	if pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.WorkspaceMountPath()); err == nil {
+		if count, paths := localSyncConflictStatus(pairs); count > 0 {
+			detail.ConflictCount = count
+			detail.ConflictPaths = paths
+		}
+	}
 	return detail
 }
 
@@ -321,6 +329,12 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 			fmt.Fprintf(w, "- %s: %s\n", line.label, line.value)
 		}
 	}
+	if detail.Sync.ConflictCount > 0 {
+		fmt.Fprintf(w, "- conflicts: %d\n", detail.Sync.ConflictCount)
+		for _, path := range detail.Sync.ConflictPaths {
+			fmt.Fprintf(w, "  - %s\n", path)
+		}
+	}
 
 	if len(detail.Agents) > 0 {
 		fmt.Fprintln(w, "\nAgents:")
@@ -368,6 +382,43 @@ func summarizeConfiguredSyncPaths(cfg *config.DevEnvironment) []string {
 		lines = append(lines, fmt.Sprintf("%s -> %s", displayLocalSyncPath(pair.Local), pair.Remote))
 	}
 	return lines
+}
+
+func localSyncConflictStatus(pairs []syncengine.Pair) (int, []string) {
+	var count int
+	samples := make([]string, 0, 3)
+	for _, pair := range pairs {
+		localPath := strings.TrimSpace(pair.Local)
+		if localPath == "" {
+			continue
+		}
+		absPath, err := filepath.Abs(localPath)
+		if err != nil {
+			continue
+		}
+		_ = filepath.WalkDir(absPath, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d == nil || d.IsDir() {
+				return nil
+			}
+			if !looksLikeSyncthingConflict(path) {
+				return nil
+			}
+			count++
+			if len(samples) < 3 {
+				if rel, relErr := filepath.Rel(absPath, path); relErr == nil {
+					samples = append(samples, filepath.Join(localPath, rel))
+				} else {
+					samples = append(samples, path)
+				}
+			}
+			return nil
+		})
+	}
+	return count, samples
+}
+
+func looksLikeSyncthingConflict(path string) bool {
+	return strings.Contains(strings.ToLower(filepath.Base(path)), ".sync-conflict-")
 }
 
 func syncthingBackgroundLogPath(sessionName string) (string, error) {
