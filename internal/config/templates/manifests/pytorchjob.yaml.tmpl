@@ -19,3 +19,18 @@ spec:
           volumes:
             - name: workspace
               emptyDir: {}
+    Worker:
+      replicas: 1
+      restartPolicy: Never
+      template:
+        spec:
+          containers:
+            - name: dev
+              image: # TODO: replace with your image
+              command: ["sleep", "infinity"]
+              volumeMounts:
+                - name: workspace
+                  mountPath: {{ .SyncRemote }}
+          volumes:
+            - name: workspace
+              emptyDir: {}

@@ -65,6 +65,42 @@ func TestSyncthingCompletion(t *testing.T) {
 	}
 }
 
+func TestSyncthingFolderNeedBytes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rest/db/status" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("folder"); got != "okdev-sess" {
+			t.Fatalf("unexpected folder query %q", got)
+		}
+		_, _ = w.Write([]byte(`{"needBytes":5678}`))
+	}))
+	defer srv.Close()
+
+	need, err := syncthingFolderNeedBytes(context.Background(), srv.URL, "k", "okdev-sess")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if need != 5678 {
+		t.Fatalf("unexpected needBytes=%d", need)
+	}
+}
+
+func TestSyncthingFolderNeedBytesZeroWhenSynced(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"needBytes":0}`))
+	}))
+	defer srv.Close()
+
+	need, err := syncthingFolderNeedBytes(context.Background(), srv.URL, "k", "okdev-sess")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if need != 0 {
+		t.Fatalf("expected 0, got needBytes=%d", need)
+	}
+}
+
 func TestBuildSTIgnoreContent(t *testing.T) {
 	content, ok := buildSTIgnoreContent([]string{" .git/ ", "", "node_modules/"})
 	if !ok {
