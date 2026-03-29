@@ -106,7 +106,7 @@ Users continue to launch agent CLIs manually through `okdev ssh`, plain SSH, or 
 ```yaml
 spec:
   session:
-    defaultNameTemplate: "{{ .Repo }}-{{ .Branch }}-{{ .User }}"
+    defaultNameTemplate: "{{ .Repo }}-{{ .User }}"
     ttlHours: 72
     idleTimeoutMinutes: 120
     shareable: true
@@ -519,7 +519,7 @@ metadata:
 spec:
   namespace: ai-team
   session:
-    defaultNameTemplate: "{{ .Repo }}-{{ .Branch }}-{{ .User }}"
+    defaultNameTemplate: "{{ .Repo }}-{{ .User }}"
     ttlHours: 168
     shareable: true
   volumes:

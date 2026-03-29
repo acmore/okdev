@@ -247,11 +247,59 @@ func TestInitReportsDetectedSTIgnorePreset(t *testing.T) {
 	}
 }
 
+func TestInitUsesFolderConfigWhenScaffoldingWorkload(t *testing.T) {
+	tmp := t.TempDir()
+	oldwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newInitCmd(&Options{})
+	cmd.SetArgs([]string{"--yes", "--workload", "job"})
+	cmd.SetIn(strings.NewReader(""))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init execute: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev", "okdev.yaml")); err != nil {
+		t.Fatalf("expected folder config, got err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("expected root config to be absent, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".stignore")); err != nil {
+		t.Fatalf("expected root .stignore, got err=%v", err)
+	}
+}
+
+func TestInitUsesRootConfigForPod(t *testing.T) {
+	tmp := t.TempDir()
+	oldwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newInitCmd(&Options{})
+	cmd.SetArgs([]string{"--yes"})
+	cmd.SetIn(strings.NewReader(""))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init execute: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev.yaml")); err != nil {
+		t.Fatalf("expected root config, got err=%v", err)
+	}
+}
+
 func TestInitScaffoldsJobManifest(t *testing.T) {
 	tmp := t.TempDir()
 	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev.yaml")}
 	cmd := newInitCmd(opts)
-	cmd.SetArgs([]string{"--yes", "--workload", "job"})
+	cmd.SetArgs([]string{"--yes", "--workload", "job", "--sync-remote", "/train"})
 	cmd.SetIn(strings.NewReader(""))
 
 	var out bytes.Buffer
@@ -270,6 +318,9 @@ func TestInitScaffoldsJobManifest(t *testing.T) {
 	if !strings.Contains(string(raw), "kind: Job") {
 		t.Fatalf("expected job scaffold, got %q", string(raw))
 	}
+	if !strings.Contains(string(raw), "mountPath: /train") {
+		t.Fatalf("expected job scaffold to use sync remote mount path, got %q", string(raw))
+	}
 	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev.yaml"))
 	if err != nil {
 		t.Fatalf("read config: %v", err)
@@ -286,7 +337,7 @@ func TestInitScaffoldsGenericDeploymentPreset(t *testing.T) {
 	tmp := t.TempDir()
 	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev.yaml")}
 	cmd := newInitCmd(opts)
-	cmd.SetArgs([]string{"--yes", "--workload", "generic", "--generic-preset", "deployment"})
+	cmd.SetArgs([]string{"--yes", "--workload", "generic", "--generic-preset", "deployment", "--sync-remote", "/train"})
 	cmd.SetIn(strings.NewReader(""))
 
 	if err := cmd.Execute(); err != nil {
@@ -300,6 +351,9 @@ func TestInitScaffoldsGenericDeploymentPreset(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "kind: Deployment") {
 		t.Fatalf("expected deployment scaffold, got %q", string(raw))
+	}
+	if !strings.Contains(string(raw), "mountPath: /train") {
+		t.Fatalf("expected deployment scaffold to use sync remote mount path, got %q", string(raw))
 	}
 	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev.yaml"))
 	if err != nil {
@@ -333,7 +387,7 @@ func TestInitScaffoldsPyTorchJobManifest(t *testing.T) {
 	tmp := t.TempDir()
 	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev.yaml")}
 	cmd := newInitCmd(opts)
-	cmd.SetArgs([]string{"--yes", "--workload", "pytorchjob"})
+	cmd.SetArgs([]string{"--yes", "--workload", "pytorchjob", "--sync-remote", "/train"})
 	cmd.SetIn(strings.NewReader(""))
 
 	var out bytes.Buffer
@@ -354,6 +408,9 @@ func TestInitScaffoldsPyTorchJobManifest(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "name: dev") {
 		t.Fatalf("expected dev container in manifest, got %q", string(raw))
+	}
+	if !strings.Contains(string(raw), "mountPath: /train") {
+		t.Fatalf("expected pytorchjob scaffold to use sync remote mount path, got %q", string(raw))
 	}
 	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev.yaml"))
 	if err != nil {

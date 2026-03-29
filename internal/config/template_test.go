@@ -56,7 +56,7 @@ func TestRenderBuiltinBasic(t *testing.T) {
 		t.Fatal("expected namespace in output")
 	}
 	// Verify runtime template syntax is preserved literally
-	if !strings.Contains(out, "{{ .Repo }}-{{ .Branch }}-{{ .User }}") {
+	if !strings.Contains(out, "{{ .Repo }}-{{ .User }}") {
 		t.Fatal("expected session name template to be preserved literally")
 	}
 	if strings.Contains(out, "\n    exclude:\n") {
@@ -65,6 +65,9 @@ func TestRenderBuiltinBasic(t *testing.T) {
 }
 
 func TestBuiltinTemplateLocalIgnores(t *testing.T) {
+	if got := BuiltinTemplateLocalIgnores(""); len(got) == 0 {
+		t.Fatal("expected empty template ref to use basic local ignore patterns")
+	}
 	patterns := BuiltinTemplateLocalIgnores("basic")
 	if len(patterns) == 0 {
 		t.Fatal("expected built-in local ignore patterns")

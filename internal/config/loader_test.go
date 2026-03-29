@@ -214,6 +214,16 @@ func TestResolvePathStopsAtGitRoot(t *testing.T) {
 	}
 }
 
+func TestRootDir(t *testing.T) {
+	tmp := t.TempDir()
+	if got := RootDir(filepath.Join(tmp, DefaultFile)); got != tmp {
+		t.Fatalf("expected root dir %q, got %q", tmp, got)
+	}
+	if got := RootDir(filepath.Join(tmp, ".okdev", "okdev.yaml")); got != tmp {
+		t.Fatalf("expected folder config root dir %q, got %q", tmp, got)
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
