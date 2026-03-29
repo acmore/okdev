@@ -54,6 +54,7 @@
 - Shows configured coding agents, whether their CLI binary is installed, and whether auth is staged in the current session container.
 - `okdev up` performs best-effort install checks for configured agents, bootstraps a modern Node/npm runtime via `nvm` when supported, and then installs missing CLIs.
 - `okdev up` also stages local auth files for dedicated sessions when a configured local auth file exists.
+- Codex uses `~/.codex/auth.json` by default, but `spec.agents[].auth.localPath` can point at a different local auth file.
 - `okdev down` removes staged agent auth symlinks/runtime files when it can still reach the target container.
 - `okdev` does not own agent process launch; users run `codex`, `claude`, `gemini`, `opencode`, or similar CLIs manually after connecting.
 - shareable sessions skip auth staging by default.
