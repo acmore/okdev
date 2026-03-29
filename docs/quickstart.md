@@ -118,6 +118,7 @@ Current scope:
 
 - `okdev up` checks/install configured `claude-code`, `codex`, `gemini`, and `opencode` CLIs when possible, including best-effort Node/npm bootstrap via `nvm` when the image has `bash` and `curl`
 - `okdev up` stages configured local auth files into reserved runtime paths for dedicated sessions
+- Codex defaults to `~/.codex/auth.json`, but you can point it at a company-specific file with `spec.agents[].auth.localPath`
 - `okdev down` cleans that staged runtime auth up before session deletion when the target is still reachable
 - `okdev agent list` reports configured agents, install status, and auth staging status
 - users still launch agent CLIs manually through `okdev ssh`, plain SSH, or editor remote sessions
