@@ -53,6 +53,16 @@ sed -i 's/container: dev/container: pytorch/' "$CFG_PATH"
 # Disable persistent SSH sessions for CI
 sed -i '/ssh:/a\    persistentSession: false' "$CFG_PATH"
 
+# Add lifecycle hooks for verification.
+# postCreate runs only on target pod; postSync runs on all pods after sync;
+# preStop is injected as a Kubernetes lifecycle handler.
+cat >>"$CFG_PATH" <<'LIFECYCLE'
+  lifecycle:
+    postCreate: "touch /tmp/post-create-marker"
+    postSync: "touch /tmp/post-sync-marker"
+    preStop: "touch /tmp/pre-stop-marker"
+LIFECYCLE
+
 echo "Generated config:"
 cat "$CFG_PATH"
 echo "Generated manifest:"
@@ -86,6 +96,49 @@ fi
 
 echo "Verifying SSH into master pod"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --setup-key --cmd 'echo pytorchjob-ssh-ok'
+
+# ---------------------------------------------------------------------------
+# Lifecycle hook verification
+# ---------------------------------------------------------------------------
+MASTER_POD=$(kubectl -n "$NAMESPACE" get pods \
+  -l "training.kubeflow.org/job-name=$SESSION_NAME,training.kubeflow.org/replica-type=master" \
+  -o jsonpath='{.items[0].metadata.name}')
+echo "Master pod: $MASTER_POD"
+
+echo "Verifying postCreate ran on master pod"
+kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- test -f /tmp/post-create-marker
+echo "postCreate marker verified"
+
+echo "Verifying postCreate annotation on master pod"
+POST_CREATE_ANN=$(kubectl -n "$NAMESPACE" get pod "$MASTER_POD" \
+  -o jsonpath='{.metadata.annotations.okdev\.io/post-create-done}')
+if [[ "$POST_CREATE_ANN" != "true" ]]; then
+  echo "ERROR: okdev.io/post-create-done annotation missing or not true (got: '$POST_CREATE_ANN')" >&2
+  exit 1
+fi
+echo "postCreate annotation verified"
+
+echo "Verifying postSync ran on master pod"
+kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- test -f /tmp/post-sync-marker
+echo "postSync marker verified on master"
+
+echo "Verifying postSync annotation on master pod"
+POST_SYNC_ANN=$(kubectl -n "$NAMESPACE" get pod "$MASTER_POD" \
+  -o jsonpath='{.metadata.annotations.okdev\.io/post-sync-done}')
+if [[ "$POST_SYNC_ANN" != "true" ]]; then
+  echo "ERROR: okdev.io/post-sync-done annotation missing or not true (got: '$POST_SYNC_ANN')" >&2
+  exit 1
+fi
+echo "postSync annotation verified"
+
+echo "Verifying preStop lifecycle handler is injected on master pod"
+PRESTOP_CMD=$(kubectl -n "$NAMESPACE" get pod "$MASTER_POD" \
+  -o jsonpath='{.spec.containers[?(@.name=="pytorch")].lifecycle.preStop.exec.command}')
+if [[ "$PRESTOP_CMD" != *"pre-stop-marker"* ]]; then
+  echo "ERROR: preStop lifecycle handler not found or unexpected (got: '$PRESTOP_CMD')" >&2
+  exit 1
+fi
+echo "preStop lifecycle handler verified"
 
 echo "Testing explicit okdev down"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes

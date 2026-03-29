@@ -92,5 +92,13 @@ jobs:
             echo "--- syncthing state (master) ---"
             kubectl -n default exec "$MASTER_POD" -c okdev-sidecar -- sh -c 'cat /var/okdev/syncthing/config.xml 2>/dev/null || true'
             kubectl -n default exec "$MASTER_POD" -c okdev-sidecar -- sh -c 'ls -la /var/okdev/syncthing/ 2>/dev/null || true'
+            echo "--- lifecycle hook markers (master) ---"
+            kubectl -n default exec "$MASTER_POD" -c pytorch -- sh -c 'ls -la /tmp/post-create-marker /tmp/post-sync-marker 2>&1 || true'
+            echo "--- lifecycle annotations (master) ---"
+            kubectl -n default get "$MASTER_POD" -o jsonpath='{.metadata.annotations}' 2>/dev/null || true
+            echo ""
+            echo "--- preStop handler (master) ---"
+            kubectl -n default get "$MASTER_POD" -o jsonpath='{.spec.containers[?(@.name=="pytorch")].lifecycle}' 2>/dev/null || true
+            echo ""
           fi
           kubectl -n kubeflow logs deployment/training-operator --tail=100 || true
