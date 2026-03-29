@@ -23,7 +23,8 @@ func newConnectCmd(opts *Options) *cobra.Command {
 
   # Use a specific shell
   okdev connect --shell /bin/zsh`,
-		Args: cobra.MaximumNArgs(1),
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: sessionCompletionFunc(opts),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			applySessionArg(opts, args)
 			cc, err := resolveCommandContext(opts, resolveSessionName)

@@ -26,7 +26,8 @@ func newStatusCmd(opts *Options) *cobra.Command {
 
   # JSON output for scripting
   okdev status --output json`,
-		Args: cobra.MaximumNArgs(1),
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: sessionCompletionFunc(opts),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			applySessionArg(opts, args)
 			cc, err := resolveCommandContext(opts, nil)

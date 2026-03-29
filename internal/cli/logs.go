@@ -40,9 +40,10 @@ func newLogsCmd(opts *Options) *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "logs [session]",
-		Short: "Stream session container logs",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "logs [session]",
+		Short:             "Stream session container logs",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: sessionCompletionFunc(opts),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			applySessionArg(opts, args)
 			req, err := buildLogsRequest(container, all, follow, previous, tail, cmd.Flags().Changed("tail"), since)

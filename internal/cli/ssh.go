@@ -51,7 +51,8 @@ func newSSHCmd(opts *Options) *cobra.Command {
 
   # Or use the managed SSH host alias directly
   ssh okdev-my-feature`,
-		Args: cobra.MaximumNArgs(1),
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: sessionCompletionFunc(opts),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withQuietConfigAnnounce(func() error {
 				errOut := cmd.ErrOrStderr()

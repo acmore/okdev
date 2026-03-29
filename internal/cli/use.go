@@ -9,9 +9,10 @@ import (
 
 func newUseCmd(opts *Options) *cobra.Command {
 	return &cobra.Command{
-		Use:   "use <session>",
-		Short: "Set active session for current repo",
-		Args:  cobra.ExactArgs(1),
+		Use:               "use <session>",
+		Short:             "Set active session for current repo",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: sessionCompletionFunc(opts),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, err := session.Resolve(args[0], "")
 			if err != nil {

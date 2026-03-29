@@ -36,9 +36,10 @@ func newAgentCmd(opts *Options) *cobra.Command {
 
 func newAgentListCmd(opts *Options) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "list [session]",
-		Short: "List configured agents and install status",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "list [session]",
+		Short:             "List configured agents and install status",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: sessionCompletionFunc(opts),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			applySessionArg(opts, args)
 			cc, err := resolveCommandContext(opts, resolveSessionName)
