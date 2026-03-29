@@ -247,3 +247,103 @@ spec:
 		t.Fatalf("expected existing workspace volume to be preserved without duplicate claim, got:\n%s", rendered)
 	}
 }
+
+func TestPytorchjobWorkerInjectMigration(t *testing.T) {
+	input := `apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: test
+spec:
+  namespace: default
+  workload:
+    type: pytorchjob
+    manifestPath: .okdev/pytorchjob.yaml
+    inject:
+      - path: "spec.pytorchReplicaSpecs.Master.template"
+  sidecar:
+    image: ghcr.io/acmore/okdev:edge
+`
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(input), &doc); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := RunMigrations(&doc, DefaultMigrations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Applied) != 1 || result.Applied[0] != "pytorchjob-worker-inject" {
+		t.Fatalf("expected pytorchjob-worker-inject applied, got %v", result.Applied)
+	}
+
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered := string(out)
+	if !strings.Contains(rendered, "spec.pytorchReplicaSpecs.Worker.template") {
+		t.Fatalf("expected Worker inject path in output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "spec.pytorchReplicaSpecs.Master.template") {
+		t.Fatalf("expected Master inject path preserved in output:\n%s", rendered)
+	}
+}
+
+func TestPytorchjobWorkerInjectSkipsWhenWorkerPresent(t *testing.T) {
+	input := `apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: test
+spec:
+  namespace: default
+  workload:
+    type: pytorchjob
+    manifestPath: .okdev/pytorchjob.yaml
+    inject:
+      - path: "spec.pytorchReplicaSpecs.Master.template"
+      - path: "spec.pytorchReplicaSpecs.Worker.template"
+  sidecar:
+    image: ghcr.io/acmore/okdev:edge
+`
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(input), &doc); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := RunMigrations(&doc, DefaultMigrations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Applied) != 0 {
+		t.Fatalf("expected no migrations applied, got %v", result.Applied)
+	}
+}
+
+func TestPytorchjobWorkerInjectSkipsNonPytorchjob(t *testing.T) {
+	input := `apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: test
+spec:
+  namespace: default
+  workload:
+    type: job
+    manifestPath: .okdev/job.yaml
+    inject:
+      - path: "spec.template"
+  sidecar:
+    image: ghcr.io/acmore/okdev:edge
+`
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(input), &doc); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := RunMigrations(&doc, DefaultMigrations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Applied) != 0 {
+		t.Fatalf("expected no migrations applied, got %v", result.Applied)
+	}
+}
