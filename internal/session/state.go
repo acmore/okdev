@@ -65,6 +65,14 @@ func activeSessionRootDir() (string, error) {
 	return filepath.Join(home, stateDirName, sessionsDirName, repoStateKey(root)), nil
 }
 
+func globalStateRootDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return filepath.Join(home, stateDirName), nil
+}
+
 func legacyActiveSessionPath() (string, error) {
 	root, err := RepoRoot()
 	if err != nil {
@@ -209,6 +217,14 @@ func ClearTarget(name string) error {
 }
 
 func ShutdownRequestPath(name string) (string, error) {
+	root, err := globalStateRootDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, shutdownRequestDirName, sanitize(name)), nil
+}
+
+func legacyShutdownRequestPath(name string) (string, error) {
 	root, err := activeSessionRootDir()
 	if err != nil {
 		return "", err
@@ -261,6 +277,9 @@ func ClearShutdownRequest(name string) error {
 	}
 	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("clear shutdown request: %w", err)
+	}
+	if lp, lerr := legacyShutdownRequestPath(name); lerr == nil {
+		_ = os.Remove(lp)
 	}
 	return nil
 }

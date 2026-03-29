@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,5 +96,53 @@ func TestShouldReuseExistingWorkloadSurfacesLookupErrors(t *testing.T) {
 	reuse, err := shouldReuseExistingWorkload(context.Background(), k, "default", rt, false)
 	if err == nil || !errors.Is(err, want) {
 		t.Fatalf("expected wrapped lookup error, got reuse=%v err=%v", reuse, err)
+	}
+}
+
+func TestEnsureCompatibleExistingSessionWorkloadAllowsSameType(t *testing.T) {
+	err := ensureCompatibleExistingSessionWorkload(context.Background(), fakeSessionAccessReader{
+		pods: []kube.PodSummary{{
+			Name:   "okdev-sess-a",
+			Labels: map[string]string{"okdev.io/workload-type": workload.TypeJob},
+		}},
+	}, "default", "sess-a", workload.TypeJob)
+	if err != nil {
+		t.Fatalf("expected matching workload type to be allowed, got %v", err)
+	}
+}
+
+func TestEnsureCompatibleExistingSessionWorkloadTreatsEmptyTypeAsPod(t *testing.T) {
+	err := ensureCompatibleExistingSessionWorkload(context.Background(), fakeSessionAccessReader{
+		pods: []kube.PodSummary{{
+			Name:   "okdev-sess-a",
+			Labels: map[string]string{},
+		}},
+	}, "default", "sess-a", "")
+	if err != nil {
+		t.Fatalf("expected empty workload type to normalize to pod, got %v", err)
+	}
+}
+
+func TestEnsureCompatibleExistingSessionWorkloadRejectsConflictingType(t *testing.T) {
+	err := ensureCompatibleExistingSessionWorkload(context.Background(), fakeSessionAccessReader{
+		pods: []kube.PodSummary{{
+			Name:   "okdev-sess-a",
+			Labels: map[string]string{"okdev.io/workload-type": workload.TypePod},
+		}},
+	}, "default", "sess-a", workload.TypeJob)
+	if err == nil || !strings.Contains(err.Error(), `already exists in namespace "default" with workload type "pod"; current config expects "job"`) {
+		t.Fatalf("expected workload conflict error, got %v", err)
+	}
+}
+
+func TestEnsureCompatibleExistingSessionWorkloadRejectsMixedExistingTypes(t *testing.T) {
+	err := ensureCompatibleExistingSessionWorkload(context.Background(), fakeSessionAccessReader{
+		pods: []kube.PodSummary{
+			{Name: "okdev-sess-a", Labels: map[string]string{"okdev.io/workload-type": workload.TypePod}},
+			{Name: "okdev-hx2n9", Labels: map[string]string{"okdev.io/workload-type": workload.TypeJob}},
+		},
+	}, "default", "sess-a", workload.TypeJob)
+	if err == nil || !strings.Contains(err.Error(), `multiple workload types (job, pod)`) {
+		t.Fatalf("expected mixed workload type error, got %v", err)
 	}
 }
