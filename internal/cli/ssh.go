@@ -421,16 +421,23 @@ func sshHostAlias(sessionName string) string {
 	return "okdev-" + sessionName
 }
 
-func ensureSSHConfigEntry(hostAlias, sessionName, namespace, user string, remotePort int, keyPath, okdevConfigPath string, forwards []config.PortMapping) (bool, error) {
+func sshConfigPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	sshDir := filepath.Join(home, ".ssh")
 	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		return "", err
+	}
+	return filepath.Join(sshDir, "config"), nil
+}
+
+func ensureSSHConfigEntry(hostAlias, sessionName, namespace, user string, remotePort int, keyPath, okdevConfigPath string, forwards []config.PortMapping) (bool, error) {
+	sshConfigPath, err := sshConfigPath()
+	if err != nil {
 		return false, err
 	}
-	sshConfigPath := filepath.Join(sshDir, "config")
 	begin := "# BEGIN OKDEV " + hostAlias
 	end := "# END OKDEV " + hostAlias
 	proxyInner := fmt.Sprintf("okdev --session %s -n %s ssh-proxy --remote-port %d", shellQuote(sessionName), shellQuote(namespace), remotePort)
@@ -780,7 +787,11 @@ func startManagedSSHForward(hostAlias string, sshSpec config.SSHSpec) error {
 	if err != nil {
 		return err
 	}
-	check := exec.Command("ssh", "-S", socketPath, "-O", "check", hostAlias)
+	configPath, err := sshConfigPath()
+	if err != nil {
+		return err
+	}
+	check := exec.Command("ssh", "-F", configPath, "-S", socketPath, "-O", "check", hostAlias)
 	if err := check.Run(); err == nil {
 		return nil
 	}
@@ -792,11 +803,15 @@ func startManagedSSHForwardWithForwards(hostAlias string, forwards []config.Port
 	if err != nil {
 		return err
 	}
-	check := exec.Command("ssh", "-S", socketPath, "-O", "check", hostAlias)
+	configPath, err := sshConfigPath()
+	if err != nil {
+		return err
+	}
+	check := exec.Command("ssh", "-F", configPath, "-S", socketPath, "-O", "check", hostAlias)
 	if err := check.Run(); err == nil {
 		return nil
 	}
-	args := managedSSHForwardArgs(hostAlias, socketPath, forwards, sshSpec)
+	args := managedSSHForwardArgs(hostAlias, configPath, socketPath, forwards, sshSpec)
 	cmd := exec.Command(args[0], args[1:]...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("start managed ssh forward: %w (%s)", err, strings.TrimSpace(string(out)))
@@ -804,9 +819,10 @@ func startManagedSSHForwardWithForwards(hostAlias string, forwards []config.Port
 	return nil
 }
 
-func managedSSHForwardArgs(hostAlias, socketPath string, forwards []config.PortMapping, sshSpec config.SSHSpec) []string {
+func managedSSHForwardArgs(hostAlias, configPath, socketPath string, forwards []config.PortMapping, sshSpec config.SSHSpec) []string {
 	args := []string{
 		"ssh",
+		"-F", configPath,
 		"-fN",
 		"-M",
 		"-S", socketPath,
@@ -837,7 +853,11 @@ func stopManagedSSHForward(hostAlias string) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command("ssh", "-S", socketPath, "-O", "exit", hostAlias)
+	configPath, err := sshConfigPath()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command("ssh", "-F", configPath, "-S", socketPath, "-O", "exit", hostAlias)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		msg := strings.ToLower(strings.TrimSpace(string(out)))
 		if strings.Contains(msg, "no such file") || strings.Contains(msg, "control socket connect") || strings.Contains(msg, "master running") {
