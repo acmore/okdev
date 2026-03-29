@@ -17,7 +17,7 @@
 - `okdev init [--workload pod|job|pytorchjob|generic] [--template basic|<registry>|<path>|<url>] [--stignore-preset default|python|node|go|rust] [--force]`
 - `okdev validate`
 - `okdev up [--wait-timeout 10m] [--dry-run]`
-- `okdev down [--delete-pvc] [--dry-run]`
+- `okdev down [--delete-pvc] [--dry-run] [--output json]`
 - `okdev status [--all] [--all-users] [--details]`
 - `okdev list [--all-namespaces] [--all-users]`
 - `okdev use <session>`
@@ -78,6 +78,14 @@
 - `--no-tmux`: disable tmux mode for this pod.
 - When `sync.engine=syncthing`, `okdev up` refreshes the session's local Syncthing processes and starts background sync in bidirectional mode by default.
 - `spec.ports` is materialized as SSH `LocalForward` or `RemoteForward` based on `direction`.
+
+### `okdev down [--delete-pvc] [--dry-run] [--output json]`
+
+- Deletes the current session workload and cleans up local SSH/sync metadata.
+- Prompts for confirmation by default; use `--yes` in scripts or non-interactive environments.
+- `--dry-run`: previews what would be deleted without removing cluster or local state.
+- `--output json`: emits a machine-readable summary of the planned or completed deletion and local cleanup steps.
+- `--delete-pvc` remains accepted for compatibility but is ignored; `okdev` no longer manages PVC lifecycle automatically.
 
 ### `okdev ssh [--setup-key] [--user root] [--cmd "..."] [--no-tmux]`
 
