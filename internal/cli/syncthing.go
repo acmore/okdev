@@ -559,6 +559,74 @@ func syncthingCompletion(ctx context.Context, base, key, folderID, deviceID stri
 	return payload.Completion, payload.NeedBytes, nil
 }
 
+// syncthingFolderNeedBytes queries the remote syncthing for the number of
+// bytes still needed for the given folder. Returns 0 when sync is complete.
+func syncthingFolderNeedBytes(ctx context.Context, base, key, folderID string) (int64, error) {
+	path := fmt.Sprintf("/rest/db/status?folder=%s", url.QueryEscape(folderID))
+	body, err := syncthingAPIRequestWithContext(ctx, http.MethodGet, base, key, path, nil, "")
+	if err != nil {
+		return 0, err
+	}
+	var payload struct {
+		NeedBytes int64 `json:"needBytes"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return 0, err
+	}
+	return payload.NeedBytes, nil
+}
+
+// waitForInitialSync blocks until the remote syncthing reports that the
+// configured folder has completed its initial sync (needBytes == 0).
+// It opens a temporary port-forward to the target pod's syncthing sidecar
+// to poll the REST API.
+func waitForInitialSync(ctx context.Context, opts *Options, k interface {
+	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+}, namespace, pod, sessionName string, timeout time.Duration, onProgress func(needBytes int64)) error {
+	folderID := "okdev-" + sessionName
+
+	remoteKey, err := readRemoteSyncthingAPIKey(ctx, k, namespace, pod)
+	if err != nil {
+		return fmt.Errorf("read remote syncthing API key: %w", err)
+	}
+
+	cancelPF, remoteBase, _, err := startSyncthingPortForward(opts, namespace, pod)
+	if err != nil {
+		return fmt.Errorf("port-forward to syncthing sidecar: %w", err)
+	}
+	defer cancelPF()
+
+	if err := waitSyncthingAPI(ctx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
+		return fmt.Errorf("remote syncthing not ready: %w", err)
+	}
+
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(syncthingProgressInterval)
+	defer ticker.Stop()
+
+	for {
+		need, err := syncthingFolderNeedBytes(ctx, remoteBase, remoteKey, folderID)
+		if err != nil {
+			slog.Debug("syncthing initial sync poll failed", "error", err)
+		} else {
+			if onProgress != nil {
+				onProgress(need)
+			}
+			if need == 0 {
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("initial sync did not complete within %s", timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 func folderTypesForMode(mode string) (local, remote string) {
 	switch mode {
 	case "up":

@@ -28,7 +28,7 @@ spec: {}
 | `sync` | `object` | — | File sync configuration |
 | `ports` | `array` | — | Port forwarding rules |
 | `ssh` | `object` | — | SSH and tmux settings |
-| `lifecycle` | `object` | — | Post-create and pre-stop hooks |
+| `lifecycle` | `object` | — | Post-create, post-sync, and pre-stop hooks |
 | `sidecar` | `object` | — | Sidecar container image |
 | `podTemplate` | `object` | — | Full Kubernetes PodSpec overlay |
 
@@ -308,13 +308,22 @@ spec:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `postCreate` | `string` | Command run once after environment creation |
+| `postCreate` | `string` | Command run once on the target pod after environment creation |
+| `postSync` | `string` | Command run once on **all** pods after initial file sync completes |
 | `preStop` | `string` | Command run before pod termination |
+
+`postSync` is useful for multi-pod workloads where every pod needs code-dependent
+setup (e.g. editable Python installs). It blocks `okdev up` until the initial
+syncthing sync finishes, then executes the command on every running session pod
+in parallel. Each pod is tracked via the `okdev.io/post-sync-done` annotation to
+prevent re-execution. Falls back to `.okdev/post-sync.sh` if no explicit command
+is configured.
 
 ```yaml
 spec:
   lifecycle:
     postCreate: uv sync --dev
+    postSync: pip install -e .
     preStop: pkill -f my-dev-server || true
 ```
 
