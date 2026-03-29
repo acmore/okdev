@@ -147,6 +147,7 @@ type transientStatus struct {
 	doneCh   chan struct{}
 	mu       sync.Mutex
 	stopOnce sync.Once
+	started  time.Time
 }
 
 func newTransientStatus(w io.Writer, message string) *transientStatus {
@@ -167,6 +168,7 @@ func newTransientStatusWithMode(w io.Writer, message string, interactive bool) *
 	s := &transientStatus{
 		w:       w,
 		message: strings.TrimSpace(message),
+		started: time.Now(),
 	}
 	if s.message == "" || !interactive {
 		return s
@@ -200,7 +202,12 @@ func (s *transientStatus) run(interval time.Duration) {
 func (s *transientStatus) render(frame string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	fmt.Fprintf(s.w, "\r%s %s\033[K", frame, s.message)
+	elapsed := time.Since(s.started)
+	if elapsed >= statusElapsedThreshold {
+		fmt.Fprintf(s.w, "\r%s %s (%s)\033[K", frame, s.message, elapsed.Round(time.Second))
+	} else {
+		fmt.Fprintf(s.w, "\r%s %s\033[K", frame, s.message)
+	}
 }
 
 func (s *transientStatus) update(message string) {
@@ -213,6 +220,12 @@ func (s *transientStatus) update(message string) {
 	}
 	s.mu.Lock()
 	s.message = trimmed
+	s.mu.Unlock()
+}
+
+func (s *transientStatus) resetElapsed() {
+	s.mu.Lock()
+	s.started = time.Now()
 	s.mu.Unlock()
 }
 

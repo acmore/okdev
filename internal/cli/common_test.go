@@ -96,6 +96,7 @@ func TestTransientStatusRendersAndClears(t *testing.T) {
 		enabled: true,
 		stopCh:  make(chan struct{}),
 		doneCh:  make(chan struct{}),
+		started: time.Now(),
 	}
 
 	go status.run(5 * time.Millisecond)
@@ -119,6 +120,7 @@ func TestTransientStatusUpdate(t *testing.T) {
 		enabled: true,
 		stopCh:  make(chan struct{}),
 		doneCh:  make(chan struct{}),
+		started: time.Now(),
 	}
 
 	go status.run(5 * time.Millisecond)
@@ -141,12 +143,78 @@ func TestTransientStatusStopIsIdempotent(t *testing.T) {
 		enabled: true,
 		stopCh:  make(chan struct{}),
 		doneCh:  make(chan struct{}),
+		started: time.Now(),
 	}
 
 	go status.run(5 * time.Millisecond)
 	time.Sleep(8 * time.Millisecond)
 	status.stop()
 	status.stop()
+}
+
+func TestTransientStatusShowsElapsedAfterThreshold(t *testing.T) {
+	var out bytes.Buffer
+	status := &transientStatus{
+		w:       &out,
+		message: "Pulling image",
+		enabled: true,
+		stopCh:  make(chan struct{}),
+		doneCh:  make(chan struct{}),
+		started: time.Now().Add(-5 * time.Second), // pretend started 5s ago
+	}
+
+	go status.run(5 * time.Millisecond)
+	time.Sleep(12 * time.Millisecond)
+	status.stop()
+
+	got := out.String()
+	if !strings.Contains(got, "(5s)") && !strings.Contains(got, "(6s)") {
+		t.Fatalf("expected elapsed time in output after threshold, got %q", got)
+	}
+}
+
+func TestTransientStatusHidesElapsedBelowThreshold(t *testing.T) {
+	var out bytes.Buffer
+	status := &transientStatus{
+		w:       &out,
+		message: "Quick check",
+		enabled: true,
+		stopCh:  make(chan struct{}),
+		doneCh:  make(chan struct{}),
+		started: time.Now(), // just started
+	}
+
+	go status.run(5 * time.Millisecond)
+	time.Sleep(12 * time.Millisecond)
+	status.stop()
+
+	got := out.String()
+	if strings.Contains(got, "(0s)") || strings.Contains(got, "(1s)") || strings.Contains(got, "(2s)") {
+		t.Fatalf("expected no elapsed time below threshold, got %q", got)
+	}
+}
+
+func TestTransientStatusResetElapsed(t *testing.T) {
+	var out bytes.Buffer
+	status := &transientStatus{
+		w:       &out,
+		message: "step one",
+		enabled: true,
+		stopCh:  make(chan struct{}),
+		doneCh:  make(chan struct{}),
+		started: time.Now().Add(-10 * time.Second),
+	}
+	status.resetElapsed()
+
+	go status.run(5 * time.Millisecond)
+	time.Sleep(12 * time.Millisecond)
+	status.stop()
+
+	got := out.String()
+	// After reset, elapsed should be near 0, below threshold — no "(10s)" in output
+	if strings.Contains(got, "(10s)") || strings.Contains(got, "(9s)") {
+		t.Fatalf("expected elapsed to be reset, got %q", got)
+	}
 }
 
 func TestAnnounceConfigPathFallsBackToStaticOutput(t *testing.T) {

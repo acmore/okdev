@@ -995,6 +995,51 @@ func (c *Client) DescribePod(ctx context.Context, namespace, pod string) (string
 	return b.String(), nil
 }
 
+// WatchPodEvents watches Kubernetes events for the given pod and calls onEvent
+// for each relevant event. It blocks until the context is cancelled.
+// Only events with reasons in the allowlist are forwarded.
+func (c *Client) WatchPodEvents(ctx context.Context, namespace, pod string, onEvent func(reason, message string)) {
+	cs, _, err := c.clientset()
+	if err != nil {
+		return
+	}
+	watcher, err := cs.CoreV1().Events(namespace).Watch(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("involvedObject.kind=Pod,involvedObject.name=%s", pod),
+	})
+	if err != nil {
+		return
+	}
+	defer watcher.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case evt, ok := <-watcher.ResultChan():
+			if !ok {
+				return
+			}
+			if evt.Type != watch.Added && evt.Type != watch.Modified {
+				continue
+			}
+			event, ok := evt.Object.(*corev1.Event)
+			if !ok {
+				continue
+			}
+			if isPodEventRelevant(event.Reason) {
+				onEvent(event.Reason, event.Message)
+			}
+		}
+	}
+}
+
+func isPodEventRelevant(reason string) bool {
+	switch reason {
+	case "Pulling", "Pulled", "FailedScheduling", "BackOff", "Failed", "Unhealthy", "FailedMount", "FailedAttachVolume":
+		return true
+	}
+	return false
+}
+
 func (c *Client) PodContainerNames(ctx context.Context, namespace, pod string) ([]string, error) {
 	cs, _, err := c.clientset()
 	if err != nil {

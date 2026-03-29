@@ -172,6 +172,34 @@ func TestPortMappingSummary(t *testing.T) {
 	}
 }
 
+func TestUpUIConcurrentStepRunStepDone(t *testing.T) {
+	var raw bytes.Buffer
+	ui := newUpUI(&raw, &raw)
+	ui.interactive = true
+
+	// Run stepRun and stepDone from multiple goroutines to verify no race.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 20; i++ {
+			ui.stepRun("ssh", "installing key")
+			ui.stepRun("ssh", "waiting for sshd")
+			ui.stepDone("ssh", "ready")
+		}
+	}()
+	for i := 0; i < 20; i++ {
+		ui.stepRun("sync", "reconciling state")
+		ui.stepRun("sync", "starting")
+		ui.stepDone("sync", "active")
+	}
+	<-done
+
+	got := raw.String()
+	if !strings.Contains(got, "ssh") || !strings.Contains(got, "sync") {
+		t.Fatalf("expected both ssh and sync steps in output, got %q", got)
+	}
+}
+
 func mustAbs(path string) string {
 	abs, err := filepath.Abs(path)
 	if err != nil {

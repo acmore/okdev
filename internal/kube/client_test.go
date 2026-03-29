@@ -466,3 +466,18 @@ users:
 	}
 	return path
 }
+
+func TestIsPodEventRelevant(t *testing.T) {
+	relevant := []string{"Pulling", "Pulled", "FailedScheduling", "BackOff", "Failed", "Unhealthy", "FailedMount", "FailedAttachVolume"}
+	for _, reason := range relevant {
+		if !isPodEventRelevant(reason) {
+			t.Errorf("expected %q to be relevant", reason)
+		}
+	}
+	irrelevant := []string{"Scheduled", "Created", "Started", "Normal", ""}
+	for _, reason := range irrelevant {
+		if isPodEventRelevant(reason) {
+			t.Errorf("expected %q to be irrelevant", reason)
+		}
+	}
+}
