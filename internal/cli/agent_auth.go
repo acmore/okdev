@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 
 	agentcatalog "github.com/acmore/okdev/internal/agent"
@@ -66,11 +67,11 @@ func ensureAgentAuthStaged(ctx context.Context, client agentExecClient, namespac
 		return "no local auth found", nil
 	}
 	stageDir := agentRemoteStageDir(spec.Name)
-	stagePath := path.Join(stageDir, "auth")
-	remotePath := strings.TrimSpace(spec.RemoteAuthPath)
+	remotePath := agentRemoteAuthPath(spec.RemoteAuthPath, localPath)
 	if remotePath == "" {
 		return "", fmt.Errorf("remote auth path is not defined")
 	}
+	stagePath := path.Join(stageDir, path.Base(remotePath))
 	state, err := agentRemoteAuthState(ctx, client, namespace, pod, container, remotePath)
 	if err != nil {
 		return "", fmt.Errorf("inspect remote auth path: %w", err)
@@ -106,10 +107,14 @@ func cleanupConfiguredAgentAuth(ctx context.Context, client agentExecClient, nam
 	results := make([]string, 0, len(agents))
 	for _, agent := range agents {
 		spec, ok := agentcatalog.Lookup(agent.Name)
-		if !ok || strings.TrimSpace(spec.RemoteAuthPath) == "" {
+		remotePath := spec.RemoteAuthPath
+		if agent.Auth != nil {
+			remotePath = agentRemoteAuthPath(spec.RemoteAuthPath, agent.Auth.LocalPath)
+		}
+		if !ok || strings.TrimSpace(remotePath) == "" {
 			continue
 		}
-		if err := cleanupAgentAuth(ctx, client, namespace, pod, container, spec); err != nil {
+		if err := cleanupAgentAuth(ctx, client, namespace, pod, container, spec.Name, remotePath); err != nil {
 			warnf("failed to clean %s auth: %v", spec.Name, err)
 			results = append(results, spec.Name+": cleanup failed")
 			continue
@@ -160,6 +165,18 @@ func agentRemoteStageDir(agentName string) string {
 	return "/run/okdev/agents/" + agentName
 }
 
+func agentRemoteAuthPath(defaultRemotePath, localPath string) string {
+	remotePath := strings.TrimSpace(defaultRemotePath)
+	if remotePath == "" {
+		return ""
+	}
+	localBase := strings.TrimSpace(filepath.Base(strings.TrimSpace(localPath)))
+	if localBase == "" || localBase == "." || localBase == string(filepath.Separator) {
+		return remotePath
+	}
+	return path.Join(path.Dir(remotePath), localBase)
+}
+
 func agentRemoteAuthState(ctx context.Context, client agentExecClient, namespace, pod, container, remotePath string) (string, error) {
 	if strings.TrimSpace(remotePath) == "" {
 		return "missing", nil
@@ -172,9 +189,9 @@ func agentRemoteAuthState(ctx context.Context, client agentExecClient, namespace
 	return strings.TrimSpace(string(out)), nil
 }
 
-func cleanupAgentAuth(ctx context.Context, client agentExecClient, namespace, pod, container string, spec agentcatalog.Spec) error {
-	stageDir := agentRemoteStageDir(spec.Name)
-	remotePath := strings.TrimSpace(spec.RemoteAuthPath)
+func cleanupAgentAuth(ctx context.Context, client agentExecClient, namespace, pod, container, agentName, remotePath string) error {
+	stageDir := agentRemoteStageDir(agentName)
+	remotePath = strings.TrimSpace(remotePath)
 	if remotePath == "" {
 		return nil
 	}
