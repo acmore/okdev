@@ -3,6 +3,7 @@ package workload
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -49,5 +50,16 @@ func TestWaitForCandidatePodReadyRetriesOnDeletedCandidate(t *testing.T) {
 	}
 	if client.calls != 2 {
 		t.Fatalf("expected retry after deleted candidate, got %d wait calls", client.calls)
+	}
+}
+
+func TestResolveManifestPathUsesProjectRootForFolderConfig(t *testing.T) {
+	configPath := filepath.Join("/tmp", "repo", ".okdev", "okdev.yaml")
+	manifestPath := ".okdev/pytorchjob.yaml"
+
+	got := ResolveManifestPath(configPath, manifestPath)
+	want := filepath.Join("/tmp", "repo", ".okdev", "pytorchjob.yaml")
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
 	}
 }

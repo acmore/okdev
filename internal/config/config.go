@@ -11,6 +11,7 @@ import (
 	agentcatalog "github.com/acmore/okdev/internal/agent"
 	"github.com/acmore/okdev/internal/version"
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/yaml"
 )
 
 // MigrationEligibleError wraps validation errors that can be fixed by okdev migrate.
@@ -372,6 +373,111 @@ func (d *DevEnvironment) WorkspaceMountPath() string {
 		}
 	}
 	return DefaultWorkspacePath
+}
+
+func (d *DevEnvironment) EffectiveWorkspaceMountPath(configPath string) string {
+	if d == nil {
+		return DefaultWorkspacePath
+	}
+	switch strings.TrimSpace(d.Spec.Workload.Type) {
+	case "", "pod":
+		return d.WorkspaceMountPath()
+	default:
+		if path := d.workspaceMountPathFromManifest(configPath); strings.TrimSpace(path) != "" {
+			return path
+		}
+		return d.WorkspaceMountPath()
+	}
+}
+
+func (d *DevEnvironment) workspaceMountPathFromManifest(configPath string) string {
+	manifestPath := strings.TrimSpace(d.Spec.Workload.ManifestPath)
+	if manifestPath == "" || configPath == "" {
+		return ""
+	}
+	if !filepath.IsAbs(manifestPath) {
+		manifestPath = filepath.Join(RootDir(configPath), manifestPath)
+	}
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return ""
+	}
+	var obj map[string]any
+	if err := yaml.Unmarshal(raw, &obj); err != nil {
+		return ""
+	}
+	targetContainer := strings.TrimSpace(d.Spec.Workload.Attach.Container)
+	if targetContainer == "" {
+		targetContainer = "dev"
+	}
+	for _, inject := range d.Spec.Workload.Inject {
+		templateMap, ok := resolveObjectPath(obj, inject.Path)
+		if !ok {
+			continue
+		}
+		template, err := decodeTemplateSpec(templateMap)
+		if err != nil {
+			continue
+		}
+		if path := workspaceMountPathForContainer(template.Spec.Containers, targetContainer); path != "" {
+			return path
+		}
+	}
+	return ""
+}
+
+func resolveObjectPath(root map[string]any, path string) (map[string]any, bool) {
+	current := root
+	for _, part := range strings.Split(strings.TrimSpace(path), ".") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		next, ok := current[part]
+		if !ok {
+			return nil, false
+		}
+		child, ok := next.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current = child
+	}
+	return current, true
+}
+
+func decodeTemplateSpec(src map[string]any) (corev1.PodTemplateSpec, error) {
+	raw, err := yaml.Marshal(src)
+	if err != nil {
+		return corev1.PodTemplateSpec{}, err
+	}
+	var template corev1.PodTemplateSpec
+	if err := yaml.Unmarshal(raw, &template); err != nil {
+		return corev1.PodTemplateSpec{}, err
+	}
+	return template, nil
+}
+
+func workspaceMountPathForContainer(containers []corev1.Container, name string) string {
+	index := -1
+	for i := range containers {
+		if containers[i].Name == name {
+			index = i
+			break
+		}
+	}
+	if index == -1 && len(containers) > 0 {
+		index = 0
+	}
+	if index == -1 {
+		return ""
+	}
+	for _, vm := range containers[index].VolumeMounts {
+		if vm.Name == DefaultWorkspaceName && strings.TrimSpace(vm.MountPath) != "" {
+			return vm.MountPath
+		}
+	}
+	return ""
 }
 
 func validateSyncPaths(paths []string) error {

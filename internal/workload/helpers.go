@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -21,7 +22,10 @@ func ResolveManifestPath(configPath, manifestPath string) string {
 	if filepath.IsAbs(manifestPath) {
 		return manifestPath
 	}
-	base := filepath.Dir(configPath)
+	base := config.RootDir(configPath)
+	if strings.TrimSpace(base) == "" {
+		base = filepath.Dir(configPath)
+	}
 	return filepath.Clean(filepath.Join(base, manifestPath))
 }
 

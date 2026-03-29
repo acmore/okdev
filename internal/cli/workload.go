@@ -14,18 +14,19 @@ import (
 
 func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName string, labels, annotations map[string]string, podSpec corev1.PodSpec, volumes []corev1.Volume, tmux bool, preStop string) (workload.Runtime, error) {
 	targetContainer := resolveTargetContainer(cfg)
+	workspaceMountPath := cfg.EffectiveWorkspaceMountPath(cfgPath)
 	switch strings.TrimSpace(cfg.Spec.Workload.Type) {
 	case "", workload.TypePod:
 		return workload.NewPodRuntime(
 			sessionName, labels, annotations, podSpec,
-			volumes, cfg.WorkspaceMountPath(), cfg.Spec.Sidecar.Image,
+			volumes, workspaceMountPath, cfg.Spec.Sidecar.Image,
 			tmux, preStop, targetContainer,
 		), nil
 	case workload.TypeJob, workload.TypeGeneric, workload.TypePyTorchJob:
 		return &workload.GenericRuntime{
 			WorkloadKind:       strings.TrimSpace(cfg.Spec.Workload.Type),
 			ManifestPath:       workload.ResolveManifestPath(cfgPath, cfg.Spec.Workload.ManifestPath),
-			WorkspaceMountPath: cfg.WorkspaceMountPath(),
+			WorkspaceMountPath: workspaceMountPath,
 			SidecarImage:       cfg.Spec.Sidecar.Image,
 			Tmux:               tmux,
 			PreStop:            preStop,

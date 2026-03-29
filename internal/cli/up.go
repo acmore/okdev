@@ -151,7 +151,7 @@ func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, e
 	labels := labelsForSession(opts, cc.cfg, cc.sessionName)
 	annotations := annotationsForSession(cc.cfg)
 	volumes := cc.cfg.EffectiveVolumes()
-	syncPairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.WorkspaceMountPath())
+	syncPairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
 	if err != nil {
 		return nil, err
 	}

@@ -56,7 +56,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if foreground {
 				background = false
 			}
-			pairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.WorkspaceMountPath())
+			pairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
 			if err != nil {
 				return err
 			}
