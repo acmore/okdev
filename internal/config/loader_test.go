@@ -86,6 +86,16 @@ func TestResolvePathFallsBackToRootConfig(t *testing.T) {
 	assertSameFile(t, rootCfg, p)
 }
 
+func TestManifestDir(t *testing.T) {
+	tmp := t.TempDir()
+	if got := ManifestDir(filepath.Join(tmp, DefaultFile)); got != tmp {
+		t.Fatalf("expected manifest dir %q, got %q", tmp, got)
+	}
+	if got := ManifestDir(filepath.Join(tmp, ".okdev", "okdev.yaml")); got != filepath.Join(tmp, ".okdev") {
+		t.Fatalf("expected manifest dir %q, got %q", filepath.Join(tmp, ".okdev"), got)
+	}
+}
+
 func TestResolvePathFindsParent(t *testing.T) {
 	tmp := t.TempDir()
 	child := filepath.Join(tmp, "a", "b")

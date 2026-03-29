@@ -3,6 +3,7 @@ package workload
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -53,12 +54,37 @@ func TestWaitForCandidatePodReadyRetriesOnDeletedCandidate(t *testing.T) {
 	}
 }
 
-func TestResolveManifestPathUsesProjectRootForFolderConfig(t *testing.T) {
-	configPath := filepath.Join("/tmp", "repo", ".okdev", "okdev.yaml")
-	manifestPath := ".okdev/pytorchjob.yaml"
+func TestResolveManifestPathPrefersFolderConfigDir(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".okdev", "okdev.yaml")
+	manifestPath := "pytorchjob.yaml"
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".okdev", "pytorchjob.yaml"), []byte("kind: PyTorchJob\n"), 0o644); err != nil {
+		t.Fatalf("write folder manifest: %v", err)
+	}
 
 	got := ResolveManifestPath(configPath, manifestPath)
-	want := filepath.Join("/tmp", "repo", ".okdev", "pytorchjob.yaml")
+	want := filepath.Join(tmp, ".okdev", "pytorchjob.yaml")
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestResolveManifestPathFallsBackToProjectRoot(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".okdev", "okdev.yaml")
+	manifestPath := "pytorchjob.yaml"
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "pytorchjob.yaml"), []byte("kind: PyTorchJob\n"), 0o644); err != nil {
+		t.Fatalf("write root manifest: %v", err)
+	}
+
+	got := ResolveManifestPath(configPath, manifestPath)
+	want := filepath.Join(tmp, "pytorchjob.yaml")
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)
 	}

@@ -391,14 +391,11 @@ func (d *DevEnvironment) EffectiveWorkspaceMountPath(configPath string) string {
 }
 
 func (d *DevEnvironment) workspaceMountPathFromManifest(configPath string) string {
-	manifestPath := strings.TrimSpace(d.Spec.Workload.ManifestPath)
-	if manifestPath == "" || configPath == "" {
+	resolvedManifestPath := ResolveWorkloadManifestPath(configPath, strings.TrimSpace(d.Spec.Workload.ManifestPath))
+	if resolvedManifestPath == "" || configPath == "" {
 		return ""
 	}
-	if !filepath.IsAbs(manifestPath) {
-		manifestPath = filepath.Join(RootDir(configPath), manifestPath)
-	}
-	raw, err := os.ReadFile(manifestPath)
+	raw, err := os.ReadFile(resolvedManifestPath)
 	if err != nil {
 		return ""
 	}
