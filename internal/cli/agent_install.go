@@ -10,11 +10,16 @@ import (
 	"github.com/acmore/okdev/internal/config"
 )
 
-func ensureConfiguredAgentsInstalled(ctx context.Context, client agentExecClient, namespace, pod, container string, agents []config.AgentSpec, warnf func(string, ...any)) []string {
+func ensureConfiguredAgentsInstalled(ctx context.Context, client agentExecClient, namespace, pod, container string, agents []config.AgentSpec, warnf func(string, ...any), progress func(string)) []string {
 	results := make([]string, 0, len(agents))
 	npmPrepared := false
 	var npmPrepareErr error
 	var npmPrepareResult string
+	report := func(msg string) {
+		if progress != nil {
+			progress(msg)
+		}
+	}
 	for _, agent := range agents {
 		spec, ok := agentcatalog.Lookup(agent.Name)
 		if !ok {
@@ -26,6 +31,7 @@ func ensureConfiguredAgentsInstalled(ctx context.Context, client agentExecClient
 			results = append(results, name+": unsupported")
 			continue
 		}
+		report(fmt.Sprintf("checking %s", spec.Name))
 		installed, err := agentBinaryInstalled(ctx, client, namespace, pod, container, spec.Binary)
 		if err != nil {
 			warnf("failed to check %s install status: %v", spec.Name, err)
@@ -39,6 +45,7 @@ func ensureConfiguredAgentsInstalled(ctx context.Context, client agentExecClient
 		if agentInstallNeedsNPM(spec) {
 			reportPrepare := false
 			if !npmPrepared {
+				report(fmt.Sprintf("preparing npm for %s", spec.Name))
 				npmPrepareResult, npmPrepareErr = ensureAgentNPMInstalled(ctx, client, namespace, pod, container)
 				npmPrepared = true
 				reportPrepare = true
@@ -52,6 +59,7 @@ func ensureConfiguredAgentsInstalled(ctx context.Context, client agentExecClient
 				results = append(results, spec.Name+": "+npmPrepareResult)
 			}
 		}
+		report(fmt.Sprintf("installing %s", spec.Name))
 		if _, err := client.ExecShInContainer(ctx, namespace, pod, container, spec.InstallCommand); err != nil {
 			warnf("failed to install %s: %v", spec.Name, err)
 			results = append(results, spec.Name+": install failed")
@@ -60,6 +68,7 @@ func ensureConfiguredAgentsInstalled(ctx context.Context, client agentExecClient
 		if err := linkAgentBinary(ctx, client, namespace, pod, container, spec); err != nil {
 			warnf("failed to expose %s binary in PATH: %v", spec.Name, err)
 		}
+		report(fmt.Sprintf("verifying %s", spec.Name))
 		installed, err = agentBinaryInstalled(ctx, client, namespace, pod, container, spec.Binary)
 		if err != nil || !installed {
 			if err != nil {
@@ -103,7 +112,10 @@ node_major() {
   fi
   node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0
 }
-if command -v npm >/dev/null 2>&1 && [ "$(node_major)" -ge 16 ]; then
+npm_ok() {
+  command -v npm >/dev/null 2>&1 && npm --version >/dev/null 2>&1
+}
+if npm_ok && [ "$(node_major)" -ge 16 ]; then
   echo installed:none
   exit 0
 fi
@@ -148,6 +160,9 @@ node_major() {
     return 0
   fi
   node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0
+}
+npm_ok() {
+  command -v npm >/dev/null 2>&1 && npm --version >/dev/null 2>&1
 }
 nvm_install() {
   if ! command -v bash >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
@@ -204,7 +219,7 @@ install_curl() {
   esac
   return 0
 }
-if command -v npm >/dev/null 2>&1 && [ "$(node_major)" -ge 16 ]; then
+if npm_ok && [ "$(node_major)" -ge 16 ]; then
   echo "__OKDEV_NPM_STATUS__=installed:${installer}"
   exit 0
 fi
@@ -218,7 +233,7 @@ fi
 if [ "$installer" = "nvm" ] || [ "$installer" = "apk" ] || [ "$installer" = "apt-get" ] || [ "$installer" = "apt" ] || [ "$installer" = "dnf" ] || [ "$installer" = "microdnf" ] || [ "$installer" = "yum" ]; then
   nvm_install || true
 fi
-if command -v npm >/dev/null 2>&1 && [ "$(node_major)" -ge 16 ]; then
+if npm_ok && [ "$(node_major)" -ge 16 ]; then
   echo "__OKDEV_NPM_STATUS__=installed:${installer}"
   exit 0
 fi
@@ -226,7 +241,7 @@ echo "__OKDEV_NPM_STATUS__=unavailable:${installer}"
 `
 
 func ensureAgentNPMInstalled(ctx context.Context, client agentExecClient, namespace, pod, container string) (string, error) {
-	npmInstalled, err := agentBinaryInstalled(ctx, client, namespace, pod, container, "npm")
+	npmInstalled, err := agentNPMUsable(ctx, client, namespace, pod, container)
 	if err != nil {
 		return "", fmt.Errorf("check npm availability: %w", err)
 	}
@@ -277,6 +292,21 @@ func ensureAgentNPMInstalled(ctx context.Context, client agentExecClient, namesp
 	default:
 		return "", fmt.Errorf("unexpected npm install result %q", strings.TrimSpace(string(out)))
 	}
+}
+
+func agentNPMUsable(ctx context.Context, client agentExecClient, namespace, pod, container string) (bool, error) {
+	_, err := client.ExecShInContainer(ctx, namespace, pod, container, "command -v npm >/dev/null 2>&1 && npm --version >/dev/null 2>&1")
+	if err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "exit code 127") || strings.Contains(msg, "exit status 127") || strings.Contains(msg, "not found") {
+			return false, nil
+		}
+		if strings.Contains(msg, "exit code 1") || strings.Contains(msg, "exit status 1") {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func detectAgentNPM(ctx context.Context, client agentExecClient, namespace, pod, container string) (status, installer string, err error) {

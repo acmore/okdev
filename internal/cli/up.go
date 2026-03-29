@@ -245,15 +245,18 @@ func upWait(state *upState) error {
 		}
 		state.ui.stepRun("pod readiness", fmt.Sprintf("%s %d/%d (%s)", p.Phase, p.ReadyContainers, p.TotalContainers, reason))
 	}
-	if err := state.runtime.WaitReady(state.ctx, state.command.kube, state.command.namespace, state.flags.waitTimeout, progressPrinter); err != nil {
+	waitErr := state.runtime.WaitReady(state.ctx, state.command.kube, state.command.namespace, state.flags.waitTimeout, progressPrinter)
+	eventCancel() // Stop event watcher immediately so no stale events print after this point.
+	state.ui.stopActive()
+	if waitErr != nil {
 		hints := fmt.Sprintf("next steps:\n- run `okdev status --session %s`\n- run `kubectl -n %s describe pod %s`", state.command.sessionName, state.command.namespace, state.workloadName)
 		diag, derr := state.command.kube.DescribePod(state.ctx, state.command.namespace, state.workloadName)
 		if derr == nil {
 			fmt.Fprintf(state.cmd.ErrOrStderr(), "pod diagnostics:\n%s\n\n%s\n", diag, hints)
-			return fmt.Errorf("wait for %s/%s readiness failed: %w", state.runtime.Kind(), state.workloadName, err)
+			return fmt.Errorf("wait for %s/%s readiness failed: %w", state.runtime.Kind(), state.workloadName, waitErr)
 		}
 		fmt.Fprintln(state.cmd.ErrOrStderr(), hints)
-		return fmt.Errorf("wait for %s/%s readiness failed: %w", state.runtime.Kind(), state.workloadName, err)
+		return fmt.Errorf("wait for %s/%s readiness failed: %w", state.runtime.Kind(), state.workloadName, waitErr)
 	}
 	state.ui.stepDone("pod readiness", "ready")
 	target, err := state.runtime.SelectTarget(state.ctx, state.command.kube, state.command.namespace)
@@ -315,7 +318,9 @@ func upSetup(state *upState) error {
 			return fmt.Errorf("refresh target before agent install checks: %w", err)
 		}
 		state.ui.stepRun("agents", "checking configured CLIs and auth")
-		results := ensureConfiguredAgentsInstalled(state.ctx, state.command.kube, state.command.namespace, target.PodName, target.Container, state.command.cfg.Spec.Agents, state.ui.warnf)
+		results := ensureConfiguredAgentsInstalled(state.ctx, state.command.kube, state.command.namespace, target.PodName, target.Container, state.command.cfg.Spec.Agents, state.ui.warnf, func(detail string) {
+			state.ui.stepRun("agents", detail)
+		})
 		authResults := ensureConfiguredAgentAuth(state.ctx, state.command.kube, state.command.namespace, target.PodName, target.Container, state.command.cfg.Spec.Session.Shareable, state.command.cfg.Spec.Agents, state.ui.warnf)
 		if len(results) == 0 && len(authResults) == 0 {
 			state.ui.stepDone("agents", "no configured agents")
@@ -820,9 +825,9 @@ func (u *upUI) stepRun(step, detail string) {
 func (u *upUI) stepDone(step, detail string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if u.activeStep == step {
-		u.stopActiveLocked()
-	}
+	// Always clear any active spinner before printing a done line,
+	// even if it belongs to a different step (parallel setup).
+	u.stopActiveLocked()
 	if detail == "" {
 		fmt.Fprintf(u.out, "✔ %s\n", step)
 		return
