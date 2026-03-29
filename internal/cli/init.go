@@ -47,20 +47,6 @@ func newInitCmd(opts *Options) *cobra.Command {
   # Non-interactive with explicit values
   okdev init --yes --name my-project --namespace dev`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			target := config.DefaultFile
-			if opts.ConfigPath != "" {
-				target = opts.ConfigPath
-			}
-
-			abs, err := filepath.Abs(target)
-			if err != nil {
-				return fmt.Errorf("resolve output path %q: %w", target, err)
-			}
-
-			if _, err := os.Stat(abs); err == nil && !force {
-				return fmt.Errorf("config already exists at %q (use --force to overwrite)", abs)
-			}
-
 			vars := config.NewTemplateVars()
 			overrides := InitOverrides{
 				Name:          nameOverride,
@@ -86,6 +72,18 @@ func newInitCmd(opts *Options) *cobra.Command {
 				return err
 			}
 
+			target := opts.ConfigPath
+			if target == "" {
+				target = defaultInitTargetPath(templateRef, vars)
+			}
+			abs, err := filepath.Abs(target)
+			if err != nil {
+				return fmt.Errorf("resolve output path %q: %w", target, err)
+			}
+			if _, err := os.Stat(abs); err == nil && !force {
+				return fmt.Errorf("config already exists at %q (use --force to overwrite)", abs)
+			}
+
 			rendered, err := config.RenderTemplateContext(context.Background(), templateRef, vars)
 			if err != nil {
 				return err
@@ -103,7 +101,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 			}
 			resolvedPreset := strings.TrimSpace(stignorePreset)
 			if resolvedPreset == "" {
-				resolvedPreset = detectSTIgnorePreset(filepath.Dir(abs))
+				resolvedPreset = detectSTIgnorePreset(config.RootDir(abs))
 			}
 			stignorePath, wroteSTIgnore, err := writeInitSTIgnore(abs, []byte(rendered), templateRef, resolvedPreset, force)
 			if err != nil {
@@ -154,6 +152,13 @@ func initTemplateUsage() string {
 		return "Template: file path or URL"
 	}
 	return fmt.Sprintf("Template: %s, file path, or URL", strings.Join(names, "|"))
+}
+
+func defaultInitTargetPath(templateRef string, vars *config.TemplateVars) string {
+	if scaffoldsInitWorkload(templateRef, vars) {
+		return config.FolderFile
+	}
+	return config.DefaultFile
 }
 
 func applyWorkloadDefaults(vars *config.TemplateVars) {
@@ -238,7 +243,7 @@ func validateRenderedInitConfig(rendered, templateRef string, vars *config.Templ
 }
 
 func scaffoldInitWorkload(configPath, templateRef string, vars *config.TemplateVars, force bool) ([]string, error) {
-	if !usesBuiltinBasicTemplate(templateRef) {
+	if !scaffoldsInitWorkload(templateRef, vars) {
 		return nil, nil
 	}
 	var templatePath string
@@ -257,7 +262,7 @@ func scaffoldInitWorkload(configPath, templateRef string, vars *config.TemplateV
 	}
 	target := vars.ManifestPath
 	if !filepath.IsAbs(target) {
-		target = filepath.Join(filepath.Dir(configPath), target)
+		target = filepath.Join(config.RootDir(configPath), target)
 	}
 	target = filepath.Clean(target)
 	if _, err := os.Stat(target); err == nil && !force {
@@ -278,6 +283,20 @@ func scaffoldInitWorkload(configPath, templateRef string, vars *config.TemplateV
 
 func usesBuiltinBasicTemplate(ref string) bool {
 	return strings.TrimSpace(ref) == "" || strings.TrimSpace(ref) == "basic"
+}
+
+func scaffoldsInitWorkload(templateRef string, vars *config.TemplateVars) bool {
+	if !usesBuiltinBasicTemplate(templateRef) {
+		return false
+	}
+	switch strings.TrimSpace(vars.WorkloadType) {
+	case "job", "pytorchjob":
+		return true
+	case "generic":
+		return strings.TrimSpace(vars.GenericPreset) == "deployment"
+	default:
+		return false
+	}
 }
 
 func detectSTIgnorePreset(dir string) string {
@@ -330,7 +349,7 @@ func writeInitSTIgnore(configPath string, rendered []byte, templateRef string, s
 	}
 	localRoot := pairs[0].Local
 	if !filepath.IsAbs(localRoot) {
-		localRoot = filepath.Join(filepath.Dir(configPath), localRoot)
+		localRoot = filepath.Join(config.RootDir(configPath), localRoot)
 	}
 	localRoot = filepath.Clean(localRoot)
 	if err := os.MkdirAll(localRoot, 0o755); err != nil {

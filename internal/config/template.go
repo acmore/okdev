@@ -241,6 +241,9 @@ func UserTemplateNames() ([]string, error) {
 }
 
 func BuiltinTemplateLocalIgnores(ref string) []string {
+	if strings.TrimSpace(ref) == "" {
+		ref = "basic"
+	}
 	preset, ok := builtinTemplateStignorePreset[ref]
 	if !ok {
 		return nil

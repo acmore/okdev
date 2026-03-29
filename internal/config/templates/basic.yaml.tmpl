@@ -5,7 +5,7 @@ metadata:
 spec:
   namespace: {{ .Namespace }}
   session:
-    defaultNameTemplate: '{{`{{ .Repo }}-{{ .Branch }}-{{ .User }}`}}'
+    defaultNameTemplate: '{{`{{ .Repo }}-{{ .User }}`}}'
     ttlHours: {{ .TTLHours }}
     idleTimeoutMinutes: 120
     shareable: true
