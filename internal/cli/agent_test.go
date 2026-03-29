@@ -119,6 +119,26 @@ func TestConfiguredAgentStatusRows(t *testing.T) {
 	}
 }
 
+func TestConfiguredAgentStatusRowsUsesRemoteBasenameFromLocalPath(t *testing.T) {
+	client := &fakeAgentExecClient{
+		results: map[string]error{
+			"command -v codex >/dev/null 2>&1":     nil,
+			`test -f "$HOME"/'.codex/config.toml'`: nil,
+		},
+	}
+	agents := []config.AgentSpec{
+		{Name: "codex", Auth: &config.AgentAuth{LocalPath: "~/.codex/config.toml"}},
+	}
+
+	rows, err := configuredAgentStatusRows(context.Background(), client, "default", "pod", "dev", agents)
+	if err != nil {
+		t.Fatalf("configuredAgentStatusRows: %v", err)
+	}
+	if len(rows) != 1 || !rows[0].AuthStaged {
+		t.Fatalf("unexpected rows %#v", rows)
+	}
+}
+
 func TestEnsureConfiguredAgentsInstalled(t *testing.T) {
 	client := &fakeAgentExecClient{
 		results: map[string]error{
@@ -419,7 +439,7 @@ func TestEnsureConfiguredAgentAuthStagesLocalFile(t *testing.T) {
 	if len(results) != 1 || results[0] != "codex: auth staged" {
 		t.Fatalf("unexpected results %#v", results)
 	}
-	if len(client.copyCalls) != 1 || client.copyCalls[0] != localAuth+"->/run/okdev/agents/codex/auth" {
+	if len(client.copyCalls) != 1 || client.copyCalls[0] != localAuth+"->/run/okdev/agents/codex/auth.json" {
 		t.Fatalf("unexpected copy calls %#v", client.copyCalls)
 	}
 	if len(client.scripts) != 3 {
@@ -428,7 +448,48 @@ func TestEnsureConfiguredAgentAuthStagesLocalFile(t *testing.T) {
 	if !strings.Contains(client.scripts[1], `mkdir -p '/run/okdev/agents/codex' "$HOME"/'.codex'`) {
 		t.Fatalf("unexpected setup script %q", client.scripts[1])
 	}
-	if !strings.Contains(client.scripts[2], `ln -sfn '/run/okdev/agents/codex/auth' "$HOME"/'.codex/auth.json'`) {
+	if !strings.Contains(client.scripts[1], `install -m 600 /dev/null '/run/okdev/agents/codex/auth.json'`) {
+		t.Fatalf("unexpected setup script %q", client.scripts[1])
+	}
+	if !strings.Contains(client.scripts[2], `ln -sfn '/run/okdev/agents/codex/auth.json' "$HOME"/'.codex/auth.json'`) {
+		t.Fatalf("unexpected finalize script %q", client.scripts[2])
+	}
+}
+
+func TestEnsureConfiguredAgentAuthPreservesLocalBasename(t *testing.T) {
+	localDir := t.TempDir()
+	localAuth := filepath.Join(localDir, "config.toml")
+	if err := os.WriteFile(localAuth, []byte("token = \"abc\"\n"), 0o600); err != nil {
+		t.Fatalf("write local auth: %v", err)
+	}
+	client := &fakeAgentExecClient{
+		results: map[string]error{},
+		outputs: map[string][]byte{
+			`if [ -L "$HOME"/'.codex/config.toml' ]; then printf symlink; elif [ -e "$HOME"/'.codex/config.toml' ]; then printf file; else printf missing; fi`: []byte("missing"),
+		},
+	}
+
+	results := ensureConfiguredAgentAuth(
+		context.Background(),
+		client,
+		"default",
+		"pod",
+		"dev",
+		false,
+		[]config.AgentSpec{{Name: "codex", Auth: &config.AgentAuth{LocalPath: localAuth}}},
+		func(string, ...any) {},
+	)
+
+	if len(results) != 1 || results[0] != "codex: auth staged" {
+		t.Fatalf("unexpected results %#v", results)
+	}
+	if len(client.copyCalls) != 1 || client.copyCalls[0] != localAuth+"->/run/okdev/agents/codex/config.toml" {
+		t.Fatalf("unexpected copy calls %#v", client.copyCalls)
+	}
+	if !strings.Contains(client.scripts[1], `install -m 600 /dev/null '/run/okdev/agents/codex/config.toml'`) {
+		t.Fatalf("unexpected setup script %q", client.scripts[1])
+	}
+	if !strings.Contains(client.scripts[2], `ln -sfn '/run/okdev/agents/codex/config.toml' "$HOME"/'.codex/config.toml'`) {
 		t.Fatalf("unexpected finalize script %q", client.scripts[2])
 	}
 }
@@ -541,6 +602,30 @@ func TestCleanupConfiguredAgentAuth(t *testing.T) {
 	}
 }
 
+func TestCleanupConfiguredAgentAuthUsesLocalBasename(t *testing.T) {
+	client := &fakeAgentExecClient{results: map[string]error{}}
+
+	results := cleanupConfiguredAgentAuth(
+		context.Background(),
+		client,
+		"default",
+		"pod",
+		"dev",
+		[]config.AgentSpec{{Name: "codex", Auth: &config.AgentAuth{LocalPath: "~/.codex/config.toml"}}},
+		func(string, ...any) {},
+	)
+
+	if len(results) != 1 || results[0] != "codex: auth cleaned" {
+		t.Fatalf("unexpected results %#v", results)
+	}
+	if len(client.scripts) != 1 {
+		t.Fatalf("expected one cleanup script, got %#v", client.scripts)
+	}
+	if !strings.Contains(client.scripts[0], `if [ -L "$HOME"/'.codex/config.toml' ]; then rm -f "$HOME"/'.codex/config.toml'; fi && rm -rf '/run/okdev/agents/codex'`) {
+		t.Fatalf("unexpected cleanup script %q", client.scripts[0])
+	}
+}
+
 func TestAgentRemotePathExprEscapesHomeSuffix(t *testing.T) {
 	got := agentRemotePathExpr("$HOME/my dir/auth.json")
 	want := `"$HOME"/'my dir/auth.json'`
@@ -558,7 +643,8 @@ func TestCleanupAgentAuthEscapesHomeSuffix(t *testing.T) {
 		"default",
 		"pod",
 		"dev",
-		agentcatalog.Spec{Name: "custom", RemoteAuthPath: "$HOME/my dir/auth.json"},
+		"custom",
+		"$HOME/my dir/auth.json",
 	); err != nil {
 		t.Fatalf("cleanupAgentAuth: %v", err)
 	}
@@ -567,6 +653,14 @@ func TestCleanupAgentAuthEscapesHomeSuffix(t *testing.T) {
 	}
 	if !strings.Contains(client.scripts[0], `if [ -L "$HOME"/'my dir/auth.json' ]; then rm -f "$HOME"/'my dir/auth.json'; fi`) {
 		t.Fatalf("unexpected cleanup script %q", client.scripts[0])
+	}
+}
+
+func TestAgentRemoteAuthPathPreservesLocalBasename(t *testing.T) {
+	got := agentRemoteAuthPath("$HOME/.codex/auth.json", "/tmp/company/config.toml")
+	want := "$HOME/.codex/config.toml"
+	if got != want {
+		t.Fatalf("agentRemoteAuthPath() = %q, want %q", got, want)
 	}
 }
 

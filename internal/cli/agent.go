@@ -103,8 +103,12 @@ func configuredAgentStatusRows(ctx context.Context, client agentExecClient, name
 			row.AuthEnv = strings.TrimSpace(agent.Auth.Env)
 			row.AuthPath = strings.TrimSpace(agent.Auth.LocalPath)
 		}
-		if spec.RemoteAuthPath != "" {
-			staged, err := agentAuthStaged(ctx, client, namespace, pod, container, spec.RemoteAuthPath)
+		remoteAuthPath := spec.RemoteAuthPath
+		if agent.Auth != nil {
+			remoteAuthPath = agentRemoteAuthPath(spec.RemoteAuthPath, agent.Auth.LocalPath)
+		}
+		if remoteAuthPath != "" {
+			staged, err := agentAuthStaged(ctx, client, namespace, pod, container, remoteAuthPath)
 			if err != nil {
 				return nil, fmt.Errorf("check %s auth status: %w", spec.Name, err)
 			}
