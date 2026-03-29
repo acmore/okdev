@@ -14,7 +14,7 @@
 ## Commands
 
 - `okdev version`
-- `okdev init [--workload pod|job|pytorchjob|generic] [--template basic|<registry>|<path>|<url>] [--stignore-preset default|python|node|go|rust] [--force]`
+- `okdev init [--workload pod|job|pytorchjob|generic] [--dev-image <image>] [--template basic|<registry>|<path>|<url>] [--stignore-preset default|python|node|go|rust] [--force]`
 - `okdev validate`
 - `okdev up [--wait-timeout 10m] [--dry-run]`
 - `okdev down [--delete-pvc] [--dry-run] [--output json]`
@@ -65,6 +65,7 @@
 - Pod-only setups default to `.okdev.yaml`.
 - When built-in workload scaffolding also writes files under `.okdev/`, the config is written as `.okdev/okdev.yaml`.
 - `--workload`: chooses the scaffold mode. `pod` keeps the current simple config shape; `job` and `pytorchjob` add a `spec.workload` block plus a starter manifest; `generic` requires explicit inject information and can optionally use a preset such as `--generic-preset deployment`.
+- `--dev-image`: sets the dev container image for pod workloads. When provided, the generated config includes a `podTemplate` with the given image.
 - `--template`: accepts built-in `basic`, a user template name from `~/.okdev/templates/`, a file path, or a URL.
 - For built-in templates, it also writes a starter local `.stignore` file for the initialized sync root.
 - For built-in `basic`, `job` and `pytorchjob` scaffold `.okdev/job.yaml` or `.okdev/pytorchjob.yaml`. `generic --generic-preset deployment` scaffolds `.okdev/deployment.yaml` while still using `spec.workload.type=generic`.
