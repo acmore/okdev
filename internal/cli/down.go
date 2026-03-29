@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 func newDownCmd(opts *Options) *cobra.Command {
 	var deletePVC bool
 	var dryRun bool
+	var yes bool
 
 	cmd := &cobra.Command{
 		Use:   "down",
@@ -46,6 +49,17 @@ func newDownCmd(opts *Options) *cobra.Command {
 					fmt.Fprintln(cmd.OutOrStdout(), "- note: --delete-pvc is ignored (okdev no longer manages PVC lifecycle)")
 				}
 				return nil
+			}
+
+			if !yes {
+				ok, err := confirmDown(os.Stdin, cmd.ErrOrStderr(), cc.sessionName, cc.namespace, runtime.Kind(), runtime.WorkloadName())
+				if err != nil {
+					return err
+				}
+				if !ok {
+					fmt.Fprintln(cmd.ErrOrStderr(), "aborted")
+					return nil
+				}
 			}
 
 			if len(cc.cfg.Spec.Agents) > 0 {
@@ -116,10 +130,29 @@ func newDownCmd(opts *Options) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Skip confirmation prompt")
 	cmd.Flags().BoolVar(&deletePVC, "delete-pvc", false, "Delete workspace PVC for this session")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview actions without deleting resources")
 	_ = cmd.Flags().MarkDeprecated("delete-pvc", "PVC lifecycle is no longer managed; delete PVCs manually if needed")
 	return cmd
+}
+
+func confirmDown(in io.Reader, out io.Writer, sessionName, namespace, kind, workloadName string) (bool, error) {
+	if !isTerminalReader(in) {
+		return false, fmt.Errorf("refusing to delete without --yes in non-interactive mode")
+	}
+	return promptConfirmDown(in, out, sessionName, namespace, kind, workloadName)
+}
+
+func promptConfirmDown(in io.Reader, out io.Writer, sessionName, namespace, kind, workloadName string) (bool, error) {
+	fmt.Fprintf(out, "Delete session %q in namespace %q? (%s/%s) [y/N]: ", sessionName, namespace, kind, workloadName)
+	reader := bufio.NewReader(in)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return false, fmt.Errorf("read confirmation: %w", err)
+	}
+	answer := strings.TrimSpace(strings.ToLower(line))
+	return answer == "y" || answer == "yes", nil
 }
 
 func removeSSHConfigEntry(hostAlias string) error {
