@@ -76,6 +76,7 @@ var templateHTTPClient templateHTTPDoer = &http.Client{Timeout: 30 * time.Second
 type TemplateVars struct {
 	Name             string
 	Namespace        string
+	DevImage         string
 	SidecarImage     string
 	SyncthingVersion string
 	SyncLocal        string

@@ -30,31 +30,25 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cat >"$CFG_PATH" <<EOF
-apiVersion: okdev.io/v1alpha1
-kind: DevEnvironment
-metadata:
-  name: e2e-smoke
-spec:
-  namespace: ${NAMESPACE}
-  session:
-    defaultNameTemplate: ${SESSION_NAME}
-  sync:
-    engine: syncthing
-    paths:
-      - ${SYNC_DIR}:/workspace
-  ssh:
-    user: root
-    persistentSession: false
-  sidecar:
-    image: ${SIDECAR_IMAGE}
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: ubuntu:22.04
-          command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]
-EOF
+echo "Scaffolding pod config via okdev init"
+cd "$WORKDIR"
+"$OKDEV_BIN" init \
+  --workload pod \
+  --yes \
+  --name e2e-smoke \
+  --namespace "$NAMESPACE" \
+  --dev-image ubuntu:22.04 \
+  --sidecar-image "$SIDECAR_IMAGE" \
+  --ssh-user root \
+  --sync-local "$SYNC_DIR" \
+  --sync-remote /workspace
+
+# Disable persistent SSH sessions for CI
+sed -i 's/persistentSession: true/persistentSession: false/' "$CFG_PATH" 2>/dev/null || true
+grep -q 'persistentSession' "$CFG_PATH" || sed -i '/ssh:/a\    persistentSession: false' "$CFG_PATH"
+
+echo "Generated config:"
+cat "$CFG_PATH"
 
 echo "hello from okdev e2e" >"$SYNC_DIR/hello.txt"
 
