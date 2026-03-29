@@ -227,6 +227,29 @@ func TestAnnounceConfigPathFallsBackToStaticOutput(t *testing.T) {
 	}
 }
 
+func TestANSIEnabledDefaultsToTrue(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm-256color")
+
+	if !ansiEnabled() {
+		t.Fatal("expected ANSI to be enabled by default")
+	}
+}
+
+func TestANSIEnabledHonorsNoColorAndDumbTerm(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	t.Setenv("TERM", "xterm-256color")
+	if ansiEnabled() {
+		t.Fatal("expected NO_COLOR to disable ANSI")
+	}
+
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "dumb")
+	if ansiEnabled() {
+		t.Fatal("expected TERM=dumb to disable ANSI")
+	}
+}
+
 func TestAnnounceConfigPathSkipsWhenQuietOrEmpty(t *testing.T) {
 	t.Setenv("OKDEV_QUIET_CONFIG_ANNOUNCE", "1")
 

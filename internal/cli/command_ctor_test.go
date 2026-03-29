@@ -37,7 +37,7 @@ func TestCommandConstructorsExposeExpectedMetadata(t *testing.T) {
 	if cmd := newConnectCmd(&Options{}); cmd.Use != "connect [session]" || cmd.Flags().Lookup("cmd") == nil || cmd.Flags().Lookup("shell") == nil || cmd.Flags().Lookup("no-tty") == nil {
 		t.Fatalf("unexpected connect command shape")
 	}
-	if cmd := newPortsCmd(&Options{}); cmd.Use != "ports" || cmd.Short == "" {
+	if cmd := newPortsCmd(&Options{}); cmd.Use != "ports" || cmd.Short == "" || cmd.Flags().Lookup("dry-run") == nil {
 		t.Fatalf("unexpected ports command shape")
 	}
 	if cmd := newAgentListCmd(&Options{}); cmd.Use != "list [session]" || cmd.Short == "" {

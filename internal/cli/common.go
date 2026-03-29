@@ -117,7 +117,7 @@ func applyConfigKubeContext(opts *Options, cfg *config.DevEnvironment) {
 }
 
 func announceConfigPath(path string) func(success bool) {
-	return announceConfigPathWithWriter(os.Stderr, path, isTerminalWriter(os.Stderr))
+	return announceConfigPathWithWriter(os.Stderr, path, isInteractiveWriter(os.Stderr))
 }
 
 func announceConfigPathWithWriter(w io.Writer, path string, interactive bool) func(success bool) {
@@ -151,7 +151,7 @@ type transientStatus struct {
 }
 
 func newTransientStatus(w io.Writer, message string) *transientStatus {
-	return newTransientStatusWithMode(w, message, isTerminalWriter(w))
+	return newTransientStatusWithMode(w, message, isInteractiveWriter(w))
 }
 
 func startTransientStatus(w io.Writer, message string) func() {
@@ -264,8 +264,19 @@ func isTerminalWriter(w io.Writer) bool {
 	return isTerminalFD(w)
 }
 
+func isInteractiveWriter(w io.Writer) bool {
+	return isTerminalWriter(w) && ansiEnabled()
+}
+
 func isTerminalReader(r io.Reader) bool {
 	return isTerminalFD(r)
+}
+
+func ansiEnabled() bool {
+	if strings.TrimSpace(os.Getenv("NO_COLOR")) != "" {
+		return false
+	}
+	return !strings.EqualFold(strings.TrimSpace(os.Getenv("TERM")), "dumb")
 }
 
 func isTerminalFD(v any) bool {

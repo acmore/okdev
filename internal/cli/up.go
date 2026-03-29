@@ -769,6 +769,7 @@ type upUI struct {
 	errOut      io.Writer
 	warnings    []string
 	interactive bool
+	colors      bool
 	activeStep  string
 	active      *transientStatus
 	mu          sync.Mutex
@@ -782,7 +783,8 @@ func newUpUI(out, errOut io.Writer) *upUI {
 	return &upUI{
 		out:         sw,
 		errOut:      errOut,
-		interactive: isTerminalWriter(out),
+		interactive: isInteractiveWriter(out),
+		colors:      ansiEnabled(),
 	}
 }
 
@@ -860,7 +862,7 @@ func (u *upUI) formatStepDetail(step, detail string) string {
 		}
 		return detail
 	}
-	if step == workload.TypePod && strings.Contains(detail, "reused existing workload") {
+	if u.colors && step == workload.TypePod && strings.Contains(detail, "reused existing workload") {
 		return ansiYellow + detail + ansiReset
 	}
 	return detail

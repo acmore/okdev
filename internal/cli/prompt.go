@@ -97,7 +97,7 @@ func promptInteractive(vars *config.TemplateVars, overrides InitOverrides, in io
 	reader := bufio.NewReader(in)
 
 	if !overrides.hasName() {
-		input, err := promptString(reader, out, "Environment name", vars.Name)
+		input, err := promptString(reader, out, "Environment name (used for session labels and default naming)", vars.Name)
 		if err != nil {
 			return err
 		}
@@ -107,7 +107,7 @@ func promptInteractive(vars *config.TemplateVars, overrides InitOverrides, in io
 	}
 
 	if !overrides.hasNamespace() {
-		input, err := promptString(reader, out, "Namespace", vars.Namespace)
+		input, err := promptString(reader, out, "Namespace (where the dev workload will run)", vars.Namespace)
 		if err != nil {
 			return err
 		}
@@ -127,7 +127,7 @@ func promptInteractive(vars *config.TemplateVars, overrides InitOverrides, in io
 	}
 
 	if vars.WorkloadType == "generic" && !overrides.hasGenericPreset() {
-		input, err := promptString(reader, out, "Generic scaffold preset (optional)", vars.GenericPreset)
+		input, err := promptString(reader, out, "Generic scaffold preset (optional, e.g. deployment)", vars.GenericPreset)
 		if err != nil {
 			return err
 		}
@@ -139,7 +139,7 @@ func promptInteractive(vars *config.TemplateVars, overrides InitOverrides, in io
 	applyWorkloadDefaults(vars)
 
 	if vars.WorkloadType == "generic" && !overrides.hasManifestPath() {
-		input, err := promptString(reader, out, "Generic manifest path", vars.ManifestPath)
+		input, err := promptString(reader, out, "Generic manifest path (local YAML to apply)", vars.ManifestPath)
 		if err != nil {
 			return err
 		}
@@ -149,7 +149,7 @@ func promptInteractive(vars *config.TemplateVars, overrides InitOverrides, in io
 	}
 
 	if vars.WorkloadType == "generic" && !overrides.hasInjectPaths() {
-		input, err := promptString(reader, out, "Generic inject paths (comma-separated)", strings.Join(vars.InjectPaths, ","))
+		input, err := promptString(reader, out, "Generic inject paths (comma-separated Kubernetes spec paths)", strings.Join(vars.InjectPaths, ","))
 		if err != nil {
 			return err
 		}
@@ -159,7 +159,7 @@ func promptInteractive(vars *config.TemplateVars, overrides InitOverrides, in io
 	}
 
 	if !overrides.hasSidecarImage() {
-		input, err := promptString(reader, out, "Sidecar image", vars.SidecarImage)
+		input, err := promptString(reader, out, "Sidecar image (okdev SSH/sync helper image)", vars.SidecarImage)
 		if err != nil {
 			return err
 		}
@@ -169,7 +169,7 @@ func promptInteractive(vars *config.TemplateVars, overrides InitOverrides, in io
 	}
 
 	if !overrides.hasSyncLocal() {
-		input, err := promptString(reader, out, "Sync local path", vars.SyncLocal)
+		input, err := promptString(reader, out, "Sync local path (project directory on this machine)", vars.SyncLocal)
 		if err != nil {
 			return err
 		}
@@ -179,7 +179,7 @@ func promptInteractive(vars *config.TemplateVars, overrides InitOverrides, in io
 	}
 
 	if !overrides.hasSyncRemote() {
-		input, err := promptString(reader, out, "Sync remote path", vars.SyncRemote)
+		input, err := promptString(reader, out, "Sync remote path (workspace path in the container)", vars.SyncRemote)
 		if err != nil {
 			return err
 		}
@@ -189,7 +189,7 @@ func promptInteractive(vars *config.TemplateVars, overrides InitOverrides, in io
 	}
 
 	if !overrides.hasSSHUser() {
-		input, err := promptString(reader, out, "SSH user", vars.SSHUser)
+		input, err := promptString(reader, out, "SSH user (login user inside the dev container)", vars.SSHUser)
 		if err != nil {
 			return err
 		}
@@ -216,7 +216,7 @@ func promptString(reader *bufio.Reader, out io.Writer, label, defaultVal string)
 
 func promptWorkloadType(reader *bufio.Reader, out io.Writer, defaultVal string) (string, error) {
 	for {
-		input, err := promptString(reader, out, "Workload type", defaultVal)
+		input, err := promptString(reader, out, "Workload type (pod=simple dev pod, job=batch workload, pytorchjob=distributed training, generic=custom manifest)", defaultVal)
 		if err != nil {
 			return "", err
 		}

@@ -9,6 +9,7 @@
 - `--context`: kubeconfig context override. When omitted, `spec.kubeContext` is used if set; otherwise kubeconfig current-context is used.
 - `--output text|json`: output format (`list`, `status`)
 - `--verbose`: debug logging
+- `NO_COLOR=1` or `TERM=dumb`: disable ANSI color/styling in interactive terminal output
 
 ## Commands
 
@@ -97,6 +98,7 @@
 
 - Advanced/recovery command. Rebuilds managed SSH `LocalForward` / `RemoteForward` state from `spec.ports` after disconnects or local port changes.
 - No-op when managed forwards are already healthy and config is unchanged.
+- `--dry-run`: previews the SSH alias and port-forward actions without updating SSH config or starting/stopping managed forwards.
 
 ### `okdev sync [--mode up|down|bi] [--foreground] [--reset] [--dry-run]`
 

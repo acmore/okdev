@@ -101,6 +101,31 @@ func TestPromptInteractiveSkipsOverriddenFields(t *testing.T) {
 	}
 }
 
+func TestPromptInteractiveUsesExplanatoryLabels(t *testing.T) {
+	vars := config.NewTemplateVars()
+	input := strings.NewReader("\n\n\n\n\n\n\n")
+	var out bytes.Buffer
+
+	if err := promptInteractive(vars, InitOverrides{}, input, &out, false, true); err != nil {
+		t.Fatalf("promptInteractive returned error: %v", err)
+	}
+
+	got := out.String()
+	for _, want := range []string{
+		"Environment name (used for session labels and default naming)",
+		"Namespace (where the dev workload will run)",
+		"Workload type (pod=simple dev pod, job=batch workload, pytorchjob=distributed training, generic=custom manifest)",
+		"Sidecar image (okdev SSH/sync helper image)",
+		"Sync local path (project directory on this machine)",
+		"Sync remote path (workspace path in the container)",
+		"SSH user (login user inside the dev container)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected prompt output to contain %q, got %q", want, got)
+		}
+	}
+}
+
 func TestSplitCommaList(t *testing.T) {
 	got := splitCommaList(" a, ,b ,, c ")
 	want := []string{"a", "b", "c"}
