@@ -2,7 +2,7 @@
 set -euo pipefail
 
 OKDEV_BIN="${OKDEV_BIN:-$(pwd)/bin/okdev}"
-SIDECAR_IMAGE="${SIDECAR_IMAGE:-okdev-sidecar:e2e}"
+SIDECAR_IMAGE="${SIDECAR_IMAGE:-okdev-sidecar:v0.0.0-e2e}"
 SESSION_NAME="${SESSION_NAME:-e2e-smoke}"
 NAMESPACE="${NAMESPACE:-default}"
 WORKDIR="$(mktemp -d)"
