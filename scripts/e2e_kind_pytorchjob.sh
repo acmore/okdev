@@ -9,13 +9,11 @@ WORKDIR="$(mktemp -d)"
 HOME_DIR="${HOME_DIR:-$WORKDIR/home}"
 CFG_PATH="$WORKDIR/.okdev.yaml"
 SYNC_DIR="$WORKDIR/workspace"
-MANIFEST_DIR="$WORKDIR/.okdev"
-MANIFEST_PATH="$MANIFEST_DIR/pytorchjob.yaml"
 ORIG_HOME="${HOME}"
 ORIG_KUBECONFIG="${KUBECONFIG:-}"
 KUBECONFIG_PATH="$HOME_DIR/.kube/config"
 
-mkdir -p "$HOME_DIR" "$SYNC_DIR" "$MANIFEST_DIR" "$HOME_DIR/.kube"
+mkdir -p "$HOME_DIR" "$SYNC_DIR" "$HOME_DIR/.kube"
 if [[ -n "$ORIG_KUBECONFIG" ]]; then
   cp "$ORIG_KUBECONFIG" "$KUBECONFIG_PATH"
 elif [[ -f "$ORIG_HOME/.kube/config" ]]; then
@@ -32,61 +30,33 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Write the PyTorchJob manifest
-cat >"$MANIFEST_PATH" <<EOF
-apiVersion: kubeflow.org/v1
-kind: PyTorchJob
-metadata:
-  name: ${SESSION_NAME}
-spec:
-  pytorchReplicaSpecs:
-    Master:
-      replicas: 1
-      restartPolicy: Never
-      template:
-        spec:
-          containers:
-            - name: pytorch
-              image: ubuntu:22.04
-              command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]
-    Worker:
-      replicas: 1
-      restartPolicy: Never
-      template:
-        spec:
-          containers:
-            - name: pytorch
-              image: ubuntu:22.04
-              command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]
-EOF
+echo "Scaffolding PyTorchJob config via okdev init"
+cd "$WORKDIR"
+"$OKDEV_BIN" init \
+  --workload pytorchjob \
+  --yes \
+  --name e2e-ptjob \
+  --namespace "$NAMESPACE" \
+  --sidecar-image "$SIDECAR_IMAGE" \
+  --ssh-user root \
+  --sync-local "$SYNC_DIR" \
+  --sync-remote /workspace
 
-# Write the okdev config
-cat >"$CFG_PATH" <<EOF
-apiVersion: okdev.io/v1alpha1
-kind: DevEnvironment
-metadata:
-  name: e2e-ptjob
-spec:
-  namespace: ${NAMESPACE}
-  session:
-    defaultNameTemplate: ${SESSION_NAME}
-  workload:
-    type: pytorchjob
-    manifestPath: ${MANIFEST_PATH}
-    inject:
-      - path: "spec.pytorchReplicaSpecs.Master.template"
-    attach:
-      container: pytorch
-  sync:
-    engine: syncthing
-    paths:
-      - ${SYNC_DIR}:/workspace
-  ssh:
-    user: root
-    persistentSession: false
-  sidecar:
-    image: ${SIDECAR_IMAGE}
-EOF
+# The training-operator webhook requires a container named "pytorch".
+# The scaffold uses "dev", so patch the manifest and config.
+MANIFEST_PATH="$WORKDIR/.okdev/pytorchjob.yaml"
+sed -i 's/name: dev/name: pytorch/' "$MANIFEST_PATH"
+sed -i 's/image: # TODO:.*/image: ubuntu:22.04/' "$MANIFEST_PATH"
+sed -i 's/command: \["sleep", "infinity"\]/command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]/' "$MANIFEST_PATH"
+sed -i 's/container: dev/container: pytorch/' "$CFG_PATH"
+
+# Disable persistent SSH sessions for CI
+sed -i '/ssh:/a\    persistentSession: false' "$CFG_PATH"
+
+echo "Generated config:"
+cat "$CFG_PATH"
+echo "Generated manifest:"
+cat "$MANIFEST_PATH"
 
 echo "hello from pytorchjob e2e" >"$SYNC_DIR/hello.txt"
 
