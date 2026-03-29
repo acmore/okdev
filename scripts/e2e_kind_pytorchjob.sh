@@ -46,7 +46,7 @@ spec:
       template:
         spec:
           containers:
-            - name: dev
+            - name: pytorch
               image: ubuntu:22.04
               command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]
     Worker:
@@ -55,7 +55,7 @@ spec:
       template:
         spec:
           containers:
-            - name: dev
+            - name: pytorch
               image: ubuntu:22.04
               command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]
 EOF
@@ -76,7 +76,7 @@ spec:
     inject:
       - path: "spec.pytorchReplicaSpecs.Master.template"
     attach:
-      container: dev
+      container: pytorch
   sync:
     engine: syncthing
     paths:
