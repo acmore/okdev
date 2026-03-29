@@ -6,7 +6,7 @@ on:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -39,3 +39,52 @@ jobs:
           kubectl -n default logs okdev-e2e-smoke -c dev || true
           kubectl -n default exec okdev-e2e-smoke -c dev -- sh -lc 'ps aux || ps' || true
           kubectl -n default exec okdev-e2e-smoke -c dev -- sh -lc 'ls -R /var/okdev /tmp 2>/dev/null | sed -n "1,200p"' || true
+          echo "--- syncthing state ---"
+          kubectl -n default exec okdev-e2e-smoke -c okdev-sidecar -- sh -c 'cat /var/okdev/syncthing/config.xml 2>/dev/null || true'
+          kubectl -n default exec okdev-e2e-smoke -c okdev-sidecar -- sh -c 'ls -la /var/okdev/syncthing/ 2>/dev/null || true'
+
+  pytorchjob:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: helm/kind-action@v1.12.0
+        with:
+          cluster_name: okdev-e2e
+
+      - name: Build okdev CLI
+        run: go build -o bin/okdev ./cmd/okdev
+
+      - name: Build sidecar image
+        run: docker build -f infra/sidecar/Dockerfile -t okdev-sidecar:v0.0.0-e2e .
+
+      - name: Load sidecar image into kind
+        run: kind load docker-image okdev-sidecar:v0.0.0-e2e --name okdev-e2e
+
+      - name: Install Kubeflow Training Operator
+        run: |
+          kubectl apply --server-side -f https://github.com/kubeflow/training-operator/releases/latest/download/manifests.yaml
+          echo "Waiting for training-operator controller to be ready"
+          kubectl -n kubeflow wait --for=condition=Available deployment/training-operator --timeout=120s
+
+      - name: Run PyTorchJob smoke test
+        run: bash scripts/e2e_kind_pytorchjob.sh
+
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          kubectl get pytorchjobs -A -o wide || true
+          kubectl get events -A --sort-by=.lastTimestamp | tail -n 200 || true
+          for pod in $(kubectl -n default get pods -l training.kubeflow.org/job-name=e2e-ptjob -o name 2>/dev/null); do
+            echo "--- $pod logs (okdev-sidecar) ---"
+            kubectl -n default logs "$pod" -c okdev-sidecar || true
+            echo "--- $pod logs (dev) ---"
+            kubectl -n default logs "$pod" -c dev || true
+          done
+          kubectl -n kubeflow logs deployment/training-operator --tail=100 || true
