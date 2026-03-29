@@ -15,7 +15,7 @@ spec:
               command: ["sleep", "infinity"]
               volumeMounts:
                 - name: workspace
-                  mountPath: /workspace
+                  mountPath: {{ .SyncRemote }}
           volumes:
             - name: workspace
               emptyDir: {}

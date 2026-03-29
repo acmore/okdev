@@ -33,7 +33,8 @@ okdev init --workload generic --generic-preset deployment
 okdev init --template basic --stignore-preset go
 ```
 
-This generates `.okdev.yaml` in the current directory. See [Config Manifest](config-manifest.md) for the full field reference and examples.
+This generates `.okdev.yaml` in the current directory for simple pod setups.
+When `okdev init` also scaffolds workload files under `.okdev/` such as `job.yaml`, it writes the config as `.okdev/okdev.yaml` instead. See [Config Manifest](config-manifest.md) for the full field reference and examples.
 
 For built-in templates, `okdev init` also writes a starter local `.stignore` file for the initialized sync root. Use `--stignore-preset` to override that starter with a project-oriented preset like `python`, `node`, `go`, or `rust`.
 When `--stignore-preset` is omitted, `okdev init` will try to detect a preset from common repo markers like `go.mod`, `package.json`, `Cargo.toml`, or `pyproject.toml`.
@@ -42,8 +43,9 @@ When `--stignore-preset` is omitted, `okdev init` will try to detect a preset fr
 okdev discovers configuration in this order:
 
 1. `-c, --config <path>` flag
-2. `.okdev.yaml`
-3. `okdev.yaml`
+2. `.okdev/okdev.yaml`
+3. `.okdev.yaml`
+4. `okdev.yaml`
 
 ## Start a Session
 
