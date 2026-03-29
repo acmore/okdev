@@ -23,6 +23,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 	var manifestPath string
 	var injectPaths []string
 	var genericPreset string
+	var devImageOverride string
 	var sidecarImageOverride string
 	var syncLocalOverride string
 	var syncRemoteOverride string
@@ -55,6 +56,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 				ManifestPath:  manifestPath,
 				InjectPaths:   injectPaths,
 				GenericPreset: genericPreset,
+				DevImage:      devImageOverride,
 				SidecarImage:  sidecarImageOverride,
 				SyncLocal:     syncLocalOverride,
 				SyncRemote:    syncRemoteOverride,
@@ -135,6 +137,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&manifestPath, "manifest-path", "", "Path to workload manifest")
 	cmd.Flags().StringArrayVar(&injectPaths, "inject-path", nil, "Workload inject path (repeatable)")
 	cmd.Flags().StringVar(&genericPreset, "generic-preset", "", "Optional generic scaffold preset, for example deployment")
+	cmd.Flags().StringVar(&devImageOverride, "dev-image", "", "Dev container image for pod workloads")
 	cmd.Flags().StringVar(&sidecarImageOverride, "sidecar-image", "", "Sidecar image")
 	cmd.Flags().StringVar(&syncLocalOverride, "sync-local", "", "Local sync path")
 	cmd.Flags().StringVar(&syncRemoteOverride, "sync-remote", "", "Remote sync path")

@@ -19,6 +19,7 @@ type InitOverrides struct {
 	ManifestPath  string
 	InjectPaths   []string
 	GenericPreset string
+	DevImage      string
 	SidecarImage  string
 	SyncLocal     string
 	SyncRemote    string
@@ -44,6 +45,9 @@ func applyOverrides(vars *config.TemplateVars, o InitOverrides) {
 	}
 	if o.GenericPreset != "" {
 		vars.GenericPreset = o.GenericPreset
+	}
+	if o.DevImage != "" {
+		vars.DevImage = o.DevImage
 	}
 	if o.SidecarImage != "" {
 		vars.SidecarImage = o.SidecarImage

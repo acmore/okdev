@@ -40,3 +40,11 @@ spec:
     keepAliveTimeoutSeconds: 90
   sidecar:
     image: {{ .SidecarImage }}
+{{- if and (eq .WorkloadType "pod") .DevImage }}
+  podTemplate:
+    spec:
+      containers:
+        - name: dev
+          image: {{ .DevImage }}
+          command: ["sleep", "infinity"]
+{{- end }}
