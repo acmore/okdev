@@ -8,3 +8,6 @@
 .worktrees/
 site/
 docs/specs/
+.okdev
+.claude
+.venv
