@@ -202,12 +202,27 @@ func (s *transientStatus) run(interval time.Duration) {
 func (s *transientStatus) render(frame string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var line string
 	elapsed := time.Since(s.started)
 	if elapsed >= statusElapsedThreshold {
-		fmt.Fprintf(s.w, "\r%s %s (%s)\033[K", frame, s.message, elapsed.Round(time.Second))
+		line = fmt.Sprintf("%s %s (%s)", frame, s.message, elapsed.Round(time.Second))
 	} else {
-		fmt.Fprintf(s.w, "\r%s %s\033[K", frame, s.message)
+		line = fmt.Sprintf("%s %s", frame, s.message)
 	}
+	// Truncate to terminal width to prevent line wrapping, which breaks
+	// in-place updates (carriage return only resets within the last line).
+	if w := terminalWidth(); w > 0 && len(line) > w {
+		line = line[:w]
+	}
+	fmt.Fprintf(s.w, "\r%s\033[K", line)
+}
+
+func terminalWidth() int {
+	w, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil {
+		return 0
+	}
+	return w
 }
 
 func (s *transientStatus) update(message string) {

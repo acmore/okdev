@@ -27,6 +27,7 @@ const fakeAgentNPMDetectKey = "__agent_npm_detect__"
 func looksLikeAgentNPMDetectScript(script string) bool {
 	return strings.Contains(script, "echo install:${installer}") &&
 		strings.Contains(script, "echo unavailable:none") &&
+		strings.Contains(script, "npm --version >/dev/null 2>&1") &&
 		strings.Contains(script, "command -v bash") &&
 		strings.Contains(script, "command -v curl")
 }
@@ -52,7 +53,7 @@ func (f *fakeAgentExecClient) ExecShInContainer(_ context.Context, _, _, _, scri
 		delete(f.results, "command -v opencode >/dev/null 2>&1")
 	}
 	if strings.HasPrefix(script, "export OKDEV_NPM_INSTALLER=") && strings.Contains(script, "__OKDEV_NPM_STATUS__=installed:") {
-		delete(f.results, "command -v npm >/dev/null 2>&1")
+		delete(f.results, "command -v npm >/dev/null 2>&1 && npm --version >/dev/null 2>&1")
 		delete(f.results, "node -p 'process.versions.node.split(\".\")[0]'")
 		if strings.Contains(script, "nvm install 20") {
 			return []byte("__OKDEV_NPM_STATUS__=installed:nvm\n"), nil
@@ -125,7 +126,7 @@ func TestEnsureConfiguredAgentsInstalled(t *testing.T) {
 			"command -v codex >/dev/null 2>&1":    errors.New("exit status 1"),
 			"command -v gemini >/dev/null 2>&1":   errors.New("exit status 1"),
 			"command -v opencode >/dev/null 2>&1": errors.New("exit status 1"),
-			"command -v npm >/dev/null 2>&1":      nil,
+			"command -v npm >/dev/null 2>&1 && npm --version >/dev/null 2>&1": nil,
 			"npm install -g @openai/codex":        nil,
 			"npm install -g @google/gemini-cli":   nil,
 			"npm install -g opencode-ai":          nil,
@@ -143,6 +144,7 @@ func TestEnsureConfiguredAgentsInstalled(t *testing.T) {
 		"dev",
 		[]config.AgentSpec{{Name: "claude-code"}, {Name: "codex"}, {Name: "gemini"}, {Name: "opencode"}},
 		func(format string, args ...any) { warnings = append(warnings, format) },
+		nil,
 	)
 
 	if len(warnings) != 0 {
@@ -177,6 +179,7 @@ func TestEnsureConfiguredAgentsInstalledBootstrapsNPMOnce(t *testing.T) {
 		"dev",
 		[]config.AgentSpec{{Name: "codex"}, {Name: "gemini"}, {Name: "opencode"}},
 		func(string, ...any) {},
+		nil,
 	)
 
 	if got := strings.Join(results, ", "); strings.Count(got, "node/npm installed via nvm") != 1 {
@@ -197,7 +200,7 @@ func TestEnsureConfiguredAgentsInstalledWarnsWhenNpmMissing(t *testing.T) {
 	client := &fakeAgentExecClient{
 		results: map[string]error{
 			"command -v codex >/dev/null 2>&1": errors.New("exit status 1"),
-			"command -v npm >/dev/null 2>&1":   errors.New("exit status 1"),
+			"command -v npm >/dev/null 2>&1 && npm --version >/dev/null 2>&1": errors.New("exit status 1"),
 		},
 		outputs: map[string][]byte{
 			`node -p 'process.versions.node.split(".")[0]'`: []byte("0\n"),
@@ -213,6 +216,7 @@ func TestEnsureConfiguredAgentsInstalledWarnsWhenNpmMissing(t *testing.T) {
 		"dev",
 		[]config.AgentSpec{{Name: "codex"}},
 		func(format string, args ...any) { warnings = append(warnings, format) },
+		nil,
 	)
 
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "skipping %s install") {
@@ -233,6 +237,7 @@ func TestEnsureConfiguredAgentsInstalledReportsUnknownAgents(t *testing.T) {
 		"dev",
 		[]config.AgentSpec{{Name: "mystery-agent"}},
 		func(format string, args ...any) { warnings = append(warnings, fmt.Sprintf(format, args...)) },
+		nil,
 	)
 
 	if len(warnings) != 1 || !strings.Contains(warnings[0], `unknown configured agent "mystery-agent"`) {
@@ -263,6 +268,7 @@ func TestEnsureConfiguredAgentsInstalledBootstrapsNPM(t *testing.T) {
 		"dev",
 		[]config.AgentSpec{{Name: "codex"}},
 		func(format string, args ...any) { warnings = append(warnings, format) },
+		nil,
 	)
 
 	if len(warnings) != 0 {
@@ -293,6 +299,7 @@ func TestEnsureConfiguredAgentsInstalledBootstrapsCurlThenNVM(t *testing.T) {
 		"dev",
 		[]config.AgentSpec{{Name: "codex"}},
 		func(format string, args ...any) { warnings = append(warnings, format) },
+		nil,
 	)
 
 	if len(warnings) != 0 {
@@ -317,7 +324,7 @@ func TestEnsureConfiguredAgentsInstalledSkipsBootstrapWhenNodeAndNpmAlreadyPrese
 	client := &fakeAgentExecClient{
 		results: map[string]error{
 			"command -v codex >/dev/null 2>&1": errors.New("exit status 1"),
-			"command -v npm >/dev/null 2>&1":   nil,
+			"command -v npm >/dev/null 2>&1 && npm --version >/dev/null 2>&1": nil,
 			"npm install -g @openai/codex":     nil,
 		},
 		outputs: map[string][]byte{
@@ -333,6 +340,7 @@ func TestEnsureConfiguredAgentsInstalledSkipsBootstrapWhenNodeAndNpmAlreadyPrese
 		"dev",
 		[]config.AgentSpec{{Name: "codex"}},
 		func(string, ...any) {},
+		nil,
 	)
 
 	if got := strings.Join(results, ", "); strings.Contains(got, "node/npm installed via") || !strings.Contains(got, "codex: installed") {
@@ -342,6 +350,45 @@ func TestEnsureConfiguredAgentsInstalledSkipsBootstrapWhenNodeAndNpmAlreadyPrese
 		if looksLikeAgentNPMDetectScript(script) {
 			t.Fatalf("did not expect npm detect script when node/npm are already present")
 		}
+	}
+}
+
+func TestEnsureConfiguredAgentsInstalledReinstallsBrokenNPMAfterInterruptedBootstrap(t *testing.T) {
+	client := &fakeAgentExecClient{
+		results: map[string]error{
+			"command -v codex >/dev/null 2>&1":                           errors.New("exit status 1"),
+			"command -v npm >/dev/null 2>&1 && npm --version >/dev/null 2>&1": errors.New("exit status 1"),
+			"npm install -g @openai/codex":                               nil,
+		},
+		outputs: map[string][]byte{
+			`node -p 'process.versions.node.split(".")[0]'`: []byte("20\n"),
+			fakeAgentNPMDetectKey:                           []byte("install:nvm\n"),
+		},
+	}
+
+	results := ensureConfiguredAgentsInstalled(
+		context.Background(),
+		client,
+		"default",
+		"pod",
+		"dev",
+		[]config.AgentSpec{{Name: "codex"}},
+		func(string, ...any) {},
+		nil,
+	)
+
+	got := strings.Join(results, ", ")
+	if !strings.Contains(got, "codex: node/npm installed via nvm") || !strings.Contains(got, "codex: installed") {
+		t.Fatalf("unexpected install summary %q", got)
+	}
+	detectCalls := 0
+	for _, script := range client.scripts {
+		if looksLikeAgentNPMDetectScript(script) {
+			detectCalls++
+		}
+	}
+	if detectCalls != 1 {
+		t.Fatalf("expected one npm detect call, got %d (%#v)", detectCalls, client.scripts)
 	}
 }
 
