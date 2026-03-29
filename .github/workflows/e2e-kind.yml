@@ -3,7 +3,7 @@ name: E2E Kind
 on:
   workflow_dispatch:
   release:
-    types: [published]
+    types: [prereleased]
 
 jobs:
   smoke:
