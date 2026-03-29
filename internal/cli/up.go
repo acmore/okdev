@@ -285,11 +285,16 @@ func upDryRun(state *upState) error {
 func upWait(state *upState) error {
 	state.ui.section("Wait")
 
-	// Start watching pod events in the background to surface image pulls, scheduling, etc.
+	// Watch session pod events in the background so controller-backed workloads
+	// like Jobs/PyTorchJobs surface image pulls and scheduling too.
 	eventCtx, eventCancel := context.WithCancel(state.ctx)
 	defer eventCancel()
-	go state.command.kube.WatchPodEvents(eventCtx, state.command.namespace, state.workloadName, func(reason, message string) {
-		state.ui.stepRun("pod event", fmt.Sprintf("[%s] %s", reason, message))
+	go watchSessionPodEvents(eventCtx, state.command.kube, state.command.namespace, state.command.sessionName, 500*time.Millisecond, func(pod, reason, message string) {
+		detail := fmt.Sprintf("[%s] %s", reason, message)
+		if strings.TrimSpace(pod) != "" {
+			detail = fmt.Sprintf("%s %s", pod, detail)
+		}
+		state.ui.stepRun("pod event", detail)
 	})
 
 	progressPrinter := func(p kube.PodReadinessProgress) {
@@ -326,6 +331,44 @@ func upWait(state *upState) error {
 	state.target = target
 	state.ui.stepDone("target", target.PodName+"/"+target.Container)
 	return nil
+}
+
+type sessionPodEventWatcher interface {
+	ListPods(context.Context, string, bool, string) ([]kube.PodSummary, error)
+	WatchPodEvents(context.Context, string, string, func(string, string))
+}
+
+func watchSessionPodEvents(ctx context.Context, k sessionPodEventWatcher, namespace, sessionName string, interval time.Duration, onEvent func(pod, reason, message string)) {
+	if onEvent == nil {
+		return
+	}
+	selector := "okdev.io/managed=true,okdev.io/session=" + sessionName
+	watched := map[string]struct{}{}
+
+	for {
+		pods, err := k.ListPods(ctx, namespace, false, selector)
+		if err == nil {
+			for _, pod := range pods {
+				name := strings.TrimSpace(pod.Name)
+				if name == "" {
+					continue
+				}
+				if _, ok := watched[name]; ok {
+					continue
+				}
+				watched[name] = struct{}{}
+				go k.WatchPodEvents(ctx, namespace, name, func(reason, message string) {
+					onEvent(name, reason, message)
+				})
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
+	}
 }
 
 func upSetup(state *upState) error {
