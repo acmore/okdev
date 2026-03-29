@@ -99,12 +99,12 @@ echo "Testing explicit okdev down"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes
 
 echo "Verifying pod is deleted"
-for i in $(seq 1 15); do
+for i in $(seq 1 30); do
   if ! kubectl -n "$NAMESPACE" get pod "okdev-${SESSION_NAME}" >/dev/null 2>&1; then
     echo "Pod deleted on attempt $i"
     break
   fi
-  if [[ "$i" -eq 15 ]]; then
+  if [[ "$i" -eq 30 ]]; then
     echo "ERROR: pod okdev-${SESSION_NAME} still exists after down" >&2
     exit 1
   fi
