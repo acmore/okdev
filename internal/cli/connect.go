@@ -23,7 +23,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 
   # Use a specific shell
   okdev exec --shell /bin/zsh`,
-		Aliases: []string{"connect"},
+		Aliases:           []string{"connect"},
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: sessionCompletionFunc(opts),
 		RunE: func(cmd *cobra.Command, args []string) error {
