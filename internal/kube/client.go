@@ -545,6 +545,57 @@ func (c *Client) ResourceExists(ctx context.Context, namespace string, apiVersio
 	return err == nil, err
 }
 
+func (c *Client) GetResourceAnnotation(ctx context.Context, namespace, apiVersion, kind, name, key string) (string, bool, error) {
+	if strings.TrimSpace(name) == "" {
+		return "", false, fmt.Errorf("resource name is required")
+	}
+
+	cs, dc, mapper, _, err := c.clients()
+	if err != nil {
+		return "", false, err
+	}
+
+	var annotations map[string]string
+
+	switch {
+	case strings.EqualFold(strings.TrimSpace(apiVersion), "v1") && strings.EqualFold(strings.TrimSpace(kind), "pod"):
+		obj, err := cs.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return "", false, err
+		}
+		annotations = obj.Annotations
+	case strings.EqualFold(strings.TrimSpace(apiVersion), "batch/v1") && strings.EqualFold(strings.TrimSpace(kind), "job"):
+		obj, err := cs.BatchV1().Jobs(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return "", false, err
+		}
+		annotations = obj.Annotations
+	default:
+		gv, err := schema.ParseGroupVersion(apiVersion)
+		if err != nil {
+			return "", false, fmt.Errorf("parse apiVersion %q: %w", apiVersion, err)
+		}
+		mapping, err := mapper.RESTMapping(schema.GroupKind{Group: gv.Group, Kind: kind}, gv.Version)
+		if err != nil {
+			return "", false, fmt.Errorf("resolve rest mapping for %s/%s: %w", apiVersion, kind, err)
+		}
+		var resource dynamic.ResourceInterface
+		if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
+			resource = dc.Resource(mapping.Resource).Namespace(namespace)
+		} else {
+			resource = dc.Resource(mapping.Resource)
+		}
+		obj, err := resource.Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return "", false, err
+		}
+		annotations = obj.GetAnnotations()
+	}
+
+	v, ok := annotations[key]
+	return v, ok, nil
+}
+
 func (c *Client) DeleteByRef(ctx context.Context, namespace string, apiVersion string, kind string, name string, ignoreNotFound bool) error {
 	cs, dc, mapper, _, err := c.clients()
 	if err != nil {
