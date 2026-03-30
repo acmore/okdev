@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/acmore/okdev/internal/config"
+	"github.com/acmore/okdev/internal/workload"
 	"sigs.k8s.io/yaml"
 )
 
@@ -130,6 +131,109 @@ func computeLCS(a, b []string) []string {
 		result[l], result[r] = result[r], result[l]
 	}
 	return result
+}
+
+type driftAction int
+
+const (
+	driftActionReuse driftAction = iota
+	driftActionApply
+)
+
+func handleWorkloadDrift(state *upState) (driftAction, error) {
+	refProvider, ok := state.runtime.(workload.RefProvider)
+	if !ok {
+		return driftActionReuse, nil
+	}
+	apiVersion, kind, name, err := refProvider.WorkloadRef()
+	if err != nil {
+		return driftActionReuse, nil
+	}
+
+	oldJSON, jsonFound, err := state.command.kube.GetResourceAnnotation(
+		state.ctx, state.command.namespace, apiVersion, kind, name,
+		config.AnnotationLastAppliedSpec,
+	)
+	if err != nil {
+		return driftActionReuse, nil
+	}
+	oldHash, hashFound, err := state.command.kube.GetResourceAnnotation(
+		state.ctx, state.command.namespace, apiVersion, kind, name,
+		config.AnnotationLastAppliedHash,
+	)
+	if err != nil {
+		return driftActionReuse, nil
+	}
+
+	if !jsonFound && !hashFound {
+		state.ui.warnf("drift detection unavailable for this session (no prior snapshot); will activate after next apply")
+		return driftActionReuse, nil
+	}
+
+	var currentJSON string
+	switch rt := state.runtime.(type) {
+	case *workload.PodRuntime:
+		currentJSON = rt.LastAppliedSpecJSON
+	case *workload.GenericRuntime:
+		currentJSON = rt.LastAppliedSpecJSON
+	default:
+		return driftActionReuse, nil
+	}
+
+	currentSnap, err := config.ParseLastAppliedWorkloadSpec(currentJSON)
+	if err != nil {
+		return driftActionReuse, nil
+	}
+	result := detectDrift(&currentSnap, oldJSON, oldHash)
+
+	switch result.Kind {
+	case driftUnknown, driftNone:
+		return driftActionReuse, nil
+	case driftChanged:
+		errOut := state.cmd.ErrOrStderr()
+		isPod := state.runtime.Kind() == workload.TypePod
+
+		if result.Diff != "" {
+			fmt.Fprintln(errOut, "Workload spec has changed:")
+			fmt.Fprintln(errOut)
+			fmt.Fprintln(errOut, result.Diff)
+			fmt.Fprintln(errOut)
+		} else {
+			fmt.Fprintln(errOut, "Workload spec has changed.")
+		}
+
+		if isPod {
+			fmt.Fprintln(errOut, "Pod workloads must be recreated to apply these changes.")
+		}
+
+		if !isTerminalReader(state.cmd.InOrStdin()) {
+			if isPod {
+				return 0, fmt.Errorf("workload spec changed; run 'okdev down --session %s' then 'okdev up --session %s' to apply",
+					state.command.sessionName, state.command.sessionName)
+			}
+			return 0, fmt.Errorf("workload spec changed; re-run with --reconcile to apply")
+		}
+
+		prompt := "Reapply workload? [y/N]: "
+		if isPod {
+			prompt = "Recreate workload? [y/N]: "
+		}
+		ok, promptErr := promptDriftReapply(state.cmd.InOrStdin(), errOut, prompt)
+		if promptErr != nil {
+			return driftActionReuse, promptErr
+		}
+		if !ok {
+			return driftActionReuse, nil
+		}
+
+		if isPod {
+			if delErr := state.runtime.Delete(state.ctx, state.command.kube, state.command.namespace, true); delErr != nil {
+				return 0, fmt.Errorf("delete existing pod for recreate: %w", delErr)
+			}
+		}
+		return driftActionApply, nil
+	}
+	return driftActionReuse, nil
 }
 
 func promptDriftReapply(in io.Reader, out io.Writer, prompt string) (bool, error) {

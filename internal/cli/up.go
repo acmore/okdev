@@ -118,9 +118,6 @@ func runUp(cmd *cobra.Command, opts *Options, flags upOptions) error {
 		if flags.dryRun {
 			return upDryRun(state)
 		}
-		if warnErr := warnIfConfigNewerThanSession(opts, state.command.kube, state.command.namespace, state.command.sessionName, state.workloadName, state.ui.warnWriter()); warnErr != nil {
-			slog.Debug("skip config drift warning", "error", warnErr)
-		}
 		if err := upWait(state); err != nil {
 			return err
 		}
@@ -209,13 +206,24 @@ func upReconcile(state *upState, applyWorkload bool) error {
 	if err != nil {
 		return err
 	}
-	if !reusedExisting {
-		if err := state.runtime.Apply(state.ctx, state.command.kube, state.command.namespace); err != nil {
-			return err
+	if reusedExisting {
+		action, driftErr := handleWorkloadDrift(state)
+		if driftErr != nil {
+			return driftErr
+		}
+		switch action {
+		case driftActionReuse:
+			state.ui.stepDone(state.runtime.Kind(), "reused existing workload")
+			return nil
+		case driftActionApply:
+			// fall through to apply
 		}
 	}
+	if err := state.runtime.Apply(state.ctx, state.command.kube, state.command.namespace); err != nil {
+		return err
+	}
 	if reusedExisting {
-		state.ui.stepDone(state.runtime.Kind(), "reused existing workload (run `okdev down` then `okdev up` to recreate)")
+		state.ui.stepDone(state.runtime.Kind(), "recreated (spec changed)")
 	} else {
 		state.ui.stepDone(state.runtime.Kind(), "applied")
 	}
