@@ -192,6 +192,39 @@ for WPOD in $WORKER_PODS; do
   echo "preStop handler verified on $WPOD"
 done
 
+echo "Changing controller workload spec to trigger drift detection"
+sed -i 's/image: ubuntu:22.04/image: ubuntu:24.04/g' "$MANIFEST_PATH"
+
+echo "Verifying non-interactive up fails with reconcile guidance"
+set +e
+DRIFT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m 2>&1)
+DRIFT_STATUS=$?
+set -e
+if [[ "$DRIFT_STATUS" -eq 0 ]]; then
+  echo "ERROR: expected drifted controller workload to require --reconcile" >&2
+  exit 1
+fi
+if [[ "$DRIFT_OUTPUT" != *"workload spec changed; re-run with --reconcile to apply"* ]]; then
+  echo "ERROR: unexpected controller drift output" >&2
+  echo "$DRIFT_OUTPUT" >&2
+  exit 1
+fi
+echo "Controller drift guidance verified"
+
+echo "Reapplying PyTorchJob via --reconcile"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --reconcile --wait-timeout 5m
+
+echo "Verifying PyTorchJob spec was updated in place"
+MASTER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$SESSION_NAME" \
+  -o jsonpath='{.spec.pytorchReplicaSpecs.Master.template.spec.containers[0].image}')
+WORKER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$SESSION_NAME" \
+  -o jsonpath='{.spec.pytorchReplicaSpecs.Worker.template.spec.containers[0].image}')
+if [[ "$MASTER_IMAGE" != "ubuntu:24.04" || "$WORKER_IMAGE" != "ubuntu:24.04" ]]; then
+  echo "ERROR: expected PyTorchJob images to update to ubuntu:24.04, got master='$MASTER_IMAGE' worker='$WORKER_IMAGE'" >&2
+  exit 1
+fi
+echo "Controller reconcile verified"
+
 echo "Testing explicit okdev down"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes
 
