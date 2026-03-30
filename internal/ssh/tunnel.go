@@ -373,7 +373,7 @@ func (tm *TunnelManager) OpenShell() error {
 			// Some terminals can briefly fail size discovery; request a PTY anyway.
 			w, h = 80, 24
 		}
-		if err := s.RequestPty("xterm-256color", h, w, xssh.TerminalModes{
+		if err := s.RequestPty(localPTYTerm(), h, w, xssh.TerminalModes{
 			xssh.ECHO:          1,
 			xssh.TTY_OP_ISPEED: 14400,
 			xssh.TTY_OP_OSPEED: 14400,
@@ -415,6 +415,14 @@ func (tm *TunnelManager) OpenShell() error {
 		return fmt.Errorf("wait shell: %w", err)
 	}
 	return nil
+}
+
+func localPTYTerm() string {
+	termValue := strings.TrimSpace(os.Getenv("TERM"))
+	if termValue == "" || termValue == "dumb" {
+		return "xterm-256color"
+	}
+	return termValue
 }
 
 func (tm *TunnelManager) keepAliveLoop() {

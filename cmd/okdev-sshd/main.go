@@ -158,6 +158,8 @@ func buildInteractiveLoginScript(sessionEnv map[string]string, shell, workspace,
 		parts = append(parts, fmt.Sprintf("if [ -x %s ]; then %s 2>&1 || echo 'warning: postAttach script failed' >&2; fi", postAttach, postAttach))
 	}
 
+	parts = append(parts, terminalBootstrapScript())
+
 	if tmuxFlag == "1" && sessionEnv["OKDEV_NO_TMUX"] != "1" {
 		parts = append(parts, devTmuxBootstrapScript())
 	}
@@ -166,9 +168,12 @@ func buildInteractiveLoginScript(sessionEnv map[string]string, shell, workspace,
 	return strings.Join(parts, "; ")
 }
 
+func terminalBootstrapScript() string {
+	return `if [ "${TERM:-}" = "xterm-ghostty" ]; then export TERM=xterm-256color; fi`
+}
+
 func devTmuxBootstrapScript() string {
 	return strings.Join([]string{
-		`if [ "${TERM:-}" = "xterm-ghostty" ]; then export TERM=xterm-256color; fi`,
 		`if command -v tmux >/dev/null 2>&1; then if [ -f /var/okdev/dev.tmux.conf ]; then exec tmux -f /var/okdev/dev.tmux.conf new-session -A -s okdev; fi; exec tmux new-session -A -s okdev; fi`,
 		`echo 'warning: tmux not available in dev container; continuing without tmux' >&2`,
 	}, "; ")
@@ -201,7 +206,13 @@ func handlePTY(cmd *exec.Cmd, s ssh.Session, ptyReq ssh.Pty, winCh <-chan ssh.Wi
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	var closeOnce sync.Once
+	closePTY := func() {
+		closeOnce.Do(func() {
+			_ = f.Close()
+		})
+	}
+	defer closePTY()
 
 	go func() {
 		for win := range winCh {
@@ -209,12 +220,15 @@ func handlePTY(cmd *exec.Cmd, s ssh.Session, ptyReq ssh.Pty, winCh <-chan ssh.Wi
 		}
 	}()
 
-	go io.Copy(f, s)
+	go func() {
+		_, _ = io.Copy(f, s)
+		closePTY()
+	}()
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		io.Copy(s, f)
+		_, _ = io.Copy(s, f)
 	}()
 
 	if err := cmd.Wait(); err != nil {
