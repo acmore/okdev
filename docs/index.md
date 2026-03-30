@@ -14,7 +14,7 @@ okdev provisions and operates dev sessions using standard Pod/PVC resources -- n
 
 1. Define your environment in `.okdev.yaml` (image, volumes, ports, sync paths).
 2. Run `okdev up` to create the pod, configure SSH, and start file sync.
-3. Connect with `ssh okdev-<session>` or `okdev connect`.
+3. Connect with `ssh okdev-<session>` or `okdev exec`.
 
 ---
 

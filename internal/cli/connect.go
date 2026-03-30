@@ -6,23 +6,24 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newConnectCmd(opts *Options) *cobra.Command {
+func newExecCmd(opts *Options) *cobra.Command {
 	var shell string
 	var cmdStr string
 	var noTTY bool
 
 	cmd := &cobra.Command{
-		Use:   "connect [session]",
+		Use:   "exec [session]",
 		Short: "Open shell or run command in session pod",
 		Long:  "Open a shell via kubectl exec. For persistent tmux sessions and port forwarding, use okdev ssh instead.",
 		Example: `  # Open an interactive shell
-  okdev connect
+  okdev exec
 
   # Run a one-off command
-  okdev connect --cmd "cat /etc/os-release"
+  okdev exec --cmd "cat /etc/os-release"
 
   # Use a specific shell
-  okdev connect --shell /bin/zsh`,
+  okdev exec --shell /bin/zsh`,
+		Aliases: []string{"connect"},
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: sessionCompletionFunc(opts),
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -93,14 +93,14 @@ echo "Verifying remote shell and logs"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --setup-key --cmd 'test -f /workspace/hello.txt'
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" logs --follow=false --tail 10 >/dev/null
 
-echo "Testing connect --cmd"
-CONNECT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" connect --no-tty --cmd 'echo connect-ok')
-if [[ "$CONNECT_OUTPUT" != *"connect-ok"* ]]; then
-  echo "ERROR: connect --cmd did not return expected output" >&2
-  echo "Got: $CONNECT_OUTPUT" >&2
+echo "Testing exec --cmd"
+EXEC_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'echo exec-ok')
+if [[ "$EXEC_OUTPUT" != *"exec-ok"* ]]; then
+  echo "ERROR: exec --cmd did not return expected output" >&2
+  echo "Got: $EXEC_OUTPUT" >&2
   exit 1
 fi
-echo "connect --cmd verified"
+echo "exec --cmd verified"
 
 echo "Capturing current pod identity before spec drift"
 ORIGINAL_POD_UID=$(kubectl -n "$NAMESPACE" get pod "okdev-${SESSION_NAME}" -o jsonpath='{.metadata.uid}')
