@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gliderlabs/ssh"
 )
@@ -107,6 +108,7 @@ func TestBuildInteractiveLoginScript(t *testing.T) {
 	for _, want := range []string{
 		"cd '/workspace/demo'",
 		"/workspace/demo/.okdev/post-attach.sh",
+		"xterm-ghostty",
 		"tmux",
 		"exec '/bin/sh' -l",
 	} {
@@ -145,6 +147,9 @@ func TestBuildInteractiveLoginScriptWithoutWorkspaceOrTmux(t *testing.T) {
 	if strings.Contains(script, "tmux") {
 		t.Fatalf("did not expect tmux bootstrap in script: %s", script)
 	}
+	if !strings.Contains(script, "xterm-ghostty") {
+		t.Fatalf("expected terminal bootstrap in script: %s", script)
+	}
 	if !strings.Contains(script, "exec '/bin/sh' -l") {
 		t.Fatalf("expected login shell exec: %s", script)
 	}
@@ -152,9 +157,18 @@ func TestBuildInteractiveLoginScriptWithoutWorkspaceOrTmux(t *testing.T) {
 
 func TestDevTmuxBootstrapScriptIncludesFallbackWarning(t *testing.T) {
 	script := devTmuxBootstrapScript()
-	for _, want := range []string{"xterm-ghostty", "tmux", "warning: tmux not available"} {
+	for _, want := range []string{"tmux", "warning: tmux not available"} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("expected tmux bootstrap script to contain %q: %s", want, script)
+		}
+	}
+}
+
+func TestTerminalBootstrapScriptNormalizesGhostty(t *testing.T) {
+	script := terminalBootstrapScript()
+	for _, want := range []string{"xterm-ghostty", "xterm-256color"} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("expected terminal bootstrap to contain %q: %s", want, script)
 		}
 	}
 }
@@ -196,7 +210,8 @@ func TestBuildCmdInteractiveShell(t *testing.T) {
 	t.Setenv("OKDEV_WORKSPACE", "")
 	t.Setenv("OKDEV_TMUX", "")
 	cmd := buildCmd(fakeSessionCmd{}, "/bin/sh")
-	if got := strings.Join(cmd.Args, " "); got != "/bin/sh -lc exec '/bin/sh' -l" {
+	want := `/bin/sh -lc if [ "${TERM:-}" = "xterm-ghostty" ]; then export TERM=xterm-256color; fi; exec '/bin/sh' -l`
+	if got := strings.Join(cmd.Args, " "); got != want {
 		t.Fatalf("unexpected interactive args: %q", got)
 	}
 }
@@ -322,6 +337,23 @@ func TestHandleNoPTYCopiesStdoutStderrAndStdin(t *testing.T) {
 	}
 	if got := sess.stderr.String(); !strings.Contains(got, "err:hello") {
 		t.Fatalf("expected stderr to contain command output, got %q", got)
+	}
+}
+
+func TestHandlePTYExitsWhenSessionInputCloses(t *testing.T) {
+	sess := newFakeSessionRuntime("", "")
+	sess.isPty = true
+	sess.pty = ssh.Pty{Term: "xterm-256color"}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- handlePTY(exec.Command("/bin/sh", "-lc", "while read line; do :; done"), sess, sess.pty, sess.winCh)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handlePTY did not exit after session input closed")
 	}
 }
 
