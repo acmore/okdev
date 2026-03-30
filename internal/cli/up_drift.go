@@ -212,7 +212,7 @@ func handleWorkloadDrift(state *upState) (driftAction, error) {
 			if isPod {
 				action = "recreate"
 			}
-			return 0, fmt.Errorf("workload spec changed; re-run with --reconcile to %s", action)
+			return driftActionReuse, fmt.Errorf("workload spec changed; re-run with --reconcile to %s", action)
 		}
 
 		prompt := "Reapply workload? [y/N]: "
@@ -229,7 +229,7 @@ func handleWorkloadDrift(state *upState) (driftAction, error) {
 
 		if isPod {
 			if delErr := state.runtime.Delete(state.ctx, state.command.kube, state.command.namespace, true); delErr != nil {
-				return 0, fmt.Errorf("delete existing pod for recreate: %w", delErr)
+				return driftActionReuse, fmt.Errorf("delete existing pod for recreate: %w", delErr)
 			}
 			return driftActionRecreate, nil
 		}
