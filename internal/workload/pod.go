@@ -11,15 +11,15 @@ import (
 const DefaultTargetContainer = "dev"
 
 type PodRuntime struct {
-	SessionName        string
-	Labels             map[string]string
-	Annotations        map[string]string
-	PodSpec            corev1.PodSpec
-	Volumes            []corev1.Volume
-	WorkspaceMountPath string
-	SidecarImage       string
-	Tmux               bool
-	PreStop            string
+	SessionName         string
+	Labels              map[string]string
+	Annotations         map[string]string
+	PodSpec             corev1.PodSpec
+	Volumes             []corev1.Volume
+	WorkspaceMountPath  string
+	SidecarImage        string
+	Tmux                bool
+	PreStop             string
 	TargetContainer     string
 	LastAppliedSpecJSON string
 	LastAppliedSpecHash string

@@ -19,16 +19,16 @@ import (
 )
 
 type GenericRuntime struct {
-	WorkloadKind       string
-	ManifestPath       string
-	WorkspaceMountPath string
-	SidecarImage       string
-	Tmux               bool
-	PreStop            string
-	TargetContainer    string
-	Volumes            []corev1.Volume
-	Labels             map[string]string
-	Annotations        map[string]string
+	WorkloadKind        string
+	ManifestPath        string
+	WorkspaceMountPath  string
+	SidecarImage        string
+	Tmux                bool
+	PreStop             string
+	TargetContainer     string
+	Volumes             []corev1.Volume
+	Labels              map[string]string
+	Annotations         map[string]string
 	Inject              []config.WorkloadInjectSpec
 	LastAppliedSpecJSON string
 	LastAppliedSpecHash string
