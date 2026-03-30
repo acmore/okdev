@@ -12,6 +12,9 @@ const (
 	TypeJob        = "job"
 	TypePyTorchJob = "pytorchjob"
 	TypeGeneric    = "generic"
+
+	AnnotationLastAppliedSpec = "okdev.io/last-applied-spec"
+	AnnotationLastAppliedHash = "okdev.io/last-applied-spec-sha256"
 )
 
 type TargetRef struct {

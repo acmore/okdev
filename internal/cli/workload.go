@@ -15,26 +15,42 @@ import (
 func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName string, labels, annotations map[string]string, podSpec corev1.PodSpec, volumes []corev1.Volume, tmux bool, preStop string) (workload.Runtime, error) {
 	targetContainer := resolveTargetContainer(cfg)
 	workspaceMountPath := cfg.EffectiveWorkspaceMountPath(cfgPath)
+	manifestPath := ""
+	manifestResolvedPath := ""
+	if t := strings.TrimSpace(cfg.Spec.Workload.Type); t != "" && t != workload.TypePod {
+		manifestPath = strings.TrimSpace(cfg.Spec.Workload.ManifestPath)
+		manifestResolvedPath = workload.ResolveManifestPath(cfgPath, cfg.Spec.Workload.ManifestPath)
+	}
+
+	snap := config.BuildWorkloadSnapshot(cfg, workspaceMountPath, targetContainer, tmux, preStop, manifestPath, manifestResolvedPath)
+	snapJSON, _ := snap.JSON()
+	snapHash, _ := snap.SHA256()
+
 	switch strings.TrimSpace(cfg.Spec.Workload.Type) {
 	case "", workload.TypePod:
-		return workload.NewPodRuntime(
+		rt := workload.NewPodRuntime(
 			sessionName, labels, annotations, podSpec,
 			volumes, workspaceMountPath, cfg.Spec.Sidecar.Image,
 			tmux, preStop, targetContainer,
-		), nil
+		)
+		rt.LastAppliedSpecJSON = snapJSON
+		rt.LastAppliedSpecHash = snapHash
+		return rt, nil
 	case workload.TypeJob, workload.TypeGeneric, workload.TypePyTorchJob:
 		return &workload.GenericRuntime{
-			WorkloadKind:       strings.TrimSpace(cfg.Spec.Workload.Type),
-			ManifestPath:       workload.ResolveManifestPath(cfgPath, cfg.Spec.Workload.ManifestPath),
-			WorkspaceMountPath: workspaceMountPath,
-			SidecarImage:       cfg.Spec.Sidecar.Image,
-			Tmux:               tmux,
-			PreStop:            preStop,
-			TargetContainer:    targetContainer,
-			Volumes:            volumes,
-			Labels:             labels,
-			Annotations:        annotations,
-			Inject:             cfg.Spec.Workload.Inject,
+			WorkloadKind:        strings.TrimSpace(cfg.Spec.Workload.Type),
+			ManifestPath:        manifestResolvedPath,
+			WorkspaceMountPath:  workspaceMountPath,
+			SidecarImage:        cfg.Spec.Sidecar.Image,
+			Tmux:                tmux,
+			PreStop:             preStop,
+			TargetContainer:     targetContainer,
+			Volumes:             volumes,
+			Labels:              labels,
+			Annotations:         annotations,
+			Inject:              cfg.Spec.Workload.Inject,
+			LastAppliedSpecJSON: snapJSON,
+			LastAppliedSpecHash: snapHash,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported workload type %q", cfg.Spec.Workload.Type)

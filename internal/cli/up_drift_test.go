@@ -1,0 +1,135 @@
+package cli
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+
+	"github.com/acmore/okdev/internal/config"
+)
+
+func TestDriftResultNoAnnotation(t *testing.T) {
+	current := config.LastAppliedWorkloadSpec{Version: "v1", WorkloadKind: "pod", SidecarImage: "img:1"}
+	result := detectDrift(&current, "", "")
+	if result.Kind != driftUnknown {
+		t.Fatalf("expected driftUnknown, got %v", result.Kind)
+	}
+}
+
+func TestDriftResultNoDrift(t *testing.T) {
+	snap := config.LastAppliedWorkloadSpec{Version: "v1", WorkloadKind: "pod", SidecarImage: "img:1"}
+	hash, _ := snap.SHA256()
+	jsonStr, _ := snap.JSON()
+	result := detectDrift(&snap, jsonStr, hash)
+	if result.Kind != driftNone {
+		t.Fatalf("expected driftNone, got %v", result.Kind)
+	}
+}
+
+func TestDriftResultChanged(t *testing.T) {
+	old := config.LastAppliedWorkloadSpec{Version: "v1", WorkloadKind: "pod", SidecarImage: "img:1"}
+	oldJSON, _ := old.JSON()
+	oldHash, _ := old.SHA256()
+
+	current := config.LastAppliedWorkloadSpec{Version: "v1", WorkloadKind: "pod", SidecarImage: "img:2"}
+	result := detectDrift(&current, oldJSON, oldHash)
+	if result.Kind != driftChanged {
+		t.Fatalf("expected driftChanged, got %v", result.Kind)
+	}
+	if result.Diff == "" {
+		t.Fatal("expected non-empty diff")
+	}
+}
+
+func TestDriftResultChangedMalformedJSON(t *testing.T) {
+	current := config.LastAppliedWorkloadSpec{Version: "v1", WorkloadKind: "pod", SidecarImage: "img:2"}
+	result := detectDrift(&current, "not-json", "different-hash")
+	if result.Kind != driftChanged {
+		t.Fatalf("expected driftChanged, got %v", result.Kind)
+	}
+	if result.Diff != "" {
+		t.Fatal("expected empty diff when old JSON is malformed")
+	}
+}
+
+func TestRenderDiffOutput(t *testing.T) {
+	old := config.LastAppliedWorkloadSpec{Version: "v1", WorkloadKind: "pod", SidecarImage: "img:1"}
+	new := config.LastAppliedWorkloadSpec{Version: "v1", WorkloadKind: "pod", SidecarImage: "img:2"}
+	diff := renderSpecDiff(&old, &new)
+	if !strings.Contains(diff, "-") || !strings.Contains(diff, "+") {
+		t.Fatalf("expected unified diff markers, got:\n%s", diff)
+	}
+	if !strings.Contains(diff, "img:1") || !strings.Contains(diff, "img:2") {
+		t.Fatalf("expected image change in diff, got:\n%s", diff)
+	}
+}
+
+func TestConfirmDriftReapplyAccepts(t *testing.T) {
+	in := strings.NewReader("y\n")
+	var out bytes.Buffer
+	ok, err := promptDriftReapply(in, &out, "Reapply workload? [y/N]: ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected confirmation")
+	}
+}
+
+func TestConfirmDriftReapplyDeclines(t *testing.T) {
+	in := strings.NewReader("n\n")
+	var out bytes.Buffer
+	ok, err := promptDriftReapply(in, &out, "Reapply workload? [y/N]: ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("expected decline")
+	}
+}
+
+func TestConfirmDriftReapplyDefaultsNo(t *testing.T) {
+	in := strings.NewReader("\n")
+	var out bytes.Buffer
+	ok, err := promptDriftReapply(in, &out, "Reapply workload? [y/N]: ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("expected default decline")
+	}
+}
+
+func TestDriftDetectionMissingAnnotationWarns(t *testing.T) {
+	snap := config.LastAppliedWorkloadSpec{Version: "v1", WorkloadKind: "pod", SidecarImage: "img:1"}
+	result := detectDrift(&snap, "", "")
+	if result.Kind != driftUnknown {
+		t.Fatalf("expected driftUnknown for missing annotation, got %v", result.Kind)
+	}
+}
+
+func TestDriftDetectionHashOnlyNoJSON(t *testing.T) {
+	current := config.LastAppliedWorkloadSpec{Version: "v1", WorkloadKind: "pod", SidecarImage: "img:2"}
+	result := detectDrift(&current, "", "some-old-hash")
+	if result.Kind != driftChanged {
+		t.Fatalf("expected driftChanged when hash present but different, got %v", result.Kind)
+	}
+	if result.Diff != "" {
+		t.Fatal("expected empty diff when no old JSON available")
+	}
+}
+
+func TestUnifiedDiffEmptyInputs(t *testing.T) {
+	result := unifiedDiff("", "")
+	if result != "" {
+		t.Fatalf("expected empty diff for empty inputs, got %q", result)
+	}
+}
+
+func TestUnifiedDiffIdentical(t *testing.T) {
+	input := "line1\nline2\n"
+	result := unifiedDiff(input, input)
+	if strings.Contains(result, "+ ") || strings.Contains(result, "- ") {
+		t.Fatalf("expected no changes in diff for identical input, got:\n%s", result)
+	}
+}

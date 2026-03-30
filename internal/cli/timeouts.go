@@ -47,9 +47,6 @@ const (
 	// Timeout for annotation read/write during postCreate.
 	annotationTimeout = 10 * time.Second
 
-	// Timeout for config drift warning check.
-	configDriftTimeout = 10 * time.Second
-
 	// Port-forward readiness poll interval.
 	portForwardPollInterval = 200 * time.Millisecond
 
