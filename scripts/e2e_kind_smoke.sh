@@ -102,6 +102,45 @@ if [[ "$CONNECT_OUTPUT" != *"connect-ok"* ]]; then
 fi
 echo "connect --cmd verified"
 
+echo "Capturing current pod identity before spec drift"
+ORIGINAL_POD_UID=$(kubectl -n "$NAMESPACE" get pod "okdev-${SESSION_NAME}" -o jsonpath='{.metadata.uid}')
+echo "Original pod UID: $ORIGINAL_POD_UID"
+
+echo "Changing pod workload spec to trigger drift detection"
+sed -i '0,/image: ubuntu:22.04/s//image: ubuntu:24.04/' "$CFG_PATH"
+
+echo "Verifying non-interactive up fails with reconcile guidance"
+set +e
+DRIFT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m 2>&1)
+DRIFT_STATUS=$?
+set -e
+if [[ "$DRIFT_STATUS" -eq 0 ]]; then
+  echo "ERROR: expected drifted pod workload to require --reconcile" >&2
+  exit 1
+fi
+if [[ "$DRIFT_OUTPUT" != *"workload spec changed; re-run with --reconcile to recreate"* ]]; then
+  echo "ERROR: unexpected pod drift output" >&2
+  echo "$DRIFT_OUTPUT" >&2
+  exit 1
+fi
+echo "Pod drift guidance verified"
+
+echo "Recreating pod workload via --reconcile"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --reconcile --wait-timeout 5m
+
+echo "Verifying pod was recreated with updated image"
+RECONCILED_POD_UID=$(kubectl -n "$NAMESPACE" get pod "okdev-${SESSION_NAME}" -o jsonpath='{.metadata.uid}')
+if [[ "$RECONCILED_POD_UID" == "$ORIGINAL_POD_UID" ]]; then
+  echo "ERROR: expected pod UID to change after --reconcile recreate" >&2
+  exit 1
+fi
+RECONCILED_IMAGE=$(kubectl -n "$NAMESPACE" get pod "okdev-${SESSION_NAME}" -o jsonpath='{.spec.containers[?(@.name=="dev")].image}')
+if [[ "$RECONCILED_IMAGE" != "ubuntu:24.04" ]]; then
+  echo "ERROR: expected reconciled pod image ubuntu:24.04, got '$RECONCILED_IMAGE'" >&2
+  exit 1
+fi
+echo "Pod reconcile verified"
+
 echo "Testing explicit okdev down"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes
 

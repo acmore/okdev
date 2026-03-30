@@ -435,6 +435,13 @@ func TestClientResourceExistsValidatesRequiredName(t *testing.T) {
 	}
 }
 
+func TestClientGetResourceAnnotationValidatesRequiredName(t *testing.T) {
+	_, _, err := (&Client{}).GetResourceAnnotation(t.Context(), "default", "v1", "Pod", " ", "okdev.io/last-applied-spec")
+	if err == nil {
+		t.Fatal("expected error for blank name")
+	}
+}
+
 func TestShellQuote(t *testing.T) {
 	if got := shellQuote("a'b"); got != `'a'\''b'` {
 		t.Fatalf("unexpected quoted string: %s", got)
