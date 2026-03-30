@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -1010,27 +1009,6 @@ func devTmuxDetailIfReady(ctx context.Context, k devShellExecutor, namespace, po
 		return "", false
 	}
 	return detail, true
-}
-
-func warnIfConfigNewerThanSession(opts *Options, k *kube.Client, namespace, sessionName, podName string, errOut io.Writer) error {
-	cfgPath, err := config.ResolvePath(opts.ConfigPath)
-	if err != nil {
-		return err
-	}
-	cfgInfo, err := os.Stat(cfgPath)
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), configDriftTimeout)
-	defer cancel()
-	podSummary, err := k.GetPodSummary(ctx, namespace, podName)
-	if err != nil {
-		return err
-	}
-	if cfgInfo.ModTime().After(podSummary.CreatedAt) {
-		fmt.Fprintf(errOut, "warning: config file is newer than running session pod (%s > %s). Run `okdev down --session %s` then `okdev up --session %s` to apply all changes.\n", cfgInfo.ModTime().UTC().Format(time.RFC3339), podSummary.CreatedAt.UTC().Format(time.RFC3339), sessionName, sessionName)
-	}
-	return nil
 }
 
 type upUI struct {
