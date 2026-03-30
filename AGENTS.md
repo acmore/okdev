@@ -5,11 +5,17 @@ This file is the canonical repository guidance for coding agents working in `okd
 ## Workflow
 
 - Prefer targeted, repo-relevant tests before committing.
+- Run the formatting check before commit and push:
+  `.venv/bin/pre-commit run --all-files --hook-stage manual okdev-gofmt`
+- Local git hooks should be installed from the repo venv and enforce both `pre-commit` and `pre-push`:
+  `uv venv .venv && uv pip install --python .venv/bin/python pre-commit && .venv/bin/pre-commit install --hook-type pre-commit --hook-type pre-push`
 - Clean up resources created by ad-hoc e2e tests before finishing the task.
 - Prefer `rg` and `rg --files` for search.
 - Keep changes narrow and preserve existing patterns unless the task requires a broader refactor.
 - Update user-facing docs when behavior changes.
 - Do not retag old releases to fix issues; cut a new version instead.
+- Prefer opening a PR rather than pushing direct branch history for review workflows.
+- Prefer squash merge when merging PRs unless the user explicitly wants to preserve individual commits.
 
 ## Editing Rules
 
