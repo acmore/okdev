@@ -6,4 +6,4 @@ repos:
         entry: ./scripts/check_fmt.sh
         language: system
         pass_filenames: false
-        stages: [pre-push, manual]
+        stages: [pre-commit, pre-push, manual]

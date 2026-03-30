@@ -42,14 +42,15 @@ Coverage on some Go 1.25 toolchains can fail under `go test ./... -cover` becaus
 Formatting is enforced through `pre-commit` and CI. To enable the local pre-push check:
 
 ```bash
-python3 -m pip install --user pre-commit
-pre-commit install --hook-type pre-push
+uv venv .venv
+uv pip install --python .venv/bin/python pre-commit
+.venv/bin/pre-commit install --hook-type pre-commit --hook-type pre-push
 ```
 
 You can run the same formatter check on demand with:
 
 ```bash
-pre-commit run --all-files --hook-stage manual okdev-gofmt
+.venv/bin/pre-commit run --all-files --hook-stage manual okdev-gofmt
 ```
 
 ## GitHub Pages Docs
