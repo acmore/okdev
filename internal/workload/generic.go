@@ -29,7 +29,9 @@ type GenericRuntime struct {
 	Volumes            []corev1.Volume
 	Labels             map[string]string
 	Annotations        map[string]string
-	Inject             []config.WorkloadInjectSpec
+	Inject              []config.WorkloadInjectSpec
+	LastAppliedSpecJSON string
+	LastAppliedSpecHash string
 
 	loadMu     sync.Mutex
 	loadedBase *unstructured.Unstructured
@@ -75,6 +77,12 @@ func (r *GenericRuntime) Apply(ctx context.Context, k ApplyClient, namespace str
 	workloadAnnotations := AnnotationsWithWorkload(r.Annotations, obj.GetName(), obj.GetAPIVersion(), obj.GetKind())
 	obj.SetLabels(mergeStringMaps(obj.GetLabels(), workloadLabels))
 	obj.SetAnnotations(mergeStringMaps(obj.GetAnnotations(), workloadAnnotations))
+	if r.LastAppliedSpecJSON != "" {
+		annos := obj.GetAnnotations()
+		annos[AnnotationLastAppliedSpec] = r.LastAppliedSpecJSON
+		annos[AnnotationLastAppliedHash] = r.LastAppliedSpecHash
+		obj.SetAnnotations(annos)
+	}
 	for _, inject := range r.Inject {
 		templateMap, err := resolveMapPath(obj.Object, inject.Path)
 		if err != nil {
