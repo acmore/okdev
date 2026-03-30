@@ -30,7 +30,7 @@ type LastAppliedWorkloadSpec struct {
 	ManifestSHA256     string          `json:"manifestSHA256,omitempty"`
 }
 
-func BuildWorkloadSnapshot(cfg *DevEnvironment, workspaceMountPath, targetContainer string, tmux bool, preStop, manifestPath string) LastAppliedWorkloadSpec {
+func BuildWorkloadSnapshot(cfg *DevEnvironment, workspaceMountPath, targetContainer string, tmux bool, preStop, manifestPath, manifestResolvedPath string) LastAppliedWorkloadSpec {
 	kind := cfg.Spec.Workload.Type
 	if kind == "" {
 		kind = "pod"
@@ -48,8 +48,8 @@ func BuildWorkloadSnapshot(cfg *DevEnvironment, workspaceMountPath, targetContai
 		PreStop:            preStop,
 		ManifestPath:       manifestPath,
 	}
-	if manifestPath != "" {
-		hash, err := ComputeManifestSHA256(manifestPath)
+	if manifestResolvedPath != "" {
+		hash, err := ComputeManifestSHA256(manifestResolvedPath)
 		if err == nil {
 			snap.ManifestSHA256 = hash
 		}
@@ -66,7 +66,9 @@ func (s *LastAppliedWorkloadSpec) JSON() (string, error) {
 }
 
 func (s *LastAppliedWorkloadSpec) SHA256() (string, error) {
-	b, err := json.Marshal(s)
+	hashInput := *s
+	hashInput.ManifestPath = ""
+	b, err := json.Marshal(hashInput)
 	if err != nil {
 		return "", fmt.Errorf("marshal for hash: %w", err)
 	}

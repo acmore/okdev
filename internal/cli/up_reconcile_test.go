@@ -31,29 +31,32 @@ type fakeRefRuntime struct {
 	apiVersion string
 	name       string
 	refErr     error
+	deleteErr  error
+	deleteCall int
 }
 
-func (f fakeRefRuntime) Kind() string                                              { return f.kind }
-func (f fakeRefRuntime) WorkloadName() string                                      { return f.name }
-func (f fakeRefRuntime) Apply(context.Context, workload.ApplyClient, string) error { return nil }
-func (f fakeRefRuntime) Delete(context.Context, workload.DeleteClient, string, bool) error {
+func (f *fakeRefRuntime) Kind() string                                              { return f.kind }
+func (f *fakeRefRuntime) WorkloadName() string                                      { return f.name }
+func (f *fakeRefRuntime) Apply(context.Context, workload.ApplyClient, string) error { return nil }
+func (f *fakeRefRuntime) Delete(context.Context, workload.DeleteClient, string, bool) error {
+	f.deleteCall++
+	return f.deleteErr
+}
+func (f *fakeRefRuntime) WaitReady(context.Context, workload.WaitClient, string, time.Duration, func(kube.PodReadinessProgress)) error {
 	return nil
 }
-func (f fakeRefRuntime) WaitReady(context.Context, workload.WaitClient, string, time.Duration, func(kube.PodReadinessProgress)) error {
-	return nil
-}
-func (f fakeRefRuntime) SelectTarget(context.Context, workload.TargetClient, string) (workload.TargetRef, error) {
+func (f *fakeRefRuntime) SelectTarget(context.Context, workload.TargetClient, string) (workload.TargetRef, error) {
 	return workload.TargetRef{}, nil
 }
-func (f fakeRefRuntime) WorkloadRef() (string, string, string, error) {
+func (f *fakeRefRuntime) WorkloadRef() (string, string, string, error) {
 	return f.apiVersion, f.kind, f.name, f.refErr
 }
 
 func TestShouldReuseExistingWorkloadForExistingControllerBackedRuntime(t *testing.T) {
 	k := &fakeWorkloadExistenceChecker{exists: true}
-	rt := fakeRefRuntime{kind: workload.TypeJob, apiVersion: "batch/v1", name: "trainer"}
+	rt := &fakeRefRuntime{kind: workload.TypeJob, apiVersion: "batch/v1", name: "trainer"}
 
-	reuse, err := shouldReuseExistingWorkload(context.Background(), k, "default", rt, false)
+	reuse, err := shouldReuseExistingWorkload(context.Background(), k, "default", rt)
 	if err != nil {
 		t.Fatalf("shouldReuseExistingWorkload: %v", err)
 	}
@@ -68,7 +71,7 @@ func TestShouldReuseExistingWorkloadForExistingControllerBackedRuntime(t *testin
 func TestShouldReuseExistingWorkloadReusesExistingPodAndSkipsForReconcile(t *testing.T) {
 	k := &fakeWorkloadExistenceChecker{exists: true}
 
-	reuse, err := shouldReuseExistingWorkload(context.Background(), k, "default", fakeRefRuntime{kind: workload.TypePod, apiVersion: "v1", name: "okdev-sess"}, false)
+	reuse, err := shouldReuseExistingWorkload(context.Background(), k, "default", &fakeRefRuntime{kind: workload.TypePod, apiVersion: "v1", name: "okdev-sess"})
 	if err != nil {
 		t.Fatalf("pod shouldReuseExistingWorkload: %v", err)
 	}
@@ -79,23 +82,62 @@ func TestShouldReuseExistingWorkloadReusesExistingPodAndSkipsForReconcile(t *tes
 		t.Fatalf("unexpected pod workload ref lookup: %#v", k)
 	}
 
-	reuse, err = shouldReuseExistingWorkload(context.Background(), k, "default", fakeRefRuntime{kind: workload.TypeJob, apiVersion: "batch/v1", name: "trainer"}, true)
+	reuse, err = shouldReuseExistingWorkload(context.Background(), k, "default", &fakeRefRuntime{kind: workload.TypeJob, apiVersion: "batch/v1", name: "trainer"})
 	if err != nil {
-		t.Fatalf("reconcile shouldReuseExistingWorkload: %v", err)
+		t.Fatalf("controller shouldReuseExistingWorkload: %v", err)
 	}
-	if reuse {
-		t.Fatal("expected reconcile mode to bypass reuse")
+	if !reuse {
+		t.Fatal("expected existing controller-backed workload to be detected")
 	}
 }
 
 func TestShouldReuseExistingWorkloadSurfacesLookupErrors(t *testing.T) {
 	want := errors.New("boom")
 	k := &fakeWorkloadExistenceChecker{err: want}
-	rt := fakeRefRuntime{kind: workload.TypeGeneric, apiVersion: "apps/v1", name: "trainer"}
+	rt := &fakeRefRuntime{kind: workload.TypeGeneric, apiVersion: "apps/v1", name: "trainer"}
 
-	reuse, err := shouldReuseExistingWorkload(context.Background(), k, "default", rt, false)
+	reuse, err := shouldReuseExistingWorkload(context.Background(), k, "default", rt)
 	if err == nil || !errors.Is(err, want) {
 		t.Fatalf("expected wrapped lookup error, got reuse=%v err=%v", reuse, err)
+	}
+}
+
+func TestPrepareReconcileApplyRecreatesExistingPod(t *testing.T) {
+	rt := &fakeRefRuntime{kind: workload.TypePod, apiVersion: "v1", name: "okdev-sess"}
+	state := &upState{
+		ctx:     context.Background(),
+		runtime: rt,
+		command: &commandContext{
+			namespace: "default",
+			kube:      &kube.Client{},
+		},
+	}
+
+	outcome, err := prepareReconcileApply(state)
+	if err != nil {
+		t.Fatalf("prepareReconcileApply: %v", err)
+	}
+	if outcome != workloadApplyRecreated {
+		t.Fatalf("expected recreate outcome, got %v", outcome)
+	}
+	if rt.deleteCall != 1 {
+		t.Fatalf("expected one delete call, got %d", rt.deleteCall)
+	}
+}
+
+func TestPrepareReconcileApplyReappliesControllerWorkload(t *testing.T) {
+	rt := &fakeRefRuntime{kind: workload.TypeJob, apiVersion: "batch/v1", name: "trainer"}
+	state := &upState{runtime: rt}
+
+	outcome, err := prepareReconcileApply(state)
+	if err != nil {
+		t.Fatalf("prepareReconcileApply: %v", err)
+	}
+	if outcome != workloadApplyReapplied {
+		t.Fatalf("expected reapply outcome, got %v", outcome)
+	}
+	if rt.deleteCall != 0 {
+		t.Fatalf("expected no delete calls, got %d", rt.deleteCall)
 	}
 }
 

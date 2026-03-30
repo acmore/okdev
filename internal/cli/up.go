@@ -54,6 +54,14 @@ type upState struct {
 	target       workload.TargetRef
 }
 
+type workloadApplyOutcome int
+
+const (
+	workloadApplyCreated workloadApplyOutcome = iota
+	workloadApplyReapplied
+	workloadApplyRecreated
+)
+
 func newUpCmd(opts *Options) *cobra.Command {
 	var waitTimeout time.Duration
 	var dryRun bool
@@ -94,7 +102,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", upDefaultWaitTimeout, "Wait timeout for pod readiness")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview actions without applying resources")
-	cmd.Flags().BoolVar(&reconcile, "reconcile", false, "Reapply controller-backed workloads instead of reusing an existing session workload")
+	cmd.Flags().BoolVar(&reconcile, "reconcile", false, "Reapply controller-backed workloads or recreate pod workloads instead of reusing an existing session workload")
 	cmd.Flags().BoolVar(&tmux, "tmux", false, "Enable tmux persistent shell sessions in the dev container")
 	cmd.Flags().BoolVar(&noTmux, "no-tmux", false, "Disable tmux persistent shell sessions for this pod")
 	cmd.Flags().BoolVar(&createMissingPVC, "create-missing-pvc", false, "Create missing PVCs referenced by spec.volumes")
@@ -201,32 +209,60 @@ func upReconcile(state *upState, applyWorkload bool) error {
 		return nil
 	}
 	state.ui.stepRun(state.runtime.Kind(), state.workloadName)
-	reusedExisting, err := shouldReuseExistingWorkload(state.ctx, state.command.kube, state.command.namespace, state.runtime, state.flags.reconcile)
+	reusedExisting, err := shouldReuseExistingWorkload(state.ctx, state.command.kube, state.command.namespace, state.runtime)
 	if err != nil {
 		return err
 	}
+	outcome := workloadApplyCreated
 	if reusedExisting {
-		action, driftErr := handleWorkloadDrift(state)
-		if driftErr != nil {
-			return driftErr
-		}
-		switch action {
-		case driftActionReuse:
-			state.ui.stepDone(state.runtime.Kind(), "reused existing workload")
-			return nil
-		case driftActionApply:
-			// fall through to apply
+		if state.flags.reconcile {
+			var prepareErr error
+			outcome, prepareErr = prepareReconcileApply(state)
+			if prepareErr != nil {
+				return prepareErr
+			}
+		} else {
+			action, driftErr := handleWorkloadDrift(state)
+			if driftErr != nil {
+				return driftErr
+			}
+			switch action {
+			case driftActionReuse:
+				state.ui.stepDone(state.runtime.Kind(), "reused existing workload")
+				return nil
+			case driftActionReapply:
+				outcome = workloadApplyReapplied
+			case driftActionRecreate:
+				outcome = workloadApplyRecreated
+			}
 		}
 	}
 	if err := state.runtime.Apply(state.ctx, state.command.kube, state.command.namespace); err != nil {
 		return err
 	}
-	if reusedExisting {
-		state.ui.stepDone(state.runtime.Kind(), "recreated (spec changed)")
-	} else {
-		state.ui.stepDone(state.runtime.Kind(), "applied")
-	}
+	state.ui.stepDone(state.runtime.Kind(), workloadApplyStatus(outcome))
 	return nil
+}
+
+func prepareReconcileApply(state *upState) (workloadApplyOutcome, error) {
+	if state.runtime.Kind() != workload.TypePod {
+		return workloadApplyReapplied, nil
+	}
+	if err := state.runtime.Delete(state.ctx, state.command.kube, state.command.namespace, true); err != nil {
+		return workloadApplyCreated, fmt.Errorf("delete existing pod for reconcile: %w", err)
+	}
+	return workloadApplyRecreated, nil
+}
+
+func workloadApplyStatus(outcome workloadApplyOutcome) string {
+	switch outcome {
+	case workloadApplyReapplied:
+		return "reapplied (spec changed)"
+	case workloadApplyRecreated:
+		return "recreated (spec changed)"
+	default:
+		return "applied"
+	}
 }
 
 func normalizeWorkloadType(workloadType string) string {
@@ -275,7 +311,11 @@ func upDryRun(state *upState) error {
 		fmt.Fprintf(state.cmd.OutOrStdout(), "- would create missing PVC references (size=%s storageClass=%q)\n", state.flags.missingPVCSize, state.flags.missingPVCStorageClass)
 	}
 	if state.flags.reconcile {
-		fmt.Fprintf(state.cmd.OutOrStdout(), "- would reconcile %s/%s\n", state.runtime.Kind(), state.workloadName)
+		verb := "reapply"
+		if state.runtime.Kind() == workload.TypePod {
+			verb = "recreate"
+		}
+		fmt.Fprintf(state.cmd.OutOrStdout(), "- would %s existing %s/%s instead of reusing it\n", verb, state.runtime.Kind(), state.workloadName)
 	} else {
 		fmt.Fprintf(state.cmd.OutOrStdout(), "- would create or reuse %s/%s\n", state.runtime.Kind(), state.workloadName)
 		fmt.Fprintln(state.cmd.OutOrStdout(), "- if the workload already exists, okdev up will reuse it; run `okdev down` then `okdev up` to recreate it")
@@ -588,10 +628,7 @@ type workloadExistenceChecker interface {
 	ResourceExists(context.Context, string, string, string, string) (bool, error)
 }
 
-func shouldReuseExistingWorkload(ctx context.Context, k workloadExistenceChecker, namespace string, runtime workload.Runtime, reconcile bool) (bool, error) {
-	if reconcile {
-		return false, nil
-	}
+func shouldReuseExistingWorkload(ctx context.Context, k workloadExistenceChecker, namespace string, runtime workload.Runtime) (bool, error) {
 	refProvider, ok := runtime.(workload.RefProvider)
 	if !ok {
 		return false, fmt.Errorf("%s runtime does not expose a workload reference", runtime.Kind())

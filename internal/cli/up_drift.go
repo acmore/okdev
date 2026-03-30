@@ -137,7 +137,8 @@ type driftAction int
 
 const (
 	driftActionReuse driftAction = iota
-	driftActionApply
+	driftActionReapply
+	driftActionRecreate
 )
 
 func handleWorkloadDrift(state *upState) (driftAction, error) {
@@ -207,11 +208,11 @@ func handleWorkloadDrift(state *upState) (driftAction, error) {
 		}
 
 		if !isTerminalReader(state.cmd.InOrStdin()) {
+			action := "apply"
 			if isPod {
-				return 0, fmt.Errorf("workload spec changed; run 'okdev down --session %s' then 'okdev up --session %s' to apply",
-					state.command.sessionName, state.command.sessionName)
+				action = "recreate"
 			}
-			return 0, fmt.Errorf("workload spec changed; re-run with --reconcile to apply")
+			return 0, fmt.Errorf("workload spec changed; re-run with --reconcile to %s", action)
 		}
 
 		prompt := "Reapply workload? [y/N]: "
@@ -230,8 +231,9 @@ func handleWorkloadDrift(state *upState) (driftAction, error) {
 			if delErr := state.runtime.Delete(state.ctx, state.command.kube, state.command.namespace, true); delErr != nil {
 				return 0, fmt.Errorf("delete existing pod for recreate: %w", delErr)
 			}
+			return driftActionRecreate, nil
 		}
-		return driftActionApply, nil
+		return driftActionReapply, nil
 	}
 	return driftActionReuse, nil
 }

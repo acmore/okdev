@@ -16,11 +16,13 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName string, lab
 	targetContainer := resolveTargetContainer(cfg)
 	workspaceMountPath := cfg.EffectiveWorkspaceMountPath(cfgPath)
 	manifestPath := ""
+	manifestResolvedPath := ""
 	if t := strings.TrimSpace(cfg.Spec.Workload.Type); t != "" && t != workload.TypePod {
-		manifestPath = workload.ResolveManifestPath(cfgPath, cfg.Spec.Workload.ManifestPath)
+		manifestPath = strings.TrimSpace(cfg.Spec.Workload.ManifestPath)
+		manifestResolvedPath = workload.ResolveManifestPath(cfgPath, cfg.Spec.Workload.ManifestPath)
 	}
 
-	snap := config.BuildWorkloadSnapshot(cfg, workspaceMountPath, targetContainer, tmux, preStop, manifestPath)
+	snap := config.BuildWorkloadSnapshot(cfg, workspaceMountPath, targetContainer, tmux, preStop, manifestPath, manifestResolvedPath)
 	snapJSON, _ := snap.JSON()
 	snapHash, _ := snap.SHA256()
 
@@ -37,7 +39,7 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName string, lab
 	case workload.TypeJob, workload.TypeGeneric, workload.TypePyTorchJob:
 		return &workload.GenericRuntime{
 			WorkloadKind:        strings.TrimSpace(cfg.Spec.Workload.Type),
-			ManifestPath:        manifestPath,
+			ManifestPath:        manifestResolvedPath,
 			WorkspaceMountPath:  workspaceMountPath,
 			SidecarImage:        cfg.Spec.Sidecar.Image,
 			Tmux:                tmux,

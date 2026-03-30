@@ -20,7 +20,7 @@ func TestBuildWorkloadSnapshotPod(t *testing.T) {
 			Sidecar: SidecarSpec{Image: "ghcr.io/acmore/okdev-sidecar:edge"},
 		},
 	}
-	snap := BuildWorkloadSnapshot(cfg, "/workspace", "dev", true, "echo bye", "")
+	snap := BuildWorkloadSnapshot(cfg, "/workspace", "dev", true, "echo bye", "", "")
 	if snap.Version != "v1" {
 		t.Fatalf("expected version v1, got %s", snap.Version)
 	}
@@ -60,8 +60,8 @@ func TestBuildWorkloadSnapshotExcludesNonWorkloadFields(t *testing.T) {
 			Sync:     SyncSpec{Paths: []string{"src/"}},
 		},
 	}
-	snap1 := BuildWorkloadSnapshot(cfg1, "/workspace", "dev", false, "", "")
-	snap2 := BuildWorkloadSnapshot(cfg2, "/workspace", "dev", false, "", "")
+	snap1 := BuildWorkloadSnapshot(cfg1, "/workspace", "dev", false, "", "", "")
+	snap2 := BuildWorkloadSnapshot(cfg2, "/workspace", "dev", false, "", "", "")
 	h1, _ := snap1.SHA256()
 	h2, _ := snap2.SHA256()
 	if h1 != h2 {
@@ -99,11 +99,36 @@ func TestBuildWorkloadSnapshotGenericIncludesManifestHash(t *testing.T) {
 			Sidecar:  SidecarSpec{Image: "img:1"},
 		},
 	}
-	snap := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", f)
+	snap := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "job.yaml", f)
 	if snap.ManifestSHA256 == "" {
 		t.Fatal("expected manifest hash for job workload")
 	}
-	if snap.ManifestPath != f {
+	if snap.ManifestPath != "job.yaml" {
 		t.Fatalf("unexpected manifest path: %s", snap.ManifestPath)
+	}
+}
+
+func TestWorkloadSnapshotHashIgnoresManifestPath(t *testing.T) {
+	cfg := &DevEnvironment{
+		Spec: DevEnvSpec{
+			Workload: WorkloadSpec{Type: "job", ManifestPath: "job.yaml"},
+			Sidecar:  SidecarSpec{Image: "img:1"},
+		},
+	}
+	snap1 := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "job.yaml", "/tmp/a/job.yaml")
+	snap2 := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "/Users/me/src/job.yaml", "/tmp/b/job.yaml")
+	snap1.ManifestSHA256 = "same"
+	snap2.ManifestSHA256 = "same"
+
+	h1, err := snap1.SHA256()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2, err := snap2.SHA256()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h1 != h2 {
+		t.Fatalf("expected manifest path to be excluded from workload hash: %s != %s", h1, h2)
 	}
 }
