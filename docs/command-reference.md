@@ -24,7 +24,7 @@
 - `okdev target show`
 - `okdev target set [--pod <name> | --role <role>]`
 - `okdev agent list`
-- `okdev connect [--shell /bin/bash] [--cmd "..."] [--no-tty]`
+- `okdev exec [--shell /bin/bash] [--cmd "..."] [--no-tty]`
 - `okdev logs [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
 - `okdev ssh [--setup-key] [--user root] [--cmd "..."] [--no-tmux]`
 - `okdev ports`
@@ -44,7 +44,7 @@
 
 ### `okdev target set [--pod <name> | --role <role>]`
 
-- Explicitly repins the interactive target used by `ssh`, `connect`, `ports`, and sync.
+- Explicitly repins the interactive target used by `ssh`, `exec`, `ports`, and sync.
 - `--pod` selects one concrete session pod.
 - `--role` selects the highest-priority eligible pod with the matching `okdev.io/workload-role`.
 - When attachable pods are defined, repinning is restricted to those pods.

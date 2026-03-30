@@ -34,8 +34,8 @@ func TestStartSessionMaintenanceDisabledIsNoop(t *testing.T) {
 }
 
 func TestCommandConstructorsExposeExpectedMetadata(t *testing.T) {
-	if cmd := newConnectCmd(&Options{}); cmd.Use != "connect [session]" || cmd.Flags().Lookup("cmd") == nil || cmd.Flags().Lookup("shell") == nil || cmd.Flags().Lookup("no-tty") == nil {
-		t.Fatalf("unexpected connect command shape")
+	if cmd := newExecCmd(&Options{}); cmd.Use != "exec [session]" || cmd.Flags().Lookup("cmd") == nil || cmd.Flags().Lookup("shell") == nil || cmd.Flags().Lookup("no-tty") == nil {
+		t.Fatalf("unexpected exec command shape")
 	}
 	if cmd := newPortsCmd(&Options{}); cmd.Use != "ports" || cmd.Short == "" || cmd.Flags().Lookup("dry-run") == nil {
 		t.Fatalf("unexpected ports command shape")
