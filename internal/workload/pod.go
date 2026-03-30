@@ -20,7 +20,9 @@ type PodRuntime struct {
 	SidecarImage       string
 	Tmux               bool
 	PreStop            string
-	TargetContainer    string
+	TargetContainer     string
+	LastAppliedSpecJSON string
+	LastAppliedSpecHash string
 }
 
 func NewPodRuntime(sessionName string, labels, annotations map[string]string, podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, tmux bool, preStop, targetContainer string) *PodRuntime {
@@ -56,11 +58,18 @@ func (r *PodRuntime) Apply(ctx context.Context, k ApplyClient, namespace string)
 		return err
 	}
 	name := r.WorkloadName()
+	annotations := AnnotationsWithWorkload(r.Annotations, name, "v1", "Pod")
+	if r.LastAppliedSpecJSON != "" {
+		annotations[AnnotationLastAppliedSpec] = r.LastAppliedSpecJSON
+	}
+	if r.LastAppliedSpecHash != "" {
+		annotations[AnnotationLastAppliedHash] = r.LastAppliedSpecHash
+	}
 	manifest, err := kube.BuildPodManifest(
 		namespace,
 		name,
 		LabelsWithWorkload(r.Labels, name, "Pod"),
-		AnnotationsWithWorkload(r.Annotations, name, "v1", "Pod"),
+		annotations,
 		prepared,
 	)
 	if err != nil {
