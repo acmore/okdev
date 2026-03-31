@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestAnonymousIDPersists(t *testing.T) {
@@ -36,8 +38,10 @@ func TestAnonymousIDPersists(t *testing.T) {
 func TestTrackCommandPostsPostHogCaptureAndWritesJournal(t *testing.T) {
 	tmp := t.TempDir()
 	var got postHogCapture
+	done := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
+		defer close(done)
 		if r.Method != http.MethodPost {
 			t.Fatalf("expected POST, got %s", r.Method)
 		}
@@ -57,6 +61,7 @@ func TestTrackCommandPostsPostHogCaptureAndWritesJournal(t *testing.T) {
 	}
 
 	client.TrackCommand("okdev up", "json", true, nil, 1250*time.Millisecond)
+	<-done
 
 	if got.APIKey != "phc_test_key" {
 		t.Fatalf("unexpected api key %q", got.APIKey)
@@ -86,3 +91,38 @@ func TestTrackCommandPostsPostHogCaptureAndWritesJournal(t *testing.T) {
 		t.Fatalf("expected journal to contain PostHog event, got %q", string(data))
 	}
 }
+
+func TestUserConfigDisablesAnalytics(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	configDir := filepath.Join(home, ".okdev")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := userConfig{Analytics: boolPtr(false)}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if !userConfigDisabled() {
+		t.Fatal("expected analytics to be disabled via user config")
+	}
+}
+
+func TestUserConfigDefaultAllowsAnalytics(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// No config file at all — should not disable.
+	if userConfigDisabled() {
+		t.Fatal("expected analytics to be allowed when no config exists")
+	}
+}
+
+func boolPtr(v bool) *bool { return &v }

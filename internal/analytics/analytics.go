@@ -17,6 +17,7 @@ import (
 
 	"github.com/acmore/okdev/internal/version"
 	"golang.org/x/term"
+	"gopkg.in/yaml.v3"
 )
 
 var PostHogKey = ""
@@ -31,6 +32,7 @@ const (
 	analyticsDirName = ".okdev/analytics"
 	anonymousIDFile  = "anonymous_id"
 	eventsFile       = "events.jsonl"
+	noticeFile       = "notice_shown"
 )
 
 type Client struct {
@@ -81,7 +83,54 @@ func NewFromEnv() *Client {
 
 func analyticsDisabled() bool {
 	value := strings.TrimSpace(os.Getenv(envDisabled))
-	return value == "1" || strings.EqualFold(value, "true") || strings.EqualFold(value, "yes")
+	if value == "1" || strings.EqualFold(value, "true") || strings.EqualFold(value, "yes") {
+		return true
+	}
+	return userConfigDisabled()
+}
+
+const userConfigFile = ".okdev/config.yaml"
+
+type userConfig struct {
+	Analytics *bool `yaml:"analytics"`
+}
+
+func userConfigDisabled() bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(home, userConfigFile))
+	if err != nil {
+		return false
+	}
+	var cfg userConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return false
+	}
+	return cfg.Analytics != nil && !*cfg.Analytics
+}
+
+// ShowNotice prints a one-time telemetry notice to stderr the first time
+// analytics are active. Subsequent calls are no-ops.
+func (c *Client) ShowNotice() {
+	if c == nil {
+		return
+	}
+	home, err := c.homeDir()
+	if err != nil {
+		return
+	}
+	noticePath := filepath.Join(home, analyticsDirName, noticeFile)
+	if _, err := os.Stat(noticePath); err == nil {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "Notice: okdev collects anonymous usage telemetry to improve the tool.")
+	fmt.Fprintln(os.Stderr, "To disable, set OKDEV_ANALYTICS_DISABLED=1 or add 'analytics: false' to ~/.okdev/config.yaml")
+	fmt.Fprintln(os.Stderr)
+	dir := filepath.Join(home, analyticsDirName)
+	_ = os.MkdirAll(dir, 0o755)
+	_ = os.WriteFile(noticePath, []byte("shown\n"), 0o644)
 }
 
 func (c *Client) TrackCommand(command, output string, verbose bool, runErr error, duration time.Duration) {
@@ -120,7 +169,7 @@ func (c *Client) TrackCommand(command, output string, verbose bool, runErr error
 	if err := c.appendEvent(event); err != nil {
 		return
 	}
-	_ = c.send(event)
+	go c.send(event)
 }
 
 func (c *Client) appendEvent(event postHogCapture) error {

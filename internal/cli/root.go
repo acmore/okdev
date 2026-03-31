@@ -69,6 +69,7 @@ func newRootCmdWithOptions() (*cobra.Command, *Options) {
 func Execute() error {
 	cmd, opts := newRootCmdWithOptions()
 	collector := analytics.NewFromEnv()
+	collector.ShowNotice()
 	commandPath := resolvedCommandPath(cmd, os.Args[1:])
 	start := time.Now()
 	err := cmd.Execute()
