@@ -123,6 +123,25 @@ func refreshTargetRef(ctx context.Context, opts *Options, cfg *config.DevEnviron
 	return resolveTargetRef(ctx, opts, cfg, namespace, sessionName, k)
 }
 
+func resolveFreshTargetRef(ctx context.Context, opts *Options, cfg *config.DevEnvironment, namespace, sessionName string, k targetResolverClient) (workload.TargetRef, error) {
+	cfgPath, err := config.ResolvePath(opts.ConfigPath)
+	if err != nil {
+		return workload.TargetRef{}, err
+	}
+	runtime, err := sessionRuntimeForExisting(cfg, cfgPath, sessionName)
+	if err != nil {
+		return workload.TargetRef{}, err
+	}
+	target, err := runtime.SelectTarget(ctx, k, namespace)
+	if err != nil {
+		return workload.TargetRef{}, err
+	}
+	if err := persistTargetRef(sessionName, target); err != nil {
+		return workload.TargetRef{}, err
+	}
+	return target, nil
+}
+
 func persistTargetRef(sessionName string, target workload.TargetRef) error {
 	if strings.TrimSpace(target.PodName) == "" {
 		target = defaultTargetRef(sessionName)

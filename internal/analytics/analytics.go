@@ -1,13 +1,10 @@
 package analytics
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -16,6 +13,7 @@ import (
 	"time"
 
 	"github.com/acmore/okdev/internal/version"
+	posthog "github.com/posthog/posthog-go"
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 )
@@ -31,24 +29,25 @@ const (
 
 	analyticsDirName = ".okdev/analytics"
 	anonymousIDFile  = "anonymous_id"
-	eventsFile       = "events.jsonl"
 	noticeFile       = "notice_shown"
+
+	analyticsShutdownTimeout = 1500 * time.Millisecond
+	analyticsUploadTimeout   = 1250 * time.Millisecond
 )
 
 type Client struct {
 	endpoint string
 	apiKey   string
 
-	httpClient *http.Client
-	now        func() time.Time
-	homeDir    func() (string, error)
+	now           func() time.Time
+	homeDir       func() (string, error)
+	newPostHogCLI func(string, string) (posthog.Client, error)
 
 	mu     sync.Mutex
 	cached string
 }
 
-type postHogCapture struct {
-	APIKey     string                 `json:"api_key"`
+type captureEvent struct {
 	Event      string                 `json:"event"`
 	DistinctID string                 `json:"distinct_id"`
 	Timestamp  time.Time              `json:"timestamp"`
@@ -73,11 +72,17 @@ func NewFromEnv() *Client {
 	return &Client{
 		endpoint: endpoint,
 		apiKey:   apiKey,
-		httpClient: &http.Client{
-			Timeout: 750 * time.Millisecond,
+		now:      time.Now,
+		homeDir:  os.UserHomeDir,
+		newPostHogCLI: func(apiKey, endpoint string) (posthog.Client, error) {
+			return posthog.NewWithConfig(apiKey, posthog.Config{
+				Endpoint:           normalizePostHogEndpoint(endpoint),
+				BatchSize:          1,
+				Interval:           time.Hour,
+				BatchUploadTimeout: analyticsUploadTimeout,
+				ShutdownTimeout:    analyticsShutdownTimeout,
+			})
 		},
-		now:     time.Now,
-		homeDir: os.UserHomeDir,
 	}
 }
 
@@ -141,8 +146,7 @@ func (c *Client) TrackCommand(command, output string, verbose bool, runErr error
 	if err != nil {
 		return
 	}
-	event := postHogCapture{
-		APIKey:     c.apiKey,
+	event := captureEvent{
 		Event:      "okdev command completed",
 		DistinctID: anonID,
 		Timestamp:  c.now().UTC(),
@@ -166,52 +170,43 @@ func (c *Client) TrackCommand(command, output string, verbose bool, runErr error
 	if runErr != nil {
 		event.Properties["error_type"] = fmt.Sprintf("%T", runErr)
 	}
-	if err := c.appendEvent(event); err != nil {
-		return
-	}
-	go c.send(event)
+	_ = c.send(event)
 }
 
-func (c *Client) appendEvent(event postHogCapture) error {
-	path, err := c.eventsPath()
+func (c *Client) send(event captureEvent) error {
+	newClient := c.newPostHogCLI
+	if newClient == nil {
+		return nil
+	}
+	cli, err := newClient(c.apiKey, c.endpoint)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	payload, err := json.Marshal(event)
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), analyticsShutdownTimeout)
+		defer cancel()
+		_ = cli.CloseWithContext(closeCtx)
+	}()
+	err = cli.Enqueue(posthog.Capture{
+		DistinctId: event.DistinctID,
+		Event:      event.Event,
+		Timestamp:  event.Timestamp,
+		Properties: posthog.Properties(event.Properties),
+	})
 	if err != nil {
 		return err
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = f.Write(append(payload, '\n'))
-	return err
-}
-
-func (c *Client) send(event postHogCapture) error {
-	payload, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, c.endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("posthog endpoint returned %s", resp.Status)
 	}
 	return nil
+}
+
+func normalizePostHogEndpoint(endpoint string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return endpoint
+	}
+	endpoint = strings.TrimRight(endpoint, "/")
+	endpoint = strings.TrimSuffix(endpoint, "/capture")
+	return strings.TrimRight(endpoint, "/")
 }
 
 func (c *Client) anonymousID() (string, error) {
@@ -250,14 +245,6 @@ func (c *Client) anonymousIDPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(home, analyticsDirName, anonymousIDFile), nil
-}
-
-func (c *Client) eventsPath() (string, error) {
-	home, err := c.homeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, analyticsDirName, eventsFile), nil
 }
 
 func randomID() (string, error) {
