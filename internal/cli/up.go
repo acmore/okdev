@@ -568,16 +568,31 @@ func upSetup(state *upState) error {
 }
 
 func upSetupSSH(state *upState, target workload.TargetRef, keyPath string) (string, error) {
+	var err error
+	target, err = waitForSetupExecReady(state, target)
+	if err != nil {
+		return "", fmt.Errorf("wait for target exec readiness: %w", err)
+	}
 	state.ui.stepRun("ssh", "installing key")
-	if err := ensureSSHKeyOnPod(state.opts, state.command.namespace, target.PodName, target.Container, keyPath); err != nil {
+	target, err = retrySetupTargetStep(state, target, func(current workload.TargetRef) error {
+		return ensureSSHKeyOnPod(state.opts, state.command.namespace, current.PodName, current.Container, keyPath)
+	})
+	if err != nil {
 		return "", fmt.Errorf("setup SSH key in pod: %w", err)
 	}
-	target, err := refreshTargetRef(state.ctx, state.opts, state.command.cfg, state.command.namespace, state.command.sessionName, state.command.kube, target)
+	target, err = refreshTargetRef(state.ctx, state.opts, state.command.cfg, state.command.namespace, state.command.sessionName, state.command.kube, target)
 	if err != nil {
 		return "", fmt.Errorf("refresh target before sshd wait: %w", err)
 	}
+	target, err = waitForSetupExecReady(state, target)
+	if err != nil {
+		return "", fmt.Errorf("wait for target exec readiness before sshd: %w", err)
+	}
 	state.ui.stepRun("ssh", "waiting for sshd")
-	if err := waitForSSHReady(state.opts, state.command.namespace, target.PodName, target.Container, state.flags.waitTimeout); err != nil {
+	target, err = retrySetupTargetStep(state, target, func(current workload.TargetRef) error {
+		return waitForSSHReady(state.opts, state.command.namespace, current.PodName, current.Container, state.flags.waitTimeout)
+	})
+	if err != nil {
 		return "", fmt.Errorf("wait for SSH service: %w", err)
 	}
 	alias := sshHostAlias(state.command.sessionName)
@@ -593,6 +608,70 @@ func upSetupSSH(state *upState, target workload.TargetRef, keyPath string) (stri
 	summary := "ssh " + alias
 	state.ui.stepDone("ssh", summary)
 	return summary, nil
+}
+
+type setupExecClient interface {
+	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+}
+
+func waitForSetupExecReady(state *upState, target workload.TargetRef) (workload.TargetRef, error) {
+	return waitForTargetExecReady(state.ctx, state.command.kube, state.command.namespace, target, func(workload.TargetRef) (workload.TargetRef, error) {
+		return resolveFreshTargetRef(state.ctx, state.opts, state.command.cfg, state.command.namespace, state.command.sessionName, state.command.kube)
+	})
+}
+
+func waitForTargetExecReady(ctx context.Context, k setupExecClient, namespace string, target workload.TargetRef, refresh func(workload.TargetRef) (workload.TargetRef, error)) (workload.TargetRef, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, sshServiceWaitTimeout)
+	defer cancel()
+	return retryTargetStep(target, shouldRetrySetupTargetError, refresh, func(current workload.TargetRef) error {
+		execCtx, execCancel := context.WithTimeout(probeCtx, execProbeTimeout)
+		defer execCancel()
+		_, err := k.ExecShInContainer(execCtx, namespace, current.PodName, current.Container, "true")
+		return err
+	})
+}
+
+func retrySetupTargetStep(state *upState, target workload.TargetRef, step func(workload.TargetRef) error) (workload.TargetRef, error) {
+	return retryTargetStep(target, shouldRetrySetupTargetError, func(workload.TargetRef) (workload.TargetRef, error) {
+		return resolveFreshTargetRef(state.ctx, state.opts, state.command.cfg, state.command.namespace, state.command.sessionName, state.command.kube)
+	}, step)
+}
+
+func retryTargetStep(target workload.TargetRef, shouldRetry func(error) bool, refresh func(workload.TargetRef) (workload.TargetRef, error), step func(workload.TargetRef) error) (workload.TargetRef, error) {
+	current := target
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := step(current); err == nil {
+			return current, nil
+		} else {
+			lastErr = err
+			if !shouldRetry(err) || attempt == 2 {
+				return current, err
+			}
+		}
+		time.Sleep(time.Duration(attempt+1) * sshKeyInstallRetryStep)
+		if refresh == nil {
+			continue
+		}
+		refreshed, err := refresh(current)
+		if err == nil {
+			current = refreshed
+		} else {
+			lastErr = err
+		}
+	}
+	return current, lastErr
+}
+
+func shouldRetrySetupTargetError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "container not found") ||
+		strings.Contains(msg, "pod not found") ||
+		strings.Contains(msg, "unable to upgrade connection") ||
+		strings.Contains(msg, "not found")
 }
 
 func upSetupSync(state *upState, target workload.TargetRef) (string, string, error) {

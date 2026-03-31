@@ -35,6 +35,21 @@ type fakeRefRuntime struct {
 	deleteCall int
 }
 
+type fakeSetupExecClient struct {
+	errs  []error
+	calls []workload.TargetRef
+}
+
+func (f *fakeSetupExecClient) ExecShInContainer(_ context.Context, _ string, pod, container, _ string) ([]byte, error) {
+	f.calls = append(f.calls, workload.TargetRef{PodName: pod, Container: container})
+	if len(f.errs) == 0 {
+		return nil, nil
+	}
+	err := f.errs[0]
+	f.errs = f.errs[1:]
+	return nil, err
+}
+
 func (f *fakeRefRuntime) Kind() string                                              { return f.kind }
 func (f *fakeRefRuntime) WorkloadName() string                                      { return f.name }
 func (f *fakeRefRuntime) Apply(context.Context, workload.ApplyClient, string) error { return nil }
@@ -186,5 +201,128 @@ func TestEnsureCompatibleExistingSessionWorkloadRejectsMixedExistingTypes(t *tes
 	}, "default", "sess-a", workload.TypeJob)
 	if err == nil || !strings.Contains(err.Error(), `multiple workload types (job, pod)`) {
 		t.Fatalf("expected mixed workload type error, got %v", err)
+	}
+}
+
+func TestRetryTargetStepRefreshesOnTransientTargetError(t *testing.T) {
+	start := workload.TargetRef{PodName: "old-pod", Container: "dev"}
+	refreshed := workload.TargetRef{PodName: "new-pod", Container: "dev"}
+	stepCalls := 0
+	refreshCalls := 0
+
+	got, err := retryTargetStep(start, shouldRetrySetupTargetError, func(current workload.TargetRef) (workload.TargetRef, error) {
+		refreshCalls++
+		if current.PodName != "old-pod" {
+			t.Fatalf("expected refresh to start from old target, got %q", current.PodName)
+		}
+		return refreshed, nil
+	}, func(current workload.TargetRef) error {
+		stepCalls++
+		if stepCalls == 1 {
+			if current.PodName != "old-pod" {
+				t.Fatalf("expected first attempt on old target, got %q", current.PodName)
+			}
+			return errors.New(`install ssh key in pod: unable to upgrade connection: container not found ("dev")`)
+		}
+		if current.PodName != "new-pod" {
+			t.Fatalf("expected retry on refreshed target, got %q", current.PodName)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("retryTargetStep: %v", err)
+	}
+	if got.PodName != "new-pod" {
+		t.Fatalf("expected refreshed target, got %q", got.PodName)
+	}
+	if stepCalls != 2 {
+		t.Fatalf("expected 2 step attempts, got %d", stepCalls)
+	}
+	if refreshCalls != 1 {
+		t.Fatalf("expected 1 refresh call, got %d", refreshCalls)
+	}
+}
+
+func TestRetryTargetStepDoesNotRefreshOnPermanentError(t *testing.T) {
+	start := workload.TargetRef{PodName: "old-pod", Container: "dev"}
+	refreshCalls := 0
+
+	got, err := retryTargetStep(start, shouldRetrySetupTargetError, func(workload.TargetRef) (workload.TargetRef, error) {
+		refreshCalls++
+		return workload.TargetRef{}, nil
+	}, func(current workload.TargetRef) error {
+		if current.PodName != "old-pod" {
+			t.Fatalf("expected original target, got %q", current.PodName)
+		}
+		return errors.New("permission denied")
+	})
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("expected permanent error, got %v", err)
+	}
+	if got.PodName != "old-pod" {
+		t.Fatalf("expected original target, got %q", got.PodName)
+	}
+	if refreshCalls != 0 {
+		t.Fatalf("expected no refreshes, got %d", refreshCalls)
+	}
+}
+
+func TestWaitForTargetExecReadyRefreshesOnTransientExecError(t *testing.T) {
+	client := &fakeSetupExecClient{
+		errs: []error{
+			errors.New(`unable to upgrade connection: container not found ("dev")`),
+			nil,
+		},
+	}
+	start := workload.TargetRef{PodName: "old-pod", Container: "dev"}
+	refreshed := workload.TargetRef{PodName: "new-pod", Container: "dev"}
+	refreshCalls := 0
+
+	got, err := waitForTargetExecReady(context.Background(), client, "default", start, func(current workload.TargetRef) (workload.TargetRef, error) {
+		refreshCalls++
+		if current.PodName != "old-pod" {
+			t.Fatalf("expected refresh from old target, got %q", current.PodName)
+		}
+		return refreshed, nil
+	})
+	if err != nil {
+		t.Fatalf("waitForTargetExecReady: %v", err)
+	}
+	if got.PodName != "new-pod" {
+		t.Fatalf("expected refreshed target, got %q", got.PodName)
+	}
+	if refreshCalls != 1 {
+		t.Fatalf("expected 1 refresh call, got %d", refreshCalls)
+	}
+	if len(client.calls) != 2 {
+		t.Fatalf("expected 2 exec attempts, got %d", len(client.calls))
+	}
+	if client.calls[0].PodName != "old-pod" || client.calls[1].PodName != "new-pod" {
+		t.Fatalf("unexpected exec attempt order: %#v", client.calls)
+	}
+}
+
+func TestWaitForTargetExecReadyStopsOnPermanentExecError(t *testing.T) {
+	client := &fakeSetupExecClient{
+		errs: []error{errors.New("permission denied")},
+	}
+	start := workload.TargetRef{PodName: "old-pod", Container: "dev"}
+	refreshCalls := 0
+
+	got, err := waitForTargetExecReady(context.Background(), client, "default", start, func(workload.TargetRef) (workload.TargetRef, error) {
+		refreshCalls++
+		return workload.TargetRef{}, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("expected permanent exec error, got %v", err)
+	}
+	if got.PodName != "old-pod" {
+		t.Fatalf("expected original target, got %q", got.PodName)
+	}
+	if refreshCalls != 0 {
+		t.Fatalf("expected no refresh call, got %d", refreshCalls)
+	}
+	if len(client.calls) != 1 || client.calls[0].PodName != "old-pod" {
+		t.Fatalf("unexpected exec attempts: %#v", client.calls)
 	}
 }
