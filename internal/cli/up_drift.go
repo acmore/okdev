@@ -191,51 +191,56 @@ func handleWorkloadDrift(state *upState) (driftAction, error) {
 	case driftUnknown, driftNone:
 		return driftActionReuse, nil
 	case driftChanged:
-		errOut := state.cmd.ErrOrStderr()
 		isPod := state.runtime.Kind() == workload.TypePod
-
-		if result.Diff != "" {
-			fmt.Fprintln(errOut, "Workload spec has changed:")
-			fmt.Fprintln(errOut)
-			fmt.Fprintln(errOut, result.Diff)
-			fmt.Fprintln(errOut)
-		} else {
-			fmt.Fprintln(errOut, "Workload spec has changed.")
-		}
-
-		if isPod {
-			fmt.Fprintln(errOut, "Pod workloads must be recreated to apply these changes.")
-		}
-
-		if !isTerminalReader(state.cmd.InOrStdin()) {
-			action := "apply"
-			if isPod {
-				action = "recreate"
-			}
-			return driftActionReuse, fmt.Errorf("workload spec changed; re-run with --reconcile to %s", action)
-		}
-
-		prompt := "Reapply workload? [y/N]: "
-		if isPod {
-			prompt = "Recreate workload? [y/N]: "
-		}
-		ok, promptErr := promptDriftReapply(state.cmd.InOrStdin(), errOut, prompt)
-		if promptErr != nil {
-			return driftActionReuse, promptErr
-		}
-		if !ok {
-			return driftActionReuse, nil
-		}
-
-		if isPod {
-			if delErr := state.runtime.Delete(state.ctx, state.command.kube, state.command.namespace, true); delErr != nil {
-				return driftActionReuse, fmt.Errorf("delete existing pod for recreate: %w", delErr)
-			}
-			return driftActionRecreate, nil
-		}
-		return driftActionReapply, nil
+		return handleChangedWorkloadDrift(state, result.Diff, isPod, isTerminalReader(state.cmd.InOrStdin()))
 	}
 	return driftActionReuse, nil
+}
+
+func handleChangedWorkloadDrift(state *upState, diff string, isPod bool, interactive bool) (driftAction, error) {
+	errOut := state.cmd.ErrOrStderr()
+	state.ui.stopActive()
+
+	if diff != "" {
+		fmt.Fprintln(errOut, "Workload spec has changed:")
+		fmt.Fprintln(errOut)
+		fmt.Fprintln(errOut, diff)
+		fmt.Fprintln(errOut)
+	} else {
+		fmt.Fprintln(errOut, "Workload spec has changed.")
+	}
+
+	if isPod {
+		fmt.Fprintln(errOut, "Pod workloads must be recreated to apply these changes.")
+	}
+
+	if !interactive {
+		action := "apply"
+		if isPod {
+			action = "recreate"
+		}
+		return driftActionReuse, fmt.Errorf("workload spec changed; re-run with --reconcile to %s", action)
+	}
+
+	prompt := "Reapply workload? [y/N]: "
+	if isPod {
+		prompt = "Recreate workload? [y/N]: "
+	}
+	ok, promptErr := promptDriftReapply(state.cmd.InOrStdin(), errOut, prompt)
+	if promptErr != nil {
+		return driftActionReuse, promptErr
+	}
+	if !ok {
+		return driftActionReuse, nil
+	}
+
+	if isPod {
+		if delErr := state.runtime.Delete(state.ctx, state.command.kube, state.command.namespace, true); delErr != nil {
+			return driftActionReuse, fmt.Errorf("delete existing pod for recreate: %w", delErr)
+		}
+		return driftActionRecreate, nil
+	}
+	return driftActionReapply, nil
 }
 
 func promptDriftReapply(in io.Reader, out io.Writer, prompt string) (bool, error) {
