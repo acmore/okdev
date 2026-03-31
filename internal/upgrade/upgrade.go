@@ -1,11 +1,18 @@
 package upgrade
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -119,4 +126,119 @@ func (c *Checker) writeCache(entry cacheEntry) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0o644)
+}
+
+type Upgrader struct {
+	assetBaseURL string
+	httpClient   *http.Client
+	goos         string
+	goarch       string
+	binPath      string
+}
+
+func NewUpgrader(version string) (*Upgrader, error) {
+	binPath, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve executable path: %w", err)
+	}
+	binPath, err = filepath.EvalSymlinks(binPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve symlinks: %w", err)
+	}
+	return &Upgrader{
+		assetBaseURL: fmt.Sprintf("https://github.com/acmore/okdev/releases/download/%s/", version),
+		httpClient:   &http.Client{Timeout: 60 * time.Second},
+		goos:         runtime.GOOS,
+		goarch:       runtime.GOARCH,
+		binPath:      binPath,
+	}, nil
+}
+
+func (u *Upgrader) assetName() string {
+	return fmt.Sprintf("okdev_%s_%s.tar.gz", u.goos, u.goarch)
+}
+
+func (u *Upgrader) Upgrade() error {
+	checksums, err := u.fetchChecksums()
+	if err != nil {
+		return fmt.Errorf("fetch checksums: %w", err)
+	}
+	assetName := u.assetName()
+	expectedHash, ok := checksums[assetName]
+	if !ok {
+		return fmt.Errorf("no checksum found for %s", assetName)
+	}
+	tarGzData, err := u.fetchAsset(assetName)
+	if err != nil {
+		return fmt.Errorf("download %s: %w", assetName, err)
+	}
+	actualHash := sha256.Sum256(tarGzData)
+	if hex.EncodeToString(actualHash[:]) != expectedHash {
+		return fmt.Errorf("checksum mismatch for %s", assetName)
+	}
+	bin, err := extractBinary(tarGzData)
+	if err != nil {
+		return fmt.Errorf("extract binary: %w", err)
+	}
+	return atomicReplace(u.binPath, bin)
+}
+
+func (u *Upgrader) fetchChecksums() (map[string]string, error) {
+	data, err := u.fetchAsset("checksums.txt")
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]string)
+	for _, line := range strings.Split(string(data), "\n") {
+		parts := strings.Fields(line)
+		if len(parts) == 2 {
+			result[parts[1]] = parts[0]
+		}
+	}
+	return result, nil
+}
+
+func (u *Upgrader) fetchAsset(name string) ([]byte, error) {
+	resp, err := u.httpClient.Get(u.assetBaseURL + name)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %s", resp.Status)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+func extractBinary(tarGzData []byte) ([]byte, error) {
+	gr, err := gzip.NewReader(bytes.NewReader(tarGzData))
+	if err != nil {
+		return nil, err
+	}
+	defer gr.Close()
+	tr := tar.NewReader(gr)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return nil, fmt.Errorf("binary not found in archive")
+		}
+		if err != nil {
+			return nil, err
+		}
+		if hdr.Name == "okdev" {
+			return io.ReadAll(tr)
+		}
+	}
+}
+
+func atomicReplace(path string, data []byte) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, info.Mode()); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }

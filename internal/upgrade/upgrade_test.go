@@ -1,8 +1,16 @@
 package upgrade
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -85,5 +93,58 @@ func TestLatestVersionUsesCache(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("expected 2 API calls, got %d", calls)
+	}
+}
+
+func TestDownloadAndReplace(t *testing.T) {
+	// Create a fake binary tarball.
+	var tarBuf bytes.Buffer
+	tw := tar.NewWriter(&tarBuf)
+	content := []byte("#!/bin/sh\necho okdev-new")
+	hdr := &tar.Header{Name: "okdev", Size: int64(len(content)), Mode: 0o755}
+	tw.WriteHeader(hdr)
+	tw.Write(content)
+	tw.Close()
+
+	var gzBuf bytes.Buffer
+	gw := gzip.NewWriter(&gzBuf)
+	gw.Write(tarBuf.Bytes())
+	gw.Close()
+
+	tarGzBytes := gzBuf.Bytes()
+	checksum := sha256.Sum256(tarGzBytes)
+	checksumHex := hex.EncodeToString(checksum[:])
+	checksumBody := checksumHex + "  okdev_linux_amd64.tar.gz\n"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, ".tar.gz"):
+			w.Write(tarGzBytes)
+		case strings.HasSuffix(r.URL.Path, "checksums.txt"):
+			w.Write([]byte(checksumBody))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	binDir := t.TempDir()
+	binPath := filepath.Join(binDir, "okdev")
+	os.WriteFile(binPath, []byte("old"), 0o755)
+
+	u := &Upgrader{
+		assetBaseURL: server.URL + "/",
+		httpClient:   server.Client(),
+		goos:         "linux",
+		goarch:       "amd64",
+		binPath:      binPath,
+	}
+	err := u.Upgrade()
+	if err != nil {
+		t.Fatalf("Upgrade: %v", err)
+	}
+	got, _ := os.ReadFile(binPath)
+	if string(got) != string(content) {
+		t.Fatalf("expected new binary content, got %q", string(got))
 	}
 }
