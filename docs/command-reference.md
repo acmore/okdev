@@ -30,6 +30,7 @@
 - `okdev ports`
 - `okdev sync [--mode up|down|bi] [--foreground] [--reset] [--dry-run]`
 - `okdev prune [--ttl-hours 72] [--all-namespaces] [--all-users] [--include-pvc] [--dry-run]`
+- `okdev upgrade`
 
 ### `okdev status [--all] [--all-users] [--details]`
 
@@ -119,3 +120,10 @@
 - `--background`: explicitly request detached background mode.
 - `--reset`: stop the session's existing local sync processes and local Syncthing state, then bootstrap sync again.
 - `okdev init` writes the starter config and, for built-in templates, a starter local `.stignore` file for the initialized sync root.
+
+### `okdev upgrade`
+
+- Checks the latest GitHub release and upgrades the `okdev` binary in place.
+- Downloads the correct archive for the current OS/architecture, verifies the SHA256 checksum, and atomically replaces the running binary.
+- No-op when already on the latest version.
+- After `okdev up` completes successfully, a non-blocking version check runs (cached for 24 hours) and prints a reminder to stderr if a newer version is available.
