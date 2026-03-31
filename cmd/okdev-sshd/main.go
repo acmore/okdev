@@ -223,6 +223,9 @@ func handlePTY(cmd *exec.Cmd, s ssh.Session, ptyReq ssh.Pty, winCh <-chan ssh.Wi
 	go func() {
 		_, _ = io.Copy(f, s)
 		closePTY()
+		if cmd.Process != nil {
+			_ = cmd.Process.Signal(syscall.SIGHUP)
+		}
 	}()
 
 	done := make(chan struct{})
