@@ -1,24 +1,21 @@
 package analytics
 
 import (
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
+	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
+	posthog "github.com/posthog/posthog-go"
 	"gopkg.in/yaml.v3"
 )
 
 func TestAnonymousIDPersists(t *testing.T) {
 	tmp := t.TempDir()
 	client := &Client{
-		httpClient: &http.Client{Timeout: time.Second},
-		now:        func() time.Time { return time.Unix(1700000000, 0) },
-		homeDir:    func() (string, error) { return tmp, nil },
+		now:     func() time.Time { return time.Unix(1700000000, 0) },
+		homeDir: func() (string, error) { return tmp, nil },
 	}
 
 	first, err := client.anonymousID()
@@ -35,60 +32,108 @@ func TestAnonymousIDPersists(t *testing.T) {
 	}
 }
 
-func TestTrackCommandPostsPostHogCaptureAndWritesJournal(t *testing.T) {
+type fakePostHogClient struct {
+	messages []posthog.Message
+	closed   bool
+}
+
+func (f *fakePostHogClient) Enqueue(msg posthog.Message) error {
+	f.messages = append(f.messages, msg)
+	return nil
+}
+
+func (f *fakePostHogClient) Close() error {
+	f.closed = true
+	return nil
+}
+
+func (f *fakePostHogClient) CloseWithContext(context.Context) error {
+	f.closed = true
+	return nil
+}
+
+func (f *fakePostHogClient) IsFeatureEnabled(posthog.FeatureFlagPayload) (interface{}, error) {
+	return nil, nil
+}
+
+func (f *fakePostHogClient) GetFeatureFlag(posthog.FeatureFlagPayload) (interface{}, error) {
+	return nil, nil
+}
+
+func (f *fakePostHogClient) GetFeatureFlagResult(posthog.FeatureFlagPayload) (*posthog.FeatureFlagResult, error) {
+	return nil, nil
+}
+
+func (f *fakePostHogClient) GetFeatureFlagPayload(posthog.FeatureFlagPayload) (string, error) {
+	return "", nil
+}
+
+func (f *fakePostHogClient) GetRemoteConfigPayload(string) (string, error) {
+	return "", nil
+}
+
+func (f *fakePostHogClient) GetAllFlags(posthog.FeatureFlagPayloadNoKey) (map[string]interface{}, error) {
+	return nil, nil
+}
+
+func (f *fakePostHogClient) ReloadFeatureFlags() error {
+	return nil
+}
+
+func (f *fakePostHogClient) GetFeatureFlags() ([]posthog.FeatureFlag, error) {
+	return nil, nil
+}
+
+func TestTrackCommandPostsPostHogCapture(t *testing.T) {
 	tmp := t.TempDir()
-	var got postHogCapture
-	done := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
-		defer close(done)
-		if r.Method != http.MethodPost {
-			t.Fatalf("expected POST, got %s", r.Method)
-		}
-		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
-			t.Fatalf("decode event: %v", err)
-		}
-		w.WriteHeader(http.StatusAccepted)
-	}))
-	defer server.Close()
+	var createdAPIKey string
+	var createdEndpoint string
+	fake := &fakePostHogClient{}
 
 	client := &Client{
-		endpoint:   server.URL,
-		apiKey:     "phc_test_key",
-		httpClient: server.Client(),
-		now:        func() time.Time { return time.Unix(1700000000, 0).UTC() },
-		homeDir:    func() (string, error) { return tmp, nil },
+		endpoint: "https://us.i.posthog.com/capture/",
+		apiKey:   "phc_test_key",
+		now:      func() time.Time { return time.Unix(1700000000, 0).UTC() },
+		homeDir:  func() (string, error) { return tmp, nil },
+		newPostHogCLI: func(apiKey, endpoint string) (posthog.Client, error) {
+			createdAPIKey = apiKey
+			createdEndpoint = endpoint
+			return fake, nil
+		},
 	}
 
 	client.TrackCommand("okdev up", "json", true, nil, 1250*time.Millisecond)
-	<-done
 
-	if got.APIKey != "phc_test_key" {
-		t.Fatalf("unexpected api key %q", got.APIKey)
+	if createdAPIKey != "phc_test_key" {
+		t.Fatalf("unexpected api key %q", createdAPIKey)
 	}
-	if got.Event != "okdev command completed" {
-		t.Fatalf("unexpected event name %q", got.Event)
+	if createdEndpoint != "https://us.i.posthog.com/capture/" {
+		t.Fatalf("unexpected endpoint %q", createdEndpoint)
 	}
-	if got.Properties["command"] != "okdev up" {
-		t.Fatalf("unexpected command property %#v", got.Properties["command"])
+	if len(fake.messages) != 1 {
+		t.Fatalf("expected 1 enqueued message, got %d", len(fake.messages))
 	}
-	if got.Properties["success"] != true {
-		t.Fatalf("unexpected success property %#v", got.Properties["success"])
+	capture, ok := fake.messages[0].(posthog.Capture)
+	if !ok {
+		t.Fatalf("expected posthog.Capture, got %T", fake.messages[0])
 	}
-	if got.Properties["duration_ms"] != float64(1250) {
-		t.Fatalf("unexpected duration %#v", got.Properties["duration_ms"])
+	if capture.Event != "okdev command completed" {
+		t.Fatalf("unexpected event name %q", capture.Event)
 	}
-	if got.Properties["output"] != "json" {
-		t.Fatalf("unexpected output property %#v", got.Properties["output"])
+	if capture.Properties["command"] != "okdev up" {
+		t.Fatalf("unexpected command property %#v", capture.Properties["command"])
 	}
-
-	journalPath := filepath.Join(tmp, analyticsDirName, eventsFile)
-	data, err := os.ReadFile(journalPath)
-	if err != nil {
-		t.Fatalf("read events journal: %v", err)
+	if capture.Properties["success"] != true {
+		t.Fatalf("unexpected success property %#v", capture.Properties["success"])
 	}
-	if !strings.Contains(string(data), "\"event\":\"okdev command completed\"") {
-		t.Fatalf("expected journal to contain PostHog event, got %q", string(data))
+	if capture.Properties["duration_ms"] != int64(1250) {
+		t.Fatalf("unexpected duration %#v", capture.Properties["duration_ms"])
+	}
+	if capture.Properties["output"] != "json" {
+		t.Fatalf("unexpected output property %#v", capture.Properties["output"])
+	}
+	if !fake.closed {
+		t.Fatal("expected posthog client to be closed")
 	}
 }
 
@@ -122,6 +167,20 @@ func TestUserConfigDefaultAllowsAnalytics(t *testing.T) {
 	// No config file at all — should not disable.
 	if userConfigDisabled() {
 		t.Fatal("expected analytics to be allowed when no config exists")
+	}
+}
+
+func TestNormalizePostHogEndpoint(t *testing.T) {
+	cases := map[string]string{
+		"https://us.i.posthog.com/capture/": "https://us.i.posthog.com",
+		"https://us.i.posthog.com/capture":  "https://us.i.posthog.com",
+		"https://us.i.posthog.com/":         "https://us.i.posthog.com",
+		"https://us.i.posthog.com":          "https://us.i.posthog.com",
+	}
+	for input, want := range cases {
+		if got := normalizePostHogEndpoint(input); got != want {
+			t.Fatalf("normalizePostHogEndpoint(%q)=%q want %q", input, got, want)
+		}
 	}
 }
 
