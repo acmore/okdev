@@ -148,3 +148,45 @@ func TestDownloadAndReplace(t *testing.T) {
 		t.Fatalf("expected new binary content, got %q", string(got))
 	}
 }
+
+func TestCheckAndRemindPrintsWhenNewer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"tag_name":"v2.0.0"}`))
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	c := &Checker{
+		apiBase:    server.URL,
+		httpClient: server.Client(),
+		homeDir:    func() (string, error) { return t.TempDir(), nil },
+		now:        time.Now,
+	}
+	c.CheckAndRemind("v1.0.0", &buf)
+	time.Sleep(100 * time.Millisecond)
+	if !strings.Contains(buf.String(), "okdev upgrade") {
+		t.Fatalf("expected upgrade reminder, got %q", buf.String())
+	}
+}
+
+func TestCheckAndRemindSilentWhenCurrent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"tag_name":"v1.0.0"}`))
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	c := &Checker{
+		apiBase:    server.URL,
+		httpClient: server.Client(),
+		homeDir:    func() (string, error) { return t.TempDir(), nil },
+		now:        time.Now,
+	}
+	c.CheckAndRemind("v1.0.0", &buf)
+	time.Sleep(100 * time.Millisecond)
+	if buf.String() != "" {
+		t.Fatalf("expected no output, got %q", buf.String())
+	}
+}

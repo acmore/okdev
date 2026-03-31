@@ -128,6 +128,23 @@ func (c *Checker) writeCache(entry cacheEntry) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
+// CheckAndRemind runs a non-blocking cached version check and prints
+// a reminder to w if a newer version is available.
+func (c *Checker) CheckAndRemind(currentVersion string, w io.Writer) {
+	go func() {
+		latest, err := c.LatestVersionCached()
+		if err != nil {
+			return
+		}
+		current := strings.TrimPrefix(currentVersion, "v")
+		remote := strings.TrimPrefix(latest, "v")
+		if current == remote || current == "" || remote == "" {
+			return
+		}
+		fmt.Fprintf(w, "\nA new version of okdev is available (%s → %s). Run \"okdev upgrade\" to update.\n", currentVersion, latest)
+	}()
+}
+
 type Upgrader struct {
 	assetBaseURL string
 	httpClient   *http.Client
