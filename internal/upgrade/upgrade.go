@@ -30,6 +30,7 @@ type Checker struct {
 	httpClient *http.Client
 	homeDir    func() (string, error)
 	now        func() time.Time
+	launch     func(func())
 }
 
 func NewChecker() *Checker {
@@ -38,6 +39,9 @@ func NewChecker() *Checker {
 		httpClient: &http.Client{Timeout: 5 * time.Second},
 		homeDir:    os.UserHomeDir,
 		now:        time.Now,
+		launch: func(fn func()) {
+			go fn()
+		},
 	}
 }
 
@@ -131,7 +135,13 @@ func (c *Checker) writeCache(entry cacheEntry) error {
 // CheckAndRemind runs a non-blocking cached version check and prints
 // a reminder to w if a newer version is available.
 func (c *Checker) CheckAndRemind(currentVersion string, w io.Writer) {
-	go func() {
+	launch := c.launch
+	if launch == nil {
+		launch = func(fn func()) {
+			go fn()
+		}
+	}
+	launch(func() {
 		latest, err := c.LatestVersionCached()
 		if err != nil {
 			return
@@ -142,7 +152,7 @@ func (c *Checker) CheckAndRemind(currentVersion string, w io.Writer) {
 			return
 		}
 		fmt.Fprintf(w, "\nA new version of okdev is available (%s → %s). Run \"okdev upgrade\" to update.\n", currentVersion, latest)
-	}()
+	})
 }
 
 type Upgrader struct {

@@ -162,9 +162,9 @@ func TestCheckAndRemindPrintsWhenNewer(t *testing.T) {
 		httpClient: server.Client(),
 		homeDir:    func() (string, error) { return t.TempDir(), nil },
 		now:        time.Now,
+		launch:     func(fn func()) { fn() },
 	}
 	c.CheckAndRemind("v1.0.0", &buf)
-	time.Sleep(100 * time.Millisecond)
 	if !strings.Contains(buf.String(), "okdev upgrade") {
 		t.Fatalf("expected upgrade reminder, got %q", buf.String())
 	}
@@ -183,9 +183,9 @@ func TestCheckAndRemindSilentWhenCurrent(t *testing.T) {
 		httpClient: server.Client(),
 		homeDir:    func() (string, error) { return t.TempDir(), nil },
 		now:        time.Now,
+		launch:     func(fn func()) { fn() },
 	}
 	c.CheckAndRemind("v1.0.0", &buf)
-	time.Sleep(100 * time.Millisecond)
 	if buf.String() != "" {
 		t.Fatalf("expected no output, got %q", buf.String())
 	}
