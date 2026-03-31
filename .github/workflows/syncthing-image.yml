@@ -9,6 +9,16 @@ on:
         default: v1.29.7
   push:
     branches: [main]
+    paths:
+      - ".github/workflows/syncthing-image.yml"
+      - "infra/sidecar/**"
+      - "cmd/okdev-sshd/**"
+      - "internal/syncthing/**"
+      - "internal/ssh/**"
+      - "internal/cli/syncthing.go"
+      - "internal/cli/ssh.go"
+      - "internal/cli/up.go"
+      - "internal/workload/**"
     tags:
       - "v*"
 
