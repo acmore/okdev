@@ -2,10 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"io"
 	"strings"
 	"testing"
 
 	"github.com/acmore/okdev/internal/config"
+	"github.com/acmore/okdev/internal/workload"
+	"github.com/spf13/cobra"
 )
 
 func TestDriftResultNoAnnotation(t *testing.T) {
@@ -132,4 +136,47 @@ func TestUnifiedDiffIdentical(t *testing.T) {
 	if strings.Contains(result, "+ ") || strings.Contains(result, "- ") {
 		t.Fatalf("expected no changes in diff for identical input, got:\n%s", result)
 	}
+}
+
+func TestHandleChangedWorkloadDriftStopsActiveStatusBeforePrompt(t *testing.T) {
+	var out bytes.Buffer
+	ui := &upUI{
+		out:         &out,
+		errOut:      &out,
+		interactive: true,
+	}
+	ui.stepRun("job", "trainer")
+
+	state := &upState{
+		ctx:     context.Background(),
+		cmd:     testCommandWithIO(strings.NewReader("n\n"), &out, &out),
+		ui:      ui,
+		runtime: &fakeRefRuntime{kind: workload.TypeJob, apiVersion: "batch/v1", name: "trainer"},
+	}
+
+	action, err := handleChangedWorkloadDrift(state, "diff-body", false, true)
+	if err != nil {
+		t.Fatalf("handleChangedWorkloadDrift: %v", err)
+	}
+	if action != driftActionReuse {
+		t.Fatalf("expected reuse on decline, got %v", action)
+	}
+	if ui.active != nil || ui.activeStep != "" {
+		t.Fatalf("expected active status to be stopped before prompting")
+	}
+	got := out.String()
+	if !strings.Contains(got, "\r\033[K") {
+		t.Fatalf("expected transient status clear before prompt, got %q", got)
+	}
+	if !strings.Contains(got, "Reapply workload? [y/N]: ") {
+		t.Fatalf("expected reapply prompt, got %q", got)
+	}
+}
+
+func testCommandWithIO(in io.Reader, out, errOut io.Writer) *cobra.Command {
+	cmd := &cobra.Command{}
+	cmd.SetIn(in)
+	cmd.SetOut(out)
+	cmd.SetErr(errOut)
+	return cmd
 }
