@@ -1,6 +1,10 @@
 package cli
 
 import (
+	"os"
+	"time"
+
+	"github.com/acmore/okdev/internal/analytics"
 	"github.com/acmore/okdev/internal/logx"
 	"github.com/spf13/cobra"
 )
@@ -16,6 +20,11 @@ type Options struct {
 }
 
 func NewRootCmd() *cobra.Command {
+	cmd, _ := newRootCmdWithOptions()
+	return cmd
+}
+
+func newRootCmdWithOptions() (*cobra.Command, *Options) {
 	opts := &Options{}
 
 	cmd := &cobra.Command{
@@ -54,9 +63,28 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newMigrateCmd(opts))
 	initRootCompletion(cmd)
 
-	return cmd
+	return cmd, opts
 }
 
 func Execute() error {
-	return NewRootCmd().Execute()
+	cmd, opts := newRootCmdWithOptions()
+	collector := analytics.NewFromEnv()
+	commandPath := resolvedCommandPath(cmd, os.Args[1:])
+	start := time.Now()
+	err := cmd.Execute()
+	if collector != nil {
+		collector.TrackCommand(commandPath, opts.Output, opts.Verbose, err, time.Since(start))
+	}
+	return err
+}
+
+func resolvedCommandPath(root *cobra.Command, args []string) string {
+	if root == nil {
+		return "okdev"
+	}
+	target, _, err := root.Find(args)
+	if err != nil || target == nil {
+		return root.CommandPath()
+	}
+	return target.CommandPath()
 }
