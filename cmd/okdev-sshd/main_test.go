@@ -347,7 +347,7 @@ func TestHandlePTYExitsWhenSessionInputCloses(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- handlePTY(exec.Command("/bin/sh", "-lc", "while read line; do :; done"), sess, sess.pty, sess.winCh)
+		done <- handlePTY(exec.Command("/bin/cat"), sess, sess.pty, sess.winCh)
 	}()
 
 	select {
