@@ -18,6 +18,8 @@ import (
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
 	syncengine "github.com/acmore/okdev/internal/sync"
+	"github.com/acmore/okdev/internal/upgrade"
+	"github.com/acmore/okdev/internal/version"
 	"github.com/acmore/okdev/internal/workload"
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
@@ -561,6 +563,7 @@ func upSetup(state *upState) error {
 
 	state.ui.printWarnings()
 	state.ui.printReadyCard(state.command.sessionName, state.command.namespace, target.PodName, sshSummary, syncSummary, state.command.cfg.Spec.Ports, state.syncPairs, syncModeSymbol)
+	upgrade.NewChecker().CheckAndRemind(version.Version, state.cmd.ErrOrStderr())
 	return nil
 }
 
