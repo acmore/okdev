@@ -9,10 +9,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -146,13 +149,22 @@ func (c *Checker) CheckAndRemind(currentVersion string, w io.Writer) {
 		if err != nil {
 			return
 		}
-		current := strings.TrimPrefix(currentVersion, "v")
-		remote := strings.TrimPrefix(latest, "v")
-		if current == remote || current == "" || remote == "" {
+		if !ShouldUpgrade(currentVersion, latest) {
 			return
 		}
 		fmt.Fprintf(w, "\nA new version of okdev is available (%s → %s). Run \"okdev upgrade\" to update.\n", currentVersion, latest)
 	})
+}
+
+func ShouldUpgrade(currentVersion, latestVersion string) bool {
+	current, okCurrent := parseSemver(currentVersion)
+	latest, okLatest := parseSemver(latestVersion)
+	if okCurrent && okLatest {
+		return compareSemver(latest, current) > 0
+	}
+	currentTrimmed := strings.TrimSpace(strings.TrimPrefix(currentVersion, "v"))
+	latestTrimmed := strings.TrimSpace(strings.TrimPrefix(latestVersion, "v"))
+	return currentTrimmed != "" && latestTrimmed != "" && currentTrimmed != latestTrimmed
 }
 
 type Upgrader struct {
@@ -164,13 +176,9 @@ type Upgrader struct {
 }
 
 func NewUpgrader(version string) (*Upgrader, error) {
-	binPath, err := os.Executable()
+	binPath, err := resolveBinaryPath(os.Executable, exec.LookPath, os.Lstat, filepath.EvalSymlinks, os.Args)
 	if err != nil {
-		return nil, fmt.Errorf("resolve executable path: %w", err)
-	}
-	binPath, err = filepath.EvalSymlinks(binPath)
-	if err != nil {
-		return nil, fmt.Errorf("resolve symlinks: %w", err)
+		return nil, fmt.Errorf("resolve upgrade binary path: %w", err)
 	}
 	return &Upgrader{
 		assetBaseURL: fmt.Sprintf("https://github.com/acmore/okdev/releases/download/%s/", version),
@@ -268,4 +276,167 @@ func atomicReplace(path string, data []byte) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+type semverVersion struct {
+	major      int
+	minor      int
+	patch      int
+	prerelease string
+}
+
+func parseSemver(v string) (semverVersion, bool) {
+	trimmed := strings.TrimSpace(strings.TrimPrefix(v, "v"))
+	if trimmed == "" {
+		return semverVersion{}, false
+	}
+	if base, _, ok := strings.Cut(trimmed, "+"); ok {
+		trimmed = base
+	}
+	core := trimmed
+	prerelease := ""
+	if base, pre, ok := strings.Cut(trimmed, "-"); ok {
+		core = base
+		prerelease = pre
+	}
+	parts := strings.Split(core, ".")
+	if len(parts) != 3 {
+		return semverVersion{}, false
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return semverVersion{}, false
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return semverVersion{}, false
+	}
+	patch, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return semverVersion{}, false
+	}
+	return semverVersion{major: major, minor: minor, patch: patch, prerelease: prerelease}, true
+}
+
+func compareSemver(a, b semverVersion) int {
+	switch {
+	case a.major != b.major:
+		return cmpInt(a.major, b.major)
+	case a.minor != b.minor:
+		return cmpInt(a.minor, b.minor)
+	case a.patch != b.patch:
+		return cmpInt(a.patch, b.patch)
+	default:
+		return comparePrerelease(a.prerelease, b.prerelease)
+	}
+}
+
+func comparePrerelease(a, b string) int {
+	switch {
+	case a == "" && b == "":
+		return 0
+	case a == "":
+		return 1
+	case b == "":
+		return -1
+	}
+	aParts := strings.Split(a, ".")
+	bParts := strings.Split(b, ".")
+	for i := 0; i < len(aParts) && i < len(bParts); i++ {
+		if aParts[i] == bParts[i] {
+			continue
+		}
+		aNum, aNumOK := parseNumericIdentifier(aParts[i])
+		bNum, bNumOK := parseNumericIdentifier(bParts[i])
+		switch {
+		case aNumOK && bNumOK:
+			return cmpInt(aNum, bNum)
+		case aNumOK:
+			return -1
+		case bNumOK:
+			return 1
+		case aParts[i] < bParts[i]:
+			return -1
+		default:
+			return 1
+		}
+	}
+	return cmpInt(len(aParts), len(bParts))
+}
+
+func parseNumericIdentifier(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+func cmpInt(a, b int) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func resolveBinaryPath(
+	executable func() (string, error),
+	lookPath func(string) (string, error),
+	lstat func(string) (fs.FileInfo, error),
+	evalSymlinks func(string) (string, error),
+	args []string,
+) (string, error) {
+	binPath, err := executable()
+	if err != nil {
+		return "", err
+	}
+	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
+		return binPath, nil
+	}
+	invokedPath := strings.TrimSpace(args[0])
+	if !strings.ContainsRune(invokedPath, filepath.Separator) {
+		lookedUp, lookErr := lookPath(invokedPath)
+		if lookErr != nil {
+			return binPath, nil
+		}
+		invokedPath = lookedUp
+	}
+	if !filepath.IsAbs(invokedPath) {
+		invokedAbs, err := filepath.Abs(invokedPath)
+		if err != nil {
+			return "", err
+		}
+		invokedPath = invokedAbs
+	}
+	resolvedInvoked, err := evalSymlinks(invokedPath)
+	if err != nil {
+		return "", err
+	}
+	resolvedBinary, err := evalSymlinks(binPath)
+	if err != nil {
+		return "", err
+	}
+	if resolvedInvoked != resolvedBinary {
+		return binPath, nil
+	}
+	info, err := lstat(invokedPath)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return "", fmt.Errorf("binary is invoked through symlink %q; upgrade the target install directly", invokedPath)
+	}
+	return invokedPath, nil
 }
