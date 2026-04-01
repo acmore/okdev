@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -188,5 +189,98 @@ func TestCheckAndRemindSilentWhenCurrent(t *testing.T) {
 	c.CheckAndRemind("v1.0.0", &buf)
 	if buf.String() != "" {
 		t.Fatalf("expected no output, got %q", buf.String())
+	}
+}
+
+func TestCheckAndRemindSilentWhenCurrentIsNewerPrerelease(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"tag_name":"v1.0.0"}`))
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	c := &Checker{
+		apiBase:    server.URL,
+		httpClient: server.Client(),
+		homeDir:    func() (string, error) { return t.TempDir(), nil },
+		now:        time.Now,
+		launch:     func(fn func()) { fn() },
+	}
+	c.CheckAndRemind("v1.1.0-rc1", &buf)
+	if buf.String() != "" {
+		t.Fatalf("expected no output for newer prerelease, got %q", buf.String())
+	}
+}
+
+func TestShouldUpgrade(t *testing.T) {
+	cases := []struct {
+		current string
+		latest  string
+		want    bool
+	}{
+		{current: "v1.0.0", latest: "v1.0.0", want: false},
+		{current: "1.0.0", latest: "v1.0.1", want: true},
+		{current: "v1.1.0-rc1", latest: "v1.0.0", want: false},
+		{current: "v1.0.0-rc1", latest: "v1.0.0", want: true},
+		{current: "0.0.0-dev", latest: "v0.5.2", want: true},
+	}
+	for _, tc := range cases {
+		if got := ShouldUpgrade(tc.current, tc.latest); got != tc.want {
+			t.Fatalf("ShouldUpgrade(%q, %q)=%v want %v", tc.current, tc.latest, got, tc.want)
+		}
+	}
+}
+
+func TestResolveBinaryPathRejectsSymlinkedInvocation(t *testing.T) {
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "okdev-real")
+	link := filepath.Join(tmp, "okdev")
+	if err := os.WriteFile(target, []byte("real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := resolveBinaryPath(
+		func() (string, error) { return target, nil },
+		func(string) (string, error) { return link, nil },
+		os.Lstat,
+		filepath.EvalSymlinks,
+		[]string{"okdev"},
+	)
+	if err == nil || !strings.Contains(err.Error(), "invoked through symlink") {
+		t.Fatalf("expected symlink rejection, got %v", err)
+	}
+}
+
+type fakeFileInfo struct{ mode fs.FileMode }
+
+func (f fakeFileInfo) Name() string       { return "okdev" }
+func (f fakeFileInfo) Size() int64        { return 0 }
+func (f fakeFileInfo) Mode() fs.FileMode  { return f.mode }
+func (f fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (f fakeFileInfo) IsDir() bool        { return false }
+func (f fakeFileInfo) Sys() any           { return nil }
+
+func TestResolveBinaryPathPrefersInvokedNonSymlinkPath(t *testing.T) {
+	got, err := resolveBinaryPath(
+		func() (string, error) { return "/opt/okdev/bin/okdev", nil },
+		func(string) (string, error) { return "/usr/local/bin/okdev", nil },
+		func(string) (fs.FileInfo, error) { return fakeFileInfo{mode: 0o755}, nil },
+		func(path string) (string, error) {
+			if path == "/usr/local/bin/okdev" {
+				return "/opt/okdev/bin/okdev", nil
+			}
+			return path, nil
+		},
+		[]string{"okdev"},
+	)
+	if err != nil {
+		t.Fatalf("resolveBinaryPath: %v", err)
+	}
+	if got != "/usr/local/bin/okdev" {
+		t.Fatalf("expected invoked path, got %q", got)
 	}
 }
