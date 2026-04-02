@@ -288,6 +288,39 @@ for WPOD in $WORKER_PODS; do
 done
 echo "Workspace reset verified across all pods"
 
+echo "Verifying sync remains active after reset"
+POST_RESET_STATUS=""
+for i in $(seq 1 15); do
+  POST_RESET_STATUS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
+  if [[ "$POST_RESET_STATUS" == *"health: active"* ]]; then
+    break
+  fi
+  if [[ "$i" -eq 15 ]]; then
+    echo "ERROR: expected sync to remain active after reset-remote" >&2
+    echo "$POST_RESET_STATUS" >&2
+    exit 1
+  fi
+  sleep 2
+done
+
+echo "Verifying steady-state sync still propagates after reset"
+echo "steady state after reset" >"$SYNC_DIR/post-reset.txt"
+POST_RESET_SYNC_OK=false
+for i in $(seq 1 30); do
+  POST_RESET_CONTENT=$(kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- sh -lc 'cat /workspace/post-reset.txt 2>/dev/null || true')
+  if [[ "$POST_RESET_CONTENT" == "steady state after reset" ]]; then
+    POST_RESET_SYNC_OK=true
+    echo "Post-reset steady-state sync verified on attempt $i"
+    break
+  fi
+  echo "Post-reset sync poll attempt $i/30: file not ready yet"
+  sleep 2
+done
+if [[ "$POST_RESET_SYNC_OK" != "true" ]]; then
+  echo "ERROR: expected post-reset local change to sync to remote workspace" >&2
+  exit 1
+fi
+
 echo "Changing controller workload spec to trigger drift detection"
 sed -i 's/image: ubuntu:22.04/image: ubuntu:24.04/g' "$MANIFEST_PATH"
 
@@ -310,16 +343,44 @@ echo "Controller drift guidance verified"
 echo "Reapplying PyTorchJob via --reconcile"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --reconcile --wait-timeout 5m
 
-echo "Verifying PyTorchJob spec was updated in place"
-MASTER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$SESSION_NAME" \
-  -o jsonpath='{.spec.pytorchReplicaSpecs.Master.template.spec.containers[0].image}')
-WORKER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$SESSION_NAME" \
-  -o jsonpath='{.spec.pytorchReplicaSpecs.Worker.template.spec.containers[0].image}')
-if [[ "$MASTER_IMAGE" != "ubuntu:24.04" || "$WORKER_IMAGE" != "ubuntu:24.04" ]]; then
-  echo "ERROR: expected PyTorchJob images to update to ubuntu:24.04, got master='$MASTER_IMAGE' worker='$WORKER_IMAGE'" >&2
+echo "Verifying PyTorchJob spec and live pods were updated in place"
+RECONCILE_OK=false
+for i in $(seq 1 30); do
+  MASTER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$SESSION_NAME" \
+    -o jsonpath='{.spec.pytorchReplicaSpecs.Master.template.spec.containers[0].image}')
+  WORKER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$SESSION_NAME" \
+    -o jsonpath='{.spec.pytorchReplicaSpecs.Worker.template.spec.containers[0].image}')
+  MASTER_POD_IMAGE=$(kubectl -n "$NAMESPACE" get pod "$MASTER_POD" \
+    -o jsonpath='{.spec.containers[?(@.name=="pytorch")].image}')
+  LIVE_WORKER_OK=true
+  for WPOD in $WORKER_PODS; do
+    WPOD_IMAGE=$(kubectl -n "$NAMESPACE" get pod "$WPOD" \
+      -o jsonpath='{.spec.containers[?(@.name=="pytorch")].image}')
+    if [[ "$WPOD_IMAGE" != "ubuntu:24.04" ]]; then
+      LIVE_WORKER_OK=false
+      break
+    fi
+  done
+  if [[ "$MASTER_IMAGE" == "ubuntu:24.04" && "$WORKER_IMAGE" == "ubuntu:24.04" && "$MASTER_POD_IMAGE" == "ubuntu:24.04" && "$LIVE_WORKER_OK" == "true" ]]; then
+    RECONCILE_OK=true
+    echo "Controller reconcile verified on attempt $i"
+    break
+  fi
+  echo "Reconcile poll attempt $i/30: live workload not updated yet"
+  sleep 2
+done
+if [[ "$RECONCILE_OK" != "true" ]]; then
+  echo "ERROR: expected PyTorchJob spec and live pods to update to ubuntu:24.04, got master='$MASTER_IMAGE' worker='$WORKER_IMAGE' masterPod='$MASTER_POD_IMAGE'" >&2
   exit 1
 fi
-echo "Controller reconcile verified"
+
+echo "Verifying session remains healthy after reconcile"
+RECONCILE_STATUS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
+if [[ "$RECONCILE_STATUS" != *"health: active"* ]]; then
+  echo "ERROR: expected sync health to remain active after controller reconcile" >&2
+  echo "$RECONCILE_STATUS" >&2
+  exit 1
+fi
 
 echo "Testing explicit okdev down"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes

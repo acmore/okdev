@@ -115,7 +115,13 @@ fi
 
 echo "Verifying remote shell and logs"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --setup-key --cmd 'test -f /workspace/hello.txt'
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" logs --follow=false --tail 10 >/dev/null
+LOG_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" logs --all --follow=false --tail 10)
+if [[ "$LOG_OUTPUT" != *"[okdev-sidecar]"* ]]; then
+  echo "ERROR: expected okdev logs --all to include sidecar output" >&2
+  echo "Got: $LOG_OUTPUT" >&2
+  exit 1
+fi
+echo "logs output verified"
 
 echo "Testing exec --cmd"
 EXEC_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'echo exec-ok')
