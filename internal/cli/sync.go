@@ -125,7 +125,67 @@ func newSyncCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&foreground, "foreground", false, "Run syncthing sync in the foreground for troubleshooting")
 	cmd.Flags().BoolVar(&reset, "reset", false, "Stop existing local sync state for this session and bootstrap again")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview sync actions without transferring files")
+
+	cmd.AddCommand(newSyncResetRemoteCmd(opts))
 	return cmd
+}
+
+func newSyncResetRemoteCmd(opts *Options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "reset-remote",
+		Short: "Clear the remote workspace and re-sync from local",
+		Long: `Stop active sync, clear the remote workspace contents (respecting
+preservePaths in the sync config), wipe the local Syncthing database,
+and re-establish sync via the two-phase initial sync protocol.
+
+The runtime resource and PVC are kept intact — only the managed
+synced workspace subtree is cleared.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cc, err := resolveCommandContext(opts, resolveSessionName)
+			if err != nil {
+				return err
+			}
+			if err := ensureExistingSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName, true); err != nil {
+				return err
+			}
+			pairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
+			if err != nil {
+				return fmt.Errorf("parse sync paths: %w", err)
+			}
+			if len(pairs) != 1 {
+				return fmt.Errorf("reset-remote requires exactly one sync path mapping, got %d", len(pairs))
+			}
+
+			target, err := resolveTargetRef(cmd.Context(), opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
+			if err != nil {
+				return err
+			}
+
+			fmt.Fprintln(cmd.OutOrStdout(), "Stopping active sync …")
+			if err := resetSyncthingSessionState(cc.sessionName); err != nil {
+				return fmt.Errorf("stop sync: %w", err)
+			}
+
+			fmt.Fprintln(cmd.OutOrStdout(), "Clearing remote workspace …")
+			ctx, cancel := context.WithTimeout(cmd.Context(), defaultContextTimeout)
+			defer cancel()
+			if err := resetRemoteWorkspace(ctx, cc.kube, cc.namespace, target.PodName, pairs[0].Remote, cc.cfg.Spec.Sync.PreservePaths); err != nil {
+				return fmt.Errorf("clear remote workspace: %w", err)
+			}
+
+			fmt.Fprintln(cmd.OutOrStdout(), "Re-establishing sync …")
+			logPath, started, err := startDetachedSyncthingSync(opts, "two-phase", cc.sessionName, cc.namespace, cc.cfgPath)
+			if err != nil {
+				return fmt.Errorf("restart sync: %w", err)
+			}
+			if started {
+				fmt.Fprintf(cmd.OutOrStdout(), "Sync re-established, logs: %s\n", logPath)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "Sync already running, logs: %s\n", logPath)
+			}
+			return nil
+		},
+	}
 }
 
 func reportSyncthingTargetReset(w io.Writer, sessionName string, reset bool) {

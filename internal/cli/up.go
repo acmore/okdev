@@ -33,6 +33,7 @@ type upOptions struct {
 	reconcile              bool
 	tmux                   bool
 	noTmux                 bool
+	resetWorkspace         bool
 	createMissingPVC       bool
 	missingPVCSize         string
 	missingPVCStorageClass string
@@ -70,6 +71,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 	var reconcile bool
 	var tmux bool
 	var noTmux bool
+	var resetWorkspace bool
 	var createMissingPVC bool
 	var missingPVCSize string
 	var missingPVCStorageClass string
@@ -95,6 +97,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 				reconcile:              reconcile,
 				tmux:                   tmux,
 				noTmux:                 noTmux,
+				resetWorkspace:         resetWorkspace,
 				createMissingPVC:       createMissingPVC,
 				missingPVCSize:         missingPVCSize,
 				missingPVCStorageClass: missingPVCStorageClass,
@@ -107,6 +110,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&reconcile, "reconcile", false, "Reapply controller-backed workloads or recreate pod workloads instead of reusing an existing session workload")
 	cmd.Flags().BoolVar(&tmux, "tmux", false, "Enable tmux persistent shell sessions in the dev container")
 	cmd.Flags().BoolVar(&noTmux, "no-tmux", false, "Disable tmux persistent shell sessions for this pod")
+	cmd.Flags().BoolVar(&resetWorkspace, "reset-workspace", false, "Clear remote workspace and re-sync from local before starting")
 	cmd.Flags().BoolVar(&createMissingPVC, "create-missing-pvc", false, "Create missing PVCs referenced by spec.volumes")
 	cmd.Flags().StringVar(&missingPVCSize, "missing-pvc-size", config.DefaultWorkspacePVCSize, "Size to use when creating a missing PVC")
 	cmd.Flags().StringVar(&missingPVCStorageClass, "missing-pvc-storage-class", "", "StorageClass to use when creating a missing PVC")
@@ -689,6 +693,20 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, err
 	if err := refreshSyncthingSessionProcesses(state.command.sessionName); err != nil {
 		return "", "", fmt.Errorf("refresh local syncthing session state: %w", err)
 	}
+
+	if state.flags.resetWorkspace {
+		state.ui.stepRun("sync", "resetting remote workspace")
+		if err := resetSyncthingSessionState(state.command.sessionName); err != nil {
+			return "", "", fmt.Errorf("reset sync state: %w", err)
+		}
+		if len(state.syncPairs) == 1 {
+			if err := resetRemoteWorkspace(state.ctx, state.command.kube, state.command.namespace, target.PodName, state.syncPairs[0].Remote, state.command.cfg.Spec.Sync.PreservePaths); err != nil {
+				return "", "", fmt.Errorf("clear remote workspace: %w", err)
+			}
+		}
+		state.ui.stepDone("sync", "remote workspace cleared")
+	}
+
 	state.ui.stepRun("sync", "starting")
 	logPath, started, err := startDetachedSyncthingSync(state.opts, upDefaultSyncMode, state.command.sessionName, state.command.namespace, state.command.cfgPath)
 	if err != nil {
@@ -1335,7 +1353,7 @@ func modeSymbol(mode string) string {
 		return "->"
 	case "down":
 		return "<-"
-	case "bi":
+	case "bi", "two-phase":
 		return "<->"
 	default:
 		return "->"

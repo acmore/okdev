@@ -948,3 +948,59 @@ func asString(v any) string {
 	s, _ := v.(string)
 	return s
 }
+
+// resetRemoteWorkspace clears the managed remote workspace subtree while
+// preserving selected paths. The algorithm:
+//  1. Move each preserve path to a temp location under the workspace root.
+//  2. Remove everything else under the workspace root.
+//  3. Move preserved paths back.
+func resetRemoteWorkspace(ctx context.Context, k interface {
+	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+}, namespace, pod, remotePath string, preservePaths []string) error {
+	remotePath = strings.TrimRight(remotePath, "/")
+	if remotePath == "" || remotePath == "/" {
+		return fmt.Errorf("refusing to reset root path")
+	}
+
+	esc := syncengine.ShellEscape
+	tmpDir := remotePath + "/.okdev-reset-preserve"
+
+	var script strings.Builder
+
+	// Move preserved paths to temp.
+	if len(preservePaths) > 0 {
+		fmt.Fprintf(&script, "mkdir -p %s\n", esc(tmpDir))
+		for _, p := range preservePaths {
+			p = strings.Trim(p, "/")
+			if p == "" || p == "." || p == ".." {
+				continue
+			}
+			src := remotePath + "/" + p
+			dst := tmpDir + "/" + p
+			// Create parent directory for nested paths.
+			dstParent := dst[:strings.LastIndex(dst, "/")]
+			fmt.Fprintf(&script, "if [ -e %s ]; then mkdir -p %s && mv %s %s; fi\n", esc(src), esc(dstParent), esc(src), esc(dst))
+		}
+	}
+
+	// Clear workspace contents (but not the directory itself).
+	fmt.Fprintf(&script, "find %s -mindepth 1 -maxdepth 1 ! -name .okdev-reset-preserve -exec rm -rf {} +\n", esc(remotePath))
+
+	// Restore preserved paths.
+	if len(preservePaths) > 0 {
+		for _, p := range preservePaths {
+			p = strings.Trim(p, "/")
+			if p == "" || p == "." || p == ".." {
+				continue
+			}
+			src := tmpDir + "/" + p
+			dst := remotePath + "/" + p
+			dstParent := dst[:strings.LastIndex(dst, "/")]
+			fmt.Fprintf(&script, "if [ -e %s ]; then mkdir -p %s && mv %s %s; fi\n", esc(src), esc(dstParent), esc(src), esc(dst))
+		}
+		fmt.Fprintf(&script, "rm -rf %s\n", esc(tmpDir))
+	}
+
+	_, err := execInSyncthingContainer(ctx, k, namespace, pod, script.String())
+	return err
+}

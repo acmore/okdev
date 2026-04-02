@@ -813,3 +813,66 @@ func TestSyncthingServeHomePatternEscapesRegexMeta(t *testing.T) {
 		t.Fatalf("syncthingServeHomePattern() = %q, want %q", got, want)
 	}
 }
+
+type fakeExecClient struct {
+	scripts []string
+}
+
+func (f *fakeExecClient) ExecShInContainer(_ context.Context, _, _, _, script string) ([]byte, error) {
+	f.scripts = append(f.scripts, script)
+	return nil, nil
+}
+
+func TestResetRemoteWorkspace(t *testing.T) {
+	client := &fakeExecClient{}
+	ctx := context.Background()
+
+	t.Run("basic reset without preserve", func(t *testing.T) {
+		client.scripts = nil
+		if err := resetRemoteWorkspace(ctx, client, "ns", "pod", "/workspace", nil); err != nil {
+			t.Fatal(err)
+		}
+		if len(client.scripts) != 1 {
+			t.Fatalf("expected 1 exec call, got %d", len(client.scripts))
+		}
+		script := client.scripts[0]
+		if !strings.Contains(script, "find") || !strings.Contains(script, "-mindepth 1 -maxdepth 1") {
+			t.Fatalf("expected find command in script, got: %s", script)
+		}
+		if strings.Contains(script, "mkdir -p") {
+			t.Fatalf("should not create preserve dir without preserve paths")
+		}
+	})
+
+	t.Run("reset with preserve paths", func(t *testing.T) {
+		client.scripts = nil
+		if err := resetRemoteWorkspace(ctx, client, "ns", "pod", "/workspace", []string{".venv", ".cache"}); err != nil {
+			t.Fatal(err)
+		}
+		script := client.scripts[0]
+		if !strings.Contains(script, ".okdev-reset-preserve") {
+			t.Fatalf("expected preserve dir reference, got: %s", script)
+		}
+		if !strings.Contains(script, ".venv") {
+			t.Fatalf("expected .venv in script, got: %s", script)
+		}
+		if !strings.Contains(script, ".cache") {
+			t.Fatalf("expected .cache in script, got: %s", script)
+		}
+		// Verify both move (preserve) and restore phases exist.
+		venvCount := strings.Count(script, ".venv")
+		if venvCount < 4 {
+			t.Fatalf("expected .venv referenced at least 4 times (preserve check+move, restore check+move), got %d in: %s", venvCount, script)
+		}
+		// Verify cleanup.
+		if !strings.Contains(script, "rm -rf") || !strings.Contains(script, ".okdev-reset-preserve") {
+			t.Fatalf("expected preserve dir cleanup, got: %s", script)
+		}
+	})
+
+	t.Run("rejects root path", func(t *testing.T) {
+		if err := resetRemoteWorkspace(ctx, client, "ns", "pod", "/", nil); err == nil {
+			t.Fatal("expected error for root path")
+		}
+	})
+}
