@@ -898,6 +898,51 @@ func TestConfigureSyncthingPeerCompressionAlways(t *testing.T) {
 	}
 }
 
+func TestConfigureSyncthingPeerUsesDynamicAddressWhenPeerAddrEmpty(t *testing.T) {
+	cfg := map[string]any{
+		"devices": []any{},
+		"folders": []any{},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/rest/config":
+			_ = json.NewEncoder(w).Encode(cfg)
+		case r.Method == http.MethodPut && r.URL.Path == "/rest/config":
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(body, &cfg); err != nil {
+				t.Fatal(err)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "REMOTE", "LOCAL", "", "okdev-test", "/tmp/remote", "receiveonly", 300, 0, false, false, false); err != nil {
+		t.Fatal(err)
+	}
+
+	devices, err := syncthingObjectArray(cfg, "devices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("expected 1 device, got %d", len(devices))
+	}
+	device, err := syncthingObjectMap(devices[0], "devices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addresses, ok := device["addresses"].([]any)
+	if !ok || len(addresses) != 1 || addresses[0] != "dynamic" {
+		t.Fatalf("expected dynamic device address, got %#v", device["addresses"])
+	}
+}
+
 func TestSyncthingServeHomePatternEscapesRegexMeta(t *testing.T) {
 	home := `/tmp/okdev/sync.[test]+(demo)?`
 	got := syncthingServeHomePattern(home)

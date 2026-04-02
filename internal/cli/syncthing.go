@@ -154,7 +154,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression); err != nil {
 			return fmt.Errorf("configure local syncthing: %w", err)
 		}
-		if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, localRemotePeerAddr, folderID, pair.Remote, folderTypeRemote, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression); err != nil {
+		if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, "", folderID, pair.Remote, folderTypeRemote, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression); err != nil {
 			return fmt.Errorf("configure remote syncthing: %w", err)
 		}
 	}
@@ -687,7 +687,7 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, peerAddr, folderID, localPath, "sendonly", sc.rescanInterval, sc.watcherDelay, true, sc.relays, sc.compression); err != nil {
 		return fmt.Errorf("configure local (phase 1): %w", err)
 	}
-	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, peerAddr, folderID, remotePath, "receiveonly", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
+	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, "", folderID, remotePath, "receiveonly", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
 		return fmt.Errorf("configure remote (phase 1): %w", err)
 	}
 
@@ -757,7 +757,7 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, peerAddr, folderID, localPath, "sendreceive", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
 		return fmt.Errorf("configure local (phase 2): %w", err)
 	}
-	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, peerAddr, folderID, remotePath, "sendreceive", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
+	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, "", folderID, remotePath, "sendreceive", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
 		return fmt.Errorf("configure remote (phase 2): %w", err)
 	}
 
@@ -822,6 +822,7 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 	if err != nil {
 		return err
 	}
+	addresses := syncthingDeviceAddresses(peerAddr)
 	foundDevice := false
 	for i, d := range devices {
 		m, err := syncthingObjectMap(d, "devices")
@@ -829,7 +830,7 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 			return err
 		}
 		if asString(m["deviceID"]) == peerID {
-			m["addresses"] = []any{peerAddr}
+			m["addresses"] = addresses
 			m["compression"] = compressionMode
 			devices[i] = m
 			foundDevice = true
@@ -840,7 +841,7 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 		devices = append(devices, map[string]any{
 			"deviceID":    peerID,
 			"name":        "okdev-peer",
-			"addresses":   []any{peerAddr},
+			"addresses":   addresses,
 			"compression": compressionMode,
 		})
 	}
@@ -891,6 +892,13 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 		return err
 	}
 	return nil
+}
+
+func syncthingDeviceAddresses(peerAddr string) []any {
+	if strings.TrimSpace(peerAddr) == "" {
+		return []any{"dynamic"}
+	}
+	return []any{peerAddr}
 }
 
 func applyManagedSyncthingFolderDefaults(folder map[string]any, rescanIntervalSeconds, watcherDelaySeconds int, ignoreDelete bool) {
