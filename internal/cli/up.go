@@ -25,7 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-const upDefaultSyncMode = "bi"
+const upDefaultSyncMode = "two-phase"
 
 type upOptions struct {
 	waitTimeout            time.Duration

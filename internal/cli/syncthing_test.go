@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -240,7 +242,7 @@ func TestApplyManagedSyncthingFolderDefaults(t *testing.T) {
 		"id": "okdev-test",
 	}
 
-	applyManagedSyncthingFolderDefaults(folder, 300, 0)
+	applyManagedSyncthingFolderDefaults(folder, 300, 0, false)
 
 	if got := folder["fsWatcherEnabled"]; got != true {
 		t.Fatalf("expected fsWatcherEnabled=true, got %#v", got)
@@ -254,6 +256,9 @@ func TestApplyManagedSyncthingFolderDefaults(t *testing.T) {
 	if got := folder["maxConflicts"]; got != 0 {
 		t.Fatalf("expected maxConflicts=0, got %#v", got)
 	}
+	if got := folder["ignoreDelete"]; got != false {
+		t.Fatalf("expected ignoreDelete=false, got %#v", got)
+	}
 }
 
 func TestApplyManagedSyncthingFolderDefaultsCustomWatcherDelay(t *testing.T) {
@@ -261,10 +266,175 @@ func TestApplyManagedSyncthingFolderDefaultsCustomWatcherDelay(t *testing.T) {
 		"id": "okdev-test",
 	}
 
-	applyManagedSyncthingFolderDefaults(folder, 300, 5)
+	applyManagedSyncthingFolderDefaults(folder, 300, 5, false)
 
 	if got := folder["fsWatcherDelayS"]; got != 5 {
 		t.Fatalf("expected fsWatcherDelayS=5, got %#v", got)
+	}
+}
+
+func TestApplyManagedSyncthingFolderDefaultsIgnoreDelete(t *testing.T) {
+	folder := map[string]any{
+		"id": "okdev-test",
+	}
+
+	applyManagedSyncthingFolderDefaults(folder, 300, 0, true)
+
+	if got := folder["ignoreDelete"]; got != true {
+		t.Fatalf("expected ignoreDelete=true, got %#v", got)
+	}
+}
+
+func TestSyncthingOverrideFolder(t *testing.T) {
+	var called bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/rest/db/override") {
+			if r.URL.Query().Get("folder") != "okdev-test" {
+				t.Errorf("expected folder=okdev-test, got %s", r.URL.Query().Get("folder"))
+			}
+			called = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	if err := syncthingOverrideFolder(context.Background(), srv.URL, "k", "okdev-test"); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("expected /rest/db/override to be called")
+	}
+}
+
+func TestSyncthingRestart(t *testing.T) {
+	var called bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/rest/system/restart" {
+			called = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	if err := syncthingRestart(context.Background(), srv.URL, "k"); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("expected /rest/system/restart to be called")
+	}
+}
+
+func TestRunTwoPhaseInitialSync(t *testing.T) {
+	// Track API calls to verify the two-phase protocol.
+	var (
+		mu             sync.Mutex
+		configPuts     int
+		overrideCalls  int
+		restartCalls   int
+		needBytesValue int64 = 1024 // starts non-zero, switches to 0 after override
+	)
+
+	localCfg := map[string]any{
+		"devices": []any{},
+		"folders": []any{},
+	}
+	remoteCfg := map[string]any{
+		"devices": []any{},
+		"folders": []any{},
+	}
+
+	handler := func(cfg *map[string]any) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			defer mu.Unlock()
+
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/config":
+				b, _ := json.Marshal(*cfg)
+				w.Write(b)
+			case r.Method == http.MethodPut && r.URL.Path == "/rest/config":
+				body, _ := io.ReadAll(r.Body)
+				var newCfg map[string]any
+				json.Unmarshal(body, &newCfg)
+				*cfg = newCfg
+				configPuts++
+				w.WriteHeader(http.StatusOK)
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/system/status":
+				w.Write([]byte(`{"myID":"DEVICE-ID"}`))
+			case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/rest/db/override"):
+				overrideCalls++
+				// Simulate: after override, remote becomes in sync.
+				needBytesValue = 0
+				w.WriteHeader(http.StatusOK)
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/db/status":
+				fmt.Fprintf(w, `{"needBytes":%d}`, needBytesValue)
+			case r.Method == http.MethodPost && r.URL.Path == "/rest/system/restart":
+				restartCalls++
+				w.WriteHeader(http.StatusOK)
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}
+	}
+
+	localSrv := httptest.NewServer(handler(&localCfg))
+	defer localSrv.Close()
+	remoteSrv := httptest.NewServer(handler(&remoteCfg))
+	defer remoteSrv.Close()
+
+	var buf bytes.Buffer
+	ctx := context.Background()
+	sc := syncthingSyncConfig{
+		rescanInterval: 300,
+		watcherDelay:   1,
+		relays:         false,
+		compression:    false,
+	}
+
+	err := runTwoPhaseInitialSync(ctx, &buf, localSrv.URL, "k", "LOCAL", remoteSrv.URL, "k", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "/tmp/remote", sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify override was called at least once.
+	if overrideCalls == 0 {
+		t.Fatal("expected /rest/db/override to be called at least once")
+	}
+
+	// Verify both instances were restarted for phase 2.
+	if restartCalls != 2 {
+		t.Fatalf("expected 2 restart calls (local+remote), got %d", restartCalls)
+	}
+
+	// Verify config was written multiple times (phase 1 + phase 2 for both sides).
+	if configPuts < 4 {
+		t.Fatalf("expected at least 4 config puts, got %d", configPuts)
+	}
+
+	// Verify final local folder type is sendreceive.
+	folders, _ := syncthingObjectArray(localCfg, "folders")
+	if len(folders) == 0 {
+		t.Fatal("expected at least one folder in local config")
+	}
+	fm, _ := syncthingObjectMap(folders[0], "folders")
+	if got := asString(fm["type"]); got != "sendreceive" {
+		t.Fatalf("expected local folder type sendreceive after phase 2, got %s", got)
+	}
+	if got, ok := fm["ignoreDelete"].(bool); !ok || got {
+		t.Fatalf("expected ignoreDelete=false after phase 2, got %#v", fm["ignoreDelete"])
+	}
+
+	// Verify output mentions both phases.
+	out := buf.String()
+	if !strings.Contains(out, "Phase 1") {
+		t.Fatal("expected output to mention Phase 1")
+	}
+	if !strings.Contains(out, "Phase 2") {
+		t.Fatal("expected output to mention Phase 2")
 	}
 }
 
@@ -459,10 +629,10 @@ func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, 0, false, false); err != nil {
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, 0, false, false, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22001", "okdev-test", "/tmp/updated", "sendonly", 120, 0, false, false); err != nil {
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22001", "okdev-test", "/tmp/updated", "sendonly", 120, 0, false, false, false); err != nil {
 		t.Fatal(err)
 	}
 	if len(putBodies) != 2 {
@@ -516,6 +686,9 @@ func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	}
 	if got := folder["maxConflicts"]; got != float64(0) {
 		t.Fatalf("expected maxConflicts=0, got %#v", got)
+	}
+	if got := folder["ignoreDelete"]; got != false {
+		t.Fatalf("expected ignoreDelete=false, got %#v", got)
 	}
 	options, err := syncthingObjectMap(cfg["options"], "options")
 	if err != nil {
@@ -612,7 +785,7 @@ func TestConfigureSyncthingPeerCompressionAlways(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, 0, false, true); err != nil {
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, 0, false, false, true); err != nil {
 		t.Fatal(err)
 	}
 

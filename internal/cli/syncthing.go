@@ -136,14 +136,27 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		return err
 	}
 
-	folderTypeLocal, folderTypeRemote := folderTypesForMode(mode)
 	folderID := "okdev-" + sessionName
-
-	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds, cfg.Spec.Sync.Syncthing.WatcherDelaySeconds, cfg.Spec.Sync.Syncthing.RelaysEnabled, cfg.Spec.Sync.Syncthing.Compression); err != nil {
-		return fmt.Errorf("configure local syncthing: %w", err)
+	syncCfg := syncthingSyncConfig{
+		rescanInterval: cfg.Spec.Sync.Syncthing.RescanIntervalSeconds,
+		watcherDelay:   cfg.Spec.Sync.Syncthing.WatcherDelaySeconds,
+		relays:         cfg.Spec.Sync.Syncthing.RelaysEnabled,
+		compression:    cfg.Spec.Sync.Syncthing.Compression,
 	}
-	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, localRemotePeerAddr, folderID, pair.Remote, folderTypeRemote, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds, cfg.Spec.Sync.Syncthing.WatcherDelaySeconds, cfg.Spec.Sync.Syncthing.RelaysEnabled, cfg.Spec.Sync.Syncthing.Compression); err != nil {
-		return fmt.Errorf("configure remote syncthing: %w", err)
+
+	if mode == "two-phase" {
+		if err := runTwoPhaseInitialSync(ctx, cmd.OutOrStdout(), localBase, localKey, localID, remoteBase, remoteKey, remoteID, localRemotePeerAddr, folderID, absLocal, pair.Remote, syncCfg); err != nil {
+			return fmt.Errorf("two-phase initial sync: %w", err)
+		}
+		mode = "bi"
+	} else {
+		folderTypeLocal, folderTypeRemote := folderTypesForMode(mode)
+		if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression); err != nil {
+			return fmt.Errorf("configure local syncthing: %w", err)
+		}
+		if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, localRemotePeerAddr, folderID, pair.Remote, folderTypeRemote, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression); err != nil {
+			return fmt.Errorf("configure remote syncthing: %w", err)
+		}
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync active (%s) for session %s\n", mode, sessionName)
@@ -627,6 +640,105 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 	}
 }
 
+// syncthingSyncConfig bundles the user-configurable knobs passed through to
+// configureSyncthingPeer so call sites stay compact.
+type syncthingSyncConfig struct {
+	rescanInterval int
+	watcherDelay   int
+	relays         bool
+	compression    bool
+}
+
+// runTwoPhaseInitialSync implements the Okteto-style two-phase sync protocol:
+//
+//  1. Configure local as sendonly with ignoreDelete=true, remote as receiveonly.
+//     Call POST /rest/db/override on every progress tick to force local state
+//     onto the remote.
+//  2. Once the remote reports needBytes==0, reconfigure both sides to
+//     sendreceive with ignoreDelete=false and restart Syncthing to apply.
+func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, localKey, localID, remoteBase, remoteKey, remoteID, peerAddr, folderID, localPath, remotePath string, sc syncthingSyncConfig) error {
+	// Phase 1: sendonly + ignoreDelete on local, receiveonly on remote.
+	fmt.Fprintln(out, "Phase 1: local-authoritative initial sync …")
+	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, peerAddr, folderID, localPath, "sendonly", sc.rescanInterval, sc.watcherDelay, true, sc.relays, sc.compression); err != nil {
+		return fmt.Errorf("configure local (phase 1): %w", err)
+	}
+	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, peerAddr, folderID, remotePath, "receiveonly", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
+		return fmt.Errorf("configure remote (phase 1): %w", err)
+	}
+
+	// Poll until remote is in sync, calling override on every tick.
+	deadline := time.Now().Add(initialSyncTimeout)
+	ticker := time.NewTicker(syncthingProgressInterval)
+	defer ticker.Stop()
+
+	for {
+		// Force local state onto remote.
+		if err := syncthingOverrideFolder(ctx, localBase, localKey, folderID); err != nil {
+			slog.Debug("syncthing override failed", "error", err)
+		}
+
+		need, err := syncthingFolderNeedBytes(ctx, remoteBase, remoteKey, folderID)
+		if err != nil {
+			slog.Debug("syncthing initial sync poll failed", "error", err)
+		} else {
+			fmt.Fprintf(out, "  initial sync: remote needBytes=%d\n", need)
+			if need == 0 {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("initial sync did not complete within %s", initialSyncTimeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+
+	// Phase 2: switch to sendreceive on both sides.
+	fmt.Fprintln(out, "Phase 2: switching to bidirectional sync …")
+	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, peerAddr, folderID, localPath, "sendreceive", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
+		return fmt.Errorf("configure local (phase 2): %w", err)
+	}
+	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, peerAddr, folderID, remotePath, "sendreceive", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
+		return fmt.Errorf("configure remote (phase 2): %w", err)
+	}
+
+	// Restart both Syncthing instances to cleanly apply the config change.
+	if err := syncthingRestart(ctx, localBase, localKey); err != nil {
+		return fmt.Errorf("restart local syncthing: %w", err)
+	}
+	if err := syncthingRestart(ctx, remoteBase, remoteKey); err != nil {
+		return fmt.Errorf("restart remote syncthing: %w", err)
+	}
+
+	// Wait for both APIs to come back after restart.
+	if err := waitSyncthingAPI(ctx, localBase, localKey, syncthingAPIReadyTimeout); err != nil {
+		return fmt.Errorf("local syncthing not ready after restart: %w", err)
+	}
+	if err := waitSyncthingAPI(ctx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
+		return fmt.Errorf("remote syncthing not ready after restart: %w", err)
+	}
+
+	fmt.Fprintln(out, "Two-phase initial sync complete, now in bidirectional mode.")
+	return nil
+}
+
+// syncthingOverrideFolder calls POST /rest/db/override to force the local
+// index as canonical for the given folder, causing diverged remote files to
+// be overwritten.
+func syncthingOverrideFolder(ctx context.Context, base, key, folderID string) error {
+	path := fmt.Sprintf("/rest/db/override?folder=%s", url.QueryEscape(folderID))
+	return syncthingPost(ctx, base, key, path, nil)
+}
+
+// syncthingRestart calls POST /rest/system/restart to restart a Syncthing
+// instance, which is required to apply folder type changes.
+func syncthingRestart(ctx context.Context, base, key string) error {
+	return syncthingPost(ctx, base, key, "/rest/system/restart", nil)
+}
+
 func folderTypesForMode(mode string) (local, remote string) {
 	switch mode {
 	case "up":
@@ -638,7 +750,7 @@ func folderTypesForMode(mode string) (local, remote string) {
 	}
 }
 
-func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peerAddr, folderID, folderPath, folderType string, rescanIntervalSeconds, watcherDelaySeconds int, relaysEnabled, compression bool) error {
+func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peerAddr, folderID, folderPath, folderType string, rescanIntervalSeconds, watcherDelaySeconds int, ignoreDelete, relaysEnabled, compression bool) error {
 	cfg, err := syncthingGetConfig(ctx, base, key)
 	if err != nil {
 		return err
@@ -696,7 +808,7 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 				map[string]any{"deviceID": selfID},
 				map[string]any{"deviceID": peerID},
 			}
-			applyManagedSyncthingFolderDefaults(fm, rescanIntervalSeconds, watcherDelaySeconds)
+			applyManagedSyncthingFolderDefaults(fm, rescanIntervalSeconds, watcherDelaySeconds, ignoreDelete)
 			folders[i] = fm
 			foundFolder = true
 			break
@@ -714,7 +826,7 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 				map[string]any{"deviceID": peerID},
 			},
 		}
-		applyManagedSyncthingFolderDefaults(folder, rescanIntervalSeconds, watcherDelaySeconds)
+		applyManagedSyncthingFolderDefaults(folder, rescanIntervalSeconds, watcherDelaySeconds, ignoreDelete)
 		folders = append(folders, folder)
 	}
 	cfg["folders"] = folders
@@ -725,7 +837,7 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 	return nil
 }
 
-func applyManagedSyncthingFolderDefaults(folder map[string]any, rescanIntervalSeconds, watcherDelaySeconds int) {
+func applyManagedSyncthingFolderDefaults(folder map[string]any, rescanIntervalSeconds, watcherDelaySeconds int, ignoreDelete bool) {
 	delay := watcherDelaySeconds
 	if delay <= 0 {
 		delay = syncthingWatcherDelayS
@@ -734,6 +846,7 @@ func applyManagedSyncthingFolderDefaults(folder map[string]any, rescanIntervalSe
 	folder["fsWatcherDelayS"] = delay
 	folder["rescanIntervalS"] = rescanIntervalSeconds
 	folder["maxConflicts"] = 0
+	folder["ignoreDelete"] = ignoreDelete
 }
 
 func applyManagedSyncthingGlobalDefaults(cfg map[string]any, relaysEnabled bool) {
