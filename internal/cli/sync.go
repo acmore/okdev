@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -273,7 +274,7 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 		if closeErr := logFile.Close(); closeErr != nil {
 			slog.Debug("failed to close log file after early exit", "path", logPath, "error", closeErr)
 		}
-		return "", false, fmt.Errorf("%w; check logs: %s", err, logPath)
+		return "", false, formatDetachedSyncthingStartupError(sessionName, logPath, err)
 	}
 	if releaseErr := cmd.Process.Release(); releaseErr != nil {
 		slog.Debug("failed to release detached process", "pid", cmd.Process.Pid, "error", releaseErr)
@@ -305,6 +306,41 @@ func waitForDetachedSyncthingStart(pid int, readyPath string, maxWait time.Durat
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+func formatDetachedSyncthingStartupError(sessionName, backgroundLogPath string, startupErr error) error {
+	msg := fmt.Sprintf("%v; check logs: %s", startupErr, backgroundLogPath)
+	if excerpt := readFileTail(backgroundLogPath, 8192); excerpt != "" {
+		msg += fmt.Sprintf("\n--- background sync log tail ---\n%s", excerpt)
+	}
+	if localLogPath, err := syncthingLocalLogPathForSession(sessionName); err == nil {
+		if excerpt := readFileTail(localLogPath, 8192); excerpt != "" {
+			msg += fmt.Sprintf("\n--- local syncthing log tail ---\n%s", excerpt)
+		}
+	}
+	return errors.New(msg)
+}
+
+func syncthingLocalLogPathForSession(sessionName string) (string, error) {
+	home, err := localSyncthingHome(sessionName)
+	if err != nil {
+		return "", err
+	}
+	return localSyncthingLogPath(home)
+}
+
+func readFileTail(path string, maxBytes int) string {
+	if strings.TrimSpace(path) == "" || maxBytes <= 0 {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	if len(data) > maxBytes {
+		data = data[len(data)-maxBytes:]
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func syncthingPIDPath(sessionName string) (string, error) {

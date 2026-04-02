@@ -27,8 +27,18 @@ export HOME="$HOME_DIR"
 export KUBECONFIG="$KUBECONFIG_PATH"
 
 cleanup() {
+  status=$?
+  if [[ "$status" -ne 0 ]]; then
+    echo "--- local okdev logs ---"
+    ls -R "$HOME_DIR/.okdev" 2>/dev/null || true
+    echo "--- background sync log ---"
+    cat "$HOME_DIR/.okdev/logs/syncthing-${SESSION_NAME}.log" 2>/dev/null || true
+    echo "--- local syncthing log ---"
+    cat "$HOME_DIR/.okdev/syncthing/${SESSION_NAME}/local.log" 2>/dev/null || true
+  fi
   "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes >/dev/null 2>&1 || true
   kubectl -n "$NAMESPACE" delete pvc "$PVC_NAME" >/dev/null 2>&1 || true
+  return "$status"
 }
 trap cleanup EXIT
 

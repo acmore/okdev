@@ -28,9 +28,19 @@ export HOME="$HOME_DIR"
 export KUBECONFIG="$KUBECONFIG_PATH"
 
 cleanup() {
+  status=$?
+  if [[ "$status" -ne 0 ]]; then
+    echo "--- local okdev logs ---"
+    ls -R "$HOME_DIR/.okdev" 2>/dev/null || true
+    echo "--- background sync log ---"
+    cat "$HOME_DIR/.okdev/logs/syncthing-${SESSION_NAME}.log" 2>/dev/null || true
+    echo "--- local syncthing log ---"
+    cat "$HOME_DIR/.okdev/syncthing/${SESSION_NAME}/local.log" 2>/dev/null || true
+  fi
   if [[ -n "$CFG_PATH" && -f "$CFG_PATH" ]]; then
     "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes >/dev/null 2>&1 || true
   fi
+  return "$status"
 }
 trap cleanup EXIT
 
