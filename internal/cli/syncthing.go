@@ -100,7 +100,8 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	if err != nil {
 		return err
 	}
-	if err := startLocalSyncthing(localBinary, localHome, localGUIAddr); err != nil {
+	localPID, err := startLocalSyncthing(localBinary, localHome, localGUIAddr)
+	if err != nil {
 		return err
 	}
 
@@ -183,7 +184,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
 	<-sigCh
-	if err := stopLocalSyncthing(localBinary, localHome); err != nil {
+	if err := stopOwnedLocalSyncthing(localHome, localPID); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to stop local syncthing: %v\n", err)
 	}
 	return nil
@@ -273,28 +274,28 @@ func localSyncthingHome(session string) (string, error) {
 	return p, nil
 }
 
-func startLocalSyncthing(binary, home, localGUIAddr string) error {
+func startLocalSyncthing(binary, home, localGUIAddr string) (int, error) {
 	genOut, genErr := exec.Command(binary, "generate", "--home", home).CombinedOutput()
 	if genErr != nil {
 		legacyOut, legacyErr := exec.Command(binary, "-home", home, "generate").CombinedOutput()
 		if legacyErr != nil && !strings.Contains(string(genOut), "already exists") && !strings.Contains(string(legacyOut), "already exists") {
-			return fmt.Errorf("generate local syncthing config: %w (%s)", genErr, strings.TrimSpace(string(genOut)))
+			return 0, fmt.Errorf("generate local syncthing config: %w (%s)", genErr, strings.TrimSpace(string(genOut)))
 		}
 	}
 
 	if err := stopLocalSyncthingForHome(home); err != nil {
-		return err
+		return 0, err
 	}
 	if err := writeLocalSyncthingEndpoint(home, "http://"+localGUIAddr); err != nil {
-		return fmt.Errorf("write local syncthing endpoint: %w", err)
+		return 0, fmt.Errorf("write local syncthing endpoint: %w", err)
 	}
 	logPath, err := localSyncthingLogPath(home)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	logFile, err := openLocalSyncthingLog(logPath)
 	if err != nil {
-		return fmt.Errorf("open local syncthing log: %w", err)
+		return 0, fmt.Errorf("open local syncthing log: %w", err)
 	}
 	cmd := newLocalSyncthingServeCommand(binary, home, localGUIAddr)
 	cmd.Stdout = logFile
@@ -305,7 +306,7 @@ func startLocalSyncthing(binary, home, localGUIAddr string) error {
 		if closeErr := logFile.Close(); closeErr != nil {
 			slog.Debug("failed to close syncthing log file after start failure", "error", closeErr)
 		}
-		return fmt.Errorf("start local syncthing: %w", err)
+		return 0, fmt.Errorf("start local syncthing: %w", err)
 	}
 	if err := writeLocalSyncthingPID(home, cmd.Process.Pid); err != nil {
 		if killErr := cmd.Process.Kill(); killErr != nil {
@@ -314,7 +315,7 @@ func startLocalSyncthing(binary, home, localGUIAddr string) error {
 		if closeErr := logFile.Close(); closeErr != nil {
 			slog.Debug("failed to close syncthing log file after PID write failure", "error", closeErr)
 		}
-		return fmt.Errorf("write local syncthing pid: %w", err)
+		return 0, fmt.Errorf("write local syncthing pid: %w", err)
 	}
 	if releaseErr := cmd.Process.Release(); releaseErr != nil {
 		slog.Debug("failed to release syncthing process", "error", releaseErr)
@@ -322,7 +323,7 @@ func startLocalSyncthing(binary, home, localGUIAddr string) error {
 	if closeErr := logFile.Close(); closeErr != nil {
 		slog.Debug("failed to close syncthing log file", "error", closeErr)
 	}
-	return nil
+	return cmd.Process.Pid, nil
 }
 
 func newLocalSyncthingServeCommand(binary, home, localGUIAddr string) *exec.Cmd {
@@ -358,6 +359,27 @@ func allocateLocalSyncthingAPIEndpoint() (guiAddr, apiBase string, err error) {
 func stopLocalSyncthing(binary, home string) error {
 	if err := stopLocalSyncthingForHome(home); err != nil {
 		return fmt.Errorf("stop local syncthing: %w", err)
+	}
+	return nil
+}
+
+func stopOwnedLocalSyncthing(home string, pid int) error {
+	if pid <= 0 {
+		return nil
+	}
+	pidPath, err := localSyncthingPIDPath(home)
+	if err != nil {
+		return err
+	}
+	currentPID, ok := readSyncthingPID(pidPath)
+	if !ok || currentPID != pid {
+		return nil
+	}
+	if err := stopRecordedLocalSyncthing(pid); err != nil {
+		return err
+	}
+	if rmErr := os.Remove(pidPath); rmErr != nil && !os.IsNotExist(rmErr) {
+		return rmErr
 	}
 	return nil
 }
