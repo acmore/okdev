@@ -25,8 +25,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-const upDefaultSyncMode = "two-phase"
-
 type upOptions struct {
 	waitTimeout            time.Duration
 	dryRun                 bool
@@ -821,18 +819,26 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, err
 		return summary, modeSym, nil
 	}
 	state.ui.stepRun("sync", "reconciling state")
+	targetReset := false
 	if reset, err := ensureSyncthingTargetSessionState(state.ctx, state.command.kube, state.command.namespace, state.command.sessionName, target.PodName); err != nil {
 		return "", "", fmt.Errorf("reconcile local syncthing session state: %w", err)
 	} else if reset {
+		targetReset = true
 		state.ui.stepDone("sync state", "reset after target pod recreation")
 	}
 	configHash := ""
+	hasConfigState := false
 	if len(state.syncPairs) == 1 {
 		localPath, err := filepath.Abs(state.syncPairs[0].Local)
 		if err != nil {
 			return "", "", fmt.Errorf("resolve sync path: %w", err)
 		}
 		configHash = syncthingSessionConfigHash(state.command.cfg, localPath, state.syncPairs[0].Remote)
+		stored, err := loadSyncthingTargetSessionState(state.command.sessionName)
+		if err != nil {
+			return "", "", fmt.Errorf("load syncthing config state: %w", err)
+		}
+		hasConfigState = strings.TrimSpace(stored.ConfigHash) != ""
 	}
 	configChanged := false
 	if configHash != "" {
@@ -842,7 +848,9 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, err
 		}
 		configChanged = changed
 	}
-	restartRequired := state.flags.resetWorkspace || configChanged || !syncthingSessionActive(state.command.sessionName)
+	active := syncthingSessionActive(state.command.sessionName)
+	restartRequired := state.flags.resetWorkspace || configChanged || !active
+	startMode := syncStartMode(state.flags.resetWorkspace, targetReset, hasConfigState, configChanged, active)
 	if restartRequired {
 		if err := refreshSyncthingSessionProcesses(state.command.sessionName); err != nil {
 			return "", "", fmt.Errorf("refresh local syncthing session state: %w", err)
@@ -864,7 +872,7 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, err
 	}
 
 	if !restartRequired {
-		modeSym = modeSymbol(upDefaultSyncMode)
+		modeSym = modeSymbol(startMode)
 		syncPathSummary := syncPairsSummary(state.syncPairs, modeSym)
 		summary = "already active (" + modeSym + ")"
 		state.ui.stepDone("sync", fmt.Sprintf("already active (%s), %s", modeSym, syncPathSummary))
@@ -872,11 +880,11 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, err
 	}
 
 	state.ui.stepRun("sync", "starting")
-	logPath, started, err := startDetachedSyncthingSync(state.opts, upDefaultSyncMode, state.command.sessionName, state.command.namespace, state.command.cfgPath)
+	logPath, started, err := startDetachedSyncthingSync(state.opts, startMode, state.command.sessionName, state.command.namespace, state.command.cfgPath)
 	if err != nil {
 		return "", "", fmt.Errorf("start syncthing background sync: %w", err)
 	}
-	modeSym = modeSymbol(upDefaultSyncMode)
+	modeSym = modeSymbol(startMode)
 	syncPathSummary := syncPairsSummary(state.syncPairs, modeSym)
 	if started {
 		summary = "active (" + modeSym + ")"
@@ -1529,6 +1537,23 @@ func modeSymbol(mode string) string {
 		return "<->"
 	default:
 		return "->"
+	}
+}
+
+func syncStartMode(resetWorkspace, targetReset, hasConfigState, configChanged, active bool) string {
+	switch {
+	case resetWorkspace:
+		return "two-phase"
+	case targetReset:
+		return "two-phase"
+	case !hasConfigState:
+		return "two-phase"
+	case configChanged:
+		return "bi"
+	case !active:
+		return "bi"
+	default:
+		return "bi"
 	}
 }
 
