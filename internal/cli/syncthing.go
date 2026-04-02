@@ -168,6 +168,9 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	fmt.Fprintf(cmd.OutOrStdout(), "Remote folder: %s\n", pair.Remote)
 	fmt.Fprintf(cmd.OutOrStdout(), "Local binary: %s\n", localBinary)
 	fmt.Fprintln(cmd.OutOrStdout(), "Press Ctrl+C to stop sync tunnel and local syncthing.")
+	if err := markSyncthingReady(sessionName); err != nil {
+		return fmt.Errorf("mark syncthing ready: %w", err)
+	}
 	progressCtx, stopProgress := context.WithCancel(context.Background())
 	defer stopProgress()
 	go runSyncthingProgressReporter(progressCtx, cmd.OutOrStdout(), localBase, localKey, remoteBase, remoteKey, folderID, localID, remoteID)
@@ -183,6 +186,14 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to stop local syncthing: %v\n", err)
 	}
 	return nil
+}
+
+func markSyncthingReady(sessionName string) error {
+	path, err := syncthingReadyPath(sessionName)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(time.Now().UTC().Format(time.RFC3339Nano)+"\n"), 0o644)
 }
 
 func writeSTIgnore(localPath string, excludes []string) error {

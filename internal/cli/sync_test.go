@@ -257,7 +257,7 @@ func TestReportSyncthingTargetReset(t *testing.T) {
 }
 
 func TestWaitForDetachedSyncthingStartRejectsDeadProcess(t *testing.T) {
-	if err := waitForDetachedSyncthingStart(999999, 10*time.Millisecond); err == nil {
+	if err := waitForDetachedSyncthingStart(999999, "", 10*time.Millisecond); err == nil {
 		t.Fatal("expected dead process to be rejected")
 	}
 }

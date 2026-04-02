@@ -213,6 +213,10 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 	if err != nil {
 		return "", false, err
 	}
+	readyPath, err := syncthingReadyPath(sessionName)
+	if err != nil {
+		return "", false, err
+	}
 	if pid, ok := readSyncthingPID(pidPath); ok {
 		if processAlive(pid) && processLooksLikeSyncthingSync(pid) {
 			return logPath, false, nil
@@ -220,6 +224,9 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 		if rmErr := os.Remove(pidPath); rmErr != nil {
 			slog.Debug("failed to remove stale PID file", "path", pidPath, "error", rmErr)
 		}
+	}
+	if err := os.Remove(readyPath); err != nil && !os.IsNotExist(err) {
+		return "", false, err
 	}
 	logFile, err := logx.OpenRotatingLog(logPath)
 	if err != nil {
@@ -262,7 +269,7 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 		}
 		return "", false, err
 	}
-	if err := waitForDetachedSyncthingStart(cmd.Process.Pid, syncthingDetachedStartupDelay); err != nil {
+	if err := waitForDetachedSyncthingStart(cmd.Process.Pid, readyPath, syncthingDetachedStartupTimeout(mode)); err != nil {
 		if closeErr := logFile.Close(); closeErr != nil {
 			slog.Debug("failed to close log file after early exit", "path", logPath, "error", closeErr)
 		}
@@ -277,13 +284,20 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 	return logPath, true, nil
 }
 
-func waitForDetachedSyncthingStart(pid int, maxWait time.Duration) error {
+func syncthingDetachedStartupTimeout(mode string) time.Duration {
+	if mode == "two-phase" {
+		return initialSyncTimeout
+	}
+	return syncthingBootstrapTimeout
+}
+
+func waitForDetachedSyncthingStart(pid int, readyPath string, maxWait time.Duration) error {
 	deadline := time.Now().Add(maxWait)
 	for {
 		if !processAlive(pid) {
 			return fmt.Errorf("syncthing background process exited early")
 		}
-		if processLooksLikeSyncthingSync(pid) {
+		if processLooksLikeSyncthingSync(pid) && syncthingReady(readyPath) {
 			return nil
 		}
 		if time.Now().After(deadline) {
@@ -303,6 +317,26 @@ func syncthingPIDPath(sessionName string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "sync.pid"), nil
+}
+
+func syncthingReadyPath(sessionName string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".okdev", "syncthing", sessionName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "sync.ready"), nil
+}
+
+func syncthingReady(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func stopDetachedSyncthingSync(sessionName string) error {
