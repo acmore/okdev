@@ -411,8 +411,9 @@ func TestRunTwoPhaseInitialSync(t *testing.T) {
 	}
 
 	// Verify config was written multiple times (phase 1 + phase 2 for both sides).
-	if configPuts < 4 {
-		t.Fatalf("expected at least 4 config puts, got %d", configPuts)
+	// Phase 1 (2) + phase 1b (1) + phase 2 (2) = 5 config puts minimum.
+	if configPuts < 5 {
+		t.Fatalf("expected at least 5 config puts (including phase 1b deletion propagation), got %d", configPuts)
 	}
 
 	// Verify final local folder type is sendreceive.
@@ -428,12 +429,15 @@ func TestRunTwoPhaseInitialSync(t *testing.T) {
 		t.Fatalf("expected ignoreDelete=false after phase 2, got %#v", fm["ignoreDelete"])
 	}
 
-	// Verify output mentions both phases.
+	// Verify output mentions all phases.
 	out := buf.String()
-	if !strings.Contains(out, "Phase 1") {
+	if !strings.Contains(out, "Phase 1:") {
 		t.Fatal("expected output to mention Phase 1")
 	}
-	if !strings.Contains(out, "Phase 2") {
+	if !strings.Contains(out, "Phase 1b:") {
+		t.Fatal("expected output to mention Phase 1b (deletion propagation)")
+	}
+	if !strings.Contains(out, "Phase 2:") {
 		t.Fatal("expected output to mention Phase 2")
 	}
 }
@@ -917,6 +921,24 @@ func TestResetRemoteWorkspace(t *testing.T) {
 	t.Run("rejects root path", func(t *testing.T) {
 		if err := resetRemoteWorkspace(ctx, client, "ns", "pod", "/", nil); err == nil {
 			t.Fatal("expected error for root path")
+		}
+	})
+
+	t.Run("rejects path traversal in preservePaths", func(t *testing.T) {
+		for _, p := range []string{"../../etc", "../data", "foo/../../bar", "/absolute/path"} {
+			if err := resetRemoteWorkspace(ctx, client, "ns", "pod", "/workspace", []string{p}); err == nil {
+				t.Fatalf("expected error for preservePath %q", p)
+			}
+		}
+	})
+
+	t.Run("allows nested preserve paths", func(t *testing.T) {
+		client.scripts = nil
+		if err := resetRemoteWorkspace(ctx, client, "ns", "pod", "/workspace", []string{"data/cache", ".local/share"}); err != nil {
+			t.Fatal(err)
+		}
+		if len(client.scripts) != 1 {
+			t.Fatalf("expected 1 exec call, got %d", len(client.scripts))
 		}
 	})
 }

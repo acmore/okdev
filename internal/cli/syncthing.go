@@ -655,8 +655,10 @@ type syncthingSyncConfig struct {
 //  1. Configure local as sendonly with ignoreDelete=true, remote as receiveonly.
 //     Call POST /rest/db/override on every progress tick to force local state
 //     onto the remote.
-//  2. Once the remote reports needBytes==0, reconfigure both sides to
-//     sendreceive with ignoreDelete=false and restart Syncthing to apply.
+//     1b. Once needBytes==0, flip ignoreDelete to false and override once more so
+//     that files deleted locally (branch switch, git pull) are propagated as
+//     deletions before entering bidirectional mode.
+//  2. Reconfigure both sides to sendreceive and restart Syncthing.
 func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, localKey, localID, remoteBase, remoteKey, remoteID, peerAddr, folderID, localPath, remotePath string, sc syncthingSyncConfig) error {
 	// Phase 1: sendonly + ignoreDelete on local, receiveonly on remote.
 	fmt.Fprintln(out, "Phase 1: local-authoritative initial sync …")
@@ -695,6 +697,24 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 			return ctx.Err()
 		case <-ticker.C:
 		}
+	}
+
+	// Phase 1b: flip ignoreDelete off and override once more so that files
+	// deleted locally (e.g. after a branch switch) are propagated as
+	// deletions to the remote before we enter bidirectional mode.
+	fmt.Fprintln(out, "Phase 1b: propagating local deletions …")
+	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, peerAddr, folderID, localPath, "sendonly", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
+		return fmt.Errorf("configure local (phase 1b): %w", err)
+	}
+	if err := syncthingOverrideFolder(ctx, localBase, localKey, folderID); err != nil {
+		slog.Debug("syncthing override (phase 1b) failed", "error", err)
+	}
+	// Give Syncthing a moment to process the deletion index updates before
+	// switching to bidirectional mode.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(syncthingProgressInterval):
 	}
 
 	// Phase 2: switch to sendreceive on both sides.
@@ -961,6 +981,14 @@ func resetRemoteWorkspace(ctx context.Context, k interface {
 	remotePath = strings.TrimRight(remotePath, "/")
 	if remotePath == "" || remotePath == "/" {
 		return fmt.Errorf("refusing to reset root path")
+	}
+
+	// Validate preserve paths to prevent path traversal outside workspace.
+	for _, p := range preservePaths {
+		cleaned := filepath.Clean(p)
+		if filepath.IsAbs(cleaned) || strings.HasPrefix(cleaned, "..") || strings.Contains(cleaned, string(filepath.Separator)+"..") {
+			return fmt.Errorf("preservePath %q escapes the workspace root", p)
+		}
 	}
 
 	esc := syncengine.ShellEscape

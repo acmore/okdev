@@ -695,14 +695,15 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, err
 	}
 
 	if state.flags.resetWorkspace {
+		if len(state.syncPairs) != 1 {
+			return "", "", fmt.Errorf("--reset-workspace requires exactly one sync path mapping, got %d", len(state.syncPairs))
+		}
 		state.ui.stepRun("sync", "resetting remote workspace")
 		if err := resetSyncthingSessionState(state.command.sessionName); err != nil {
 			return "", "", fmt.Errorf("reset sync state: %w", err)
 		}
-		if len(state.syncPairs) == 1 {
-			if err := resetRemoteWorkspace(state.ctx, state.command.kube, state.command.namespace, target.PodName, state.syncPairs[0].Remote, state.command.cfg.Spec.Sync.PreservePaths); err != nil {
-				return "", "", fmt.Errorf("clear remote workspace: %w", err)
-			}
+		if err := resetRemoteWorkspace(state.ctx, state.command.kube, state.command.namespace, target.PodName, state.syncPairs[0].Remote, state.command.cfg.Spec.Sync.PreservePaths); err != nil {
+			return "", "", fmt.Errorf("clear remote workspace: %w", err)
 		}
 		state.ui.stepDone("sync", "remote workspace cleared")
 	}
