@@ -400,9 +400,9 @@ func TestRunTwoPhaseInitialSync(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Verify override was called at least once.
-	if overrideCalls == 0 {
-		t.Fatal("expected /rest/db/override to be called at least once")
+	// Verify override was called at least twice (phase 1 + phase 1b).
+	if overrideCalls < 2 {
+		t.Fatalf("expected /rest/db/override to be called at least twice (phase 1 + 1b), got %d", overrideCalls)
 	}
 
 	// Verify both instances were restarted for phase 2.
@@ -439,6 +439,95 @@ func TestRunTwoPhaseInitialSync(t *testing.T) {
 	}
 	if !strings.Contains(out, "Phase 2:") {
 		t.Fatal("expected output to mention Phase 2")
+	}
+}
+
+func TestRunTwoPhaseInitialSyncWaitsForDeletionConvergence(t *testing.T) {
+	// Simulate: phase 1 completes quickly, but phase 1b (deletion propagation)
+	// takes multiple ticks before the remote converges.
+	var (
+		mu                sync.Mutex
+		overrideCalls     int
+		phase1bNeedCalls  int
+		phase1bConvergeAt = 3 // converge after 3 needBytes polls in phase 1b
+		inPhase1b         bool
+	)
+
+	localCfg := map[string]any{"devices": []any{}, "folders": []any{}}
+	remoteCfg := map[string]any{"devices": []any{}, "folders": []any{}}
+
+	handler := func(cfg *map[string]any, isLocal bool) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			defer mu.Unlock()
+
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/config":
+				b, _ := json.Marshal(*cfg)
+				w.Write(b)
+			case r.Method == http.MethodPut && r.URL.Path == "/rest/config":
+				body, _ := io.ReadAll(r.Body)
+				var newCfg map[string]any
+				json.Unmarshal(body, &newCfg)
+				*cfg = newCfg
+				// Detect phase 1b: local config with sendonly + ignoreDelete=false.
+				if isLocal {
+					if folders, ok := newCfg["folders"].([]any); ok && len(folders) > 0 {
+						if fm, ok := folders[0].(map[string]any); ok {
+							if asString(fm["type"]) == "sendonly" {
+								if id, ok := fm["ignoreDelete"].(bool); ok && !id {
+									inPhase1b = true
+								}
+							}
+						}
+					}
+				}
+				w.WriteHeader(http.StatusOK)
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/system/status":
+				w.Write([]byte(`{"myID":"DEVICE-ID"}`))
+			case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/rest/db/override"):
+				overrideCalls++
+				w.WriteHeader(http.StatusOK)
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/db/status":
+				need := int64(0)
+				if inPhase1b {
+					phase1bNeedCalls++
+					if phase1bNeedCalls < phase1bConvergeAt {
+						need = 512 // still converging
+					}
+					// else need = 0, converged
+				}
+				fmt.Fprintf(w, `{"needBytes":%d}`, need)
+			case r.Method == http.MethodPost && r.URL.Path == "/rest/system/restart":
+				w.WriteHeader(http.StatusOK)
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}
+	}
+
+	localSrv := httptest.NewServer(handler(&localCfg, true))
+	defer localSrv.Close()
+	remoteSrv := httptest.NewServer(handler(&remoteCfg, false))
+	defer remoteSrv.Close()
+
+	var buf bytes.Buffer
+	sc := syncthingSyncConfig{rescanInterval: 300, watcherDelay: 1}
+
+	err := runTwoPhaseInitialSync(context.Background(), &buf, localSrv.URL, "k", "LOCAL", remoteSrv.URL, "k", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "/tmp/remote", sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Phase 1b must have polled multiple times before converging.
+	if phase1bNeedCalls < phase1bConvergeAt {
+		t.Fatalf("expected at least %d phase 1b needBytes polls, got %d", phase1bConvergeAt, phase1bNeedCalls)
+	}
+
+	// Output should show non-zero needBytes during phase 1b.
+	out := buf.String()
+	if !strings.Contains(out, "deletion propagation: remote needBytes=512") {
+		t.Fatalf("expected phase 1b progress with needBytes=512, got: %s", out)
 	}
 }
 

@@ -699,22 +699,35 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 		}
 	}
 
-	// Phase 1b: flip ignoreDelete off and override once more so that files
-	// deleted locally (e.g. after a branch switch) are propagated as
-	// deletions to the remote before we enter bidirectional mode.
+	// Phase 1b: flip ignoreDelete off and override so that files deleted
+	// locally (e.g. after a branch switch) are propagated as deletions to
+	// the remote before we enter bidirectional mode. Wait for convergence
+	// just like phase 1.
 	fmt.Fprintln(out, "Phase 1b: propagating local deletions …")
 	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, peerAddr, folderID, localPath, "sendonly", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
 		return fmt.Errorf("configure local (phase 1b): %w", err)
 	}
-	if err := syncthingOverrideFolder(ctx, localBase, localKey, folderID); err != nil {
-		slog.Debug("syncthing override (phase 1b) failed", "error", err)
-	}
-	// Give Syncthing a moment to process the deletion index updates before
-	// switching to bidirectional mode.
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(syncthingProgressInterval):
+	for {
+		if err := syncthingOverrideFolder(ctx, localBase, localKey, folderID); err != nil {
+			slog.Debug("syncthing override (phase 1b) failed", "error", err)
+		}
+		need, err := syncthingFolderNeedBytes(ctx, remoteBase, remoteKey, folderID)
+		if err != nil {
+			slog.Debug("syncthing phase 1b poll failed", "error", err)
+		} else {
+			fmt.Fprintf(out, "  deletion propagation: remote needBytes=%d\n", need)
+			if need == 0 {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("deletion propagation did not complete within %s", initialSyncTimeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
 	}
 
 	// Phase 2: switch to sendreceive on both sides.
