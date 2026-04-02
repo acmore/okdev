@@ -1002,6 +1002,26 @@ func TestWriteLocalSTIgnorePropagatesStatError(t *testing.T) {
 	}
 }
 
+func TestLocalSyncthingLogShowsAPIPortConflict(t *testing.T) {
+	home := t.TempDir()
+	logPath, err := localSyncthingLogPath(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte("WARNING: Failed starting API: listen tcp 127.0.0.1:34337: bind: address already in use\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !localSyncthingLogShowsAPIPortConflict(home) {
+		t.Fatal("expected bind conflict to be detected")
+	}
+	if err := os.WriteFile(logPath, []byte("INFO: syncthing ready\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if localSyncthingLogShowsAPIPortConflict(home) {
+		t.Fatal("did not expect bind conflict to be detected")
+	}
+}
+
 func TestConfigureSyncthingPeerCompressionAlways(t *testing.T) {
 	cfg := map[string]any{
 		"devices": []any{},

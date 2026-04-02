@@ -97,35 +97,22 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	if err != nil {
 		return err
 	}
-	localGUIAddr, localAPIBase, err := allocateLocalSyncthingAPIEndpoint()
-	if err != nil {
-		return err
-	}
-	localPID, err := startLocalSyncthing(localBinary, localHome, localGUIAddr)
-	if err != nil {
-		return err
-	}
-
 	cancelPF, localRemoteAPIBase, localRemotePeerAddr, err := startSyncthingPortForward(opts, namespace, pod)
 	if err != nil {
 		return err
 	}
 	defer cancelPF()
 
-	localKey, err := readLocalSyncthingAPIKey(localHome)
-	if err != nil {
-		return err
-	}
 	remoteKey, err := readRemoteSyncthingAPIKey(ctx, k, namespace, pod)
 	if err != nil {
 		return err
 	}
 
-	localBase := localAPIBase
-	remoteBase := localRemoteAPIBase
-	if err := waitSyncthingAPI(ctx, localBase, localKey, syncthingAPIReadyTimeout); err != nil {
-		return fmt.Errorf("local syncthing not ready: %w", err)
+	localBase, localKey, localPID, err := startAndWaitForLocalSyncthing(ctx, localBinary, localHome)
+	if err != nil {
+		return err
 	}
+	remoteBase := localRemoteAPIBase
 	if err := waitSyncthingAPI(ctx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
 		return fmt.Errorf("remote syncthing not ready: %w", err)
 	}
@@ -193,6 +180,45 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to stop local syncthing: %v\n", err)
 	}
 	return nil
+}
+
+func startAndWaitForLocalSyncthing(ctx context.Context, binary, home string) (string, string, int, error) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		localGUIAddr, localAPIBase, err := allocateLocalSyncthingAPIEndpoint()
+		if err != nil {
+			return "", "", 0, err
+		}
+		localPID, err := startLocalSyncthing(binary, home, localGUIAddr)
+		if err != nil {
+			return "", "", 0, err
+		}
+		localKey, err := readLocalSyncthingAPIKey(home)
+		if err != nil {
+			_ = stopOwnedLocalSyncthing(home, localPID)
+			return "", "", 0, err
+		}
+		if err := waitSyncthingAPI(ctx, localAPIBase, localKey, syncthingAPIReadyTimeout); err == nil {
+			return localAPIBase, localKey, localPID, nil
+		} else {
+			lastErr = err
+			if !localSyncthingLogShowsAPIPortConflict(home) || attempt == 2 {
+				_ = stopOwnedLocalSyncthing(home, localPID)
+				return "", "", 0, fmt.Errorf("local syncthing not ready: %w", err)
+			}
+			_ = stopOwnedLocalSyncthing(home, localPID)
+		}
+	}
+	return "", "", 0, fmt.Errorf("local syncthing not ready: %w", lastErr)
+}
+
+func localSyncthingLogShowsAPIPortConflict(home string) bool {
+	logPath, err := localSyncthingLogPath(home)
+	if err != nil {
+		return false
+	}
+	tail := readFileTail(logPath, 8192)
+	return strings.Contains(tail, "bind: address already in use")
 }
 
 func markSyncthingReady(sessionName string) error {
