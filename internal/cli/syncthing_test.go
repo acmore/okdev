@@ -240,7 +240,7 @@ func TestApplyManagedSyncthingFolderDefaults(t *testing.T) {
 		"id": "okdev-test",
 	}
 
-	applyManagedSyncthingFolderDefaults(folder, 300)
+	applyManagedSyncthingFolderDefaults(folder, 300, 0)
 
 	if got := folder["fsWatcherEnabled"]; got != true {
 		t.Fatalf("expected fsWatcherEnabled=true, got %#v", got)
@@ -250,6 +250,21 @@ func TestApplyManagedSyncthingFolderDefaults(t *testing.T) {
 	}
 	if got := folder["rescanIntervalS"]; got != 300 {
 		t.Fatalf("expected rescanIntervalS=%d, got %#v", 300, got)
+	}
+	if got := folder["maxConflicts"]; got != 0 {
+		t.Fatalf("expected maxConflicts=0, got %#v", got)
+	}
+}
+
+func TestApplyManagedSyncthingFolderDefaultsCustomWatcherDelay(t *testing.T) {
+	folder := map[string]any{
+		"id": "okdev-test",
+	}
+
+	applyManagedSyncthingFolderDefaults(folder, 300, 5)
+
+	if got := folder["fsWatcherDelayS"]; got != 5 {
+		t.Fatalf("expected fsWatcherDelayS=5, got %#v", got)
 	}
 }
 
@@ -444,10 +459,10 @@ func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, false, false); err != nil {
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, 0, false, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22001", "okdev-test", "/tmp/updated", "sendonly", 120, false, false); err != nil {
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22001", "okdev-test", "/tmp/updated", "sendonly", 120, 0, false, false); err != nil {
 		t.Fatal(err)
 	}
 	if len(putBodies) != 2 {
@@ -498,6 +513,9 @@ func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	}
 	if got := folder["fsWatcherEnabled"]; got != true {
 		t.Fatalf("unexpected fsWatcherEnabled %#v", got)
+	}
+	if got := folder["maxConflicts"]; got != float64(0) {
+		t.Fatalf("expected maxConflicts=0, got %#v", got)
 	}
 	options, err := syncthingObjectMap(cfg["options"], "options")
 	if err != nil {
@@ -594,7 +612,7 @@ func TestConfigureSyncthingPeerCompressionAlways(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, false, true); err != nil {
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, 0, false, true); err != nil {
 		t.Fatal(err)
 	}
 

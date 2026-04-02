@@ -139,10 +139,10 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	folderTypeLocal, folderTypeRemote := folderTypesForMode(mode)
 	folderID := "okdev-" + sessionName
 
-	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds, cfg.Spec.Sync.Syncthing.RelaysEnabled, cfg.Spec.Sync.Syncthing.Compression); err != nil {
+	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds, cfg.Spec.Sync.Syncthing.WatcherDelaySeconds, cfg.Spec.Sync.Syncthing.RelaysEnabled, cfg.Spec.Sync.Syncthing.Compression); err != nil {
 		return fmt.Errorf("configure local syncthing: %w", err)
 	}
-	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, localRemotePeerAddr, folderID, pair.Remote, folderTypeRemote, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds, cfg.Spec.Sync.Syncthing.RelaysEnabled, cfg.Spec.Sync.Syncthing.Compression); err != nil {
+	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, localRemotePeerAddr, folderID, pair.Remote, folderTypeRemote, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds, cfg.Spec.Sync.Syncthing.WatcherDelaySeconds, cfg.Spec.Sync.Syncthing.RelaysEnabled, cfg.Spec.Sync.Syncthing.Compression); err != nil {
 		return fmt.Errorf("configure remote syncthing: %w", err)
 	}
 
@@ -638,7 +638,7 @@ func folderTypesForMode(mode string) (local, remote string) {
 	}
 }
 
-func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peerAddr, folderID, folderPath, folderType string, rescanIntervalSeconds int, relaysEnabled, compression bool) error {
+func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peerAddr, folderID, folderPath, folderType string, rescanIntervalSeconds, watcherDelaySeconds int, relaysEnabled, compression bool) error {
 	cfg, err := syncthingGetConfig(ctx, base, key)
 	if err != nil {
 		return err
@@ -696,7 +696,7 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 				map[string]any{"deviceID": selfID},
 				map[string]any{"deviceID": peerID},
 			}
-			applyManagedSyncthingFolderDefaults(fm, rescanIntervalSeconds)
+			applyManagedSyncthingFolderDefaults(fm, rescanIntervalSeconds, watcherDelaySeconds)
 			folders[i] = fm
 			foundFolder = true
 			break
@@ -714,7 +714,7 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 				map[string]any{"deviceID": peerID},
 			},
 		}
-		applyManagedSyncthingFolderDefaults(folder, rescanIntervalSeconds)
+		applyManagedSyncthingFolderDefaults(folder, rescanIntervalSeconds, watcherDelaySeconds)
 		folders = append(folders, folder)
 	}
 	cfg["folders"] = folders
@@ -725,10 +725,15 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 	return nil
 }
 
-func applyManagedSyncthingFolderDefaults(folder map[string]any, rescanIntervalSeconds int) {
+func applyManagedSyncthingFolderDefaults(folder map[string]any, rescanIntervalSeconds, watcherDelaySeconds int) {
+	delay := watcherDelaySeconds
+	if delay <= 0 {
+		delay = syncthingWatcherDelayS
+	}
 	folder["fsWatcherEnabled"] = true
-	folder["fsWatcherDelayS"] = syncthingWatcherDelayS
+	folder["fsWatcherDelayS"] = delay
 	folder["rescanIntervalS"] = rescanIntervalSeconds
+	folder["maxConflicts"] = 0
 }
 
 func applyManagedSyncthingGlobalDefaults(cfg map[string]any, relaysEnabled bool) {

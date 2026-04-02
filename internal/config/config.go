@@ -121,6 +121,7 @@ type SyncthingSpec struct {
 	AutoInstall           *bool  `yaml:"autoInstall"`
 	Image                 string `yaml:"image"`
 	RescanIntervalSeconds int    `yaml:"rescanIntervalSeconds"`
+	WatcherDelaySeconds   int    `yaml:"watcherDelaySeconds"`
 	RelaysEnabled         bool   `yaml:"relaysEnabled"`
 	Compression           bool   `yaml:"compression"`
 }
