@@ -407,9 +407,9 @@ func TestRunTwoPhaseInitialSync(t *testing.T) {
 		t.Fatalf("expected /rest/db/override to be called at least twice (phase 1 + 1b), got %d", overrideCalls)
 	}
 
-	// Verify both instances were restarted for phase 2.
-	if restartCalls != 2 {
-		t.Fatalf("expected 2 restart calls (local+remote), got %d", restartCalls)
+	// Verify only the remote instance is restarted for phase 2.
+	if restartCalls != 1 {
+		t.Fatalf("expected 1 restart call (remote only), got %d", restartCalls)
 	}
 
 	// Verify config was written multiple times (phase 1 + phase 2 for both sides).

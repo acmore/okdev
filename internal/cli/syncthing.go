@@ -821,17 +821,17 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 		return fmt.Errorf("configure remote (phase 2): %w", err)
 	}
 
-	// Restart both Syncthing instances to cleanly apply the config change.
-	if err := syncthingRestart(ctx, localBase, localKey); err != nil {
-		return fmt.Errorf("restart local syncthing: %w", err)
-	}
+	// The local daemon is launched with --no-restart so it can be owned by
+	// the okdev sync child. Folder config changes are applied live there, so
+	// only restart the remote sidecar process.
 	if err := syncthingRestart(ctx, remoteBase, remoteKey); err != nil {
 		return fmt.Errorf("restart remote syncthing: %w", err)
 	}
 
-	// Wait for both APIs to come back after restart.
+	// Wait for the remote API to come back after restart, and confirm the
+	// local API remained reachable through the live config update.
 	if err := waitSyncthingAPI(ctx, localBase, localKey, syncthingAPIReadyTimeout); err != nil {
-		return fmt.Errorf("local syncthing not ready after restart: %w", err)
+		return fmt.Errorf("local syncthing not ready after phase 2 update: %w", err)
 	}
 	if err := waitSyncthingAPI(ctx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
 		return fmt.Errorf("remote syncthing not ready after restart: %w", err)
