@@ -931,6 +931,33 @@ func TestReadLocalSyncthingEndpoint(t *testing.T) {
 	}
 }
 
+func TestReadLocalSyncthingEndpointPrefersRuntimeEndpointFile(t *testing.T) {
+	home := t.TempDir()
+	configXML := `<configuration>
+  <gui>
+    <apikey>test-key-123</apikey>
+    <address>127.0.0.1:8384</address>
+  </gui>
+</configuration>`
+	if err := os.WriteFile(filepath.Join(home, "config.xml"), []byte(configXML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeLocalSyncthingEndpoint(home, "http://127.0.0.1:49200"); err != nil {
+		t.Fatal(err)
+	}
+
+	apiBase, apiKey, err := readLocalSyncthingEndpoint(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if apiKey != "test-key-123" {
+		t.Fatalf("expected apiKey=test-key-123, got %s", apiKey)
+	}
+	if apiBase != "http://127.0.0.1:49200" {
+		t.Fatalf("expected apiBase=http://127.0.0.1:49200, got %s", apiBase)
+	}
+}
+
 func TestReadLocalSyncthingEndpointMissing(t *testing.T) {
 	home := t.TempDir()
 	_, _, err := readLocalSyncthingEndpoint(home)

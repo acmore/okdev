@@ -52,6 +52,16 @@ sed -i 's/image: # TODO:.*/image: ubuntu:22.04/g' "$MANIFEST_PATH"
 sed -i 's/command: \["sleep", "infinity"\]/command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]/g' "$MANIFEST_PATH"
 perl -0pi -e 's/- name: workspace\n              emptyDir: \{\}/- name: workspace\n              persistentVolumeClaim:\n                claimName: '"$PVC_NAME"'/g' "$MANIFEST_PATH"
 sed -i 's/container: dev/container: pytorch/' "$CFG_PATH"
+python3 - <<'PY' "$CFG_PATH"
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+old = '      - path: "spec.pytorchReplicaSpecs.Worker.template"\n'
+new = '      - path: "spec.pytorchReplicaSpecs.Worker.template"\n        sidecar: false\n'
+if old not in text:
+    raise SystemExit("worker inject path not found")
+path.write_text(text.replace(old, new, 1))
+PY
 
 # Set 2 worker replicas for multi-pod testing (1 master + 2 workers = 3 pods).
 sed -i '/Worker:/,/replicas:/ s/replicas: 1/replicas: 2/' "$MANIFEST_PATH"
@@ -105,7 +115,7 @@ echo "Sync health status verified"
 echo "Waiting for synced file to appear remotely with correct content"
 SYNC_OK=false
 for i in $(seq 1 30); do
-  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --setup-key --cmd 'sh -lc "if [ -f /workspace/hello.txt ]; then cat /workspace/hello.txt; fi"' || true)
+  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'if [ -f /workspace/hello.txt ]; then cat /workspace/hello.txt; fi' || true)
   if [[ "$REMOTE_CONTENT" == "hello from pytorchjob e2e" ]]; then
     SYNC_OK=true
     echo "Sync verified on attempt $i"

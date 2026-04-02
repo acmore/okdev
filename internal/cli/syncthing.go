@@ -168,6 +168,9 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	defer stopProgress()
 	go runSyncthingProgressReporter(progressCtx, cmd.OutOrStdout(), localBase, localKey, remoteBase, remoteKey, folderID, localID, remoteID)
 
+	// The detached sync child should survive the parent CLI process exiting.
+	signal.Ignore(syscall.SIGHUP)
+	defer signal.Reset(syscall.SIGHUP)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
@@ -266,6 +269,9 @@ func startLocalSyncthing(binary, home, localGUIAddr string) error {
 	if err := stopLocalSyncthingForHome(home); err != nil {
 		return err
 	}
+	if err := writeLocalSyncthingEndpoint(home, "http://"+localGUIAddr); err != nil {
+		return fmt.Errorf("write local syncthing endpoint: %w", err)
+	}
 	logPath, err := localSyncthingLogPath(home)
 	if err != nil {
 		return err
@@ -350,6 +356,21 @@ func localSyncthingLogPath(home string) (string, error) {
 	return filepath.Join(home, "local.log"), nil
 }
 
+func localSyncthingEndpointPath(home string) (string, error) {
+	if strings.TrimSpace(home) == "" {
+		return "", errors.New("syncthing home is empty")
+	}
+	return filepath.Join(home, "endpoint"), nil
+}
+
+func writeLocalSyncthingEndpoint(home, apiBase string) error {
+	path, err := localSyncthingEndpointPath(home)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(strings.TrimSpace(apiBase)+"\n"), 0o644)
+}
+
 func openLocalSyncthingLog(path string) (*os.File, error) {
 	return logx.OpenRotatingLog(path)
 }
@@ -361,10 +382,11 @@ func pkillByPattern(pattern string) error {
 		return nil
 	}
 	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+	msg := strings.TrimSpace(string(out))
+	if errors.As(err, &exitErr) && (exitErr.ExitCode() == 1 || strings.Contains(msg, "sysmond service not found")) {
 		return nil
 	}
-	return fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
+	return fmt.Errorf("%w (%s)", err, msg)
 }
 
 func syncthingServeHomePattern(home string) string {
@@ -1114,6 +1136,11 @@ func checkSyncHealth(sessionName string) (syncHealthStatus, string) {
 // readLocalSyncthingEndpoint reads the API base URL and key from a local
 // Syncthing home directory's config.xml.
 func readLocalSyncthingEndpoint(home string) (apiBase, apiKey string, err error) {
+	if endpointPath, pathErr := localSyncthingEndpointPath(home); pathErr == nil {
+		if b, readErr := os.ReadFile(endpointPath); readErr == nil {
+			apiBase = strings.TrimSpace(string(b))
+		}
+	}
 	paths := []string{filepath.Join(home, "config.xml"), filepath.Join(home, "config", "config.xml")}
 	for _, p := range paths {
 		b, readErr := os.ReadFile(p)
@@ -1127,11 +1154,14 @@ func readLocalSyncthingEndpoint(home string) (apiBase, apiKey string, err error)
 		if cfg.GUI.APIKey == "" || cfg.GUI.Address == "" {
 			continue
 		}
-		addr := cfg.GUI.Address
-		if !strings.HasPrefix(addr, "http") {
-			addr = "http://" + addr
+		if apiBase == "" {
+			addr := cfg.GUI.Address
+			if !strings.HasPrefix(addr, "http") {
+				addr = "http://" + addr
+			}
+			apiBase = addr
 		}
-		return addr, cfg.GUI.APIKey, nil
+		return apiBase, cfg.GUI.APIKey, nil
 	}
 	return "", "", errors.New("unable to read local syncthing endpoint")
 }
