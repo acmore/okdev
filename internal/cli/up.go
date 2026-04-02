@@ -40,22 +40,23 @@ type upOptions struct {
 }
 
 type upState struct {
-	cmd           *cobra.Command
-	opts          *Options
-	flags         upOptions
-	ui            *upUI
-	command       *commandContext
-	ctx           context.Context
-	cancel        context.CancelFunc
-	labels        map[string]string
-	annotations   map[string]string
-	volumes       []corev1.Volume
-	syncPairs     []syncengine.Pair
-	enableTmux    bool
-	runtime       workload.Runtime
-	workloadName  string
-	target        workload.TargetRef
-	reconcileKube reconcileWaitClient
+	cmd            *cobra.Command
+	opts           *Options
+	flags          upOptions
+	ui             *upUI
+	command        *commandContext
+	ctx            context.Context
+	cancel         context.CancelFunc
+	labels         map[string]string
+	annotations    map[string]string
+	volumes        []corev1.Volume
+	syncPairs      []syncengine.Pair
+	enableTmux     bool
+	runtime        workload.Runtime
+	workloadName   string
+	target         workload.TargetRef
+	previousTarget workload.TargetRef
+	reconcileKube  reconcileWaitClient
 }
 
 type workloadApplyOutcome int
@@ -171,21 +172,23 @@ func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, e
 		return nil, err
 	}
 	ctx, cancel := upCommandContext(flags.waitTimeout)
+	previousTarget, _ := loadTargetRef(cc.sessionName)
 	return &upState{
-		cmd:          cmd,
-		opts:         opts,
-		flags:        flags,
-		ui:           ui,
-		command:      cc,
-		ctx:          ctx,
-		cancel:       cancel,
-		labels:       labels,
-		annotations:  annotations,
-		volumes:      volumes,
-		syncPairs:    syncPairs,
-		enableTmux:   enableTmux,
-		runtime:      runtime,
-		workloadName: runtime.WorkloadName(),
+		cmd:            cmd,
+		opts:           opts,
+		flags:          flags,
+		ui:             ui,
+		command:        cc,
+		ctx:            ctx,
+		cancel:         cancel,
+		labels:         labels,
+		annotations:    annotations,
+		volumes:        volumes,
+		syncPairs:      syncPairs,
+		enableTmux:     enableTmux,
+		runtime:        runtime,
+		workloadName:   runtime.WorkloadName(),
+		previousTarget: previousTarget,
 	}, nil
 }
 
@@ -463,9 +466,21 @@ func upWait(state *upState) error {
 		return fmt.Errorf("wait for %s/%s readiness failed: %w", state.runtime.Kind(), state.workloadName, waitErr)
 	}
 	state.ui.stepDone("pod readiness", "ready")
+	if shouldPreferReplacementTarget(state) {
+		if err := state.command.kube.AnnotatePod(state.ctx, state.command.namespace, state.previousTarget.PodName, "okdev.io/last-attach", ""); err != nil {
+			slog.Debug("failed to clear last-attach annotation", "pod", state.previousTarget.PodName, "error", err)
+		}
+	}
 	target, err := state.runtime.SelectTarget(state.ctx, state.command.kube, state.command.namespace)
 	if err != nil {
 		return fmt.Errorf("select target: %w", err)
+	}
+	if shouldPreferReplacementTarget(state) && target.PodName == state.previousTarget.PodName {
+		if replacement, replacementErr := waitForReplacementTarget(state, target); replacementErr == nil {
+			target = replacement
+		} else {
+			slog.Debug("replacement target did not become ready before timeout", "session", state.command.sessionName, "error", replacementErr)
+		}
 	}
 	if err := persistTargetRef(state.command.sessionName, target); err != nil {
 		return fmt.Errorf("save target state: %w", err)
@@ -476,6 +491,35 @@ func upWait(state *upState) error {
 	state.target = target
 	state.ui.stepDone("target", target.PodName+"/"+target.Container)
 	return nil
+}
+
+func shouldPreferReplacementTarget(state *upState) bool {
+	if state == nil || !state.flags.reconcile {
+		return false
+	}
+	if reconcileStrategyForWorkload(state) != workloadApplyReapplied {
+		return false
+	}
+	return strings.TrimSpace(state.previousTarget.PodName) != ""
+}
+
+func waitForReplacementTarget(state *upState, current workload.TargetRef) (workload.TargetRef, error) {
+	if state == nil {
+		return current, nil
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		refreshed, err := resolveFreshTargetRef(state.ctx, state.opts, state.command.cfg, state.command.namespace, state.command.sessionName, state.command.kube)
+		if err == nil && strings.TrimSpace(refreshed.PodName) != "" && refreshed.PodName != current.PodName {
+			return refreshed, nil
+		}
+		select {
+		case <-state.ctx.Done():
+			return current, state.ctx.Err()
+		case <-time.After(1 * time.Second):
+		}
+	}
+	return current, fmt.Errorf("replacement target did not appear")
 }
 
 type sessionPodEventWatcher interface {
