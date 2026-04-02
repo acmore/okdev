@@ -182,6 +182,27 @@ func TestPreparePodSpecForTargetUsesNamedContainer(t *testing.T) {
 	}
 }
 
+func TestInjectPreStopForTargetUsesNamedContainer(t *testing.T) {
+	spec := corev1.PodSpec{
+		Containers: []corev1.Container{
+			{Name: "trainer", Image: "python:3.12"},
+			{Name: "helper", Image: "busybox"},
+		},
+	}
+	InjectPreStopForTarget(&spec, "echo bye", "trainer")
+	trainer := findContainer(spec.Containers, "trainer")
+	helper := findContainer(spec.Containers, "helper")
+	if trainer == nil || helper == nil {
+		t.Fatal("expected both containers to exist")
+	}
+	if trainer.Lifecycle == nil || trainer.Lifecycle.PreStop == nil {
+		t.Fatal("expected prestop lifecycle on trainer container")
+	}
+	if helper.Lifecycle != nil && helper.Lifecycle.PreStop != nil {
+		t.Fatal("did not expect prestop lifecycle on helper container")
+	}
+}
+
 func TestPreparePodSpecDefaultsWorkspacePathAndTargetContainer(t *testing.T) {
 	spec, err := PreparePodSpecForTarget(corev1.PodSpec{
 		Containers: []corev1.Container{

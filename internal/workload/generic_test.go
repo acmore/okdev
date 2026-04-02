@@ -11,6 +11,7 @@ import (
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/yaml"
 )
 
 func TestGenericRuntimeApplyAndSelectTarget(t *testing.T) {
@@ -174,6 +175,79 @@ spec:
 	if got := rt.WorkloadName(); got != "mutated" {
 		t.Fatalf("expected refreshed workload name, got %q", got)
 	}
+}
+
+func TestGenericRuntimeApplyInjectsPreStopWhenSidecarDisabled(t *testing.T) {
+	tmp := t.TempDir()
+	manifestPath := filepath.Join(tmp, "pytorchjob.yaml")
+	if err := os.WriteFile(manifestPath, []byte(`
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: trainer
+spec:
+  pytorchReplicaSpecs:
+    Master:
+      template:
+        spec:
+          containers:
+            - name: pytorch
+              image: python:3.12
+    Worker:
+      template:
+        spec:
+          containers:
+            - name: pytorch
+              image: python:3.12
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rt := &GenericRuntime{
+		WorkloadKind:       TypeGeneric,
+		ManifestPath:       manifestPath,
+		WorkspaceMountPath: "/workspace",
+		SidecarImage:       "ghcr.io/acmore/okdev:edge",
+		TargetContainer:    "pytorch",
+		PreStop:            "touch /tmp/pre-stop-marker",
+		Inject: []config.WorkloadInjectSpec{
+			{Path: "spec.pytorchReplicaSpecs.Master.template"},
+			{Path: "spec.pytorchReplicaSpecs.Worker.template", Sidecar: boolPtr(false)},
+		},
+	}
+	client := &captureApplyClient{}
+	if err := rt.Apply(context.Background(), client, "default"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	var obj map[string]any
+	if err := yaml.Unmarshal(client.manifest, &obj); err != nil {
+		t.Fatal(err)
+	}
+	workerTemplate, err := resolveMapPath(obj, "spec.pytorchReplicaSpecs.Worker.template")
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := decodePodTemplateSpec(workerTemplate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := template.Spec.Containers[0]
+	if worker.Lifecycle == nil || worker.Lifecycle.PreStop == nil {
+		t.Fatal("expected prestop lifecycle on worker container")
+	}
+	if got := strings.Join(worker.Lifecycle.PreStop.Exec.Command, " "); !strings.Contains(got, "pre-stop-marker") {
+		t.Fatalf("expected prestop command to include marker, got %q", got)
+	}
+	for _, c := range template.Spec.Containers {
+		if c.Name == "okdev-sidecar" {
+			t.Fatal("did not expect sidecar injection when sidecar=false")
+		}
+	}
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
 
 func TestPodTemplateSpecUnstructuredRoundTrip(t *testing.T) {
