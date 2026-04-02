@@ -14,8 +14,8 @@ KUBECONFIG_PATH="$HOME_DIR/.kube/config"
 
 DIR_A="$WORKDIR/a"
 DIR_B="$WORKDIR/b"
-CFG_A="$DIR_A/.okdev/okdev.yaml"
-CFG_B="$DIR_B/.okdev/okdev.yaml"
+CFG_A=""
+CFG_B=""
 SYNC_A="$DIR_A/workspace"
 SYNC_B="$DIR_B/workspace"
 
@@ -57,8 +57,18 @@ init_pod_config() {
       --sync-local "$sync_dir" \
       --sync-remote /workspace
   )
-  sed -i 's/persistentSession: true/persistentSession: false/' "$dir/.okdev/okdev.yaml" 2>/dev/null || true
-  grep -q 'persistentSession' "$dir/.okdev/okdev.yaml" || sed -i '/ssh:/a\    persistentSession: false' "$dir/.okdev/okdev.yaml"
+  local cfg_path=""
+  if [[ -f "$dir/.okdev/okdev.yaml" ]]; then
+    cfg_path="$dir/.okdev/okdev.yaml"
+  elif [[ -f "$dir/.okdev.yaml" ]]; then
+    cfg_path="$dir/.okdev.yaml"
+  else
+    echo "ERROR: okdev init did not write a config file for $name" >&2
+    exit 1
+  fi
+  sed -i 's/persistentSession: true/persistentSession: false/' "$cfg_path" 2>/dev/null || true
+  grep -q 'persistentSession' "$cfg_path" || sed -i '/ssh:/a\    persistentSession: false' "$cfg_path"
+  printf '%s\n' "$cfg_path"
 }
 
 wait_status_active() {
@@ -94,8 +104,8 @@ wait_remote_file() {
 }
 
 echo "Scaffolding multi-session pod configs"
-init_pod_config "$DIR_A" "$SESSION_A" "$SYNC_A"
-init_pod_config "$DIR_B" "$SESSION_B" "$SYNC_B"
+CFG_A=$(init_pod_config "$DIR_A" "$SESSION_A" "$SYNC_A")
+CFG_B=$(init_pod_config "$DIR_B" "$SESSION_B" "$SYNC_B")
 
 echo "hello from session a" >"$SYNC_A/session.txt"
 echo "hello from session b" >"$SYNC_B/session.txt"
