@@ -108,7 +108,7 @@ const (
 	sshPort = 2222
 
 	// Syncthing watcher delay (seconds).
-	syncthingWatcherDelayS = 10
+	syncthingWatcherDelayS = 1
 
 	// TCP keepalive period for proxy connections.
 	proxyTCPKeepAlivePeriod = 10 * time.Second

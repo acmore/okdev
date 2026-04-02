@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -21,8 +22,9 @@ import (
 )
 
 type syncthingSessionTargetState struct {
-	PodName   string `json:"podName"`
-	CreatedAt string `json:"createdAt"`
+	PodName    string `json:"podName"`
+	CreatedAt  string `json:"createdAt"`
+	ConfigHash string `json:"configHash,omitempty"`
 }
 
 func newSyncCmd(opts *Options) *cobra.Command {
@@ -125,7 +127,67 @@ func newSyncCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&foreground, "foreground", false, "Run syncthing sync in the foreground for troubleshooting")
 	cmd.Flags().BoolVar(&reset, "reset", false, "Stop existing local sync state for this session and bootstrap again")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview sync actions without transferring files")
+
+	cmd.AddCommand(newSyncResetRemoteCmd(opts))
 	return cmd
+}
+
+func newSyncResetRemoteCmd(opts *Options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "reset-remote",
+		Short: "Clear the remote workspace and re-sync from local",
+		Long: `Stop active sync, clear the remote workspace contents (respecting
+preservePaths in the sync config), wipe the local Syncthing database,
+and re-establish sync via the two-phase initial sync protocol.
+
+The runtime resource and PVC are kept intact — only the managed
+synced workspace subtree is cleared.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cc, err := resolveCommandContext(opts, resolveSessionName)
+			if err != nil {
+				return err
+			}
+			if err := ensureExistingSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName, true); err != nil {
+				return err
+			}
+			pairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
+			if err != nil {
+				return fmt.Errorf("parse sync paths: %w", err)
+			}
+			if len(pairs) != 1 {
+				return fmt.Errorf("reset-remote requires exactly one sync path mapping, got %d", len(pairs))
+			}
+
+			target, err := resolveTargetRef(cmd.Context(), opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
+			if err != nil {
+				return err
+			}
+
+			fmt.Fprintln(cmd.OutOrStdout(), "Stopping active sync …")
+			if err := resetSyncthingSessionState(cc.sessionName); err != nil {
+				return fmt.Errorf("stop sync: %w", err)
+			}
+
+			fmt.Fprintln(cmd.OutOrStdout(), "Clearing remote workspace …")
+			ctx, cancel := context.WithTimeout(cmd.Context(), defaultContextTimeout)
+			defer cancel()
+			if err := resetRemoteWorkspace(ctx, cc.kube, cc.namespace, target.PodName, pairs[0].Remote, cc.cfg.Spec.Sync.PreservePaths); err != nil {
+				return fmt.Errorf("clear remote workspace: %w", err)
+			}
+
+			fmt.Fprintln(cmd.OutOrStdout(), "Re-establishing sync …")
+			logPath, started, err := startDetachedSyncthingSync(opts, "two-phase", cc.sessionName, cc.namespace, cc.cfgPath)
+			if err != nil {
+				return fmt.Errorf("restart sync: %w", err)
+			}
+			if started {
+				fmt.Fprintf(cmd.OutOrStdout(), "Sync re-established, logs: %s\n", logPath)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "Sync already running, logs: %s\n", logPath)
+			}
+			return nil
+		},
+	}
 }
 
 func reportSyncthingTargetReset(w io.Writer, sessionName string, reset bool) {
@@ -153,6 +215,10 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 	if err != nil {
 		return "", false, err
 	}
+	readyPath, err := syncthingReadyPath(sessionName)
+	if err != nil {
+		return "", false, err
+	}
 	if pid, ok := readSyncthingPID(pidPath); ok {
 		if processAlive(pid) && processLooksLikeSyncthingSync(pid) {
 			return logPath, false, nil
@@ -160,6 +226,9 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 		if rmErr := os.Remove(pidPath); rmErr != nil {
 			slog.Debug("failed to remove stale PID file", "path", pidPath, "error", rmErr)
 		}
+	}
+	if err := os.Remove(readyPath); err != nil && !os.IsNotExist(err) {
+		return "", false, err
 	}
 	logFile, err := logx.OpenRotatingLog(logPath)
 	if err != nil {
@@ -202,11 +271,11 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 		}
 		return "", false, err
 	}
-	if err := waitForDetachedSyncthingStart(cmd.Process.Pid, syncthingDetachedStartupDelay); err != nil {
+	if err := waitForDetachedSyncthingStart(cmd.Process.Pid, readyPath, syncthingDetachedStartupTimeout(mode)); err != nil {
 		if closeErr := logFile.Close(); closeErr != nil {
 			slog.Debug("failed to close log file after early exit", "path", logPath, "error", closeErr)
 		}
-		return "", false, fmt.Errorf("%w; check logs: %s", err, logPath)
+		return "", false, formatDetachedSyncthingStartupError(sessionName, logPath, err)
 	}
 	if releaseErr := cmd.Process.Release(); releaseErr != nil {
 		slog.Debug("failed to release detached process", "pid", cmd.Process.Pid, "error", releaseErr)
@@ -217,13 +286,20 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 	return logPath, true, nil
 }
 
-func waitForDetachedSyncthingStart(pid int, maxWait time.Duration) error {
+func syncthingDetachedStartupTimeout(mode string) time.Duration {
+	if mode == "two-phase" {
+		return initialSyncTimeout
+	}
+	return syncthingBootstrapTimeout
+}
+
+func waitForDetachedSyncthingStart(pid int, readyPath string, maxWait time.Duration) error {
 	deadline := time.Now().Add(maxWait)
 	for {
 		if !processAlive(pid) {
 			return fmt.Errorf("syncthing background process exited early")
 		}
-		if processLooksLikeSyncthingSync(pid) {
+		if processLooksLikeSyncthingSync(pid) && syncthingReady(readyPath) {
 			return nil
 		}
 		if time.Now().After(deadline) {
@@ -231,6 +307,41 @@ func waitForDetachedSyncthingStart(pid int, maxWait time.Duration) error {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+func formatDetachedSyncthingStartupError(sessionName, backgroundLogPath string, startupErr error) error {
+	msg := fmt.Sprintf("%v; check logs: %s", startupErr, backgroundLogPath)
+	if excerpt := readFileTail(backgroundLogPath, 8192); excerpt != "" {
+		msg += fmt.Sprintf("\n--- background sync log tail ---\n%s", excerpt)
+	}
+	if localLogPath, err := syncthingLocalLogPathForSession(sessionName); err == nil {
+		if excerpt := readFileTail(localLogPath, 8192); excerpt != "" {
+			msg += fmt.Sprintf("\n--- local syncthing log tail ---\n%s", excerpt)
+		}
+	}
+	return errors.New(msg)
+}
+
+func syncthingLocalLogPathForSession(sessionName string) (string, error) {
+	home, err := localSyncthingHome(sessionName)
+	if err != nil {
+		return "", err
+	}
+	return localSyncthingLogPath(home)
+}
+
+func readFileTail(path string, maxBytes int) string {
+	if strings.TrimSpace(path) == "" || maxBytes <= 0 {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	if len(data) > maxBytes {
+		data = data[len(data)-maxBytes:]
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func syncthingPIDPath(sessionName string) (string, error) {
@@ -243,6 +354,26 @@ func syncthingPIDPath(sessionName string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "sync.pid"), nil
+}
+
+func syncthingReadyPath(sessionName string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".okdev", "syncthing", sessionName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "sync.ready"), nil
+}
+
+func syncthingReady(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func stopDetachedSyncthingSync(sessionName string) error {
@@ -318,7 +449,7 @@ func saveSyncthingTargetSessionState(sessionName string, state syncthingSessionT
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(state.PodName) == "" && strings.TrimSpace(state.CreatedAt) == "" {
+	if strings.TrimSpace(state.PodName) == "" && strings.TrimSpace(state.CreatedAt) == "" && strings.TrimSpace(state.ConfigHash) == "" {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -329,6 +460,29 @@ func saveSyncthingTargetSessionState(sessionName string, state syncthingSessionT
 		return err
 	}
 	return os.WriteFile(path, append(b, '\n'), 0o644)
+}
+
+func saveSyncthingConfigHash(sessionName, configHash string) error {
+	state, err := loadSyncthingTargetSessionState(sessionName)
+	if err != nil {
+		return err
+	}
+	state.ConfigHash = strings.TrimSpace(configHash)
+	return saveSyncthingTargetSessionState(sessionName, state)
+}
+
+func syncthingConfigChanged(sessionName, currentHash string) (bool, error) {
+	if strings.TrimSpace(currentHash) == "" {
+		return false, nil
+	}
+	state, err := loadSyncthingTargetSessionState(sessionName)
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(state.ConfigHash) == "" {
+		return true, nil
+	}
+	return state.ConfigHash != currentHash, nil
 }
 
 type podSummaryReader interface {
@@ -343,13 +497,14 @@ func ensureSyncthingTargetSessionState(ctx context.Context, k podSummaryReader, 
 	if err != nil {
 		return false, fmt.Errorf("get target pod summary: %w", err)
 	}
-	current := syncthingSessionTargetState{
-		PodName:   strings.TrimSpace(summary.Name),
-		CreatedAt: summary.CreatedAt.UTC().Format(time.RFC3339Nano),
-	}
 	previous, err := loadSyncthingTargetSessionState(sessionName)
 	if err != nil {
 		return false, err
+	}
+	current := syncthingSessionTargetState{
+		PodName:    strings.TrimSpace(summary.Name),
+		CreatedAt:  summary.CreatedAt.UTC().Format(time.RFC3339Nano),
+		ConfigHash: previous.ConfigHash,
 	}
 	resetNeeded := previous.PodName != "" && (previous.PodName != current.PodName || previous.CreatedAt != current.CreatedAt)
 	if resetNeeded {

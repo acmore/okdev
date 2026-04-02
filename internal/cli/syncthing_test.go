@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -177,6 +180,40 @@ func TestWriteLocalSTIgnoreOverridesExistingFileWhenExcludesExplicit(t *testing.
 	}
 }
 
+func TestStopLocalSyncthingForHomeStopsRecordedPID(t *testing.T) {
+	home := t.TempDir()
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	})
+	if err := writeLocalSyncthingPID(home, cmd.Process.Pid); err != nil {
+		t.Fatal(err)
+	}
+	if err := stopLocalSyncthingForHome(home); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected recorded process to exit")
+	case <-done:
+	}
+	pidPath, err := localSyncthingPIDPath(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Fatalf("expected pid file to be removed, got err=%v", err)
+	}
+}
+
 type syncthingExecRecorder struct {
 	namespace string
 	pod       string
@@ -240,7 +277,7 @@ func TestApplyManagedSyncthingFolderDefaults(t *testing.T) {
 		"id": "okdev-test",
 	}
 
-	applyManagedSyncthingFolderDefaults(folder, 300)
+	applyManagedSyncthingFolderDefaults(folder, 300, 0, false)
 
 	if got := folder["fsWatcherEnabled"]; got != true {
 		t.Fatalf("expected fsWatcherEnabled=true, got %#v", got)
@@ -250,6 +287,378 @@ func TestApplyManagedSyncthingFolderDefaults(t *testing.T) {
 	}
 	if got := folder["rescanIntervalS"]; got != 300 {
 		t.Fatalf("expected rescanIntervalS=%d, got %#v", 300, got)
+	}
+	if got := folder["maxConflicts"]; got != 0 {
+		t.Fatalf("expected maxConflicts=0, got %#v", got)
+	}
+	if got := folder["ignoreDelete"]; got != false {
+		t.Fatalf("expected ignoreDelete=false, got %#v", got)
+	}
+}
+
+func TestApplyManagedSyncthingFolderDefaultsCustomWatcherDelay(t *testing.T) {
+	folder := map[string]any{
+		"id": "okdev-test",
+	}
+
+	applyManagedSyncthingFolderDefaults(folder, 300, 5, false)
+
+	if got := folder["fsWatcherDelayS"]; got != 5 {
+		t.Fatalf("expected fsWatcherDelayS=5, got %#v", got)
+	}
+}
+
+func TestApplyManagedSyncthingFolderDefaultsIgnoreDelete(t *testing.T) {
+	folder := map[string]any{
+		"id": "okdev-test",
+	}
+
+	applyManagedSyncthingFolderDefaults(folder, 300, 0, true)
+
+	if got := folder["ignoreDelete"]; got != true {
+		t.Fatalf("expected ignoreDelete=true, got %#v", got)
+	}
+}
+
+func TestSyncthingOverrideFolder(t *testing.T) {
+	var called bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/rest/db/override") {
+			if r.URL.Query().Get("folder") != "okdev-test" {
+				t.Errorf("expected folder=okdev-test, got %s", r.URL.Query().Get("folder"))
+			}
+			called = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	if err := syncthingOverrideFolder(context.Background(), srv.URL, "k", "okdev-test"); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("expected /rest/db/override to be called")
+	}
+}
+
+func TestSyncthingRestart(t *testing.T) {
+	var called bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/rest/system/restart" {
+			called = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	if err := syncthingRestart(context.Background(), srv.URL, "k"); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("expected /rest/system/restart to be called")
+	}
+}
+
+func TestSyncthingRestartRequired(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/rest/config/restart-required" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"requiresRestart":true}`))
+	}))
+	defer srv.Close()
+
+	required, err := syncthingRestartRequired(context.Background(), srv.URL, "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !required {
+		t.Fatal("expected restart-required=true")
+	}
+}
+
+func TestRunTwoPhaseInitialSync(t *testing.T) {
+	// Track API calls to verify the two-phase protocol.
+	var (
+		mu             sync.Mutex
+		configPuts     int
+		overrideCalls  int
+		restartCalls   int
+		needBytesValue int64 = 1024 // starts non-zero, switches to 0 after override
+	)
+
+	localCfg := map[string]any{
+		"devices": []any{},
+		"folders": []any{},
+	}
+	remoteCfg := map[string]any{
+		"devices": []any{},
+		"folders": []any{},
+	}
+
+	handler := func(cfg *map[string]any) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			defer mu.Unlock()
+
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/config":
+				b, _ := json.Marshal(*cfg)
+				w.Write(b)
+			case r.Method == http.MethodPut && r.URL.Path == "/rest/config":
+				body, _ := io.ReadAll(r.Body)
+				var newCfg map[string]any
+				json.Unmarshal(body, &newCfg)
+				*cfg = newCfg
+				configPuts++
+				w.WriteHeader(http.StatusOK)
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/system/status":
+				w.Write([]byte(`{"myID":"DEVICE-ID"}`))
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/system/connections":
+				w.Write([]byte(`{"connections":{"REMOTE":{"connected":true},"LOCAL":{"connected":true}}}`))
+			case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/rest/db/override"):
+				overrideCalls++
+				// Simulate: after override, remote becomes in sync.
+				needBytesValue = 0
+				w.WriteHeader(http.StatusOK)
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/db/status":
+				fmt.Fprintf(w, `{"needBytes":%d}`, needBytesValue)
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/config/restart-required":
+				w.Write([]byte(`{"requiresRestart":false}`))
+			case r.Method == http.MethodPost && r.URL.Path == "/rest/system/restart":
+				restartCalls++
+				w.WriteHeader(http.StatusOK)
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}
+	}
+
+	localSrv := httptest.NewServer(handler(&localCfg))
+	defer localSrv.Close()
+	remoteSrv := httptest.NewServer(handler(&remoteCfg))
+	defer remoteSrv.Close()
+
+	var buf bytes.Buffer
+	ctx := context.Background()
+	sc := syncthingSyncConfig{
+		rescanInterval: 300,
+		watcherDelay:   1,
+		relays:         false,
+		compression:    false,
+	}
+
+	err := runTwoPhaseInitialSync(ctx, &buf, localSrv.URL, "k", "LOCAL", remoteSrv.URL, "k", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "/tmp/remote", sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify override was called at least twice (phase 1 + phase 1b).
+	if overrideCalls < 2 {
+		t.Fatalf("expected /rest/db/override to be called at least twice (phase 1 + 1b), got %d", overrideCalls)
+	}
+
+	// Verify neither instance reported restart-required in phase 2.
+	if restartCalls != 0 {
+		t.Fatalf("expected 0 restart calls when restart-required=false, got %d", restartCalls)
+	}
+
+	// Verify config was written multiple times (phase 1 + phase 2 for both sides).
+	// Phase 1 (2) + phase 1b (1) + phase 2 (2) = 5 config puts minimum.
+	if configPuts < 5 {
+		t.Fatalf("expected at least 5 config puts (including phase 1b deletion propagation), got %d", configPuts)
+	}
+
+	// Verify final local folder type is sendreceive.
+	folders, _ := syncthingObjectArray(localCfg, "folders")
+	if len(folders) == 0 {
+		t.Fatal("expected at least one folder in local config")
+	}
+	fm, _ := syncthingObjectMap(folders[0], "folders")
+	if got := asString(fm["type"]); got != "sendreceive" {
+		t.Fatalf("expected local folder type sendreceive after phase 2, got %s", got)
+	}
+	if got, ok := fm["ignoreDelete"].(bool); !ok || got {
+		t.Fatalf("expected ignoreDelete=false after phase 2, got %#v", fm["ignoreDelete"])
+	}
+
+	// Verify output mentions all phases.
+	out := buf.String()
+	if !strings.Contains(out, "Phase 1:") {
+		t.Fatal("expected output to mention Phase 1")
+	}
+	if !strings.Contains(out, "Phase 1b:") {
+		t.Fatal("expected output to mention Phase 1b (deletion propagation)")
+	}
+	if !strings.Contains(out, "Phase 2:") {
+		t.Fatal("expected output to mention Phase 2")
+	}
+}
+
+func TestRunTwoPhaseInitialSyncWaitsForDeletionConvergence(t *testing.T) {
+	// Simulate: phase 1 completes quickly, but phase 1b (deletion propagation)
+	// takes multiple ticks before the remote converges.
+	var (
+		mu                sync.Mutex
+		overrideCalls     int
+		phase1bNeedCalls  int
+		phase1bConvergeAt = 3 // converge after 3 needBytes polls in phase 1b
+		inPhase1b         bool
+	)
+
+	localCfg := map[string]any{"devices": []any{}, "folders": []any{}}
+	remoteCfg := map[string]any{"devices": []any{}, "folders": []any{}}
+
+	handler := func(cfg *map[string]any, isLocal bool) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			defer mu.Unlock()
+
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/config":
+				b, _ := json.Marshal(*cfg)
+				w.Write(b)
+			case r.Method == http.MethodPut && r.URL.Path == "/rest/config":
+				body, _ := io.ReadAll(r.Body)
+				var newCfg map[string]any
+				json.Unmarshal(body, &newCfg)
+				*cfg = newCfg
+				// Detect phase 1b: local config with sendonly + ignoreDelete=false.
+				if isLocal {
+					if folders, ok := newCfg["folders"].([]any); ok && len(folders) > 0 {
+						if fm, ok := folders[0].(map[string]any); ok {
+							if asString(fm["type"]) == "sendonly" {
+								if id, ok := fm["ignoreDelete"].(bool); ok && !id {
+									inPhase1b = true
+								}
+							}
+						}
+					}
+				}
+				w.WriteHeader(http.StatusOK)
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/system/status":
+				w.Write([]byte(`{"myID":"DEVICE-ID"}`))
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/system/connections":
+				w.Write([]byte(`{"connections":{"REMOTE":{"connected":true},"LOCAL":{"connected":true}}}`))
+			case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/rest/db/override"):
+				overrideCalls++
+				w.WriteHeader(http.StatusOK)
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/db/status":
+				need := int64(0)
+				if inPhase1b {
+					phase1bNeedCalls++
+					if phase1bNeedCalls < phase1bConvergeAt {
+						need = 512 // still converging
+					}
+					// else need = 0, converged
+				}
+				fmt.Fprintf(w, `{"needBytes":%d}`, need)
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/config/restart-required":
+				w.Write([]byte(`{"requiresRestart":false}`))
+			case r.Method == http.MethodPost && r.URL.Path == "/rest/system/restart":
+				w.WriteHeader(http.StatusOK)
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}
+	}
+
+	localSrv := httptest.NewServer(handler(&localCfg, true))
+	defer localSrv.Close()
+	remoteSrv := httptest.NewServer(handler(&remoteCfg, false))
+	defer remoteSrv.Close()
+
+	var buf bytes.Buffer
+	sc := syncthingSyncConfig{rescanInterval: 300, watcherDelay: 1}
+
+	err := runTwoPhaseInitialSync(context.Background(), &buf, localSrv.URL, "k", "LOCAL", remoteSrv.URL, "k", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "/tmp/remote", sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Phase 1b must have polled multiple times before converging.
+	if phase1bNeedCalls < phase1bConvergeAt {
+		t.Fatalf("expected at least %d phase 1b needBytes polls, got %d", phase1bConvergeAt, phase1bNeedCalls)
+	}
+
+	// Output should show non-zero needBytes during phase 1b.
+	out := buf.String()
+	if !strings.Contains(out, "deletion propagation: remote needBytes=512") {
+		t.Fatalf("expected phase 1b progress with needBytes=512, got: %s", out)
+	}
+}
+
+func TestRunTwoPhaseInitialSyncWaitsForPeerConnection(t *testing.T) {
+	var (
+		mu                sync.Mutex
+		overrideCalls     int
+		connectionPolls   int
+		connectionReadyAt = 3
+	)
+
+	localCfg := map[string]any{"devices": []any{}, "folders": []any{}}
+	remoteCfg := map[string]any{"devices": []any{}, "folders": []any{}}
+
+	handler := func(cfg *map[string]any) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			defer mu.Unlock()
+
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/config":
+				_ = json.NewEncoder(w).Encode(*cfg)
+			case r.Method == http.MethodPut && r.URL.Path == "/rest/config":
+				body, _ := io.ReadAll(r.Body)
+				var newCfg map[string]any
+				_ = json.Unmarshal(body, &newCfg)
+				*cfg = newCfg
+				w.WriteHeader(http.StatusOK)
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/system/status":
+				w.Write([]byte(`{"myID":"DEVICE-ID"}`))
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/system/connections":
+				connectionPolls++
+				connected := connectionPolls >= connectionReadyAt
+				fmt.Fprintf(w, `{"connections":{"REMOTE":{"connected":%t},"LOCAL":{"connected":%t}}}`, connected, connected)
+			case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/rest/db/override"):
+				overrideCalls++
+				w.WriteHeader(http.StatusOK)
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/db/status":
+				w.Write([]byte(`{"needBytes":0}`))
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/config/restart-required":
+				w.Write([]byte(`{"requiresRestart":false}`))
+			case r.Method == http.MethodPost && r.URL.Path == "/rest/system/restart":
+				w.WriteHeader(http.StatusOK)
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}
+	}
+
+	localSrv := httptest.NewServer(handler(&localCfg))
+	defer localSrv.Close()
+	remoteSrv := httptest.NewServer(handler(&remoteCfg))
+	defer remoteSrv.Close()
+
+	var buf bytes.Buffer
+	sc := syncthingSyncConfig{rescanInterval: 300, watcherDelay: 1}
+	err := runTwoPhaseInitialSync(context.Background(), &buf, localSrv.URL, "k", "LOCAL", remoteSrv.URL, "k", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "/tmp/remote", sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if connectionPolls < connectionReadyAt {
+		t.Fatalf("expected at least %d connection polls, got %d", connectionReadyAt, connectionPolls)
+	}
+	if overrideCalls == 0 {
+		t.Fatal("expected override calls during startup")
+	}
+	if !strings.Contains(buf.String(), "peer connection: local=false remote=false") {
+		t.Fatalf("expected connection progress output, got: %s", buf.String())
 	}
 }
 
@@ -334,6 +743,18 @@ func TestOpenLocalSyncthingLogRotatesOversizedFile(t *testing.T) {
 	}
 	if info.Size() != 0 {
 		t.Fatalf("expected empty active log after rotation, got %d", info.Size())
+	}
+}
+
+func TestNewLocalSyncthingServeCommandDisablesAutoUpgrade(t *testing.T) {
+	cmd := newLocalSyncthingServeCommand("/tmp/syncthing", "/tmp/home", "127.0.0.1:8384")
+	args := strings.Join(cmd.Args, " ")
+	if !strings.Contains(args, "--no-upgrade") {
+		t.Fatalf("expected --no-upgrade in args, got %q", args)
+	}
+	env := strings.Join(cmd.Env, "\n")
+	if !strings.Contains(env, "STNOUPGRADE=1") {
+		t.Fatalf("expected STNOUPGRADE=1 in env, got %q", env)
 	}
 }
 
@@ -444,10 +865,10 @@ func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, false, false); err != nil {
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, 0, false, false, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22001", "okdev-test", "/tmp/updated", "sendonly", 120, false, false); err != nil {
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22001", "okdev-test", "/tmp/updated", "sendonly", 120, 0, false, false, false); err != nil {
 		t.Fatal(err)
 	}
 	if len(putBodies) != 2 {
@@ -499,6 +920,12 @@ func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	if got := folder["fsWatcherEnabled"]; got != true {
 		t.Fatalf("unexpected fsWatcherEnabled %#v", got)
 	}
+	if got := folder["maxConflicts"]; got != float64(0) {
+		t.Fatalf("expected maxConflicts=0, got %#v", got)
+	}
+	if got := folder["ignoreDelete"]; got != false {
+		t.Fatalf("expected ignoreDelete=false, got %#v", got)
+	}
 	options, err := syncthingObjectMap(cfg["options"], "options")
 	if err != nil {
 		t.Fatal(err)
@@ -541,6 +968,11 @@ func TestEffectiveLocalExcludes(t *testing.T) {
 	if len(got) != 2 || got[0] != ".idea" || got[1] != "build" {
 		t.Fatalf("expected custom excludes, got %v", got)
 	}
+	for _, v := range effectiveLocalExcludes(nil) {
+		if v == ".git" {
+			t.Fatal("did not expect .git in default excludes")
+		}
+	}
 }
 
 func TestWriteSTIgnoreDefaultExcludes(t *testing.T) {
@@ -570,6 +1002,26 @@ func TestWriteLocalSTIgnorePropagatesStatError(t *testing.T) {
 	}
 }
 
+func TestLocalSyncthingLogShowsAPIPortConflict(t *testing.T) {
+	home := t.TempDir()
+	logPath, err := localSyncthingLogPath(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte("WARNING: Failed starting API: listen tcp 127.0.0.1:34337: bind: address already in use\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !localSyncthingLogShowsAPIPortConflict(home) {
+		t.Fatal("expected bind conflict to be detected")
+	}
+	if err := os.WriteFile(logPath, []byte("INFO: syncthing ready\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if localSyncthingLogShowsAPIPortConflict(home) {
+		t.Fatal("did not expect bind conflict to be detected")
+	}
+}
+
 func TestConfigureSyncthingPeerCompressionAlways(t *testing.T) {
 	cfg := map[string]any{
 		"devices": []any{},
@@ -594,7 +1046,7 @@ func TestConfigureSyncthingPeerCompressionAlways(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, false, true); err != nil {
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, 0, false, false, true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -614,6 +1066,51 @@ func TestConfigureSyncthingPeerCompressionAlways(t *testing.T) {
 	}
 }
 
+func TestConfigureSyncthingPeerUsesDynamicAddressWhenPeerAddrEmpty(t *testing.T) {
+	cfg := map[string]any{
+		"devices": []any{},
+		"folders": []any{},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/rest/config":
+			_ = json.NewEncoder(w).Encode(cfg)
+		case r.Method == http.MethodPut && r.URL.Path == "/rest/config":
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(body, &cfg); err != nil {
+				t.Fatal(err)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "REMOTE", "LOCAL", "", "okdev-test", "/tmp/remote", "receiveonly", 300, 0, false, false, false); err != nil {
+		t.Fatal(err)
+	}
+
+	devices, err := syncthingObjectArray(cfg, "devices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("expected 1 device, got %d", len(devices))
+	}
+	device, err := syncthingObjectMap(devices[0], "devices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addresses, ok := device["addresses"].([]any)
+	if !ok || len(addresses) != 1 || addresses[0] != "dynamic" {
+		t.Fatalf("expected dynamic device address, got %#v", device["addresses"])
+	}
+}
+
 func TestSyncthingServeHomePatternEscapesRegexMeta(t *testing.T) {
 	home := `/tmp/okdev/sync.[test]+(demo)?`
 	got := syncthingServeHomePattern(home)
@@ -621,4 +1118,156 @@ func TestSyncthingServeHomePatternEscapesRegexMeta(t *testing.T) {
 	if got != want {
 		t.Fatalf("syncthingServeHomePattern() = %q, want %q", got, want)
 	}
+}
+
+func TestReadLocalSyncthingEndpoint(t *testing.T) {
+	home := t.TempDir()
+	configXML := `<configuration>
+  <gui>
+    <apikey>test-key-123</apikey>
+    <address>127.0.0.1:8384</address>
+  </gui>
+</configuration>`
+	if err := os.WriteFile(filepath.Join(home, "config.xml"), []byte(configXML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	apiBase, apiKey, err := readLocalSyncthingEndpoint(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if apiKey != "test-key-123" {
+		t.Fatalf("expected apiKey=test-key-123, got %s", apiKey)
+	}
+	if apiBase != "http://127.0.0.1:8384" {
+		t.Fatalf("expected apiBase=http://127.0.0.1:8384, got %s", apiBase)
+	}
+}
+
+func TestReadLocalSyncthingEndpointPrefersRuntimeEndpointFile(t *testing.T) {
+	home := t.TempDir()
+	configXML := `<configuration>
+  <gui>
+    <apikey>test-key-123</apikey>
+    <address>127.0.0.1:8384</address>
+  </gui>
+</configuration>`
+	if err := os.WriteFile(filepath.Join(home, "config.xml"), []byte(configXML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeLocalSyncthingEndpoint(home, "http://127.0.0.1:49200"); err != nil {
+		t.Fatal(err)
+	}
+
+	apiBase, apiKey, err := readLocalSyncthingEndpoint(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if apiKey != "test-key-123" {
+		t.Fatalf("expected apiKey=test-key-123, got %s", apiKey)
+	}
+	if apiBase != "http://127.0.0.1:49200" {
+		t.Fatalf("expected apiBase=http://127.0.0.1:49200, got %s", apiBase)
+	}
+}
+
+func TestReadLocalSyncthingEndpointMissing(t *testing.T) {
+	home := t.TempDir()
+	_, _, err := readLocalSyncthingEndpoint(home)
+	if err == nil {
+		t.Fatal("expected error for missing config")
+	}
+}
+
+func TestWarnSyncHealthStopped(t *testing.T) {
+	// Use a non-existent session name so the PID file won't exist.
+	var buf bytes.Buffer
+	status := warnSyncHealth(&buf, "nonexistent-session-for-test")
+	if status != syncHealthStopped {
+		t.Fatalf("expected stopped, got %s", status)
+	}
+	if !strings.Contains(buf.String(), "sync is not running") {
+		t.Fatalf("expected warning message, got: %s", buf.String())
+	}
+}
+
+type fakeExecClient struct {
+	scripts []string
+}
+
+func (f *fakeExecClient) ExecShInContainer(_ context.Context, _, _, _, script string) ([]byte, error) {
+	f.scripts = append(f.scripts, script)
+	return nil, nil
+}
+
+func TestResetRemoteWorkspace(t *testing.T) {
+	client := &fakeExecClient{}
+	ctx := context.Background()
+
+	t.Run("basic reset without preserve", func(t *testing.T) {
+		client.scripts = nil
+		if err := resetRemoteWorkspace(ctx, client, "ns", "pod", "/workspace", nil); err != nil {
+			t.Fatal(err)
+		}
+		if len(client.scripts) != 1 {
+			t.Fatalf("expected 1 exec call, got %d", len(client.scripts))
+		}
+		script := client.scripts[0]
+		if !strings.Contains(script, "find") || !strings.Contains(script, "-mindepth 1 -maxdepth 1") {
+			t.Fatalf("expected find command in script, got: %s", script)
+		}
+		if strings.Contains(script, "mkdir -p") {
+			t.Fatalf("should not create preserve dir without preserve paths")
+		}
+	})
+
+	t.Run("reset with preserve paths", func(t *testing.T) {
+		client.scripts = nil
+		if err := resetRemoteWorkspace(ctx, client, "ns", "pod", "/workspace", []string{".venv", ".cache"}); err != nil {
+			t.Fatal(err)
+		}
+		script := client.scripts[0]
+		if !strings.Contains(script, ".okdev-reset-preserve") {
+			t.Fatalf("expected preserve dir reference, got: %s", script)
+		}
+		if !strings.Contains(script, ".venv") {
+			t.Fatalf("expected .venv in script, got: %s", script)
+		}
+		if !strings.Contains(script, ".cache") {
+			t.Fatalf("expected .cache in script, got: %s", script)
+		}
+		// Verify both move (preserve) and restore phases exist.
+		venvCount := strings.Count(script, ".venv")
+		if venvCount < 4 {
+			t.Fatalf("expected .venv referenced at least 4 times (preserve check+move, restore check+move), got %d in: %s", venvCount, script)
+		}
+		// Verify cleanup.
+		if !strings.Contains(script, "rm -rf") || !strings.Contains(script, ".okdev-reset-preserve") {
+			t.Fatalf("expected preserve dir cleanup, got: %s", script)
+		}
+	})
+
+	t.Run("rejects root path", func(t *testing.T) {
+		if err := resetRemoteWorkspace(ctx, client, "ns", "pod", "/", nil); err == nil {
+			t.Fatal("expected error for root path")
+		}
+	})
+
+	t.Run("rejects path traversal in preservePaths", func(t *testing.T) {
+		for _, p := range []string{"../../etc", "../data", "foo/../../bar", "/absolute/path"} {
+			if err := resetRemoteWorkspace(ctx, client, "ns", "pod", "/workspace", []string{p}); err == nil {
+				t.Fatalf("expected error for preservePath %q", p)
+			}
+		}
+	})
+
+	t.Run("allows nested preserve paths", func(t *testing.T) {
+		client.scripts = nil
+		if err := resetRemoteWorkspace(ctx, client, "ns", "pod", "/workspace", []string{"data/cache", ".local/share"}); err != nil {
+			t.Fatal(err)
+		}
+		if len(client.scripts) != 1 {
+			t.Fatalf("expected 1 exec call, got %d", len(client.scripts))
+		}
+	})
 }

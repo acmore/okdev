@@ -5,6 +5,7 @@ OKDEV_BIN="${OKDEV_BIN:-$(pwd)/bin/okdev}"
 SIDECAR_IMAGE="${SIDECAR_IMAGE:-okdev-sidecar:v0.0.0-e2e}"
 SESSION_NAME="${SESSION_NAME:-e2e-ptjob}"
 NAMESPACE="${NAMESPACE:-default}"
+PVC_NAME="${PVC_NAME:-${SESSION_NAME}-workspace}"
 WORKDIR="$(mktemp -d)"
 HOME_DIR="${HOME_DIR:-$WORKDIR/home}"
 CFG_PATH="$WORKDIR/.okdev/okdev.yaml"
@@ -26,7 +27,18 @@ export HOME="$HOME_DIR"
 export KUBECONFIG="$KUBECONFIG_PATH"
 
 cleanup() {
+  status=$?
+  if [[ "$status" -ne 0 ]]; then
+    echo "--- local okdev logs ---"
+    ls -R "$HOME_DIR/.okdev" 2>/dev/null || true
+    echo "--- background sync log ---"
+    cat "$HOME_DIR/.okdev/logs/syncthing-${SESSION_NAME}.log" 2>/dev/null || true
+    echo "--- local syncthing log ---"
+    cat "$HOME_DIR/.okdev/syncthing/${SESSION_NAME}/local.log" 2>/dev/null || true
+  fi
   "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes >/dev/null 2>&1 || true
+  kubectl -n "$NAMESPACE" delete pvc "$PVC_NAME" >/dev/null 2>&1 || true
+  return "$status"
 }
 trap cleanup EXIT
 
@@ -48,7 +60,18 @@ MANIFEST_PATH="$WORKDIR/.okdev/pytorchjob.yaml"
 sed -i 's/name: dev/name: pytorch/g' "$MANIFEST_PATH"
 sed -i 's/image: # TODO:.*/image: ubuntu:22.04/g' "$MANIFEST_PATH"
 sed -i 's/command: \["sleep", "infinity"\]/command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]/g' "$MANIFEST_PATH"
+perl -0pi -e 's/- name: workspace\n              emptyDir: \{\}/- name: workspace\n              persistentVolumeClaim:\n                claimName: '"$PVC_NAME"'/g' "$MANIFEST_PATH"
 sed -i 's/container: dev/container: pytorch/' "$CFG_PATH"
+python3 - <<'PY' "$CFG_PATH"
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+old = '      - path: "spec.pytorchReplicaSpecs.Worker.template"\n'
+new = '      - path: "spec.pytorchReplicaSpecs.Worker.template"\n        sidecar: false\n'
+if old not in text:
+    raise SystemExit("worker inject path not found")
+path.write_text(text.replace(old, new, 1))
+PY
 
 # Set 2 worker replicas for multi-pod testing (1 master + 2 workers = 3 pods).
 sed -i '/Worker:/,/replicas:/ s/replicas: 1/replicas: 2/' "$MANIFEST_PATH"
@@ -73,16 +96,44 @@ cat "$MANIFEST_PATH"
 
 echo "hello from pytorchjob e2e" >"$SYNC_DIR/hello.txt"
 
+echo "Creating shared workspace PVC"
+kubectl -n "$NAMESPACE" apply -f - <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${PVC_NAME}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+EOF
+
 echo "Starting PyTorchJob smoke session (1 master + 2 workers)"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m
 
 echo "Checking status"
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details
+STATUS_OUTPUT=""
+for i in $(seq 1 15); do
+  STATUS_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
+  echo "$STATUS_OUTPUT"
+  if [[ "$STATUS_OUTPUT" == *"health: active"* ]]; then
+    break
+  fi
+  if [[ "$i" -eq 15 ]]; then
+    echo "ERROR: expected status --details to report active sync" >&2
+    exit 1
+  fi
+  echo "Sync health not active yet, retrying status check ($i/15)"
+  sleep 2
+done
+echo "Sync health status verified"
 
 echo "Waiting for synced file to appear remotely with correct content"
 SYNC_OK=false
 for i in $(seq 1 30); do
-  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --setup-key --cmd 'sh -lc "if [ -f /workspace/hello.txt ]; then cat /workspace/hello.txt; fi"' || true)
+  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'if [ -f /workspace/hello.txt ]; then cat /workspace/hello.txt; fi' || true)
   if [[ "$REMOTE_CONTENT" == "hello from pytorchjob e2e" ]]; then
     SYNC_OK=true
     echo "Sync verified on attempt $i"
@@ -192,6 +243,84 @@ for WPOD in $WORKER_PODS; do
   echo "preStop handler verified on $WPOD"
 done
 
+echo "Creating remote-only stale file before workspace reset"
+kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- sh -lc 'mkdir -p /workspace/generated && echo stale > /workspace/generated/stale.txt'
+for WPOD in $WORKER_PODS; do
+  kubectl -n "$NAMESPACE" exec "$WPOD" -c pytorch -- test -f /workspace/generated/stale.txt
+done
+
+echo "Updating local workspace before reset"
+echo "hello after reset" >"$SYNC_DIR/hello.txt"
+echo "fresh from local after reset" >"$SYNC_DIR/fresh.txt"
+
+echo "Resetting remote workspace from local"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync reset-remote
+
+echo "Waiting for local-authoritative workspace to converge after reset"
+RESET_OK=false
+for i in $(seq 1 45); do
+  REMOTE_HELLO=$(kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- sh -lc 'cat /workspace/hello.txt 2>/dev/null || true')
+  REMOTE_FRESH=$(kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- sh -lc 'cat /workspace/fresh.txt 2>/dev/null || true')
+  if [[ "$REMOTE_HELLO" == "hello after reset" && "$REMOTE_FRESH" == "fresh from local after reset" ]]; then
+    RESET_OK=true
+    echo "Workspace reset converged on attempt $i"
+    break
+  fi
+  echo "Reset convergence poll attempt $i/45: workspace not ready yet"
+  sleep 2
+done
+
+if [[ "$RESET_OK" != "true" ]]; then
+  echo "ERROR: workspace did not converge after reset-remote" >&2
+  exit 1
+fi
+
+echo "Verifying stale remote-only file was removed from shared workspace"
+if kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- test -e /workspace/generated/stale.txt; then
+  echo "ERROR: stale remote-only file still exists on master after reset-remote" >&2
+  exit 1
+fi
+for WPOD in $WORKER_PODS; do
+  if kubectl -n "$NAMESPACE" exec "$WPOD" -c pytorch -- test -e /workspace/generated/stale.txt; then
+    echo "ERROR: stale remote-only file still exists on worker $WPOD after reset-remote" >&2
+    exit 1
+  fi
+done
+echo "Workspace reset verified across all pods"
+
+echo "Verifying sync remains active after reset"
+POST_RESET_STATUS=""
+for i in $(seq 1 15); do
+  POST_RESET_STATUS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
+  if [[ "$POST_RESET_STATUS" == *"health: active"* ]]; then
+    break
+  fi
+  if [[ "$i" -eq 15 ]]; then
+    echo "ERROR: expected sync to remain active after reset-remote" >&2
+    echo "$POST_RESET_STATUS" >&2
+    exit 1
+  fi
+  sleep 2
+done
+
+echo "Verifying steady-state sync still propagates after reset"
+echo "steady state after reset" >"$SYNC_DIR/post-reset.txt"
+POST_RESET_SYNC_OK=false
+for i in $(seq 1 30); do
+  POST_RESET_CONTENT=$(kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- sh -lc 'cat /workspace/post-reset.txt 2>/dev/null || true')
+  if [[ "$POST_RESET_CONTENT" == "steady state after reset" ]]; then
+    POST_RESET_SYNC_OK=true
+    echo "Post-reset steady-state sync verified on attempt $i"
+    break
+  fi
+  echo "Post-reset sync poll attempt $i/30: file not ready yet"
+  sleep 2
+done
+if [[ "$POST_RESET_SYNC_OK" != "true" ]]; then
+  echo "ERROR: expected post-reset local change to sync to remote workspace" >&2
+  exit 1
+fi
+
 echo "Changing controller workload spec to trigger drift detection"
 sed -i 's/image: ubuntu:22.04/image: ubuntu:24.04/g' "$MANIFEST_PATH"
 
@@ -204,26 +333,54 @@ if [[ "$DRIFT_STATUS" -eq 0 ]]; then
   echo "ERROR: expected drifted controller workload to require --reconcile" >&2
   exit 1
 fi
-if [[ "$DRIFT_OUTPUT" != *"workload spec changed; re-run with --reconcile to apply"* ]]; then
+if [[ "$DRIFT_OUTPUT" != *"workload spec changed; re-run with --reconcile to recreate"* ]]; then
   echo "ERROR: unexpected controller drift output" >&2
   echo "$DRIFT_OUTPUT" >&2
   exit 1
 fi
 echo "Controller drift guidance verified"
 
-echo "Reapplying PyTorchJob via --reconcile"
+echo "Recreating PyTorchJob via --reconcile"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --reconcile --wait-timeout 5m
 
-echo "Verifying PyTorchJob spec was updated in place"
-MASTER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$SESSION_NAME" \
-  -o jsonpath='{.spec.pytorchReplicaSpecs.Master.template.spec.containers[0].image}')
-WORKER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$SESSION_NAME" \
-  -o jsonpath='{.spec.pytorchReplicaSpecs.Worker.template.spec.containers[0].image}')
-if [[ "$MASTER_IMAGE" != "ubuntu:24.04" || "$WORKER_IMAGE" != "ubuntu:24.04" ]]; then
-  echo "ERROR: expected PyTorchJob images to update to ubuntu:24.04, got master='$MASTER_IMAGE' worker='$WORKER_IMAGE'" >&2
+echo "Verifying PyTorchJob spec and live pods were recreated with the new image"
+RECONCILE_OK=false
+for i in $(seq 1 30); do
+  MASTER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$SESSION_NAME" \
+    -o jsonpath='{.spec.pytorchReplicaSpecs.Master.template.spec.containers[0].image}')
+  WORKER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$SESSION_NAME" \
+    -o jsonpath='{.spec.pytorchReplicaSpecs.Worker.template.spec.containers[0].image}')
+  MASTER_POD_IMAGE=$(kubectl -n "$NAMESPACE" get pod "$MASTER_POD" \
+    -o jsonpath='{.spec.containers[?(@.name=="pytorch")].image}')
+  LIVE_WORKER_OK=true
+  for WPOD in $WORKER_PODS; do
+    WPOD_IMAGE=$(kubectl -n "$NAMESPACE" get pod "$WPOD" \
+      -o jsonpath='{.spec.containers[?(@.name=="pytorch")].image}')
+    if [[ "$WPOD_IMAGE" != "ubuntu:24.04" ]]; then
+      LIVE_WORKER_OK=false
+      break
+    fi
+  done
+  if [[ "$MASTER_IMAGE" == "ubuntu:24.04" && "$WORKER_IMAGE" == "ubuntu:24.04" && "$MASTER_POD_IMAGE" == "ubuntu:24.04" && "$LIVE_WORKER_OK" == "true" ]]; then
+    RECONCILE_OK=true
+    echo "Controller reconcile verified on attempt $i"
+    break
+  fi
+  echo "Reconcile poll attempt $i/30: live workload not updated yet"
+  sleep 2
+done
+if [[ "$RECONCILE_OK" != "true" ]]; then
+  echo "ERROR: expected PyTorchJob spec and live pods to update to ubuntu:24.04, got master='$MASTER_IMAGE' worker='$WORKER_IMAGE' masterPod='$MASTER_POD_IMAGE'" >&2
   exit 1
 fi
-echo "Controller reconcile verified"
+
+echo "Verifying session remains healthy after reconcile"
+RECONCILE_STATUS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
+if [[ "$RECONCILE_STATUS" != *"health: active"* ]]; then
+  echo "ERROR: expected sync health to remain active after controller reconcile" >&2
+  echo "$RECONCILE_STATUS" >&2
+  exit 1
+fi
 
 echo "Testing explicit okdev down"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes

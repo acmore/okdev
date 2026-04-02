@@ -28,9 +28,19 @@ export HOME="$HOME_DIR"
 export KUBECONFIG="$KUBECONFIG_PATH"
 
 cleanup() {
+  status=$?
+  if [[ "$status" -ne 0 ]]; then
+    echo "--- local okdev logs ---"
+    ls -R "$HOME_DIR/.okdev" 2>/dev/null || true
+    echo "--- background sync log ---"
+    cat "$HOME_DIR/.okdev/logs/syncthing-${SESSION_NAME}.log" 2>/dev/null || true
+    echo "--- local syncthing log ---"
+    cat "$HOME_DIR/.okdev/syncthing/${SESSION_NAME}/local.log" 2>/dev/null || true
+  fi
   if [[ -n "$CFG_PATH" && -f "$CFG_PATH" ]]; then
     "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes >/dev/null 2>&1 || true
   fi
+  return "$status"
 }
 trap cleanup EXIT
 
@@ -69,12 +79,26 @@ echo "Starting kind smoke session"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m
 
 echo "Checking status"
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details
+STATUS_OUTPUT=""
+for i in $(seq 1 15); do
+  STATUS_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
+  echo "$STATUS_OUTPUT"
+  if [[ "$STATUS_OUTPUT" == *"health: active"* ]]; then
+    break
+  fi
+  if [[ "$i" -eq 15 ]]; then
+    echo "ERROR: expected status --details to report active sync" >&2
+    exit 1
+  fi
+  echo "Sync health not active yet, retrying status check ($i/15)"
+  sleep 2
+done
+echo "Sync health status verified"
 
 echo "Waiting for synced file to appear remotely with correct content"
 SYNC_OK=false
 for i in $(seq 1 30); do
-  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --setup-key --cmd 'sh -lc "if [ -f /workspace/hello.txt ]; then cat /workspace/hello.txt; fi"' || true)
+  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'if [ -f /workspace/hello.txt ]; then cat /workspace/hello.txt; fi' || true)
   if [[ "$REMOTE_CONTENT" == "hello from okdev e2e" ]]; then
     SYNC_OK=true
     echo "Sync verified on attempt $i"
@@ -91,7 +115,13 @@ fi
 
 echo "Verifying remote shell and logs"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --setup-key --cmd 'test -f /workspace/hello.txt'
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" logs --follow=false --tail 10 >/dev/null
+LOG_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" logs --all --follow=false --tail 10)
+if [[ "$LOG_OUTPUT" != *"[okdev-sidecar]"* ]]; then
+  echo "ERROR: expected okdev logs --all to include sidecar output" >&2
+  echo "Got: $LOG_OUTPUT" >&2
+  exit 1
+fi
+echo "logs output verified"
 
 echo "Testing exec --cmd"
 EXEC_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'echo exec-ok')

@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  smoke:
+  kind:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -27,44 +27,17 @@ jobs:
       - name: Load sidecar image into kind
         run: kind load docker-image okdev-sidecar:v0.0.0-e2e --name okdev-e2e
 
-      - name: Run smoke test
+      - name: Run pod smoke test
         run: bash scripts/e2e_kind_smoke.sh
 
-      - name: Dump cluster state on failure
-        if: failure()
-        run: |
-          kubectl get pods -A -o wide || true
-          kubectl get events -A --sort-by=.lastTimestamp | tail -n 200 || true
-          kubectl -n default logs okdev-e2e-smoke -c okdev-sidecar || true
-          kubectl -n default logs okdev-e2e-smoke -c dev || true
-          kubectl -n default exec okdev-e2e-smoke -c dev -- sh -lc 'ps aux || ps' || true
-          kubectl -n default exec okdev-e2e-smoke -c dev -- sh -lc 'ls -R /var/okdev /tmp 2>/dev/null | sed -n "1,200p"' || true
-          echo "--- syncthing state ---"
-          kubectl -n default exec okdev-e2e-smoke -c okdev-sidecar -- sh -c 'cat /var/okdev/syncthing/config.xml 2>/dev/null || true'
-          kubectl -n default exec okdev-e2e-smoke -c okdev-sidecar -- sh -c 'ls -la /var/okdev/syncthing/ 2>/dev/null || true'
+      - name: Run deployment test
+        run: bash scripts/e2e_kind_deployment.sh
 
-  pytorchjob:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
+      - name: Run job test
+        run: bash scripts/e2e_kind_job.sh
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - uses: helm/kind-action@v1.12.0
-        with:
-          cluster_name: okdev-e2e
-
-      - name: Build okdev CLI
-        run: go build -o bin/okdev ./cmd/okdev
-
-      - name: Build sidecar image
-        run: docker build -f infra/sidecar/Dockerfile -t okdev-sidecar:v0.0.0-e2e .
-
-      - name: Load sidecar image into kind
-        run: kind load docker-image okdev-sidecar:v0.0.0-e2e --name okdev-e2e
+      - name: Run multi-session test
+        run: bash scripts/e2e_kind_multi_session.sh
 
       - name: Install Kubeflow Training Operator
         run: |
@@ -72,33 +45,28 @@ jobs:
           echo "Waiting for training-operator controller to be ready"
           kubectl -n kubeflow wait --for=condition=Available deployment/training-operator --timeout=120s
 
-      - name: Run PyTorchJob smoke test
+      - name: Run PyTorchJob test
         run: bash scripts/e2e_kind_pytorchjob.sh
 
       - name: Dump cluster state on failure
         if: failure()
         run: |
           kubectl get pods -A -o wide || true
+          kubectl get deployments -A -o wide || true
+          kubectl get jobs -A -o wide || true
           kubectl get pytorchjobs -A -o wide || true
-          kubectl get events -A --sort-by=.lastTimestamp | tail -n 200 || true
-          for pod in $(kubectl -n default get pods -l training.kubeflow.org/job-name=e2e-ptjob -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
-            echo "--- $pod logs (okdev-sidecar) ---"
+          kubectl get pvc -A -o wide || true
+          kubectl get events -A --sort-by=.lastTimestamp | tail -n 300 || true
+          for pod in $(kubectl -n default get pods -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+            echo "--- ${pod} describe ---"
+            kubectl -n default describe pod "$pod" || true
+            echo "--- ${pod} logs: okdev-sidecar ---"
             kubectl -n default logs "$pod" -c okdev-sidecar || true
-            echo "--- $pod logs (pytorch) ---"
-            kubectl -n default logs "$pod" -c pytorch || true
-            echo "--- $pod lifecycle markers ---"
-            kubectl -n default exec "$pod" -c pytorch -- sh -c 'ls -la /tmp/post-create-marker /tmp/post-sync-marker 2>&1 || true'
-            echo "--- $pod annotations ---"
-            kubectl -n default get pod "$pod" -o jsonpath='{.metadata.annotations}' 2>/dev/null || true
-            echo ""
-            echo "--- $pod preStop handler ---"
-            kubectl -n default get pod "$pod" -o jsonpath='{.spec.containers[?(@.name=="pytorch")].lifecycle}' 2>/dev/null || true
-            echo ""
+            for container in dev pytorch; do
+              if kubectl -n default get pod "$pod" -o jsonpath="{.spec.containers[?(@.name==\"${container}\")].name}" 2>/dev/null | grep -q .; then
+                echo "--- ${pod} logs: ${container} ---"
+                kubectl -n default logs "$pod" -c "$container" || true
+              fi
+            done
           done
-          MASTER_POD=$(kubectl -n default get pods -l training.kubeflow.org/job-name=e2e-ptjob,training.kubeflow.org/replica-type=master -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-          if [[ -n "$MASTER_POD" ]]; then
-            echo "--- syncthing state (master) ---"
-            kubectl -n default exec "$MASTER_POD" -c okdev-sidecar -- sh -c 'cat /var/okdev/syncthing/config.xml 2>/dev/null || true'
-            kubectl -n default exec "$MASTER_POD" -c okdev-sidecar -- sh -c 'ls -la /var/okdev/syncthing/ 2>/dev/null || true'
-          fi
           kubectl -n kubeflow logs deployment/training-operator --tail=100 || true

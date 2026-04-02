@@ -19,7 +19,7 @@ func newUpgradeCmd() *cobra.Command {
 				return fmt.Errorf("check latest version: %w", err)
 			}
 			current := version.Version
-			if "v"+current == latest || current == latest {
+			if !upgrade.ShouldUpgrade(current, latest) {
 				fmt.Fprintln(cmd.OutOrStdout(), "Already up to date:", current)
 				return nil
 			}

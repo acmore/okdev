@@ -116,6 +116,31 @@ func TestSyncHelpers(t *testing.T) {
 	}
 }
 
+func TestSyncStartMode(t *testing.T) {
+	cases := []struct {
+		name           string
+		resetWorkspace bool
+		targetReset    bool
+		hasConfigState bool
+		configChanged  bool
+		active         bool
+		want           string
+	}{
+		{name: "first bootstrap", hasConfigState: false, active: false, want: "two-phase"},
+		{name: "explicit reset", resetWorkspace: true, hasConfigState: true, configChanged: true, active: true, want: "two-phase"},
+		{name: "target recreated", targetReset: true, hasConfigState: true, active: false, want: "two-phase"},
+		{name: "config changed on active session", hasConfigState: true, configChanged: true, active: true, want: "bi"},
+		{name: "daemon recovery", hasConfigState: true, active: false, want: "bi"},
+		{name: "steady state", hasConfigState: true, active: true, want: "bi"},
+	}
+
+	for _, tc := range cases {
+		if got := syncStartMode(tc.resetWorkspace, tc.targetReset, tc.hasConfigState, tc.configChanged, tc.active); got != tc.want {
+			t.Fatalf("%s: got %q want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestSyncPairsSummary(t *testing.T) {
 	if got := syncPairsSummary(nil, "->"); got != "no paths" {
 		t.Fatalf("unexpected empty summary %q", got)

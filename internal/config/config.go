@@ -112,6 +112,7 @@ type SyncSpec struct {
 	Paths         []string      `yaml:"paths"`
 	Exclude       []string      `yaml:"exclude"`
 	RemoteExclude []string      `yaml:"remoteExclude"`
+	PreservePaths []string      `yaml:"preservePaths"`
 	Engine        string        `yaml:"engine"`
 	Syncthing     SyncthingSpec `yaml:"syncthing"`
 }
@@ -121,6 +122,7 @@ type SyncthingSpec struct {
 	AutoInstall           *bool  `yaml:"autoInstall"`
 	Image                 string `yaml:"image"`
 	RescanIntervalSeconds int    `yaml:"rescanIntervalSeconds"`
+	WatcherDelaySeconds   int    `yaml:"watcherDelaySeconds"`
 	RelaysEnabled         bool   `yaml:"relaysEnabled"`
 	Compression           bool   `yaml:"compression"`
 }

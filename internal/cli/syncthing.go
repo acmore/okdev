@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -36,7 +38,7 @@ const (
 // defaultSyncExcludes are applied when the user has not configured any
 // spec.sync.exclude patterns.  They prevent common large or noisy
 // directories from being synced by default.
-var defaultSyncExcludes = []string{".git", "node_modules", "vendor", "__pycache__", ".DS_Store"}
+var defaultSyncExcludes = []string{"node_modules", "vendor", "__pycache__", ".DS_Store"}
 
 var syncthingHTTPClient = &http.Client{Timeout: syncthingHTTPClientTimeout}
 
@@ -95,34 +97,22 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	if err != nil {
 		return err
 	}
-	localGUIAddr, localAPIBase, err := allocateLocalSyncthingAPIEndpoint()
-	if err != nil {
-		return err
-	}
-	if err := startLocalSyncthing(localBinary, localHome, localGUIAddr); err != nil {
-		return err
-	}
-
 	cancelPF, localRemoteAPIBase, localRemotePeerAddr, err := startSyncthingPortForward(opts, namespace, pod)
 	if err != nil {
 		return err
 	}
 	defer cancelPF()
 
-	localKey, err := readLocalSyncthingAPIKey(localHome)
-	if err != nil {
-		return err
-	}
 	remoteKey, err := readRemoteSyncthingAPIKey(ctx, k, namespace, pod)
 	if err != nil {
 		return err
 	}
 
-	localBase := localAPIBase
-	remoteBase := localRemoteAPIBase
-	if err := waitSyncthingAPI(ctx, localBase, localKey, syncthingAPIReadyTimeout); err != nil {
-		return fmt.Errorf("local syncthing not ready: %w", err)
+	localBase, localKey, localPID, err := startAndWaitForLocalSyncthing(ctx, localBinary, localHome)
+	if err != nil {
+		return err
 	}
+	remoteBase := localRemoteAPIBase
 	if err := waitSyncthingAPI(ctx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
 		return fmt.Errorf("remote syncthing not ready: %w", err)
 	}
@@ -136,14 +126,35 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		return err
 	}
 
-	folderTypeLocal, folderTypeRemote := folderTypesForMode(mode)
 	folderID := "okdev-" + sessionName
-
-	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds, cfg.Spec.Sync.Syncthing.RelaysEnabled, cfg.Spec.Sync.Syncthing.Compression); err != nil {
-		return fmt.Errorf("configure local syncthing: %w", err)
+	syncCfg := syncthingSyncConfig{
+		rescanInterval: cfg.Spec.Sync.Syncthing.RescanIntervalSeconds,
+		watcherDelay:   cfg.Spec.Sync.Syncthing.WatcherDelaySeconds,
+		relays:         cfg.Spec.Sync.Syncthing.RelaysEnabled,
+		compression:    cfg.Spec.Sync.Syncthing.Compression,
 	}
-	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, localRemotePeerAddr, folderID, pair.Remote, folderTypeRemote, cfg.Spec.Sync.Syncthing.RescanIntervalSeconds, cfg.Spec.Sync.Syncthing.RelaysEnabled, cfg.Spec.Sync.Syncthing.Compression); err != nil {
-		return fmt.Errorf("configure remote syncthing: %w", err)
+
+	if mode == "two-phase" {
+		// The bootstrap context has a short timeout (syncthingBootstrapTimeout).
+		// Two-phase initial sync may take much longer, so use a dedicated context.
+		twoPhaseCtx, twoPhaseCancel := context.WithTimeout(context.Background(), initialSyncTimeout)
+		defer twoPhaseCancel()
+		if err := runTwoPhaseInitialSync(twoPhaseCtx, cmd.OutOrStdout(), localBase, localKey, localID, remoteBase, remoteKey, remoteID, localRemotePeerAddr, folderID, absLocal, pair.Remote, syncCfg); err != nil {
+			return fmt.Errorf("two-phase initial sync: %w", err)
+		}
+		mode = "bi"
+	} else {
+		folderTypeLocal, folderTypeRemote := folderTypesForMode(mode)
+		if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression); err != nil {
+			return fmt.Errorf("configure local syncthing: %w", err)
+		}
+		if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, "", folderID, pair.Remote, folderTypeRemote, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression); err != nil {
+			return fmt.Errorf("configure remote syncthing: %w", err)
+		}
+	}
+
+	if err := saveSyncthingConfigHash(sessionName, syncthingSessionConfigHash(cfg, absLocal, pair.Remote)); err != nil {
+		return fmt.Errorf("persist syncthing config state: %w", err)
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync active (%s) for session %s\n", mode, sessionName)
@@ -151,18 +162,71 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	fmt.Fprintf(cmd.OutOrStdout(), "Remote folder: %s\n", pair.Remote)
 	fmt.Fprintf(cmd.OutOrStdout(), "Local binary: %s\n", localBinary)
 	fmt.Fprintln(cmd.OutOrStdout(), "Press Ctrl+C to stop sync tunnel and local syncthing.")
+	if err := markSyncthingReady(sessionName); err != nil {
+		return fmt.Errorf("mark syncthing ready: %w", err)
+	}
 	progressCtx, stopProgress := context.WithCancel(context.Background())
 	defer stopProgress()
 	go runSyncthingProgressReporter(progressCtx, cmd.OutOrStdout(), localBase, localKey, remoteBase, remoteKey, folderID, localID, remoteID)
 
+	// The detached sync child should survive the parent CLI process exiting.
+	signal.Ignore(syscall.SIGHUP)
+	defer signal.Reset(syscall.SIGHUP)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
 	<-sigCh
-	if err := stopLocalSyncthing(localBinary, localHome); err != nil {
+	if err := stopOwnedLocalSyncthing(localHome, localPID); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to stop local syncthing: %v\n", err)
 	}
 	return nil
+}
+
+func startAndWaitForLocalSyncthing(ctx context.Context, binary, home string) (string, string, int, error) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		localGUIAddr, localAPIBase, err := allocateLocalSyncthingAPIEndpoint()
+		if err != nil {
+			return "", "", 0, err
+		}
+		localPID, err := startLocalSyncthing(binary, home, localGUIAddr)
+		if err != nil {
+			return "", "", 0, err
+		}
+		localKey, err := readLocalSyncthingAPIKey(home)
+		if err != nil {
+			_ = stopOwnedLocalSyncthing(home, localPID)
+			return "", "", 0, err
+		}
+		if err := waitSyncthingAPI(ctx, localAPIBase, localKey, syncthingAPIReadyTimeout); err == nil {
+			return localAPIBase, localKey, localPID, nil
+		} else {
+			lastErr = err
+			if !localSyncthingLogShowsAPIPortConflict(home) || attempt == 2 {
+				_ = stopOwnedLocalSyncthing(home, localPID)
+				return "", "", 0, fmt.Errorf("local syncthing not ready: %w", err)
+			}
+			_ = stopOwnedLocalSyncthing(home, localPID)
+		}
+	}
+	return "", "", 0, fmt.Errorf("local syncthing not ready: %w", lastErr)
+}
+
+func localSyncthingLogShowsAPIPortConflict(home string) bool {
+	logPath, err := localSyncthingLogPath(home)
+	if err != nil {
+		return false
+	}
+	tail := readFileTail(logPath, 8192)
+	return strings.Contains(tail, "bind: address already in use")
+}
+
+func markSyncthingReady(sessionName string) error {
+	path, err := syncthingReadyPath(sessionName)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(time.Now().UTC().Format(time.RFC3339Nano)+"\n"), 0o644)
 }
 
 func writeSTIgnore(localPath string, excludes []string) error {
@@ -241,35 +305,30 @@ func localSyncthingHome(session string) (string, error) {
 	return p, nil
 }
 
-func startLocalSyncthing(binary, home, localGUIAddr string) error {
+func startLocalSyncthing(binary, home, localGUIAddr string) (int, error) {
 	genOut, genErr := exec.Command(binary, "generate", "--home", home).CombinedOutput()
 	if genErr != nil {
 		legacyOut, legacyErr := exec.Command(binary, "-home", home, "generate").CombinedOutput()
 		if legacyErr != nil && !strings.Contains(string(genOut), "already exists") && !strings.Contains(string(legacyOut), "already exists") {
-			return fmt.Errorf("generate local syncthing config: %w (%s)", genErr, strings.TrimSpace(string(genOut)))
+			return 0, fmt.Errorf("generate local syncthing config: %w (%s)", genErr, strings.TrimSpace(string(genOut)))
 		}
 	}
 
 	if err := stopLocalSyncthingForHome(home); err != nil {
-		return err
+		return 0, err
+	}
+	if err := writeLocalSyncthingEndpoint(home, "http://"+localGUIAddr); err != nil {
+		return 0, fmt.Errorf("write local syncthing endpoint: %w", err)
 	}
 	logPath, err := localSyncthingLogPath(home)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	logFile, err := openLocalSyncthingLog(logPath)
 	if err != nil {
-		return fmt.Errorf("open local syncthing log: %w", err)
+		return 0, fmt.Errorf("open local syncthing log: %w", err)
 	}
-	cmd := exec.Command(
-		binary,
-		"serve",
-		"--home", home,
-		"--no-browser",
-		"--gui-address=http://"+localGUIAddr,
-		"--no-restart",
-		"--skip-port-probing",
-	)
+	cmd := newLocalSyncthingServeCommand(binary, home, localGUIAddr)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Stdin = nil
@@ -278,7 +337,16 @@ func startLocalSyncthing(binary, home, localGUIAddr string) error {
 		if closeErr := logFile.Close(); closeErr != nil {
 			slog.Debug("failed to close syncthing log file after start failure", "error", closeErr)
 		}
-		return fmt.Errorf("start local syncthing: %w", err)
+		return 0, fmt.Errorf("start local syncthing: %w", err)
+	}
+	if err := writeLocalSyncthingPID(home, cmd.Process.Pid); err != nil {
+		if killErr := cmd.Process.Kill(); killErr != nil {
+			slog.Debug("failed to kill syncthing process after PID write failure", "pid", cmd.Process.Pid, "error", killErr)
+		}
+		if closeErr := logFile.Close(); closeErr != nil {
+			slog.Debug("failed to close syncthing log file after PID write failure", "error", closeErr)
+		}
+		return 0, fmt.Errorf("write local syncthing pid: %w", err)
 	}
 	if releaseErr := cmd.Process.Release(); releaseErr != nil {
 		slog.Debug("failed to release syncthing process", "error", releaseErr)
@@ -286,7 +354,22 @@ func startLocalSyncthing(binary, home, localGUIAddr string) error {
 	if closeErr := logFile.Close(); closeErr != nil {
 		slog.Debug("failed to close syncthing log file", "error", closeErr)
 	}
-	return nil
+	return cmd.Process.Pid, nil
+}
+
+func newLocalSyncthingServeCommand(binary, home, localGUIAddr string) *exec.Cmd {
+	cmd := exec.Command(
+		binary,
+		"serve",
+		"--home", home,
+		"--no-browser",
+		"--gui-address=http://"+localGUIAddr,
+		"--no-restart",
+		"--skip-port-probing",
+		"--no-upgrade",
+	)
+	cmd.Env = append(os.Environ(), "STNOUPGRADE=1")
+	return cmd
 }
 
 func allocateLocalSyncthingAPIEndpoint() (guiAddr, apiBase string, err error) {
@@ -311,6 +394,27 @@ func stopLocalSyncthing(binary, home string) error {
 	return nil
 }
 
+func stopOwnedLocalSyncthing(home string, pid int) error {
+	if pid <= 0 {
+		return nil
+	}
+	pidPath, err := localSyncthingPIDPath(home)
+	if err != nil {
+		return err
+	}
+	currentPID, ok := readSyncthingPID(pidPath)
+	if !ok || currentPID != pid {
+		return nil
+	}
+	if err := stopRecordedLocalSyncthing(pid); err != nil {
+		return err
+	}
+	if rmErr := os.Remove(pidPath); rmErr != nil && !os.IsNotExist(rmErr) {
+		return rmErr
+	}
+	return nil
+}
+
 // stopLocalSyncthingForSession kills any local syncthing process associated
 // with the given session. This is used by `okdev down` as a safety net to
 // clean up orphaned syncthing processes that may survive if the detached
@@ -327,7 +431,27 @@ func stopLocalSyncthingForSession(sessionName string) error {
 }
 
 func stopLocalSyncthingForHome(home string) error {
-	return pkillByPattern(syncthingServeHomePattern(home))
+	pidPath, err := localSyncthingPIDPath(home)
+	if err == nil {
+		if pid, ok := readSyncthingPID(pidPath); ok && pid > 0 {
+			if stopErr := stopRecordedLocalSyncthing(pid); stopErr != nil {
+				return stopErr
+			}
+			if rmErr := os.Remove(pidPath); rmErr != nil && !os.IsNotExist(rmErr) {
+				return rmErr
+			}
+			time.Sleep(syncthingShutdownPollInterval)
+			return nil
+		}
+		if rmErr := os.Remove(pidPath); rmErr != nil && !os.IsNotExist(rmErr) {
+			return rmErr
+		}
+	}
+	if err := pkillByPattern(syncthingServeHomePattern(home)); err != nil {
+		return err
+	}
+	time.Sleep(syncthingShutdownPollInterval)
+	return nil
 }
 
 func localSyncthingLogPath(home string) (string, error) {
@@ -335,6 +459,65 @@ func localSyncthingLogPath(home string) (string, error) {
 		return "", errors.New("syncthing home is empty")
 	}
 	return filepath.Join(home, "local.log"), nil
+}
+
+func localSyncthingPIDPath(home string) (string, error) {
+	if strings.TrimSpace(home) == "" {
+		return "", errors.New("syncthing home is empty")
+	}
+	return filepath.Join(home, "local.pid"), nil
+}
+
+func writeLocalSyncthingPID(home string, pid int) error {
+	path, err := localSyncthingPIDPath(home)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(strconv.Itoa(pid)+"\n"), 0o644)
+}
+
+func stopRecordedLocalSyncthing(pid int) error {
+	if pid <= 0 {
+		return nil
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return nil
+	}
+	if processAlive(pid) {
+		if sigErr := p.Signal(syscall.SIGTERM); sigErr != nil {
+			slog.Debug("failed to send SIGTERM to local syncthing", "pid", pid, "error", sigErr)
+		}
+	}
+	deadline := time.Now().Add(syncthingShutdownWait)
+	for processAlive(pid) && time.Now().Before(deadline) {
+		time.Sleep(syncthingShutdownPollInterval)
+	}
+	if processAlive(pid) {
+		if sigErr := p.Signal(syscall.SIGKILL); sigErr != nil {
+			slog.Debug("failed to send SIGKILL to local syncthing", "pid", pid, "error", sigErr)
+		}
+	}
+	deadline = time.Now().Add(syncthingShutdownWait)
+	for processAlive(pid) && time.Now().Before(deadline) {
+		time.Sleep(syncthingShutdownPollInterval)
+	}
+	return nil
+}
+
+func localSyncthingEndpointPath(home string) (string, error) {
+	if strings.TrimSpace(home) == "" {
+		return "", errors.New("syncthing home is empty")
+	}
+	return filepath.Join(home, "endpoint"), nil
+}
+
+func writeLocalSyncthingEndpoint(home, apiBase string) error {
+	path, err := localSyncthingEndpointPath(home)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(strings.TrimSpace(apiBase)+"\n"), 0o644)
 }
 
 func openLocalSyncthingLog(path string) (*os.File, error) {
@@ -348,10 +531,11 @@ func pkillByPattern(pattern string) error {
 		return nil
 	}
 	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+	msg := strings.TrimSpace(string(out))
+	if errors.As(err, &exitErr) && (exitErr.ExitCode() == 1 || strings.Contains(msg, "sysmond service not found")) {
 		return nil
 	}
-	return fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
+	return fmt.Errorf("%w (%s)", err, msg)
 }
 
 func syncthingServeHomePattern(home string) string {
@@ -414,7 +598,8 @@ func startSyncthingPortForward(opts *Options, namespace, pod string) (context.Ca
 type syncthingConfigXML struct {
 	XMLName xml.Name `xml:"configuration"`
 	GUI     struct {
-		APIKey string `xml:"apikey"`
+		APIKey  string `xml:"apikey"`
+		Address string `xml:"address"`
 	} `xml:"gui"`
 }
 
@@ -576,6 +761,33 @@ func syncthingFolderNeedBytes(ctx context.Context, base, key, folderID string) (
 	return payload.NeedBytes, nil
 }
 
+func syncthingPeerConnected(ctx context.Context, base, key, peerID string) (bool, error) {
+	body, err := syncthingAPIRequestWithContext(ctx, http.MethodGet, base, key, "/rest/system/connections", nil, "")
+	if err != nil {
+		return false, err
+	}
+	var conns struct {
+		Connections map[string]struct {
+			Connected bool `json:"connected"`
+		} `json:"connections"`
+	}
+	if err := json.Unmarshal(body, &conns); err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(peerID) == "" {
+		for _, c := range conns.Connections {
+			if c.Connected {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	if c, ok := conns.Connections[peerID]; ok {
+		return c.Connected, nil
+	}
+	return false, nil
+}
+
 // waitForInitialSync blocks until the remote syncthing reports that the
 // configured folder has completed its initial sync (needBytes == 0).
 // It opens a temporary port-forward to the target pod's syncthing sidecar
@@ -627,6 +839,191 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 	}
 }
 
+// syncthingSyncConfig bundles the user-configurable knobs passed through to
+// configureSyncthingPeer so call sites stay compact.
+type syncthingSyncConfig struct {
+	rescanInterval int
+	watcherDelay   int
+	relays         bool
+	compression    bool
+}
+
+// runTwoPhaseInitialSync implements the Okteto-style two-phase sync protocol:
+//
+//  1. Configure local as sendonly with ignoreDelete=true, remote as receiveonly.
+//     Call POST /rest/db/override on every progress tick to force local state
+//     onto the remote.
+//     1b. Once needBytes==0, flip ignoreDelete to false and override once more so
+//     that files deleted locally (branch switch, git pull) are propagated as
+//     deletions before entering bidirectional mode.
+//  2. Reconfigure both sides to sendreceive and restart only if Syncthing
+//     reports that the applied config requires it.
+func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, localKey, localID, remoteBase, remoteKey, remoteID, peerAddr, folderID, localPath, remotePath string, sc syncthingSyncConfig) error {
+	// Phase 1: sendonly + ignoreDelete on local, receiveonly on remote.
+	fmt.Fprintln(out, "Phase 1: local-authoritative initial sync …")
+	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, peerAddr, folderID, localPath, "sendonly", sc.rescanInterval, sc.watcherDelay, true, sc.relays, sc.compression); err != nil {
+		return fmt.Errorf("configure local (phase 1): %w", err)
+	}
+	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, "", folderID, remotePath, "receiveonly", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
+		return fmt.Errorf("configure remote (phase 1): %w", err)
+	}
+
+	// Poll until remote is in sync, calling override on every tick.
+	deadline := time.Now().Add(initialSyncTimeout)
+	ticker := time.NewTicker(syncthingProgressInterval)
+	defer ticker.Stop()
+
+	for {
+		// Force local state onto remote.
+		if err := syncthingOverrideFolder(ctx, localBase, localKey, folderID); err != nil {
+			slog.Debug("syncthing override failed", "error", err)
+		}
+
+		need, err := syncthingFolderNeedBytes(ctx, remoteBase, remoteKey, folderID)
+		if err != nil {
+			slog.Debug("syncthing initial sync poll failed", "error", err)
+		} else {
+			fmt.Fprintf(out, "  initial sync: remote needBytes=%d\n", need)
+			if need == 0 {
+				localConnected, localErr := syncthingPeerConnected(ctx, localBase, localKey, remoteID)
+				remoteConnected, remoteErr := syncthingPeerConnected(ctx, remoteBase, remoteKey, localID)
+				if localErr != nil {
+					slog.Debug("syncthing local connection poll failed", "error", localErr)
+				}
+				if remoteErr != nil {
+					slog.Debug("syncthing remote connection poll failed", "error", remoteErr)
+				}
+				fmt.Fprintf(out, "  peer connection: local=%t remote=%t\n", localConnected, remoteConnected)
+				if localConnected && remoteConnected {
+					break
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("initial sync did not complete within %s", initialSyncTimeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+
+	// Phase 1b: flip ignoreDelete off and override so that files deleted
+	// locally (e.g. after a branch switch) are propagated as deletions to
+	// the remote before we enter bidirectional mode. Wait for convergence
+	// just like phase 1.
+	fmt.Fprintln(out, "Phase 1b: propagating local deletions …")
+	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, peerAddr, folderID, localPath, "sendonly", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
+		return fmt.Errorf("configure local (phase 1b): %w", err)
+	}
+	for {
+		if err := syncthingOverrideFolder(ctx, localBase, localKey, folderID); err != nil {
+			slog.Debug("syncthing override (phase 1b) failed", "error", err)
+		}
+		need, err := syncthingFolderNeedBytes(ctx, remoteBase, remoteKey, folderID)
+		if err != nil {
+			slog.Debug("syncthing phase 1b poll failed", "error", err)
+		} else {
+			fmt.Fprintf(out, "  deletion propagation: remote needBytes=%d\n", need)
+			if need == 0 {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("deletion propagation did not complete within %s", initialSyncTimeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+
+	// Phase 2: switch to sendreceive on both sides.
+	fmt.Fprintln(out, "Phase 2: switching to bidirectional sync …")
+	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, peerAddr, folderID, localPath, "sendreceive", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
+		return fmt.Errorf("configure local (phase 2): %w", err)
+	}
+	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, "", folderID, remotePath, "sendreceive", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
+		return fmt.Errorf("configure remote (phase 2): %w", err)
+	}
+
+	localRestartRequired, err := syncthingRestartRequired(ctx, localBase, localKey)
+	if err != nil {
+		return fmt.Errorf("check local restart requirement: %w", err)
+	}
+	remoteRestartRequired, err := syncthingRestartRequired(ctx, remoteBase, remoteKey)
+	if err != nil {
+		return fmt.Errorf("check remote restart requirement: %w", err)
+	}
+
+	// The local daemon is launched with --no-restart so it can be owned by
+	// the okdev sync child. Folder config changes are expected to apply live.
+	// If Syncthing ever reports a restart requirement here, fail clearly so
+	// we can handle that path explicitly rather than killing the daemon.
+	if localRestartRequired {
+		return errors.New("local syncthing reported restart-required after phase 2 config update")
+	}
+	if remoteRestartRequired {
+		if err := syncthingRestart(ctx, remoteBase, remoteKey); err != nil {
+			return fmt.Errorf("restart remote syncthing: %w", err)
+		}
+	}
+
+	// Confirm the local API remained reachable through the live config update,
+	// and wait for the remote API to come back only if it restarted.
+	if err := waitSyncthingAPI(ctx, localBase, localKey, syncthingAPIReadyTimeout); err != nil {
+		return fmt.Errorf("local syncthing not ready after phase 2 update: %w", err)
+	}
+	if remoteRestartRequired {
+		if err := waitSyncthingAPI(ctx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
+			return fmt.Errorf("remote syncthing not ready after restart: %w", err)
+		}
+	}
+	if connected, err := syncthingPeerConnected(ctx, localBase, localKey, remoteID); err != nil {
+		return fmt.Errorf("check local syncthing connection after restart: %w", err)
+	} else if !connected {
+		return errors.New("local syncthing peer not connected after restart")
+	}
+	if connected, err := syncthingPeerConnected(ctx, remoteBase, remoteKey, localID); err != nil {
+		return fmt.Errorf("check remote syncthing connection after restart: %w", err)
+	} else if !connected {
+		return errors.New("remote syncthing peer not connected after restart")
+	}
+
+	fmt.Fprintln(out, "Two-phase initial sync complete, now in bidirectional mode.")
+	return nil
+}
+
+// syncthingOverrideFolder calls POST /rest/db/override to force the local
+// index as canonical for the given folder, causing diverged remote files to
+// be overwritten.
+func syncthingOverrideFolder(ctx context.Context, base, key, folderID string) error {
+	path := fmt.Sprintf("/rest/db/override?folder=%s", url.QueryEscape(folderID))
+	return syncthingPost(ctx, base, key, path, nil)
+}
+
+// syncthingRestart calls POST /rest/system/restart to restart a Syncthing
+// instance, which is required to apply folder type changes.
+func syncthingRestart(ctx context.Context, base, key string) error {
+	return syncthingPost(ctx, base, key, "/rest/system/restart", nil)
+}
+
+func syncthingRestartRequired(ctx context.Context, base, key string) (bool, error) {
+	body, err := syncthingAPIRequestWithContext(ctx, http.MethodGet, base, key, "/rest/config/restart-required", nil, "")
+	if err != nil {
+		return false, err
+	}
+	var payload struct {
+		RequiresRestart bool `json:"requiresRestart"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false, err
+	}
+	return payload.RequiresRestart, nil
+}
+
 func folderTypesForMode(mode string) (local, remote string) {
 	switch mode {
 	case "up":
@@ -638,7 +1035,7 @@ func folderTypesForMode(mode string) (local, remote string) {
 	}
 }
 
-func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peerAddr, folderID, folderPath, folderType string, rescanIntervalSeconds int, relaysEnabled, compression bool) error {
+func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peerAddr, folderID, folderPath, folderType string, rescanIntervalSeconds, watcherDelaySeconds int, ignoreDelete, relaysEnabled, compression bool) error {
 	cfg, err := syncthingGetConfig(ctx, base, key)
 	if err != nil {
 		return err
@@ -654,6 +1051,7 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 	if err != nil {
 		return err
 	}
+	addresses := syncthingDeviceAddresses(peerAddr)
 	foundDevice := false
 	for i, d := range devices {
 		m, err := syncthingObjectMap(d, "devices")
@@ -661,7 +1059,7 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 			return err
 		}
 		if asString(m["deviceID"]) == peerID {
-			m["addresses"] = []any{peerAddr}
+			m["addresses"] = addresses
 			m["compression"] = compressionMode
 			devices[i] = m
 			foundDevice = true
@@ -672,7 +1070,7 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 		devices = append(devices, map[string]any{
 			"deviceID":    peerID,
 			"name":        "okdev-peer",
-			"addresses":   []any{peerAddr},
+			"addresses":   addresses,
 			"compression": compressionMode,
 		})
 	}
@@ -696,7 +1094,7 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 				map[string]any{"deviceID": selfID},
 				map[string]any{"deviceID": peerID},
 			}
-			applyManagedSyncthingFolderDefaults(fm, rescanIntervalSeconds)
+			applyManagedSyncthingFolderDefaults(fm, rescanIntervalSeconds, watcherDelaySeconds, ignoreDelete)
 			folders[i] = fm
 			foundFolder = true
 			break
@@ -714,7 +1112,7 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 				map[string]any{"deviceID": peerID},
 			},
 		}
-		applyManagedSyncthingFolderDefaults(folder, rescanIntervalSeconds)
+		applyManagedSyncthingFolderDefaults(folder, rescanIntervalSeconds, watcherDelaySeconds, ignoreDelete)
 		folders = append(folders, folder)
 	}
 	cfg["folders"] = folders
@@ -725,10 +1123,23 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 	return nil
 }
 
-func applyManagedSyncthingFolderDefaults(folder map[string]any, rescanIntervalSeconds int) {
+func syncthingDeviceAddresses(peerAddr string) []any {
+	if strings.TrimSpace(peerAddr) == "" {
+		return []any{"dynamic"}
+	}
+	return []any{peerAddr}
+}
+
+func applyManagedSyncthingFolderDefaults(folder map[string]any, rescanIntervalSeconds, watcherDelaySeconds int, ignoreDelete bool) {
+	delay := watcherDelaySeconds
+	if delay <= 0 {
+		delay = syncthingWatcherDelayS
+	}
 	folder["fsWatcherEnabled"] = true
-	folder["fsWatcherDelayS"] = syncthingWatcherDelayS
+	folder["fsWatcherDelayS"] = delay
 	folder["rescanIntervalS"] = rescanIntervalSeconds
+	folder["maxConflicts"] = 0
+	folder["ignoreDelete"] = ignoreDelete
 }
 
 func applyManagedSyncthingGlobalDefaults(cfg map[string]any, relaysEnabled bool) {
@@ -829,4 +1240,201 @@ func syncthingObjectMap(v any, field string) (map[string]any, error) {
 func asString(v any) string {
 	s, _ := v.(string)
 	return s
+}
+
+// resetRemoteWorkspace clears the managed remote workspace subtree while
+// preserving selected paths. The algorithm:
+//  1. Move each preserve path to a temp location under the workspace root.
+//  2. Remove everything else under the workspace root.
+//  3. Move preserved paths back.
+func resetRemoteWorkspace(ctx context.Context, k interface {
+	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+}, namespace, pod, remotePath string, preservePaths []string) error {
+	remotePath = strings.TrimRight(remotePath, "/")
+	if remotePath == "" || remotePath == "/" {
+		return fmt.Errorf("refusing to reset root path")
+	}
+
+	// Validate preserve paths to prevent path traversal outside workspace.
+	for _, p := range preservePaths {
+		cleaned := filepath.Clean(p)
+		if filepath.IsAbs(cleaned) || strings.HasPrefix(cleaned, "..") || strings.Contains(cleaned, string(filepath.Separator)+"..") {
+			return fmt.Errorf("preservePath %q escapes the workspace root", p)
+		}
+	}
+
+	esc := syncengine.ShellEscape
+	tmpDir := remotePath + "/.okdev-reset-preserve"
+
+	var script strings.Builder
+
+	// Move preserved paths to temp.
+	if len(preservePaths) > 0 {
+		fmt.Fprintf(&script, "mkdir -p %s\n", esc(tmpDir))
+		for _, p := range preservePaths {
+			p = strings.Trim(p, "/")
+			if p == "" || p == "." || p == ".." {
+				continue
+			}
+			src := remotePath + "/" + p
+			dst := tmpDir + "/" + p
+			// Create parent directory for nested paths.
+			dstParent := dst[:strings.LastIndex(dst, "/")]
+			fmt.Fprintf(&script, "if [ -e %s ]; then mkdir -p %s && mv %s %s; fi\n", esc(src), esc(dstParent), esc(src), esc(dst))
+		}
+	}
+
+	// Clear workspace contents (but not the directory itself).
+	fmt.Fprintf(&script, "find %s -mindepth 1 -maxdepth 1 ! -name .okdev-reset-preserve -exec rm -rf {} +\n", esc(remotePath))
+
+	// Restore preserved paths.
+	if len(preservePaths) > 0 {
+		for _, p := range preservePaths {
+			p = strings.Trim(p, "/")
+			if p == "" || p == "." || p == ".." {
+				continue
+			}
+			src := tmpDir + "/" + p
+			dst := remotePath + "/" + p
+			dstParent := dst[:strings.LastIndex(dst, "/")]
+			fmt.Fprintf(&script, "if [ -e %s ]; then mkdir -p %s && mv %s %s; fi\n", esc(src), esc(dstParent), esc(src), esc(dst))
+		}
+		fmt.Fprintf(&script, "rm -rf %s\n", esc(tmpDir))
+	}
+
+	_, err := execInSyncthingContainer(ctx, k, namespace, pod, script.String())
+	return err
+}
+
+type syncthingSessionConfigState struct {
+	Engine                string   `json:"engine"`
+	LocalPath             string   `json:"localPath"`
+	RemotePath            string   `json:"remotePath"`
+	Exclude               []string `json:"exclude,omitempty"`
+	RemoteExclude         []string `json:"remoteExclude,omitempty"`
+	WatcherDelaySeconds   int      `json:"watcherDelaySeconds,omitempty"`
+	RescanIntervalSeconds int      `json:"rescanIntervalSeconds,omitempty"`
+	RelaysEnabled         bool     `json:"relaysEnabled,omitempty"`
+	Compression           bool     `json:"compression,omitempty"`
+}
+
+func syncthingSessionConfigHash(cfg *config.DevEnvironment, localPath, remotePath string) string {
+	if cfg == nil {
+		return ""
+	}
+	state := syncthingSessionConfigState{
+		Engine:                strings.TrimSpace(cfg.Spec.Sync.Engine),
+		LocalPath:             localPath,
+		RemotePath:            remotePath,
+		Exclude:               append([]string(nil), cfg.Spec.Sync.Exclude...),
+		RemoteExclude:         append([]string(nil), cfg.Spec.Sync.RemoteExclude...),
+		WatcherDelaySeconds:   cfg.Spec.Sync.Syncthing.WatcherDelaySeconds,
+		RescanIntervalSeconds: cfg.Spec.Sync.Syncthing.RescanIntervalSeconds,
+		RelaysEnabled:         cfg.Spec.Sync.Syncthing.RelaysEnabled,
+		Compression:           cfg.Spec.Sync.Syncthing.Compression,
+	}
+	b, err := json.Marshal(state)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return fmt.Sprintf("%x", sum[:])
+}
+
+// syncHealthStatus represents the sync health as checked by the CLI.
+type syncHealthStatus string
+
+const (
+	syncHealthActive  syncHealthStatus = "active"
+	syncHealthStale   syncHealthStatus = "stale"
+	syncHealthStopped syncHealthStatus = "stopped"
+)
+
+// checkSyncHealth checks the health of the Syncthing sync for a session.
+// It checks whether the process is alive and optionally queries the local
+// Syncthing API for connection and folder status.
+func checkSyncHealth(sessionName string) (syncHealthStatus, string) {
+	pidPath, err := syncthingPIDStatusPath(sessionName)
+	if err != nil {
+		return syncHealthStopped, "sync is not running"
+	}
+	pid, ok := readSyncthingPID(pidPath)
+	if !ok || !processAlive(pid) || !processLooksLikeSyncthingSync(pid) {
+		return syncHealthStopped, "sync is not running"
+	}
+
+	// Process is alive — try to query the local Syncthing API.
+	// Use the read-only home path to avoid creating directories.
+	home, err := localSyncthingStatusHome(sessionName)
+	if err != nil {
+		return syncHealthActive, ""
+	}
+	apiBase, apiKey, err := readLocalSyncthingEndpoint(home)
+	if err != nil {
+		// Can't read config but process is alive, treat as active.
+		return syncHealthActive, ""
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Check connections to see if peer is connected.
+	connected, err := syncthingPeerConnected(ctx, apiBase, apiKey, "")
+	if err != nil {
+		// API unreachable likely means Syncthing is still starting up or
+		// restarting (e.g. during two-phase transition). Treat as active
+		// rather than stale since the process is running.
+		return syncHealthActive, ""
+	}
+	if !connected {
+		return syncHealthStale, "peer disconnected"
+	}
+
+	return syncHealthActive, ""
+}
+
+// readLocalSyncthingEndpoint reads the API base URL and key from a local
+// Syncthing home directory's config.xml.
+func readLocalSyncthingEndpoint(home string) (apiBase, apiKey string, err error) {
+	if endpointPath, pathErr := localSyncthingEndpointPath(home); pathErr == nil {
+		if b, readErr := os.ReadFile(endpointPath); readErr == nil {
+			apiBase = strings.TrimSpace(string(b))
+		}
+	}
+	paths := []string{filepath.Join(home, "config.xml"), filepath.Join(home, "config", "config.xml")}
+	for _, p := range paths {
+		b, readErr := os.ReadFile(p)
+		if readErr != nil {
+			continue
+		}
+		var cfg syncthingConfigXML
+		if xmlErr := xml.Unmarshal(b, &cfg); xmlErr != nil {
+			continue
+		}
+		if cfg.GUI.APIKey == "" || cfg.GUI.Address == "" {
+			continue
+		}
+		if apiBase == "" {
+			addr := cfg.GUI.Address
+			if !strings.HasPrefix(addr, "http") {
+				addr = "http://" + addr
+			}
+			apiBase = addr
+		}
+		return apiBase, cfg.GUI.APIKey, nil
+	}
+	return "", "", errors.New("unable to read local syncthing endpoint")
+}
+
+// warnSyncHealth prints a sync health warning to w if the sync for the
+// given session is unhealthy. Returns the health status.
+func warnSyncHealth(w io.Writer, sessionName string) syncHealthStatus {
+	status, reason := checkSyncHealth(sessionName)
+	switch status {
+	case syncHealthStopped:
+		fmt.Fprintf(w, "warning: sync is not running — run \"okdev sync\" to restart, or \"okdev sync reset-remote\" to reset workspace\n")
+	case syncHealthStale:
+		fmt.Fprintf(w, "warning: sync may be stale — %s — run \"okdev sync --reset\" to re-establish sync\n", reason)
+	}
+	return status
 }
