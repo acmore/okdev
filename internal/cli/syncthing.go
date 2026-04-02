@@ -295,15 +295,7 @@ func startLocalSyncthing(binary, home, localGUIAddr string) error {
 	if err != nil {
 		return fmt.Errorf("open local syncthing log: %w", err)
 	}
-	cmd := exec.Command(
-		binary,
-		"serve",
-		"--home", home,
-		"--no-browser",
-		"--gui-address=http://"+localGUIAddr,
-		"--no-restart",
-		"--skip-port-probing",
-	)
+	cmd := newLocalSyncthingServeCommand(binary, home, localGUIAddr)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.Stdin = nil
@@ -321,6 +313,21 @@ func startLocalSyncthing(binary, home, localGUIAddr string) error {
 		slog.Debug("failed to close syncthing log file", "error", closeErr)
 	}
 	return nil
+}
+
+func newLocalSyncthingServeCommand(binary, home, localGUIAddr string) *exec.Cmd {
+	cmd := exec.Command(
+		binary,
+		"serve",
+		"--home", home,
+		"--no-browser",
+		"--gui-address=http://"+localGUIAddr,
+		"--no-restart",
+		"--skip-port-probing",
+		"--no-upgrade",
+	)
+	cmd.Env = append(os.Environ(), "STNOUPGRADE=1")
+	return cmd
 }
 
 func allocateLocalSyncthingAPIEndpoint() (guiAddr, apiBase string, err error) {

@@ -686,6 +686,18 @@ func TestOpenLocalSyncthingLogRotatesOversizedFile(t *testing.T) {
 	}
 }
 
+func TestNewLocalSyncthingServeCommandDisablesAutoUpgrade(t *testing.T) {
+	cmd := newLocalSyncthingServeCommand("/tmp/syncthing", "/tmp/home", "127.0.0.1:8384")
+	args := strings.Join(cmd.Args, " ")
+	if !strings.Contains(args, "--no-upgrade") {
+		t.Fatalf("expected --no-upgrade in args, got %q", args)
+	}
+	env := strings.Join(cmd.Env, "\n")
+	if !strings.Contains(env, "STNOUPGRADE=1") {
+		t.Fatalf("expected STNOUPGRADE=1 in env, got %q", env)
+	}
+}
+
 func TestFolderTypesForMode(t *testing.T) {
 	tests := []struct {
 		mode       string
