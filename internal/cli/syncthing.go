@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -306,6 +307,15 @@ func startLocalSyncthing(binary, home, localGUIAddr string) error {
 		}
 		return fmt.Errorf("start local syncthing: %w", err)
 	}
+	if err := writeLocalSyncthingPID(home, cmd.Process.Pid); err != nil {
+		if killErr := cmd.Process.Kill(); killErr != nil {
+			slog.Debug("failed to kill syncthing process after PID write failure", "pid", cmd.Process.Pid, "error", killErr)
+		}
+		if closeErr := logFile.Close(); closeErr != nil {
+			slog.Debug("failed to close syncthing log file after PID write failure", "error", closeErr)
+		}
+		return fmt.Errorf("write local syncthing pid: %w", err)
+	}
 	if releaseErr := cmd.Process.Release(); releaseErr != nil {
 		slog.Debug("failed to release syncthing process", "error", releaseErr)
 	}
@@ -368,7 +378,27 @@ func stopLocalSyncthingForSession(sessionName string) error {
 }
 
 func stopLocalSyncthingForHome(home string) error {
-	return pkillByPattern(syncthingServeHomePattern(home))
+	pidPath, err := localSyncthingPIDPath(home)
+	if err == nil {
+		if pid, ok := readSyncthingPID(pidPath); ok && pid > 0 {
+			if stopErr := stopRecordedLocalSyncthing(pid); stopErr != nil {
+				return stopErr
+			}
+			if rmErr := os.Remove(pidPath); rmErr != nil && !os.IsNotExist(rmErr) {
+				return rmErr
+			}
+			time.Sleep(syncthingShutdownPollInterval)
+			return nil
+		}
+		if rmErr := os.Remove(pidPath); rmErr != nil && !os.IsNotExist(rmErr) {
+			return rmErr
+		}
+	}
+	if err := pkillByPattern(syncthingServeHomePattern(home)); err != nil {
+		return err
+	}
+	time.Sleep(syncthingShutdownPollInterval)
+	return nil
 }
 
 func localSyncthingLogPath(home string) (string, error) {
@@ -376,6 +406,50 @@ func localSyncthingLogPath(home string) (string, error) {
 		return "", errors.New("syncthing home is empty")
 	}
 	return filepath.Join(home, "local.log"), nil
+}
+
+func localSyncthingPIDPath(home string) (string, error) {
+	if strings.TrimSpace(home) == "" {
+		return "", errors.New("syncthing home is empty")
+	}
+	return filepath.Join(home, "local.pid"), nil
+}
+
+func writeLocalSyncthingPID(home string, pid int) error {
+	path, err := localSyncthingPIDPath(home)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(strconv.Itoa(pid)+"\n"), 0o644)
+}
+
+func stopRecordedLocalSyncthing(pid int) error {
+	if pid <= 0 {
+		return nil
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return nil
+	}
+	if processAlive(pid) {
+		if sigErr := p.Signal(syscall.SIGTERM); sigErr != nil {
+			slog.Debug("failed to send SIGTERM to local syncthing", "pid", pid, "error", sigErr)
+		}
+	}
+	deadline := time.Now().Add(syncthingShutdownWait)
+	for processAlive(pid) && time.Now().Before(deadline) {
+		time.Sleep(syncthingShutdownPollInterval)
+	}
+	if processAlive(pid) {
+		if sigErr := p.Signal(syscall.SIGKILL); sigErr != nil {
+			slog.Debug("failed to send SIGKILL to local syncthing", "pid", pid, "error", sigErr)
+		}
+	}
+	deadline = time.Now().Add(syncthingShutdownWait)
+	for processAlive(pid) && time.Now().Before(deadline) {
+		time.Sleep(syncthingShutdownPollInterval)
+	}
+	return nil
 }
 
 func localSyncthingEndpointPath(home string) (string, error) {

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -176,6 +177,40 @@ func TestWriteLocalSTIgnoreOverridesExistingFileWhenExcludesExplicit(t *testing.
 	}
 	if string(got) != ".git/\n" {
 		t.Fatalf("expected explicit excludes to replace file, got %q", got)
+	}
+}
+
+func TestStopLocalSyncthingForHomeStopsRecordedPID(t *testing.T) {
+	home := t.TempDir()
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	})
+	if err := writeLocalSyncthingPID(home, cmd.Process.Pid); err != nil {
+		t.Fatal(err)
+	}
+	if err := stopLocalSyncthingForHome(home); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected recorded process to exit")
+	case <-done:
+	}
+	pidPath, err := localSyncthingPIDPath(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Fatalf("expected pid file to be removed, got err=%v", err)
 	}
 }
 
