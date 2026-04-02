@@ -143,6 +143,8 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					stopSSHConfig()
 				}
 
+				warnSyncHealth(errOut, cc.sessionName)
+
 				tm := &okssh.TunnelManager{
 					SSHUser:           user,
 					SSHKeyPath:        keyPath,

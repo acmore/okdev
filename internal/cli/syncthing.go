@@ -427,7 +427,8 @@ func startSyncthingPortForward(opts *Options, namespace, pod string) (context.Ca
 type syncthingConfigXML struct {
 	XMLName xml.Name `xml:"configuration"`
 	GUI     struct {
-		APIKey string `xml:"apikey"`
+		APIKey  string `xml:"apikey"`
+		Address string `xml:"address"`
 	} `xml:"gui"`
 }
 
@@ -1003,4 +1004,106 @@ func resetRemoteWorkspace(ctx context.Context, k interface {
 
 	_, err := execInSyncthingContainer(ctx, k, namespace, pod, script.String())
 	return err
+}
+
+// syncHealthStatus represents the sync health as checked by the CLI.
+type syncHealthStatus string
+
+const (
+	syncHealthActive  syncHealthStatus = "active"
+	syncHealthStale   syncHealthStatus = "stale"
+	syncHealthStopped syncHealthStatus = "stopped"
+)
+
+// checkSyncHealth checks the health of the Syncthing sync for a session.
+// It checks whether the process is alive and optionally queries the local
+// Syncthing API for connection and folder status.
+func checkSyncHealth(sessionName string) (syncHealthStatus, string) {
+	pidPath, err := syncthingPIDStatusPath(sessionName)
+	if err != nil {
+		return syncHealthStopped, "sync is not running"
+	}
+	pid, ok := readSyncthingPID(pidPath)
+	if !ok || !processAlive(pid) || !processLooksLikeSyncthingSync(pid) {
+		return syncHealthStopped, "sync is not running"
+	}
+
+	// Process is alive — try to query the local Syncthing API.
+	// Use the read-only home path to avoid creating directories.
+	home, err := localSyncthingStatusHome(sessionName)
+	if err != nil {
+		return syncHealthActive, ""
+	}
+	apiBase, apiKey, err := readLocalSyncthingEndpoint(home)
+	if err != nil {
+		// Can't read config but process is alive, treat as active.
+		return syncHealthActive, ""
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Check connections to see if peer is connected.
+	body, err := syncthingAPIRequestWithContext(ctx, http.MethodGet, apiBase, apiKey, "/rest/system/connections", nil, "")
+	if err != nil {
+		return syncHealthStale, "sync process running but API unreachable"
+	}
+	var conns struct {
+		Connections map[string]struct {
+			Connected bool `json:"connected"`
+		} `json:"connections"`
+	}
+	if err := json.Unmarshal(body, &conns); err != nil {
+		return syncHealthActive, ""
+	}
+	peerConnected := false
+	for _, c := range conns.Connections {
+		if c.Connected {
+			peerConnected = true
+			break
+		}
+	}
+	if !peerConnected {
+		return syncHealthStale, "peer disconnected"
+	}
+
+	return syncHealthActive, ""
+}
+
+// readLocalSyncthingEndpoint reads the API base URL and key from a local
+// Syncthing home directory's config.xml.
+func readLocalSyncthingEndpoint(home string) (apiBase, apiKey string, err error) {
+	paths := []string{filepath.Join(home, "config.xml"), filepath.Join(home, "config", "config.xml")}
+	for _, p := range paths {
+		b, readErr := os.ReadFile(p)
+		if readErr != nil {
+			continue
+		}
+		var cfg syncthingConfigXML
+		if xmlErr := xml.Unmarshal(b, &cfg); xmlErr != nil {
+			continue
+		}
+		if cfg.GUI.APIKey == "" || cfg.GUI.Address == "" {
+			continue
+		}
+		addr := cfg.GUI.Address
+		if !strings.HasPrefix(addr, "http") {
+			addr = "http://" + addr
+		}
+		return addr, cfg.GUI.APIKey, nil
+	}
+	return "", "", errors.New("unable to read local syncthing endpoint")
+}
+
+// warnSyncHealth prints a sync health warning to w if the sync for the
+// given session is unhealthy. Returns the health status.
+func warnSyncHealth(w io.Writer, sessionName string) syncHealthStatus {
+	status, reason := checkSyncHealth(sessionName)
+	switch status {
+	case syncHealthStopped:
+		fmt.Fprintf(w, "warning: sync is not running — run \"okdev sync\" to restart, or \"okdev sync reset-remote\" to reset workspace\n")
+	case syncHealthStale:
+		fmt.Fprintf(w, "warning: sync may be stale — %s — run \"okdev sync --reset\" to re-establish sync\n", reason)
+	}
+	return status
 }

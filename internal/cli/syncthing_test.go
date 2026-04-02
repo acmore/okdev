@@ -814,6 +814,50 @@ func TestSyncthingServeHomePatternEscapesRegexMeta(t *testing.T) {
 	}
 }
 
+func TestReadLocalSyncthingEndpoint(t *testing.T) {
+	home := t.TempDir()
+	configXML := `<configuration>
+  <gui>
+    <apikey>test-key-123</apikey>
+    <address>127.0.0.1:8384</address>
+  </gui>
+</configuration>`
+	if err := os.WriteFile(filepath.Join(home, "config.xml"), []byte(configXML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	apiBase, apiKey, err := readLocalSyncthingEndpoint(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if apiKey != "test-key-123" {
+		t.Fatalf("expected apiKey=test-key-123, got %s", apiKey)
+	}
+	if apiBase != "http://127.0.0.1:8384" {
+		t.Fatalf("expected apiBase=http://127.0.0.1:8384, got %s", apiBase)
+	}
+}
+
+func TestReadLocalSyncthingEndpointMissing(t *testing.T) {
+	home := t.TempDir()
+	_, _, err := readLocalSyncthingEndpoint(home)
+	if err == nil {
+		t.Fatal("expected error for missing config")
+	}
+}
+
+func TestWarnSyncHealthStopped(t *testing.T) {
+	// Use a non-existent session name so the PID file won't exist.
+	var buf bytes.Buffer
+	status := warnSyncHealth(&buf, "nonexistent-session-for-test")
+	if status != syncHealthStopped {
+		t.Fatalf("expected stopped, got %s", status)
+	}
+	if !strings.Contains(buf.String(), "sync is not running") {
+		t.Fatalf("expected warning message, got: %s", buf.String())
+	}
+}
+
 type fakeExecClient struct {
 	scripts []string
 }
