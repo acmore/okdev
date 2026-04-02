@@ -251,13 +251,34 @@ func upReconcile(state *upState, applyWorkload bool) error {
 }
 
 func prepareReconcileApply(state *upState) (workloadApplyOutcome, error) {
-	if state.runtime.Kind() != workload.TypePod {
+	switch reconcileStrategyForWorkload(state) {
+	case workloadApplyReapplied:
 		return workloadApplyReapplied, nil
 	}
 	if err := state.runtime.Delete(state.ctx, state.command.kube, state.command.namespace, true); err != nil {
 		return workloadApplyCreated, fmt.Errorf("delete existing pod for reconcile: %w", err)
 	}
 	return workloadApplyRecreated, nil
+}
+
+func reconcileStrategyForWorkload(state *upState) workloadApplyOutcome {
+	if state == nil {
+		return workloadApplyReapplied
+	}
+	if state.command != nil && state.command.cfg != nil {
+		switch normalizeWorkloadType(state.command.cfg.Spec.Workload.Type) {
+		case workload.TypePod, workload.TypeJob, workload.TypePyTorchJob:
+			return workloadApplyRecreated
+		default:
+			return workloadApplyReapplied
+		}
+	}
+	switch normalizeWorkloadType(state.runtime.Kind()) {
+	case workload.TypePod, workload.TypeJob, workload.TypePyTorchJob:
+		return workloadApplyRecreated
+	default:
+		return workloadApplyReapplied
+	}
 }
 
 func workloadApplyStatus(outcome workloadApplyOutcome) string {

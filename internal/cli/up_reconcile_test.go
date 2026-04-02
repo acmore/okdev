@@ -141,8 +141,11 @@ func TestPrepareReconcileApplyRecreatesExistingPod(t *testing.T) {
 }
 
 func TestPrepareReconcileApplyReappliesControllerWorkload(t *testing.T) {
-	rt := &fakeRefRuntime{kind: workload.TypeJob, apiVersion: "batch/v1", name: "trainer"}
-	state := &upState{runtime: rt}
+	rt := &fakeRefRuntime{kind: workload.TypeGeneric, apiVersion: "apps/v1", name: "trainer"}
+	state := &upState{
+		runtime: rt,
+		command: &commandContext{},
+	}
 
 	outcome, err := prepareReconcileApply(state)
 	if err != nil {
@@ -153,6 +156,52 @@ func TestPrepareReconcileApplyReappliesControllerWorkload(t *testing.T) {
 	}
 	if rt.deleteCall != 0 {
 		t.Fatalf("expected no delete calls, got %d", rt.deleteCall)
+	}
+}
+
+func TestPrepareReconcileApplyRecreatesJobWorkload(t *testing.T) {
+	rt := &fakeRefRuntime{kind: workload.TypeJob, apiVersion: "batch/v1", name: "trainer"}
+	state := &upState{
+		ctx:     context.Background(),
+		runtime: rt,
+		command: &commandContext{
+			namespace: "default",
+			kube:      &kube.Client{},
+		},
+	}
+
+	outcome, err := prepareReconcileApply(state)
+	if err != nil {
+		t.Fatalf("prepareReconcileApply: %v", err)
+	}
+	if outcome != workloadApplyRecreated {
+		t.Fatalf("expected recreate outcome, got %v", outcome)
+	}
+	if rt.deleteCall != 1 {
+		t.Fatalf("expected one delete call, got %d", rt.deleteCall)
+	}
+}
+
+func TestPrepareReconcileApplyRecreatesPyTorchJobWorkload(t *testing.T) {
+	rt := &fakeRefRuntime{kind: workload.TypePyTorchJob, apiVersion: "kubeflow.org/v1", name: "trainer"}
+	state := &upState{
+		ctx:     context.Background(),
+		runtime: rt,
+		command: &commandContext{
+			namespace: "default",
+			kube:      &kube.Client{},
+		},
+	}
+
+	outcome, err := prepareReconcileApply(state)
+	if err != nil {
+		t.Fatalf("prepareReconcileApply: %v", err)
+	}
+	if outcome != workloadApplyRecreated {
+		t.Fatalf("expected recreate outcome, got %v", outcome)
+	}
+	if rt.deleteCall != 1 {
+		t.Fatalf("expected one delete call, got %d", rt.deleteCall)
 	}
 }
 
