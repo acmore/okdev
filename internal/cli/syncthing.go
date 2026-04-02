@@ -145,7 +145,11 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	}
 
 	if mode == "two-phase" {
-		if err := runTwoPhaseInitialSync(ctx, cmd.OutOrStdout(), localBase, localKey, localID, remoteBase, remoteKey, remoteID, localRemotePeerAddr, folderID, absLocal, pair.Remote, syncCfg); err != nil {
+		// The bootstrap context has a short timeout (syncthingBootstrapTimeout).
+		// Two-phase initial sync may take much longer, so use a dedicated context.
+		twoPhaseCtx, twoPhaseCancel := context.WithTimeout(context.Background(), initialSyncTimeout)
+		defer twoPhaseCancel()
+		if err := runTwoPhaseInitialSync(twoPhaseCtx, cmd.OutOrStdout(), localBase, localKey, localID, remoteBase, remoteKey, remoteID, localRemotePeerAddr, folderID, absLocal, pair.Remote, syncCfg); err != nil {
 			return fmt.Errorf("two-phase initial sync: %w", err)
 		}
 		mode = "bi"
@@ -1165,7 +1169,10 @@ func checkSyncHealth(sessionName string) (syncHealthStatus, string) {
 	// Check connections to see if peer is connected.
 	connected, err := syncthingPeerConnected(ctx, apiBase, apiKey, "")
 	if err != nil {
-		return syncHealthStale, "sync process running but API unreachable"
+		// API unreachable likely means Syncthing is still starting up or
+		// restarting (e.g. during two-phase transition). Treat as active
+		// rather than stale since the process is running.
+		return syncHealthActive, ""
 	}
 	if !connected {
 		return syncHealthStale, "peer disconnected"
