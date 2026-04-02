@@ -365,6 +365,8 @@ func TestRunTwoPhaseInitialSync(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			case r.Method == http.MethodGet && r.URL.Path == "/rest/system/status":
 				w.Write([]byte(`{"myID":"DEVICE-ID"}`))
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/system/connections":
+				w.Write([]byte(`{"connections":{"REMOTE":{"connected":true},"LOCAL":{"connected":true}}}`))
 			case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/rest/db/override"):
 				overrideCalls++
 				// Simulate: after override, remote becomes in sync.
@@ -485,6 +487,8 @@ func TestRunTwoPhaseInitialSyncWaitsForDeletionConvergence(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			case r.Method == http.MethodGet && r.URL.Path == "/rest/system/status":
 				w.Write([]byte(`{"myID":"DEVICE-ID"}`))
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/system/connections":
+				w.Write([]byte(`{"connections":{"REMOTE":{"connected":true},"LOCAL":{"connected":true}}}`))
 			case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/rest/db/override"):
 				overrideCalls++
 				w.WriteHeader(http.StatusOK)
@@ -528,6 +532,73 @@ func TestRunTwoPhaseInitialSyncWaitsForDeletionConvergence(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "deletion propagation: remote needBytes=512") {
 		t.Fatalf("expected phase 1b progress with needBytes=512, got: %s", out)
+	}
+}
+
+func TestRunTwoPhaseInitialSyncWaitsForPeerConnection(t *testing.T) {
+	var (
+		mu                sync.Mutex
+		overrideCalls     int
+		connectionPolls   int
+		connectionReadyAt = 3
+	)
+
+	localCfg := map[string]any{"devices": []any{}, "folders": []any{}}
+	remoteCfg := map[string]any{"devices": []any{}, "folders": []any{}}
+
+	handler := func(cfg *map[string]any) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			defer mu.Unlock()
+
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/config":
+				_ = json.NewEncoder(w).Encode(*cfg)
+			case r.Method == http.MethodPut && r.URL.Path == "/rest/config":
+				body, _ := io.ReadAll(r.Body)
+				var newCfg map[string]any
+				_ = json.Unmarshal(body, &newCfg)
+				*cfg = newCfg
+				w.WriteHeader(http.StatusOK)
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/system/status":
+				w.Write([]byte(`{"myID":"DEVICE-ID"}`))
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/system/connections":
+				connectionPolls++
+				connected := connectionPolls >= connectionReadyAt
+				fmt.Fprintf(w, `{"connections":{"REMOTE":{"connected":%t},"LOCAL":{"connected":%t}}}`, connected, connected)
+			case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/rest/db/override"):
+				overrideCalls++
+				w.WriteHeader(http.StatusOK)
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/db/status":
+				w.Write([]byte(`{"needBytes":0}`))
+			case r.Method == http.MethodPost && r.URL.Path == "/rest/system/restart":
+				w.WriteHeader(http.StatusOK)
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}
+	}
+
+	localSrv := httptest.NewServer(handler(&localCfg))
+	defer localSrv.Close()
+	remoteSrv := httptest.NewServer(handler(&remoteCfg))
+	defer remoteSrv.Close()
+
+	var buf bytes.Buffer
+	sc := syncthingSyncConfig{rescanInterval: 300, watcherDelay: 1}
+	err := runTwoPhaseInitialSync(context.Background(), &buf, localSrv.URL, "k", "LOCAL", remoteSrv.URL, "k", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "/tmp/remote", sc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if connectionPolls < connectionReadyAt {
+		t.Fatalf("expected at least %d connection polls, got %d", connectionReadyAt, connectionPolls)
+	}
+	if overrideCalls == 0 {
+		t.Fatal("expected override calls during startup")
+	}
+	if !strings.Contains(buf.String(), "peer connection: local=false remote=false") {
+		t.Fatalf("expected connection progress output, got: %s", buf.String())
 	}
 }
 

@@ -612,6 +612,33 @@ func syncthingFolderNeedBytes(ctx context.Context, base, key, folderID string) (
 	return payload.NeedBytes, nil
 }
 
+func syncthingPeerConnected(ctx context.Context, base, key, peerID string) (bool, error) {
+	body, err := syncthingAPIRequestWithContext(ctx, http.MethodGet, base, key, "/rest/system/connections", nil, "")
+	if err != nil {
+		return false, err
+	}
+	var conns struct {
+		Connections map[string]struct {
+			Connected bool `json:"connected"`
+		} `json:"connections"`
+	}
+	if err := json.Unmarshal(body, &conns); err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(peerID) == "" {
+		for _, c := range conns.Connections {
+			if c.Connected {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	if c, ok := conns.Connections[peerID]; ok {
+		return c.Connected, nil
+	}
+	return false, nil
+}
+
 // waitForInitialSync blocks until the remote syncthing reports that the
 // configured folder has completed its initial sync (needBytes == 0).
 // It opens a temporary port-forward to the target pod's syncthing sidecar
@@ -708,7 +735,18 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 		} else {
 			fmt.Fprintf(out, "  initial sync: remote needBytes=%d\n", need)
 			if need == 0 {
-				break
+				localConnected, localErr := syncthingPeerConnected(ctx, localBase, localKey, remoteID)
+				remoteConnected, remoteErr := syncthingPeerConnected(ctx, remoteBase, remoteKey, localID)
+				if localErr != nil {
+					slog.Debug("syncthing local connection poll failed", "error", localErr)
+				}
+				if remoteErr != nil {
+					slog.Debug("syncthing remote connection poll failed", "error", remoteErr)
+				}
+				fmt.Fprintf(out, "  peer connection: local=%t remote=%t\n", localConnected, remoteConnected)
+				if localConnected && remoteConnected {
+					break
+				}
 			}
 		}
 		if time.Now().After(deadline) {
@@ -775,6 +813,16 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 	}
 	if err := waitSyncthingAPI(ctx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
 		return fmt.Errorf("remote syncthing not ready after restart: %w", err)
+	}
+	if connected, err := syncthingPeerConnected(ctx, localBase, localKey, remoteID); err != nil {
+		return fmt.Errorf("check local syncthing connection after restart: %w", err)
+	} else if !connected {
+		return errors.New("local syncthing peer not connected after restart")
+	}
+	if connected, err := syncthingPeerConnected(ctx, remoteBase, remoteKey, localID); err != nil {
+		return fmt.Errorf("check remote syncthing connection after restart: %w", err)
+	} else if !connected {
+		return errors.New("remote syncthing peer not connected after restart")
 	}
 
 	fmt.Fprintln(out, "Two-phase initial sync complete, now in bidirectional mode.")
@@ -1115,26 +1163,11 @@ func checkSyncHealth(sessionName string) (syncHealthStatus, string) {
 	defer cancel()
 
 	// Check connections to see if peer is connected.
-	body, err := syncthingAPIRequestWithContext(ctx, http.MethodGet, apiBase, apiKey, "/rest/system/connections", nil, "")
+	connected, err := syncthingPeerConnected(ctx, apiBase, apiKey, "")
 	if err != nil {
 		return syncHealthStale, "sync process running but API unreachable"
 	}
-	var conns struct {
-		Connections map[string]struct {
-			Connected bool `json:"connected"`
-		} `json:"connections"`
-	}
-	if err := json.Unmarshal(body, &conns); err != nil {
-		return syncHealthActive, ""
-	}
-	peerConnected := false
-	for _, c := range conns.Connections {
-		if c.Connected {
-			peerConnected = true
-			break
-		}
-	}
-	if !peerConnected {
+	if !connected {
 		return syncHealthStale, "peer disconnected"
 	}
 
