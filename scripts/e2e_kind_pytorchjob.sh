@@ -77,7 +77,13 @@ echo "Starting PyTorchJob smoke session (1 master + 2 workers)"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m
 
 echo "Checking status"
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details
+STATUS_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
+echo "$STATUS_OUTPUT"
+if [[ "$STATUS_OUTPUT" != *"sync: active"* ]]; then
+  echo "ERROR: expected status --details to report active sync" >&2
+  exit 1
+fi
+echo "Sync health status verified"
 
 echo "Waiting for synced file to appear remotely with correct content"
 SYNC_OK=false
@@ -191,6 +197,51 @@ for WPOD in $WORKER_PODS; do
   fi
   echo "preStop handler verified on $WPOD"
 done
+
+echo "Creating remote-only stale file before workspace reset"
+kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- sh -lc 'mkdir -p /workspace/generated && echo stale > /workspace/generated/stale.txt'
+for WPOD in $WORKER_PODS; do
+  kubectl -n "$NAMESPACE" exec "$WPOD" -c pytorch -- test -f /workspace/generated/stale.txt
+done
+
+echo "Updating local workspace before reset"
+echo "hello after reset" >"$SYNC_DIR/hello.txt"
+echo "fresh from local after reset" >"$SYNC_DIR/fresh.txt"
+
+echo "Resetting remote workspace from local"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync reset-remote
+
+echo "Waiting for local-authoritative workspace to converge after reset"
+RESET_OK=false
+for i in $(seq 1 45); do
+  REMOTE_HELLO=$(kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- sh -lc 'cat /workspace/hello.txt 2>/dev/null || true')
+  REMOTE_FRESH=$(kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- sh -lc 'cat /workspace/fresh.txt 2>/dev/null || true')
+  if [[ "$REMOTE_HELLO" == "hello after reset" && "$REMOTE_FRESH" == "fresh from local after reset" ]]; then
+    RESET_OK=true
+    echo "Workspace reset converged on attempt $i"
+    break
+  fi
+  echo "Reset convergence poll attempt $i/45: workspace not ready yet"
+  sleep 2
+done
+
+if [[ "$RESET_OK" != "true" ]]; then
+  echo "ERROR: workspace did not converge after reset-remote" >&2
+  exit 1
+fi
+
+echo "Verifying stale remote-only file was removed from shared workspace"
+if kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- test -e /workspace/generated/stale.txt; then
+  echo "ERROR: stale remote-only file still exists on master after reset-remote" >&2
+  exit 1
+fi
+for WPOD in $WORKER_PODS; do
+  if kubectl -n "$NAMESPACE" exec "$WPOD" -c pytorch -- test -e /workspace/generated/stale.txt; then
+    echo "ERROR: stale remote-only file still exists on worker $WPOD after reset-remote" >&2
+    exit 1
+  fi
+done
+echo "Workspace reset verified across all pods"
 
 echo "Changing controller workload spec to trigger drift detection"
 sed -i 's/image: ubuntu:22.04/image: ubuntu:24.04/g' "$MANIFEST_PATH"

@@ -69,7 +69,13 @@ echo "Starting kind smoke session"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m
 
 echo "Checking status"
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details
+STATUS_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
+echo "$STATUS_OUTPUT"
+if [[ "$STATUS_OUTPUT" != *"sync: active"* ]]; then
+  echo "ERROR: expected status --details to report active sync" >&2
+  exit 1
+fi
+echo "Sync health status verified"
 
 echo "Waiting for synced file to appear remotely with correct content"
 SYNC_OK=false
