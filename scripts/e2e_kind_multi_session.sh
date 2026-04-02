@@ -44,7 +44,8 @@ init_pod_config() {
   local name="$2"
   local sync_dir="$3"
   mkdir -p "$dir"
-  (
+  local init_output
+  init_output=$(
     cd "$dir"
     "$OKDEV_BIN" init \
       --workload pod \
@@ -57,6 +58,7 @@ init_pod_config() {
       --sync-local "$sync_dir" \
       --sync-remote /workspace
   )
+  printf '%s\n' "$init_output" >&2
   local cfg_path=""
   if [[ -f "$dir/.okdev/okdev.yaml" ]]; then
     cfg_path="$dir/.okdev/okdev.yaml"
