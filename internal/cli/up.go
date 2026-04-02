@@ -108,7 +108,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", upDefaultWaitTimeout, "Wait timeout for pod readiness")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview actions without applying resources")
-	cmd.Flags().BoolVar(&reconcile, "reconcile", false, "Reapply controller-backed workloads or recreate pod workloads instead of reusing an existing session workload")
+	cmd.Flags().BoolVar(&reconcile, "reconcile", false, "Reconcile existing workloads by reapplying rolling controllers or recreating immutable workloads")
 	cmd.Flags().BoolVar(&tmux, "tmux", false, "Enable tmux persistent shell sessions in the dev container")
 	cmd.Flags().BoolVar(&noTmux, "no-tmux", false, "Disable tmux persistent shell sessions for this pod")
 	cmd.Flags().BoolVar(&resetWorkspace, "reset-workspace", false, "Clear remote workspace and re-sync from local before starting")
@@ -257,7 +257,7 @@ func prepareReconcileApply(state *upState) (workloadApplyOutcome, error) {
 		return workloadApplyReapplied, nil
 	}
 	if err := state.runtime.Delete(state.ctx, state.command.kube, state.command.namespace, true); err != nil {
-		return workloadApplyCreated, fmt.Errorf("delete existing pod for reconcile: %w", err)
+		return workloadApplyCreated, fmt.Errorf("delete existing workload for reconcile: %w", err)
 	}
 	if err := waitForReconcileDeletion(state); err != nil {
 		return workloadApplyCreated, err

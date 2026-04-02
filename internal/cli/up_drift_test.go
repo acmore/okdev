@@ -151,7 +151,7 @@ func TestHandleChangedWorkloadDriftStopsActiveStatusBeforePrompt(t *testing.T) {
 		ctx:     context.Background(),
 		cmd:     testCommandWithIO(strings.NewReader("n\n"), &out, &out),
 		ui:      ui,
-		runtime: &fakeRefRuntime{kind: workload.TypeJob, apiVersion: "batch/v1", name: "trainer"},
+		runtime: &fakeRefRuntime{kind: workload.TypeGeneric, apiVersion: "apps/v1", name: "trainer"},
 	}
 
 	action, err := handleChangedWorkloadDrift(state, "diff-body", false, true)
@@ -170,6 +170,43 @@ func TestHandleChangedWorkloadDriftStopsActiveStatusBeforePrompt(t *testing.T) {
 	}
 	if !strings.Contains(got, "Reapply workload? [y/N]: ") {
 		t.Fatalf("expected reapply prompt, got %q", got)
+	}
+}
+
+func TestHandleChangedWorkloadDriftPromptsRecreateForImmutableController(t *testing.T) {
+	var out bytes.Buffer
+	ui := &upUI{
+		out:         &out,
+		errOut:      &out,
+		interactive: true,
+	}
+	ui.stepRun("job", "trainer")
+
+	state := &upState{
+		ctx: context.Background(),
+		cmd: testCommandWithIO(strings.NewReader("n\n"), &out, &out),
+		ui:  ui,
+		runtime: &fakeRefRuntime{
+			kind:       workload.TypeJob,
+			apiVersion: "batch/v1",
+			name:       "trainer",
+		},
+		command: &commandContext{sessionName: "sess"},
+	}
+
+	action, err := handleChangedWorkloadDrift(state, "diff-body", false, true)
+	if err != nil {
+		t.Fatalf("handleChangedWorkloadDrift: %v", err)
+	}
+	if action != driftActionReuse {
+		t.Fatalf("expected reuse on decline, got %v", action)
+	}
+	got := out.String()
+	if !strings.Contains(got, "This workload must be recreated to apply these changes.") {
+		t.Fatalf("expected recreate guidance, got %q", got)
+	}
+	if !strings.Contains(got, "Recreate workload? [y/N]: ") {
+		t.Fatalf("expected recreate prompt, got %q", got)
 	}
 }
 
