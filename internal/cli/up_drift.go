@@ -200,6 +200,7 @@ func handleWorkloadDrift(state *upState) (driftAction, error) {
 func handleChangedWorkloadDrift(state *upState, diff string, isPod bool, interactive bool) (driftAction, error) {
 	errOut := state.cmd.ErrOrStderr()
 	state.ui.stopActive()
+	requiresRecreate := isPod || reconcileStrategyForWorkload(state) == workloadApplyRecreated
 
 	if diff != "" {
 		fmt.Fprintln(errOut, "Workload spec has changed:")
@@ -210,20 +211,20 @@ func handleChangedWorkloadDrift(state *upState, diff string, isPod bool, interac
 		fmt.Fprintln(errOut, "Workload spec has changed.")
 	}
 
-	if isPod {
-		fmt.Fprintln(errOut, "Pod workloads must be recreated to apply these changes.")
+	if requiresRecreate {
+		fmt.Fprintln(errOut, "This workload must be recreated to apply these changes.")
 	}
 
 	if !interactive {
 		action := "apply"
-		if isPod {
+		if requiresRecreate {
 			action = "recreate"
 		}
 		return driftActionReuse, fmt.Errorf("workload spec changed; re-run with --reconcile to %s", action)
 	}
 
 	prompt := "Reapply workload? [y/N]: "
-	if isPod {
+	if requiresRecreate {
 		prompt = "Recreate workload? [y/N]: "
 	}
 	ok, promptErr := promptDriftReapply(state.cmd.InOrStdin(), errOut, prompt)
@@ -234,9 +235,12 @@ func handleChangedWorkloadDrift(state *upState, diff string, isPod bool, interac
 		return driftActionReuse, nil
 	}
 
-	if isPod {
+	if requiresRecreate {
 		if delErr := state.runtime.Delete(state.ctx, state.command.kube, state.command.namespace, true); delErr != nil {
-			return driftActionReuse, fmt.Errorf("delete existing pod for recreate: %w", delErr)
+			return driftActionReuse, fmt.Errorf("delete existing workload for recreate: %w", delErr)
+		}
+		if waitErr := waitForReconcileDeletion(state); waitErr != nil {
+			return driftActionReuse, waitErr
 		}
 		return driftActionRecreate, nil
 	}

@@ -105,6 +105,8 @@ func (r *GenericRuntime) Apply(ctx context.Context, k ApplyClient, namespace str
 			if err != nil {
 				return err
 			}
+		} else {
+			kube.InjectPreStopForTarget(&template.Spec, r.PreStop, r.interactiveContainer())
 		}
 		updated, err := encodePodTemplateSpec(template)
 		if err != nil {

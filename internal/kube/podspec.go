@@ -56,16 +56,7 @@ func PreparePodSpecForTarget(podSpec corev1.PodSpec, volumes []corev1.Volume, wo
 		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 	})
 
-	targetIndex := -1
-	for i := range spec.Containers {
-		if spec.Containers[i].Name == targetContainer {
-			targetIndex = i
-			break
-		}
-	}
-	if targetIndex == -1 && len(spec.Containers) > 0 {
-		targetIndex = 0
-	}
+	targetIndex := targetContainerIndex(spec.Containers, targetContainer)
 	if targetIndex >= 0 {
 		spec.Containers[targetIndex].VolumeMounts = ensureVolumeMount(spec.Containers[targetIndex].VolumeMounts, corev1.VolumeMount{
 			Name:      "workspace",
@@ -91,16 +82,7 @@ func PreparePodSpecForTarget(podSpec corev1.PodSpec, volumes []corev1.Volume, wo
 		}
 	}
 
-	if preStop != "" && targetIndex >= 0 {
-		if spec.Containers[targetIndex].Lifecycle == nil {
-			spec.Containers[targetIndex].Lifecycle = &corev1.Lifecycle{}
-		}
-		spec.Containers[targetIndex].Lifecycle.PreStop = &corev1.LifecycleHandler{
-			Exec: &corev1.ExecAction{
-				Command: []string{"sh", "-c", preStop},
-			},
-		}
-	}
+	InjectPreStopForTarget(spec, preStop, targetContainer)
 
 	if !hasContainer(spec.Containers, "okdev-sidecar") {
 		privileged := true
@@ -141,6 +123,24 @@ func PreparePodSpecForTarget(podSpec corev1.PodSpec, volumes []corev1.Volume, wo
 	}
 
 	return *spec, nil
+}
+
+func InjectPreStopForTarget(spec *corev1.PodSpec, preStop string, targetContainer string) {
+	if spec == nil || strings.TrimSpace(preStop) == "" {
+		return
+	}
+	targetIndex := targetContainerIndex(spec.Containers, targetContainer)
+	if targetIndex < 0 {
+		return
+	}
+	if spec.Containers[targetIndex].Lifecycle == nil {
+		spec.Containers[targetIndex].Lifecycle = &corev1.Lifecycle{}
+	}
+	spec.Containers[targetIndex].Lifecycle.PreStop = &corev1.LifecycleHandler{
+		Exec: &corev1.ExecAction{
+			Command: []string{"sh", "-c", preStop},
+		},
+	}
 }
 
 func syncthingImagePullPolicy(image string) corev1.PullPolicy {
@@ -206,4 +206,16 @@ func hasContainer(containers []corev1.Container, name string) bool {
 		}
 	}
 	return false
+}
+
+func targetContainerIndex(containers []corev1.Container, targetContainer string) int {
+	for i := range containers {
+		if containers[i].Name == targetContainer {
+			return i
+		}
+	}
+	if len(containers) > 0 {
+		return 0
+	}
+	return -1
 }

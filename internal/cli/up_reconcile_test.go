@@ -17,6 +17,8 @@ type fakeWorkloadExistenceChecker struct {
 	apiVersion string
 	kind       string
 	name       string
+	podsSeq    [][]kube.PodSummary
+	listCalls  int
 }
 
 func (f *fakeWorkloadExistenceChecker) ResourceExists(_ context.Context, _ string, apiVersion, kind, name string) (bool, error) {
@@ -24,6 +26,18 @@ func (f *fakeWorkloadExistenceChecker) ResourceExists(_ context.Context, _ strin
 	f.kind = kind
 	f.name = name
 	return f.exists, f.err
+}
+
+func (f *fakeWorkloadExistenceChecker) ListPods(_ context.Context, _ string, _ bool, _ string) ([]kube.PodSummary, error) {
+	if len(f.podsSeq) == 0 {
+		return nil, f.err
+	}
+	idx := f.listCalls
+	if idx >= len(f.podsSeq) {
+		idx = len(f.podsSeq) - 1
+	}
+	f.listCalls++
+	return f.podsSeq[idx], f.err
 }
 
 type fakeRefRuntime struct {
@@ -119,12 +133,19 @@ func TestShouldReuseExistingWorkloadSurfacesLookupErrors(t *testing.T) {
 
 func TestPrepareReconcileApplyRecreatesExistingPod(t *testing.T) {
 	rt := &fakeRefRuntime{kind: workload.TypePod, apiVersion: "v1", name: "okdev-sess"}
+	k := &fakeWorkloadExistenceChecker{
+		exists:  false,
+		podsSeq: [][]kube.PodSummary{{}},
+	}
 	state := &upState{
-		ctx:     context.Background(),
-		runtime: rt,
+		ctx:           context.Background(),
+		runtime:       rt,
+		reconcileKube: k,
+		labels:        map[string]string{"okdev.io/session": "sess"},
 		command: &commandContext{
-			namespace: "default",
-			kube:      &kube.Client{},
+			namespace:   "default",
+			kube:        &kube.Client{},
+			sessionName: "sess",
 		},
 	}
 
@@ -141,8 +162,11 @@ func TestPrepareReconcileApplyRecreatesExistingPod(t *testing.T) {
 }
 
 func TestPrepareReconcileApplyReappliesControllerWorkload(t *testing.T) {
-	rt := &fakeRefRuntime{kind: workload.TypeJob, apiVersion: "batch/v1", name: "trainer"}
-	state := &upState{runtime: rt}
+	rt := &fakeRefRuntime{kind: workload.TypeGeneric, apiVersion: "apps/v1", name: "trainer"}
+	state := &upState{
+		runtime: rt,
+		command: &commandContext{},
+	}
 
 	outcome, err := prepareReconcileApply(state)
 	if err != nil {
@@ -153,6 +177,99 @@ func TestPrepareReconcileApplyReappliesControllerWorkload(t *testing.T) {
 	}
 	if rt.deleteCall != 0 {
 		t.Fatalf("expected no delete calls, got %d", rt.deleteCall)
+	}
+}
+
+func TestPrepareReconcileApplyRecreatesJobWorkload(t *testing.T) {
+	rt := &fakeRefRuntime{kind: workload.TypeJob, apiVersion: "batch/v1", name: "trainer"}
+	k := &fakeWorkloadExistenceChecker{
+		exists:  false,
+		podsSeq: [][]kube.PodSummary{{}},
+	}
+	state := &upState{
+		ctx:           context.Background(),
+		runtime:       rt,
+		reconcileKube: k,
+		labels:        map[string]string{"okdev.io/session": "sess"},
+		command: &commandContext{
+			namespace:   "default",
+			kube:        &kube.Client{},
+			sessionName: "sess",
+		},
+	}
+
+	outcome, err := prepareReconcileApply(state)
+	if err != nil {
+		t.Fatalf("prepareReconcileApply: %v", err)
+	}
+	if outcome != workloadApplyRecreated {
+		t.Fatalf("expected recreate outcome, got %v", outcome)
+	}
+	if rt.deleteCall != 1 {
+		t.Fatalf("expected one delete call, got %d", rt.deleteCall)
+	}
+}
+
+func TestPrepareReconcileApplyRecreatesPyTorchJobWorkload(t *testing.T) {
+	rt := &fakeRefRuntime{kind: workload.TypePyTorchJob, apiVersion: "kubeflow.org/v1", name: "trainer"}
+	k := &fakeWorkloadExistenceChecker{
+		exists:  false,
+		podsSeq: [][]kube.PodSummary{{}},
+	}
+	state := &upState{
+		ctx:           context.Background(),
+		runtime:       rt,
+		reconcileKube: k,
+		labels:        map[string]string{"okdev.io/session": "sess"},
+		command: &commandContext{
+			namespace:   "default",
+			kube:        &kube.Client{},
+			sessionName: "sess",
+		},
+	}
+
+	outcome, err := prepareReconcileApply(state)
+	if err != nil {
+		t.Fatalf("prepareReconcileApply: %v", err)
+	}
+	if outcome != workloadApplyRecreated {
+		t.Fatalf("expected recreate outcome, got %v", outcome)
+	}
+	if rt.deleteCall != 1 {
+		t.Fatalf("expected one delete call, got %d", rt.deleteCall)
+	}
+}
+
+func TestPrepareReconcileApplyWaitsForDeletionBarrier(t *testing.T) {
+	rt := &fakeRefRuntime{kind: workload.TypePyTorchJob, apiVersion: "kubeflow.org/v1", name: "trainer"}
+	k := &fakeWorkloadExistenceChecker{
+		exists: false,
+		podsSeq: [][]kube.PodSummary{
+			{{Name: "pod-a"}},
+			{},
+		},
+	}
+	state := &upState{
+		ctx:           context.Background(),
+		runtime:       rt,
+		reconcileKube: k,
+		labels:        map[string]string{"okdev.io/session": "sess"},
+		command: &commandContext{
+			namespace:   "default",
+			sessionName: "sess",
+			kube:        &kube.Client{},
+		},
+	}
+
+	outcome, err := prepareReconcileApply(state)
+	if err != nil {
+		t.Fatalf("prepareReconcileApply: %v", err)
+	}
+	if outcome != workloadApplyRecreated {
+		t.Fatalf("expected recreate outcome, got %v", outcome)
+	}
+	if k.listCalls < 2 {
+		t.Fatalf("expected deletion barrier to poll pods, got %d list calls", k.listCalls)
 	}
 }
 

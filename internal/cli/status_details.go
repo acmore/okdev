@@ -74,6 +74,8 @@ type detailedStatusSSH struct {
 
 type detailedStatusSync struct {
 	Engine             string   `json:"engine"`
+	Health             string   `json:"health,omitempty"`
+	HealthDetail       string   `json:"healthDetail,omitempty"`
 	ConfiguredPaths    []string `json:"configuredPaths,omitempty"`
 	BackgroundStatus   string   `json:"backgroundStatus,omitempty"`
 	BackgroundPID      int      `json:"backgroundPid,omitempty"`
@@ -233,6 +235,10 @@ func buildDetailedSync(sessionName string, cfg *config.DevEnvironment, cfgPath s
 			detail.ConflictPaths = paths
 		}
 	}
+
+	health, reason := checkSyncHealth(sessionName)
+	detail.Health = string(health)
+	detail.HealthDetail = reason
 	return detail
 }
 
@@ -309,6 +315,13 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 			status += " (pid " + strconv.Itoa(detail.Sync.BackgroundPID) + ")"
 		}
 		fmt.Fprintf(w, "- background: %s\n", status)
+	}
+	if detail.Sync.Health != "" {
+		healthLine := detail.Sync.Health
+		if detail.Sync.HealthDetail != "" {
+			healthLine += " (" + detail.Sync.HealthDetail + ")"
+		}
+		fmt.Fprintf(w, "- health: %s\n", healthLine)
 	}
 	if len(detail.Sync.ConfiguredPaths) > 0 {
 		fmt.Fprintln(w, "- configured paths:")

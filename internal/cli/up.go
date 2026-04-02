@@ -25,35 +25,36 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-const upDefaultSyncMode = "bi"
-
 type upOptions struct {
 	waitTimeout            time.Duration
 	dryRun                 bool
 	reconcile              bool
 	tmux                   bool
 	noTmux                 bool
+	resetWorkspace         bool
 	createMissingPVC       bool
 	missingPVCSize         string
 	missingPVCStorageClass string
 }
 
 type upState struct {
-	cmd          *cobra.Command
-	opts         *Options
-	flags        upOptions
-	ui           *upUI
-	command      *commandContext
-	ctx          context.Context
-	cancel       context.CancelFunc
-	labels       map[string]string
-	annotations  map[string]string
-	volumes      []corev1.Volume
-	syncPairs    []syncengine.Pair
-	enableTmux   bool
-	runtime      workload.Runtime
-	workloadName string
-	target       workload.TargetRef
+	cmd            *cobra.Command
+	opts           *Options
+	flags          upOptions
+	ui             *upUI
+	command        *commandContext
+	ctx            context.Context
+	cancel         context.CancelFunc
+	labels         map[string]string
+	annotations    map[string]string
+	volumes        []corev1.Volume
+	syncPairs      []syncengine.Pair
+	enableTmux     bool
+	runtime        workload.Runtime
+	workloadName   string
+	target         workload.TargetRef
+	previousTarget workload.TargetRef
+	reconcileKube  reconcileWaitClient
 }
 
 type workloadApplyOutcome int
@@ -70,6 +71,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 	var reconcile bool
 	var tmux bool
 	var noTmux bool
+	var resetWorkspace bool
 	var createMissingPVC bool
 	var missingPVCSize string
 	var missingPVCStorageClass string
@@ -95,6 +97,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 				reconcile:              reconcile,
 				tmux:                   tmux,
 				noTmux:                 noTmux,
+				resetWorkspace:         resetWorkspace,
 				createMissingPVC:       createMissingPVC,
 				missingPVCSize:         missingPVCSize,
 				missingPVCStorageClass: missingPVCStorageClass,
@@ -104,9 +107,10 @@ func newUpCmd(opts *Options) *cobra.Command {
 
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", upDefaultWaitTimeout, "Wait timeout for pod readiness")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview actions without applying resources")
-	cmd.Flags().BoolVar(&reconcile, "reconcile", false, "Reapply controller-backed workloads or recreate pod workloads instead of reusing an existing session workload")
+	cmd.Flags().BoolVar(&reconcile, "reconcile", false, "Reconcile existing workloads by reapplying rolling controllers or recreating immutable workloads")
 	cmd.Flags().BoolVar(&tmux, "tmux", false, "Enable tmux persistent shell sessions in the dev container")
 	cmd.Flags().BoolVar(&noTmux, "no-tmux", false, "Disable tmux persistent shell sessions for this pod")
+	cmd.Flags().BoolVar(&resetWorkspace, "reset-workspace", false, "Clear remote workspace and re-sync from local before starting")
 	cmd.Flags().BoolVar(&createMissingPVC, "create-missing-pvc", false, "Create missing PVCs referenced by spec.volumes")
 	cmd.Flags().StringVar(&missingPVCSize, "missing-pvc-size", config.DefaultWorkspacePVCSize, "Size to use when creating a missing PVC")
 	cmd.Flags().StringVar(&missingPVCStorageClass, "missing-pvc-storage-class", "", "StorageClass to use when creating a missing PVC")
@@ -166,21 +170,23 @@ func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, e
 		return nil, err
 	}
 	ctx, cancel := upCommandContext(flags.waitTimeout)
+	previousTarget, _ := loadTargetRef(cc.sessionName)
 	return &upState{
-		cmd:          cmd,
-		opts:         opts,
-		flags:        flags,
-		ui:           ui,
-		command:      cc,
-		ctx:          ctx,
-		cancel:       cancel,
-		labels:       labels,
-		annotations:  annotations,
-		volumes:      volumes,
-		syncPairs:    syncPairs,
-		enableTmux:   enableTmux,
-		runtime:      runtime,
-		workloadName: runtime.WorkloadName(),
+		cmd:            cmd,
+		opts:           opts,
+		flags:          flags,
+		ui:             ui,
+		command:        cc,
+		ctx:            ctx,
+		cancel:         cancel,
+		labels:         labels,
+		annotations:    annotations,
+		volumes:        volumes,
+		syncPairs:      syncPairs,
+		enableTmux:     enableTmux,
+		runtime:        runtime,
+		workloadName:   runtime.WorkloadName(),
+		previousTarget: previousTarget,
 	}, nil
 }
 
@@ -247,13 +253,104 @@ func upReconcile(state *upState, applyWorkload bool) error {
 }
 
 func prepareReconcileApply(state *upState) (workloadApplyOutcome, error) {
-	if state.runtime.Kind() != workload.TypePod {
+	switch reconcileStrategyForWorkload(state) {
+	case workloadApplyReapplied:
 		return workloadApplyReapplied, nil
 	}
 	if err := state.runtime.Delete(state.ctx, state.command.kube, state.command.namespace, true); err != nil {
-		return workloadApplyCreated, fmt.Errorf("delete existing pod for reconcile: %w", err)
+		return workloadApplyCreated, fmt.Errorf("delete existing workload for reconcile: %w", err)
+	}
+	if err := waitForReconcileDeletion(state); err != nil {
+		return workloadApplyCreated, err
 	}
 	return workloadApplyRecreated, nil
+}
+
+type reconcileWaitClient interface {
+	ResourceExists(context.Context, string, string, string, string) (bool, error)
+	ListPods(context.Context, string, bool, string) ([]kube.PodSummary, error)
+}
+
+func waitForReconcileDeletion(state *upState) error {
+	if state == nil || state.command == nil || state.runtime == nil {
+		return nil
+	}
+	k := state.reconcileKube
+	if k == nil {
+		k = state.command.kube
+	}
+	if k == nil {
+		return nil
+	}
+	timeout := state.flags.waitTimeout
+	if timeout <= 0 {
+		timeout = upDefaultWaitTimeout
+	}
+	ctx, cancel := context.WithTimeout(state.ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		ready, err := reconcileDeletionComplete(ctx, k, state.command.namespace, state.command.sessionName, state.labels, state.runtime)
+		if err != nil {
+			return fmt.Errorf("wait for reconcile deletion: %w", err)
+		}
+		if ready {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for reconcile deletion: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func reconcileDeletionComplete(ctx context.Context, k reconcileWaitClient, namespace, sessionName string, labels map[string]string, rt workload.Runtime) (bool, error) {
+	if provider, ok := rt.(workload.RefProvider); ok {
+		apiVersion, kind, name, err := provider.WorkloadRef()
+		if err != nil {
+			return false, err
+		}
+		exists, err := k.ResourceExists(ctx, namespace, apiVersion, kind, name)
+		if err != nil {
+			return false, err
+		}
+		if exists {
+			return false, nil
+		}
+	}
+
+	selector := strings.TrimSpace(workload.DiscoveryLabelSelector(labels))
+	if strings.TrimSpace(sessionName) != "" {
+		selector = "okdev.io/managed=true,okdev.io/session=" + sessionName
+	}
+	pods, err := k.ListPods(ctx, namespace, false, selector)
+	if err != nil {
+		return false, err
+	}
+	return len(pods) == 0, nil
+}
+
+func reconcileStrategyForWorkload(state *upState) workloadApplyOutcome {
+	if state == nil {
+		return workloadApplyReapplied
+	}
+	if state.command != nil && state.command.cfg != nil {
+		switch normalizeWorkloadType(state.command.cfg.Spec.Workload.Type) {
+		case workload.TypePod, workload.TypeJob, workload.TypePyTorchJob:
+			return workloadApplyRecreated
+		default:
+			return workloadApplyReapplied
+		}
+	}
+	switch normalizeWorkloadType(state.runtime.Kind()) {
+	case workload.TypePod, workload.TypeJob, workload.TypePyTorchJob:
+		return workloadApplyRecreated
+	default:
+		return workloadApplyReapplied
+	}
 }
 
 func workloadApplyStatus(outcome workloadApplyOutcome) string {
@@ -367,9 +464,21 @@ func upWait(state *upState) error {
 		return fmt.Errorf("wait for %s/%s readiness failed: %w", state.runtime.Kind(), state.workloadName, waitErr)
 	}
 	state.ui.stepDone("pod readiness", "ready")
+	if shouldPreferReplacementTarget(state) {
+		if err := state.command.kube.AnnotatePod(state.ctx, state.command.namespace, state.previousTarget.PodName, "okdev.io/last-attach", ""); err != nil {
+			slog.Debug("failed to clear last-attach annotation", "pod", state.previousTarget.PodName, "error", err)
+		}
+	}
 	target, err := state.runtime.SelectTarget(state.ctx, state.command.kube, state.command.namespace)
 	if err != nil {
 		return fmt.Errorf("select target: %w", err)
+	}
+	if shouldPreferReplacementTarget(state) && target.PodName == state.previousTarget.PodName {
+		if replacement, replacementErr := waitForReplacementTarget(state, target); replacementErr == nil {
+			target = replacement
+		} else {
+			slog.Debug("replacement target did not become ready before timeout", "session", state.command.sessionName, "error", replacementErr)
+		}
 	}
 	if err := persistTargetRef(state.command.sessionName, target); err != nil {
 		return fmt.Errorf("save target state: %w", err)
@@ -380,6 +489,35 @@ func upWait(state *upState) error {
 	state.target = target
 	state.ui.stepDone("target", target.PodName+"/"+target.Container)
 	return nil
+}
+
+func shouldPreferReplacementTarget(state *upState) bool {
+	if state == nil || !state.flags.reconcile {
+		return false
+	}
+	if reconcileStrategyForWorkload(state) != workloadApplyReapplied {
+		return false
+	}
+	return strings.TrimSpace(state.previousTarget.PodName) != ""
+}
+
+func waitForReplacementTarget(state *upState, current workload.TargetRef) (workload.TargetRef, error) {
+	if state == nil {
+		return current, nil
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		refreshed, err := resolveFreshTargetRef(state.ctx, state.opts, state.command.cfg, state.command.namespace, state.command.sessionName, state.command.kube)
+		if err == nil && strings.TrimSpace(refreshed.PodName) != "" && refreshed.PodName != current.PodName {
+			return refreshed, nil
+		}
+		select {
+		case <-state.ctx.Done():
+			return current, state.ctx.Err()
+		case <-time.After(1 * time.Second):
+		}
+	}
+	return current, fmt.Errorf("replacement target did not appear")
 }
 
 type sessionPodEventWatcher interface {
@@ -681,20 +819,72 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, err
 		return summary, modeSym, nil
 	}
 	state.ui.stepRun("sync", "reconciling state")
+	targetReset := false
 	if reset, err := ensureSyncthingTargetSessionState(state.ctx, state.command.kube, state.command.namespace, state.command.sessionName, target.PodName); err != nil {
 		return "", "", fmt.Errorf("reconcile local syncthing session state: %w", err)
 	} else if reset {
+		targetReset = true
 		state.ui.stepDone("sync state", "reset after target pod recreation")
 	}
-	if err := refreshSyncthingSessionProcesses(state.command.sessionName); err != nil {
-		return "", "", fmt.Errorf("refresh local syncthing session state: %w", err)
+	configHash := ""
+	hasConfigState := false
+	if len(state.syncPairs) == 1 {
+		localPath, err := filepath.Abs(state.syncPairs[0].Local)
+		if err != nil {
+			return "", "", fmt.Errorf("resolve sync path: %w", err)
+		}
+		configHash = syncthingSessionConfigHash(state.command.cfg, localPath, state.syncPairs[0].Remote)
+		stored, err := loadSyncthingTargetSessionState(state.command.sessionName)
+		if err != nil {
+			return "", "", fmt.Errorf("load syncthing config state: %w", err)
+		}
+		hasConfigState = strings.TrimSpace(stored.ConfigHash) != ""
 	}
+	configChanged := false
+	if configHash != "" {
+		changed, err := syncthingConfigChanged(state.command.sessionName, configHash)
+		if err != nil {
+			return "", "", fmt.Errorf("compare syncthing config state: %w", err)
+		}
+		configChanged = changed
+	}
+	active := syncthingSessionActive(state.command.sessionName)
+	restartRequired := state.flags.resetWorkspace || configChanged || !active
+	startMode := syncStartMode(state.flags.resetWorkspace, targetReset, hasConfigState, configChanged, active)
+	if restartRequired {
+		if err := refreshSyncthingSessionProcesses(state.command.sessionName); err != nil {
+			return "", "", fmt.Errorf("refresh local syncthing session state: %w", err)
+		}
+	}
+
+	if state.flags.resetWorkspace {
+		if len(state.syncPairs) != 1 {
+			return "", "", fmt.Errorf("--reset-workspace requires exactly one sync path mapping, got %d", len(state.syncPairs))
+		}
+		state.ui.stepRun("sync", "resetting remote workspace")
+		if err := resetSyncthingSessionState(state.command.sessionName); err != nil {
+			return "", "", fmt.Errorf("reset sync state: %w", err)
+		}
+		if err := resetRemoteWorkspace(state.ctx, state.command.kube, state.command.namespace, target.PodName, state.syncPairs[0].Remote, state.command.cfg.Spec.Sync.PreservePaths); err != nil {
+			return "", "", fmt.Errorf("clear remote workspace: %w", err)
+		}
+		state.ui.stepDone("sync", "remote workspace cleared")
+	}
+
+	if !restartRequired {
+		modeSym = modeSymbol(startMode)
+		syncPathSummary := syncPairsSummary(state.syncPairs, modeSym)
+		summary = "already active (" + modeSym + ")"
+		state.ui.stepDone("sync", fmt.Sprintf("already active (%s), %s", modeSym, syncPathSummary))
+		return summary, modeSym, nil
+	}
+
 	state.ui.stepRun("sync", "starting")
-	logPath, started, err := startDetachedSyncthingSync(state.opts, upDefaultSyncMode, state.command.sessionName, state.command.namespace, state.command.cfgPath)
+	logPath, started, err := startDetachedSyncthingSync(state.opts, startMode, state.command.sessionName, state.command.namespace, state.command.cfgPath)
 	if err != nil {
 		return "", "", fmt.Errorf("start syncthing background sync: %w", err)
 	}
-	modeSym = modeSymbol(upDefaultSyncMode)
+	modeSym = modeSymbol(startMode)
 	syncPathSummary := syncPairsSummary(state.syncPairs, modeSym)
 	if started {
 		summary = "active (" + modeSym + ")"
@@ -704,6 +894,14 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, err
 		state.ui.stepDone("sync", fmt.Sprintf("already active (%s), %s, logs: %s", modeSym, syncPathSummary, logPath))
 	}
 	return summary, modeSym, nil
+}
+
+func syncthingSessionActive(sessionName string) bool {
+	if strings.TrimSpace(sessionName) == "" {
+		return false
+	}
+	status, _ := checkSyncHealth(sessionName)
+	return status == syncHealthActive
 }
 
 type workloadExistenceChecker interface {
@@ -1335,10 +1533,27 @@ func modeSymbol(mode string) string {
 		return "->"
 	case "down":
 		return "<-"
-	case "bi":
+	case "bi", "two-phase":
 		return "<->"
 	default:
 		return "->"
+	}
+}
+
+func syncStartMode(resetWorkspace, targetReset, hasConfigState, configChanged, active bool) string {
+	switch {
+	case resetWorkspace:
+		return "two-phase"
+	case targetReset:
+		return "two-phase"
+	case !hasConfigState:
+		return "two-phase"
+	case configChanged:
+		return "bi"
+	case !active:
+		return "bi"
+	default:
+		return "bi"
 	}
 }
 
