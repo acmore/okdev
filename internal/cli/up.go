@@ -782,8 +782,11 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, err
 	} else if reset {
 		state.ui.stepDone("sync state", "reset after target pod recreation")
 	}
-	if err := refreshSyncthingSessionProcesses(state.command.sessionName); err != nil {
-		return "", "", fmt.Errorf("refresh local syncthing session state: %w", err)
+	restartRequired := state.flags.resetWorkspace || !syncthingSessionActive(state.command.sessionName)
+	if restartRequired {
+		if err := refreshSyncthingSessionProcesses(state.command.sessionName); err != nil {
+			return "", "", fmt.Errorf("refresh local syncthing session state: %w", err)
+		}
 	}
 
 	if state.flags.resetWorkspace {
@@ -798,6 +801,14 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, err
 			return "", "", fmt.Errorf("clear remote workspace: %w", err)
 		}
 		state.ui.stepDone("sync", "remote workspace cleared")
+	}
+
+	if !restartRequired {
+		modeSym = modeSymbol(upDefaultSyncMode)
+		syncPathSummary := syncPairsSummary(state.syncPairs, modeSym)
+		summary = "already active (" + modeSym + ")"
+		state.ui.stepDone("sync", fmt.Sprintf("already active (%s), %s", modeSym, syncPathSummary))
+		return summary, modeSym, nil
 	}
 
 	state.ui.stepRun("sync", "starting")
@@ -815,6 +826,14 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, err
 		state.ui.stepDone("sync", fmt.Sprintf("already active (%s), %s, logs: %s", modeSym, syncPathSummary, logPath))
 	}
 	return summary, modeSym, nil
+}
+
+func syncthingSessionActive(sessionName string) bool {
+	if strings.TrimSpace(sessionName) == "" {
+		return false
+	}
+	status, _ := checkSyncHealth(sessionName)
+	return status == syncHealthActive
 }
 
 type workloadExistenceChecker interface {
