@@ -729,7 +729,8 @@ type syncthingSyncConfig struct {
 //     1b. Once needBytes==0, flip ignoreDelete to false and override once more so
 //     that files deleted locally (branch switch, git pull) are propagated as
 //     deletions before entering bidirectional mode.
-//  2. Reconfigure both sides to sendreceive and restart Syncthing.
+//  2. Reconfigure both sides to sendreceive and restart only if Syncthing
+//     reports that the applied config requires it.
 func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, localKey, localID, remoteBase, remoteKey, remoteID, peerAddr, folderID, localPath, remotePath string, sc syncthingSyncConfig) error {
 	// Phase 1: sendonly + ignoreDelete on local, receiveonly on remote.
 	fmt.Fprintln(out, "Phase 1: local-authoritative initial sync …")
@@ -821,20 +822,37 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 		return fmt.Errorf("configure remote (phase 2): %w", err)
 	}
 
-	// The local daemon is launched with --no-restart so it can be owned by
-	// the okdev sync child. Folder config changes are applied live there, so
-	// only restart the remote sidecar process.
-	if err := syncthingRestart(ctx, remoteBase, remoteKey); err != nil {
-		return fmt.Errorf("restart remote syncthing: %w", err)
+	localRestartRequired, err := syncthingRestartRequired(ctx, localBase, localKey)
+	if err != nil {
+		return fmt.Errorf("check local restart requirement: %w", err)
+	}
+	remoteRestartRequired, err := syncthingRestartRequired(ctx, remoteBase, remoteKey)
+	if err != nil {
+		return fmt.Errorf("check remote restart requirement: %w", err)
 	}
 
-	// Wait for the remote API to come back after restart, and confirm the
-	// local API remained reachable through the live config update.
+	// The local daemon is launched with --no-restart so it can be owned by
+	// the okdev sync child. Folder config changes are expected to apply live.
+	// If Syncthing ever reports a restart requirement here, fail clearly so
+	// we can handle that path explicitly rather than killing the daemon.
+	if localRestartRequired {
+		return errors.New("local syncthing reported restart-required after phase 2 config update")
+	}
+	if remoteRestartRequired {
+		if err := syncthingRestart(ctx, remoteBase, remoteKey); err != nil {
+			return fmt.Errorf("restart remote syncthing: %w", err)
+		}
+	}
+
+	// Confirm the local API remained reachable through the live config update,
+	// and wait for the remote API to come back only if it restarted.
 	if err := waitSyncthingAPI(ctx, localBase, localKey, syncthingAPIReadyTimeout); err != nil {
 		return fmt.Errorf("local syncthing not ready after phase 2 update: %w", err)
 	}
-	if err := waitSyncthingAPI(ctx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
-		return fmt.Errorf("remote syncthing not ready after restart: %w", err)
+	if remoteRestartRequired {
+		if err := waitSyncthingAPI(ctx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
+			return fmt.Errorf("remote syncthing not ready after restart: %w", err)
+		}
 	}
 	if connected, err := syncthingPeerConnected(ctx, localBase, localKey, remoteID); err != nil {
 		return fmt.Errorf("check local syncthing connection after restart: %w", err)
@@ -863,6 +881,20 @@ func syncthingOverrideFolder(ctx context.Context, base, key, folderID string) er
 // instance, which is required to apply folder type changes.
 func syncthingRestart(ctx context.Context, base, key string) error {
 	return syncthingPost(ctx, base, key, "/rest/system/restart", nil)
+}
+
+func syncthingRestartRequired(ctx context.Context, base, key string) (bool, error) {
+	body, err := syncthingAPIRequestWithContext(ctx, http.MethodGet, base, key, "/rest/config/restart-required", nil, "")
+	if err != nil {
+		return false, err
+	}
+	var payload struct {
+		RequiresRestart bool `json:"requiresRestart"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false, err
+	}
+	return payload.RequiresRestart, nil
 }
 
 func folderTypesForMode(mode string) (local, remote string) {

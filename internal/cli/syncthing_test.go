@@ -328,6 +328,25 @@ func TestSyncthingRestart(t *testing.T) {
 	}
 }
 
+func TestSyncthingRestartRequired(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/rest/config/restart-required" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"requiresRestart":true}`))
+	}))
+	defer srv.Close()
+
+	required, err := syncthingRestartRequired(context.Background(), srv.URL, "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !required {
+		t.Fatal("expected restart-required=true")
+	}
+}
+
 func TestRunTwoPhaseInitialSync(t *testing.T) {
 	// Track API calls to verify the two-phase protocol.
 	var (
@@ -374,6 +393,8 @@ func TestRunTwoPhaseInitialSync(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			case r.Method == http.MethodGet && r.URL.Path == "/rest/db/status":
 				fmt.Fprintf(w, `{"needBytes":%d}`, needBytesValue)
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/config/restart-required":
+				w.Write([]byte(`{"requiresRestart":false}`))
 			case r.Method == http.MethodPost && r.URL.Path == "/rest/system/restart":
 				restartCalls++
 				w.WriteHeader(http.StatusOK)
@@ -407,9 +428,9 @@ func TestRunTwoPhaseInitialSync(t *testing.T) {
 		t.Fatalf("expected /rest/db/override to be called at least twice (phase 1 + 1b), got %d", overrideCalls)
 	}
 
-	// Verify only the remote instance is restarted for phase 2.
-	if restartCalls != 1 {
-		t.Fatalf("expected 1 restart call (remote only), got %d", restartCalls)
+	// Verify neither instance reported restart-required in phase 2.
+	if restartCalls != 0 {
+		t.Fatalf("expected 0 restart calls when restart-required=false, got %d", restartCalls)
 	}
 
 	// Verify config was written multiple times (phase 1 + phase 2 for both sides).
@@ -502,6 +523,8 @@ func TestRunTwoPhaseInitialSyncWaitsForDeletionConvergence(t *testing.T) {
 					// else need = 0, converged
 				}
 				fmt.Fprintf(w, `{"needBytes":%d}`, need)
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/config/restart-required":
+				w.Write([]byte(`{"requiresRestart":false}`))
 			case r.Method == http.MethodPost && r.URL.Path == "/rest/system/restart":
 				w.WriteHeader(http.StatusOK)
 			default:
@@ -571,6 +594,8 @@ func TestRunTwoPhaseInitialSyncWaitsForPeerConnection(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			case r.Method == http.MethodGet && r.URL.Path == "/rest/db/status":
 				w.Write([]byte(`{"needBytes":0}`))
+			case r.Method == http.MethodGet && r.URL.Path == "/rest/config/restart-required":
+				w.Write([]byte(`{"requiresRestart":false}`))
 			case r.Method == http.MethodPost && r.URL.Path == "/rest/system/restart":
 				w.WriteHeader(http.StatusOK)
 			default:
