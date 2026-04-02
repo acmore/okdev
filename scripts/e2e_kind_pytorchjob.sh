@@ -333,17 +333,17 @@ if [[ "$DRIFT_STATUS" -eq 0 ]]; then
   echo "ERROR: expected drifted controller workload to require --reconcile" >&2
   exit 1
 fi
-if [[ "$DRIFT_OUTPUT" != *"workload spec changed; re-run with --reconcile to apply"* ]]; then
+if [[ "$DRIFT_OUTPUT" != *"workload spec changed; re-run with --reconcile to recreate"* ]]; then
   echo "ERROR: unexpected controller drift output" >&2
   echo "$DRIFT_OUTPUT" >&2
   exit 1
 fi
 echo "Controller drift guidance verified"
 
-echo "Reapplying PyTorchJob via --reconcile"
+echo "Recreating PyTorchJob via --reconcile"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --reconcile --wait-timeout 5m
 
-echo "Verifying PyTorchJob spec and live pods were updated in place"
+echo "Verifying PyTorchJob spec and live pods were recreated with the new image"
 RECONCILE_OK=false
 for i in $(seq 1 30); do
   MASTER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$SESSION_NAME" \
