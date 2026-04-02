@@ -5,6 +5,7 @@ OKDEV_BIN="${OKDEV_BIN:-$(pwd)/bin/okdev}"
 SIDECAR_IMAGE="${SIDECAR_IMAGE:-okdev-sidecar:v0.0.0-e2e}"
 SESSION_NAME="${SESSION_NAME:-e2e-ptjob}"
 NAMESPACE="${NAMESPACE:-default}"
+PVC_NAME="${PVC_NAME:-${SESSION_NAME}-workspace}"
 WORKDIR="$(mktemp -d)"
 HOME_DIR="${HOME_DIR:-$WORKDIR/home}"
 CFG_PATH="$WORKDIR/.okdev/okdev.yaml"
@@ -27,6 +28,7 @@ export KUBECONFIG="$KUBECONFIG_PATH"
 
 cleanup() {
   "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes >/dev/null 2>&1 || true
+  kubectl -n "$NAMESPACE" delete pvc "$PVC_NAME" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -48,6 +50,7 @@ MANIFEST_PATH="$WORKDIR/.okdev/pytorchjob.yaml"
 sed -i 's/name: dev/name: pytorch/g' "$MANIFEST_PATH"
 sed -i 's/image: # TODO:.*/image: ubuntu:22.04/g' "$MANIFEST_PATH"
 sed -i 's/command: \["sleep", "infinity"\]/command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]/g' "$MANIFEST_PATH"
+perl -0pi -e 's/- name: workspace\n              emptyDir: \{\}/- name: workspace\n              persistentVolumeClaim:\n                claimName: '"$PVC_NAME"'/g' "$MANIFEST_PATH"
 sed -i 's/container: dev/container: pytorch/' "$CFG_PATH"
 
 # Set 2 worker replicas for multi-pod testing (1 master + 2 workers = 3 pods).
@@ -73,13 +76,27 @@ cat "$MANIFEST_PATH"
 
 echo "hello from pytorchjob e2e" >"$SYNC_DIR/hello.txt"
 
+echo "Creating shared workspace PVC"
+kubectl -n "$NAMESPACE" apply -f - <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${PVC_NAME}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+EOF
+
 echo "Starting PyTorchJob smoke session (1 master + 2 workers)"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m
 
 echo "Checking status"
 STATUS_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
 echo "$STATUS_OUTPUT"
-if [[ "$STATUS_OUTPUT" != *"sync: active"* ]]; then
+if [[ "$STATUS_OUTPUT" != *"health: active"* ]]; then
   echo "ERROR: expected status --details to report active sync" >&2
   exit 1
 fi
