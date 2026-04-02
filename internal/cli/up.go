@@ -40,21 +40,22 @@ type upOptions struct {
 }
 
 type upState struct {
-	cmd          *cobra.Command
-	opts         *Options
-	flags        upOptions
-	ui           *upUI
-	command      *commandContext
-	ctx          context.Context
-	cancel       context.CancelFunc
-	labels       map[string]string
-	annotations  map[string]string
-	volumes      []corev1.Volume
-	syncPairs    []syncengine.Pair
-	enableTmux   bool
-	runtime      workload.Runtime
-	workloadName string
-	target       workload.TargetRef
+	cmd           *cobra.Command
+	opts          *Options
+	flags         upOptions
+	ui            *upUI
+	command       *commandContext
+	ctx           context.Context
+	cancel        context.CancelFunc
+	labels        map[string]string
+	annotations   map[string]string
+	volumes       []corev1.Volume
+	syncPairs     []syncengine.Pair
+	enableTmux    bool
+	runtime       workload.Runtime
+	workloadName  string
+	target        workload.TargetRef
+	reconcileKube reconcileWaitClient
 }
 
 type workloadApplyOutcome int
@@ -258,7 +259,77 @@ func prepareReconcileApply(state *upState) (workloadApplyOutcome, error) {
 	if err := state.runtime.Delete(state.ctx, state.command.kube, state.command.namespace, true); err != nil {
 		return workloadApplyCreated, fmt.Errorf("delete existing pod for reconcile: %w", err)
 	}
+	if err := waitForReconcileDeletion(state); err != nil {
+		return workloadApplyCreated, err
+	}
 	return workloadApplyRecreated, nil
+}
+
+type reconcileWaitClient interface {
+	ResourceExists(context.Context, string, string, string, string) (bool, error)
+	ListPods(context.Context, string, bool, string) ([]kube.PodSummary, error)
+}
+
+func waitForReconcileDeletion(state *upState) error {
+	if state == nil || state.command == nil || state.runtime == nil {
+		return nil
+	}
+	k := state.reconcileKube
+	if k == nil {
+		k = state.command.kube
+	}
+	if k == nil {
+		return nil
+	}
+	timeout := state.flags.waitTimeout
+	if timeout <= 0 {
+		timeout = upDefaultWaitTimeout
+	}
+	ctx, cancel := context.WithTimeout(state.ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		ready, err := reconcileDeletionComplete(ctx, k, state.command.namespace, state.command.sessionName, state.labels, state.runtime)
+		if err != nil {
+			return fmt.Errorf("wait for reconcile deletion: %w", err)
+		}
+		if ready {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for reconcile deletion: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func reconcileDeletionComplete(ctx context.Context, k reconcileWaitClient, namespace, sessionName string, labels map[string]string, rt workload.Runtime) (bool, error) {
+	if provider, ok := rt.(workload.RefProvider); ok {
+		apiVersion, kind, name, err := provider.WorkloadRef()
+		if err != nil {
+			return false, err
+		}
+		exists, err := k.ResourceExists(ctx, namespace, apiVersion, kind, name)
+		if err != nil {
+			return false, err
+		}
+		if exists {
+			return false, nil
+		}
+	}
+
+	selector := strings.TrimSpace(workload.DiscoveryLabelSelector(labels))
+	if strings.TrimSpace(sessionName) != "" {
+		selector = "okdev.io/managed=true,okdev.io/session=" + sessionName
+	}
+	pods, err := k.ListPods(ctx, namespace, false, selector)
+	if err != nil {
+		return false, err
+	}
+	return len(pods) == 0, nil
 }
 
 func reconcileStrategyForWorkload(state *upState) workloadApplyOutcome {
