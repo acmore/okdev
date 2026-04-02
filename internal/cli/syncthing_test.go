@@ -968,6 +968,11 @@ func TestEffectiveLocalExcludes(t *testing.T) {
 	if len(got) != 2 || got[0] != ".idea" || got[1] != "build" {
 		t.Fatalf("expected custom excludes, got %v", got)
 	}
+	for _, v := range effectiveLocalExcludes(nil) {
+		if v == ".git" {
+			t.Fatal("did not expect .git in default excludes")
+		}
+	}
 }
 
 func TestWriteSTIgnoreDefaultExcludes(t *testing.T) {

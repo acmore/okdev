@@ -22,8 +22,9 @@ import (
 )
 
 type syncthingSessionTargetState struct {
-	PodName   string `json:"podName"`
-	CreatedAt string `json:"createdAt"`
+	PodName    string `json:"podName"`
+	CreatedAt  string `json:"createdAt"`
+	ConfigHash string `json:"configHash,omitempty"`
 }
 
 func newSyncCmd(opts *Options) *cobra.Command {
@@ -448,7 +449,7 @@ func saveSyncthingTargetSessionState(sessionName string, state syncthingSessionT
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(state.PodName) == "" && strings.TrimSpace(state.CreatedAt) == "" {
+	if strings.TrimSpace(state.PodName) == "" && strings.TrimSpace(state.CreatedAt) == "" && strings.TrimSpace(state.ConfigHash) == "" {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
@@ -459,6 +460,29 @@ func saveSyncthingTargetSessionState(sessionName string, state syncthingSessionT
 		return err
 	}
 	return os.WriteFile(path, append(b, '\n'), 0o644)
+}
+
+func saveSyncthingConfigHash(sessionName, configHash string) error {
+	state, err := loadSyncthingTargetSessionState(sessionName)
+	if err != nil {
+		return err
+	}
+	state.ConfigHash = strings.TrimSpace(configHash)
+	return saveSyncthingTargetSessionState(sessionName, state)
+}
+
+func syncthingConfigChanged(sessionName, currentHash string) (bool, error) {
+	if strings.TrimSpace(currentHash) == "" {
+		return false, nil
+	}
+	state, err := loadSyncthingTargetSessionState(sessionName)
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(state.ConfigHash) == "" {
+		return true, nil
+	}
+	return state.ConfigHash != currentHash, nil
 }
 
 type podSummaryReader interface {
@@ -473,13 +497,14 @@ func ensureSyncthingTargetSessionState(ctx context.Context, k podSummaryReader, 
 	if err != nil {
 		return false, fmt.Errorf("get target pod summary: %w", err)
 	}
-	current := syncthingSessionTargetState{
-		PodName:   strings.TrimSpace(summary.Name),
-		CreatedAt: summary.CreatedAt.UTC().Format(time.RFC3339Nano),
-	}
 	previous, err := loadSyncthingTargetSessionState(sessionName)
 	if err != nil {
 		return false, err
+	}
+	current := syncthingSessionTargetState{
+		PodName:    strings.TrimSpace(summary.Name),
+		CreatedAt:  summary.CreatedAt.UTC().Format(time.RFC3339Nano),
+		ConfigHash: previous.ConfigHash,
 	}
 	resetNeeded := previous.PodName != "" && (previous.PodName != current.PodName || previous.CreatedAt != current.CreatedAt)
 	if resetNeeded {

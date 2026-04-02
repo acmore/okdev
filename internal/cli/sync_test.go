@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
 )
 
@@ -218,6 +219,104 @@ func TestEnsureSyncthingTargetSessionStateResetsWhenPodRecreated(t *testing.T) {
 	}
 	if _, err := os.Stat(staleFile); !os.IsNotExist(err) {
 		t.Fatalf("expected stale local sync state to be removed, got err=%v", err)
+	}
+}
+
+func TestEnsureSyncthingTargetSessionStatePreservesConfigHash(t *testing.T) {
+	home := t.TempDir()
+	origHome := os.Getenv("HOME")
+	if err := os.Setenv("HOME", home); err != nil {
+		t.Fatalf("set HOME: %v", err)
+	}
+	defer func() {
+		_ = os.Setenv("HOME", origHome)
+	}()
+
+	sessionName := "sess-config-hash"
+	if err := saveSyncthingTargetSessionState(sessionName, syncthingSessionTargetState{
+		PodName:    "pod-a",
+		CreatedAt:  time.Unix(100, 0).UTC().Format(time.RFC3339Nano),
+		ConfigHash: "abc123",
+	}); err != nil {
+		t.Fatalf("saveSyncthingTargetSessionState: %v", err)
+	}
+
+	reset, err := ensureSyncthingTargetSessionState(context.Background(), fakePodSummaryReader{
+		summary: &kube.PodSummary{Name: "pod-a", CreatedAt: time.Unix(100, 0)},
+	}, "default", sessionName, "pod-a")
+	if err != nil {
+		t.Fatalf("ensureSyncthingTargetSessionState: %v", err)
+	}
+	if reset {
+		t.Fatal("did not expect unchanged pod to reset")
+	}
+	state, err := loadSyncthingTargetSessionState(sessionName)
+	if err != nil {
+		t.Fatalf("loadSyncthingTargetSessionState: %v", err)
+	}
+	if state.ConfigHash != "abc123" {
+		t.Fatalf("expected config hash to be preserved, got %q", state.ConfigHash)
+	}
+}
+
+func TestSyncthingConfigChanged(t *testing.T) {
+	home := t.TempDir()
+	origHome := os.Getenv("HOME")
+	if err := os.Setenv("HOME", home); err != nil {
+		t.Fatalf("set HOME: %v", err)
+	}
+	defer func() {
+		_ = os.Setenv("HOME", origHome)
+	}()
+
+	sessionName := "sess-sync-config"
+	changed, err := syncthingConfigChanged(sessionName, "hash-a")
+	if err != nil {
+		t.Fatalf("syncthingConfigChanged: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected missing config hash to force refresh")
+	}
+
+	if err := saveSyncthingConfigHash(sessionName, "hash-a"); err != nil {
+		t.Fatalf("saveSyncthingConfigHash: %v", err)
+	}
+	changed, err = syncthingConfigChanged(sessionName, "hash-a")
+	if err != nil {
+		t.Fatalf("syncthingConfigChanged: %v", err)
+	}
+	if changed {
+		t.Fatal("did not expect same config hash to force refresh")
+	}
+
+	changed, err = syncthingConfigChanged(sessionName, "hash-b")
+	if err != nil {
+		t.Fatalf("syncthingConfigChanged: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected changed config hash to force refresh")
+	}
+}
+
+func TestSyncthingSessionConfigHashTracksSyncSettings(t *testing.T) {
+	cfg := &config.DevEnvironment{}
+	cfg.SetDefaults()
+	hashA := syncthingSessionConfigHash(cfg, "/tmp/local", "/workspace")
+	if hashA == "" {
+		t.Fatal("expected non-empty sync config hash")
+	}
+
+	cfg.Spec.Sync.RemoteExclude = []string{"dist"}
+	hashB := syncthingSessionConfigHash(cfg, "/tmp/local", "/workspace")
+	if hashA == hashB {
+		t.Fatal("expected remoteExclude change to affect sync config hash")
+	}
+
+	cfg.Spec.Sync.RemoteExclude = nil
+	cfg.Spec.Sync.Syncthing.WatcherDelaySeconds = 7
+	hashC := syncthingSessionConfigHash(cfg, "/tmp/local", "/workspace")
+	if hashA == hashC {
+		t.Fatal("expected watcher delay change to affect sync config hash")
 	}
 }
 

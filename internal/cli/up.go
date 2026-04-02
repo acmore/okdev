@@ -826,7 +826,23 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, err
 	} else if reset {
 		state.ui.stepDone("sync state", "reset after target pod recreation")
 	}
-	restartRequired := state.flags.resetWorkspace || !syncthingSessionActive(state.command.sessionName)
+	configHash := ""
+	if len(state.syncPairs) == 1 {
+		localPath, err := filepath.Abs(state.syncPairs[0].Local)
+		if err != nil {
+			return "", "", fmt.Errorf("resolve sync path: %w", err)
+		}
+		configHash = syncthingSessionConfigHash(state.command.cfg, localPath, state.syncPairs[0].Remote)
+	}
+	configChanged := false
+	if configHash != "" {
+		changed, err := syncthingConfigChanged(state.command.sessionName, configHash)
+		if err != nil {
+			return "", "", fmt.Errorf("compare syncthing config state: %w", err)
+		}
+		configChanged = changed
+	}
+	restartRequired := state.flags.resetWorkspace || configChanged || !syncthingSessionActive(state.command.sessionName)
 	if restartRequired {
 		if err := refreshSyncthingSessionProcesses(state.command.sessionName); err != nil {
 			return "", "", fmt.Errorf("refresh local syncthing session state: %w", err)

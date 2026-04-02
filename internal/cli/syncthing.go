@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -37,7 +38,7 @@ const (
 // defaultSyncExcludes are applied when the user has not configured any
 // spec.sync.exclude patterns.  They prevent common large or noisy
 // directories from being synced by default.
-var defaultSyncExcludes = []string{".git", "node_modules", "vendor", "__pycache__", ".DS_Store"}
+var defaultSyncExcludes = []string{"node_modules", "vendor", "__pycache__", ".DS_Store"}
 
 var syncthingHTTPClient = &http.Client{Timeout: syncthingHTTPClientTimeout}
 
@@ -163,6 +164,10 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, "", folderID, pair.Remote, folderTypeRemote, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression); err != nil {
 			return fmt.Errorf("configure remote syncthing: %w", err)
 		}
+	}
+
+	if err := saveSyncthingConfigHash(sessionName, syncthingSessionConfigHash(cfg, absLocal, pair.Remote)); err != nil {
+		return fmt.Errorf("persist syncthing config state: %w", err)
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync active (%s) for session %s\n", mode, sessionName)
@@ -1273,6 +1278,41 @@ func resetRemoteWorkspace(ctx context.Context, k interface {
 
 	_, err := execInSyncthingContainer(ctx, k, namespace, pod, script.String())
 	return err
+}
+
+type syncthingSessionConfigState struct {
+	Engine                string   `json:"engine"`
+	LocalPath             string   `json:"localPath"`
+	RemotePath            string   `json:"remotePath"`
+	Exclude               []string `json:"exclude,omitempty"`
+	RemoteExclude         []string `json:"remoteExclude,omitempty"`
+	WatcherDelaySeconds   int      `json:"watcherDelaySeconds,omitempty"`
+	RescanIntervalSeconds int      `json:"rescanIntervalSeconds,omitempty"`
+	RelaysEnabled         bool     `json:"relaysEnabled,omitempty"`
+	Compression           bool     `json:"compression,omitempty"`
+}
+
+func syncthingSessionConfigHash(cfg *config.DevEnvironment, localPath, remotePath string) string {
+	if cfg == nil {
+		return ""
+	}
+	state := syncthingSessionConfigState{
+		Engine:                strings.TrimSpace(cfg.Spec.Sync.Engine),
+		LocalPath:             localPath,
+		RemotePath:            remotePath,
+		Exclude:               append([]string(nil), cfg.Spec.Sync.Exclude...),
+		RemoteExclude:         append([]string(nil), cfg.Spec.Sync.RemoteExclude...),
+		WatcherDelaySeconds:   cfg.Spec.Sync.Syncthing.WatcherDelaySeconds,
+		RescanIntervalSeconds: cfg.Spec.Sync.Syncthing.RescanIntervalSeconds,
+		RelaysEnabled:         cfg.Spec.Sync.Syncthing.RelaysEnabled,
+		Compression:           cfg.Spec.Sync.Syncthing.Compression,
+	}
+	b, err := json.Marshal(state)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return fmt.Sprintf("%x", sum[:])
 }
 
 // syncHealthStatus represents the sync health as checked by the CLI.
