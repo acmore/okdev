@@ -46,6 +46,7 @@ var defaultSyncExcludes = []string{".git/", "node_modules", "vendor", "__pycache
 const (
 	largeSyncWarnThreshold = 100 * 1024 * 1024
 	largeSyncWarnLimit     = 10
+	largeSyncNeedWarnBytes = 500 * 1024 * 1024
 )
 
 var syncthingHTTPClient = &http.Client{Timeout: syncthingHTTPClientTimeout}
@@ -94,7 +95,6 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	if err := writeLocalSTIgnore(absLocal); err != nil {
 		return err
 	}
-	warnLargeSyncFiles(cmd.ErrOrStderr(), absLocal)
 	if _, err := execInSyncthingContainer(ctx, k, namespace, pod, fmt.Sprintf("mkdir -p %s", syncengine.ShellEscape(pair.Remote))); err != nil {
 		return err
 	}
@@ -172,7 +172,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	}
 	progressCtx, stopProgress := context.WithCancel(context.Background())
 	defer stopProgress()
-	go runSyncthingProgressReporter(progressCtx, cmd.OutOrStdout(), localBase, localKey, remoteBase, remoteKey, folderID, localID, remoteID)
+	go runSyncthingProgressReporter(progressCtx, cmd.OutOrStdout(), localBase, localKey, remoteBase, remoteKey, folderID, localID, remoteID, absLocal)
 
 	// The detached sync child should survive the parent CLI process exiting.
 	signal.Ignore(syscall.SIGHUP)
@@ -665,9 +665,10 @@ func syncthingDeviceID(ctx context.Context, base, key string) (string, error) {
 	return payload.MyID, nil
 }
 
-func runSyncthingProgressReporter(ctx context.Context, out io.Writer, localBase, localKey, remoteBase, remoteKey, folderID, localID, remoteID string) {
+func runSyncthingProgressReporter(ctx context.Context, out io.Writer, localBase, localKey, remoteBase, remoteKey, folderID, localID, remoteID, localPath string) {
 	ticker := time.NewTicker(syncthingProgressInterval)
 	defer ticker.Stop()
+	warnedLargeSync := false
 	emit := func() bool {
 		upPct, upNeed, err := syncthingCompletion(ctx, localBase, localKey, folderID, remoteID)
 		if err != nil {
@@ -680,6 +681,10 @@ func runSyncthingProgressReporter(ctx context.Context, out io.Writer, localBase,
 			return false
 		}
 		fmt.Fprintf(out, "Syncthing progress: up %.1f%% (need=%dB), down %.1f%% (need=%dB)\n", upPct, upNeed, downPct, downNeed)
+		if !warnedLargeSync && maxInt64(upNeed, downNeed) >= largeSyncNeedWarnBytes {
+			warnLargeSyncEntries(out, localPath, maxInt64(upNeed, downNeed))
+			warnedLargeSync = true
+		}
 		if upNeed == 0 && downNeed == 0 && upPct >= 99.9 && downPct >= 99.9 {
 			return true
 		}
@@ -698,6 +703,13 @@ func runSyncthingProgressReporter(ctx context.Context, out io.Writer, localBase,
 			}
 		}
 	}
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func syncthingCompletion(ctx context.Context, base, key, folderID, deviceID string) (float64, int64, error) {
@@ -1319,24 +1331,33 @@ type syncLargeFile struct {
 	Size int64
 }
 
-func warnLargeSyncFiles(w io.Writer, localPath string) {
-	files, err := detectLargeSyncFiles(localPath, largeSyncWarnThreshold, largeSyncWarnLimit)
-	if err != nil || len(files) == 0 {
+type syncLargeDir struct {
+	Path string
+	Size int64
+}
+
+func warnLargeSyncEntries(w io.Writer, localPath string, needBytes int64) {
+	files, dirs, err := detectLargeSyncEntries(localPath, largeSyncWarnThreshold, largeSyncWarnLimit)
+	if err != nil || (len(files) == 0 && len(dirs) == 0) {
 		return
 	}
-	fmt.Fprintf(w, "warning: %d large file(s) will be synced from %s\n", len(files), localPath)
+	fmt.Fprintf(w, "warning: sync still needs %s; largest local files and folders under %s:\n", humanSizeIEC(needBytes), localPath)
 	for _, f := range files {
-		fmt.Fprintf(w, "- %s  %s\n", humanSizeIEC(f.Size), f.Path)
+		fmt.Fprintf(w, "- file %s  %s\n", humanSizeIEC(f.Size), f.Path)
+	}
+	for _, d := range dirs {
+		fmt.Fprintf(w, "- dir  %s  %s/\n", humanSizeIEC(d.Size), d.Path)
 	}
 	fmt.Fprintln(w, "consider adding large generated or dataset files to .stignore")
 }
 
-func detectLargeSyncFiles(root string, threshold int64, limit int) ([]syncLargeFile, error) {
+func detectLargeSyncEntries(root string, threshold int64, limit int) ([]syncLargeFile, []syncLargeDir, error) {
 	ignores, err := loadSTIgnorePatterns(root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var files []syncLargeFile
+	dirSizes := map[string]int64{}
 	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -1365,16 +1386,29 @@ func detectLargeSyncFiles(root string, threshold int64, limit int) ([]syncLargeF
 		if info.Size() >= threshold {
 			files = append(files, syncLargeFile{Path: rel, Size: info.Size()})
 		}
+		if slash := strings.IndexByte(rel, '/'); slash > 0 {
+			dirSizes[rel[:slash]] += info.Size()
+		}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Size > files[j].Size })
 	if len(files) > limit {
 		files = files[:limit]
 	}
-	return files, nil
+	var dirs []syncLargeDir
+	for path, size := range dirSizes {
+		if size >= threshold {
+			dirs = append(dirs, syncLargeDir{Path: path, Size: size})
+		}
+	}
+	sort.Slice(dirs, func(i, j int) bool { return dirs[i].Size > dirs[j].Size })
+	if len(dirs) > limit {
+		dirs = dirs[:limit]
+	}
+	return files, dirs, nil
 }
 
 func loadSTIgnorePatterns(root string) ([]string, error) {
