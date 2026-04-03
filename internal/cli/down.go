@@ -31,8 +31,9 @@ func newDownCmd(opts *Options) *cobra.Command {
 	var yes bool
 
 	cmd := &cobra.Command{
-		Use:   "down",
+		Use:   "down [session]",
 		Short: "Delete a dev session pod",
+		Args:  cobra.MaximumNArgs(1),
 		Example: `  # Delete the current session (prompts for confirmation)
   okdev down
 
@@ -46,8 +47,9 @@ func newDownCmd(opts *Options) *cobra.Command {
   okdev down --output json --yes
 
   # Delete a specific session
-  okdev down --session my-feature -y`,
+  okdev down my-feature -y`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			applySessionArg(opts, args)
 			uiOut := cmd.OutOrStdout()
 			uiErr := cmd.ErrOrStderr()
 			if opts.Output == "json" {

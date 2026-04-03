@@ -17,24 +17,25 @@
 - `okdev init [--workload pod|job|pytorchjob|generic] [--dev-image <image>] [--template basic|<registry>|<path>|<url>] [--stignore-preset default|python|node|go|rust] [--force]`
 - `okdev validate`
 - `okdev up [--wait-timeout 10m] [--dry-run]`
-- `okdev down [--delete-pvc] [--dry-run] [--output json]`
-- `okdev status [--all] [--all-users] [--details]`
+- `okdev down [session] [--delete-pvc] [--dry-run] [--output json]`
+- `okdev status [session] [--all] [--all-users] [--details]`
 - `okdev list [--all-namespaces] [--all-users]`
 - `okdev use <session>`
 - `okdev target show`
 - `okdev target set [--pod <name> | --role <role>]`
 - `okdev agent list`
 - `okdev exec [--shell /bin/bash] [--cmd "..."] [--no-tty]`
-- `okdev logs [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
-- `okdev ssh [--setup-key] [--user root] [--cmd "..."] [--no-tmux]`
+- `okdev logs [session] [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
+- `okdev ssh [session] [--setup-key] [--user root] [--cmd "..."] [--no-tmux]`
 - `okdev ports`
 - `okdev sync [--mode up|down|bi] [--foreground] [--reset] [--dry-run]`
 - `okdev prune [--ttl-hours 72] [--all-namespaces] [--all-users] [--include-pvc] [--dry-run]`
 - `okdev upgrade`
 
-### `okdev status [--all] [--all-users] [--details]`
+### `okdev status [session] [--all] [--all-users] [--details]`
 
 - Shows session status for the current or selected session.
+- When `session` is provided, `okdev` can resolve the saved config from session metadata even outside the repo.
 - `--details`: prints a single-session diagnostic view with target selection, pod list, managed SSH state, sync state, key local paths, and target pod details.
 - `--details` is only valid when exactly one session is selected.
 
@@ -83,23 +84,26 @@
 - When `sync.engine=syncthing`, `okdev up` refreshes the session's local Syncthing processes and starts background sync in bidirectional mode by default.
 - `spec.ports` is materialized as SSH `LocalForward` or `RemoteForward` based on `direction`.
 
-### `okdev down [--delete-pvc] [--dry-run] [--output json]`
+### `okdev down [session] [--delete-pvc] [--dry-run] [--output json]`
 
 - Deletes the current session workload and cleans up local SSH/sync metadata.
+- When `session` is provided, `okdev` can resolve the saved config from session metadata even outside the repo.
 - Prompts for confirmation by default; use `--yes` in scripts or non-interactive environments.
 - `--dry-run`: previews what would be deleted without removing cluster or local state.
 - `--output json`: emits a machine-readable summary of the planned or completed deletion and local cleanup steps.
 - `--delete-pvc` remains accepted for compatibility but is ignored; `okdev` no longer manages PVC lifecycle automatically.
 
-### `okdev ssh [--setup-key] [--user root] [--cmd "..."] [--no-tmux]`
+### `okdev ssh [session] [--setup-key] [--user root] [--cmd "..."] [--no-tmux]`
 
 - Targets `okdev-sshd` in the `dev` container.
+- When `session` is provided, `okdev` can resolve the saved config from session metadata even outside the repo.
 - Maintains managed host alias in `~/.ssh/config` as `okdev-<session>`.
 - `--no-tmux`: bypass tmux for this SSH session when tmux mode is enabled.
 
-### `okdev logs [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
+### `okdev logs [session] [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
 
 - Streams logs from the resolved target pod for the current session.
+- When `session` is provided, `okdev` can resolve the saved config from session metadata even outside the repo.
 - Defaults to the pinned target container when `--container` is omitted.
 - `--all`: streams all regular containers in the target pod and prefixes each line with `[container]`.
 - `--follow`: follows logs by default; use `--follow=false` for a bounded dump.

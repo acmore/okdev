@@ -345,6 +345,56 @@ func TestResolveCommandContextUsesResolver(t *testing.T) {
 	}
 }
 
+func TestOptionsWithSessionConfigUsesSavedSessionMetadata(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	cfgDir := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(cfgDir, ".okdev.yaml")
+	if err := os.WriteFile(cfgPath, []byte("apiVersion: okdev.io/v1alpha1\nkind: DevEnvironment\nmetadata:\n  name: demo\nspec:\n  namespace: default\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SaveInfo(session.Info{
+		Name:        "sess-a",
+		ConfigPath:  cfgPath,
+		Namespace:   "team-a",
+		KubeContext: "ctx-a",
+	}); err != nil {
+		t.Fatalf("SaveInfo: %v", err)
+	}
+
+	got, err := optionsWithSessionConfig(&Options{Session: "sess-a"})
+	if err != nil {
+		t.Fatalf("optionsWithSessionConfig: %v", err)
+	}
+	if got.ConfigPath != cfgPath {
+		t.Fatalf("expected config path %q, got %q", cfgPath, got.ConfigPath)
+	}
+	if got.Namespace != "team-a" {
+		t.Fatalf("expected namespace from session info, got %q", got.Namespace)
+	}
+	if got.Context != "ctx-a" {
+		t.Fatalf("expected context from session info, got %q", got.Context)
+	}
+}
+
+func TestOptionsWithSessionConfigErrorsWithoutSavedConfigPath(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	if err := session.SaveInfo(session.Info{Name: "sess-a"}); err != nil {
+		t.Fatalf("SaveInfo: %v", err)
+	}
+
+	_, err := optionsWithSessionConfig(&Options{Session: "sess-a"})
+	if err == nil || !strings.Contains(err.Error(), "has no saved config path") {
+		t.Fatalf("expected missing saved config path error, got %v", err)
+	}
+}
+
 func TestNewTransientStatusAndStartTransientStatusDisableForNonTTY(t *testing.T) {
 	var out bytes.Buffer
 	status := newTransientStatus(&out, "loading")
