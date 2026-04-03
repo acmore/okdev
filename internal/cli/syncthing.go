@@ -139,6 +139,10 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		compression:    cfg.Spec.Sync.Syncthing.Compression,
 	}
 
+	if err := markSyncthingReady(sessionName); err != nil {
+		return fmt.Errorf("mark syncthing ready: %w", err)
+	}
+
 	if mode == "two-phase" {
 		// The bootstrap context has a short timeout (syncthingBootstrapTimeout).
 		// Two-phase initial sync may take much longer, so use a dedicated context.
@@ -167,9 +171,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	fmt.Fprintf(cmd.OutOrStdout(), "Remote folder: %s\n", pair.Remote)
 	fmt.Fprintf(cmd.OutOrStdout(), "Local binary: %s\n", localBinary)
 	fmt.Fprintln(cmd.OutOrStdout(), "Press Ctrl+C to stop sync tunnel and local syncthing.")
-	if err := markSyncthingReady(sessionName); err != nil {
-		return fmt.Errorf("mark syncthing ready: %w", err)
-	}
+
 	progressCtx, stopProgress := context.WithCancel(context.Background())
 	defer stopProgress()
 	go runSyncthingProgressReporter(progressCtx, cmd.OutOrStdout(), localBase, localKey, remoteBase, remoteKey, folderID, localID, remoteID, absLocal)
