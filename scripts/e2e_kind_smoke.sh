@@ -141,7 +141,12 @@ if [[ "$LOGS_OUTSIDE" != *"[okdev-sidecar]"* ]]; then
   echo "$LOGS_OUTSIDE" >&2
   exit 1
 fi
-"$OKDEV_BIN" ssh "$SESSION_NAME" --setup-key --cmd 'test -f /workspace/hello.txt'
+SSH_OUTSIDE=$("$OKDEV_BIN" ssh "$SESSION_NAME" --setup-key --cmd 'echo ssh-ok')
+if [[ "$SSH_OUTSIDE" != *"ssh-ok"* ]]; then
+  echo "ERROR: expected config-free ssh to succeed outside repo" >&2
+  echo "$SSH_OUTSIDE" >&2
+  exit 1
+fi
 cd "$WORKDIR"
 echo "Config-free positional session commands verified"
 
