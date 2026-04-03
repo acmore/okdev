@@ -280,6 +280,7 @@ spec:
 | `user` | `string` | `root` | SSH user |
 | `privateKeyPath` | `string` | — | Path to SSH private key |
 | `autoDetectPorts` | `bool` | `true` | Auto-detect listening ports in the container |
+| `forwardAgent` | `bool` | `false` | Forward the local SSH agent for live `okdev ssh` sessions |
 | `persistentSession` | `bool` | `true` | Enable tmux-backed interactive sessions |
 | `keepAliveIntervalSeconds` | `int` | `10` | SSH keepalive interval |
 | `keepAliveTimeoutSeconds` | `int` | `10` | SSH keepalive timeout |
@@ -292,6 +293,7 @@ spec:
     user: root
     privateKeyPath: ~/.okdev/ssh/id_ed25519
     autoDetectPorts: true
+    forwardAgent: false
     persistentSession: true
     keepAliveIntervalSeconds: 30
     keepAliveTimeoutSeconds: 90

@@ -33,6 +33,8 @@ func newSSHCmd(opts *Options) *cobra.Command {
 	var setupKey bool
 	var cmdStr string
 	var noTmux bool
+	var forwardAgent bool
+	var noForwardAgent bool
 
 	cmd := &cobra.Command{
 		Use:   "ssh [session]",
@@ -48,6 +50,9 @@ func newSSHCmd(opts *Options) *cobra.Command {
 
   # Plain shell without tmux
   okdev ssh --no-tmux
+
+  # Forward local SSH agent into the session
+  okdev ssh --forward-agent
 
   # Or use the managed SSH host alias directly
   ssh okdev-my-feature`,
@@ -145,9 +150,19 @@ func newSSHCmd(opts *Options) *cobra.Command {
 
 				warnSyncHealth(errOut, cc.sessionName)
 
+				forwardAgentEnabled := effectiveSSHForwardAgent(cc.cfg, forwardAgent, noForwardAgent)
+				agentSock := ""
+				if forwardAgentEnabled {
+					agentSock, err = resolveLocalSSHAgentSocket()
+					if err != nil {
+						return err
+					}
+				}
+
 				tm := &okssh.TunnelManager{
 					SSHUser:           user,
 					SSHKeyPath:        keyPath,
+					ForwardAgentSock:  agentSock,
 					RemotePort:        remotePort,
 					KeepAliveInterval: time.Duration(cc.cfg.Spec.SSH.KeepAliveInterval) * time.Second,
 					KeepAliveTimeout:  time.Duration(cc.cfg.Spec.SSH.KeepAliveTimeout) * time.Second,
@@ -223,7 +238,38 @@ func newSSHCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&setupKey, "setup-key", false, "Generate local key if needed and install its public key in pod")
 	cmd.Flags().StringVar(&cmdStr, "cmd", "", "Run a command over SSH")
 	cmd.Flags().BoolVar(&noTmux, "no-tmux", false, "Disable tmux for this SSH session even if enabled on the pod")
+	cmd.Flags().BoolVar(&forwardAgent, "forward-agent", false, "Forward the local SSH agent into this SSH session")
+	cmd.Flags().BoolVar(&noForwardAgent, "no-forward-agent", false, "Disable SSH agent forwarding for this SSH session")
+	cmd.MarkFlagsMutuallyExclusive("forward-agent", "no-forward-agent")
 	return cmd
+}
+
+func effectiveSSHForwardAgent(cfg *config.DevEnvironment, forwardAgent, noForwardAgent bool) bool {
+	if noForwardAgent {
+		return false
+	}
+	if forwardAgent {
+		return true
+	}
+	if cfg == nil {
+		return false
+	}
+	return cfg.Spec.SSH.ForwardAgentEnabled()
+}
+
+func resolveLocalSSHAgentSocket() (string, error) {
+	sock := strings.TrimSpace(os.Getenv("SSH_AUTH_SOCK"))
+	if sock == "" {
+		return "", errors.New("ssh agent forwarding requested, but SSH_AUTH_SOCK is not set")
+	}
+	info, err := os.Stat(sock)
+	if err != nil {
+		return "", fmt.Errorf("ssh agent forwarding requested, but local SSH_AUTH_SOCK %q is unavailable: %w", sock, err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return "", fmt.Errorf("ssh agent forwarding requested, but SSH_AUTH_SOCK %q is not a unix socket", sock)
+	}
+	return sock, nil
 }
 
 // sshShellRunner abstracts the TunnelManager methods needed by

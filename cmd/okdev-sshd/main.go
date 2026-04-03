@@ -103,7 +103,9 @@ func loadAuthorizedKeys(path string) ([]ssh.PublicKey, error) {
 
 func sessionHandler(shell string) ssh.Handler {
 	return func(s ssh.Session) {
-		cmd := buildCmd(s, shell)
+		extraEnv, cleanup := sessionAgentEnv(s)
+		defer cleanup()
+		cmd := buildCmd(s, shell, extraEnv)
 
 		ptyReq, winCh, isPty := s.Pty()
 		if isPty {
@@ -125,7 +127,7 @@ func sessionHandler(shell string) ssh.Handler {
 	}
 }
 
-func buildCmd(s ssh.Session, shell string) *exec.Cmd {
+func buildCmd(s ssh.Session, shell string, extraEnv []string) *exec.Cmd {
 	var cmd *exec.Cmd
 	if len(s.RawCommand()) == 0 {
 		if script := interactiveLoginScript(s, shell); script != "" {
@@ -136,7 +138,7 @@ func buildCmd(s ssh.Session, shell string) *exec.Cmd {
 	} else {
 		cmd = exec.Command(shell, "-lc", s.RawCommand())
 	}
-	cmd.Env = append(os.Environ(), s.Environ()...)
+	cmd.Env = append(append(os.Environ(), s.Environ()...), extraEnv...)
 	return cmd
 }
 
@@ -174,9 +176,22 @@ func terminalBootstrapScript() string {
 
 func devTmuxBootstrapScript() string {
 	return strings.Join([]string{
-		`if command -v tmux >/dev/null 2>&1; then if [ -f /var/okdev/dev.tmux.conf ]; then exec tmux -f /var/okdev/dev.tmux.conf new-session -A -s okdev; fi; exec tmux new-session -A -s okdev; fi`,
+		`if command -v tmux >/dev/null 2>&1; then if [ -n "${SSH_AUTH_SOCK:-}" ]; then tmux set-environment -g SSH_AUTH_SOCK "$SSH_AUTH_SOCK" >/dev/null 2>&1 || true; else tmux set-environment -gu SSH_AUTH_SOCK >/dev/null 2>&1 || true; fi; if [ -f /var/okdev/dev.tmux.conf ]; then exec tmux -f /var/okdev/dev.tmux.conf new-session -A -s okdev; fi; exec tmux new-session -A -s okdev; fi`,
 		`echo 'warning: tmux not available in dev container; continuing without tmux' >&2`,
 	}, "; ")
+}
+
+func sessionAgentEnv(s ssh.Session) ([]string, func()) {
+	if s == nil || s.Context() == nil || !ssh.AgentRequested(s) {
+		return nil, func() {}
+	}
+	l, err := ssh.NewAgentListener()
+	if err != nil {
+		log.Printf("failed to create SSH agent listener: %v", err)
+		return nil, func() {}
+	}
+	go ssh.ForwardAgentConnections(l, s)
+	return []string{"SSH_AUTH_SOCK=" + l.Addr().String()}, func() { _ = l.Close() }
 }
 
 func sessionEnvMap(s ssh.Session) map[string]string {

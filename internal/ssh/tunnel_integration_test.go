@@ -19,6 +19,7 @@ import (
 
 	gssh "github.com/gliderlabs/ssh"
 	xssh "golang.org/x/crypto/ssh"
+	xagent "golang.org/x/crypto/ssh/agent"
 )
 
 func TestTunnelManagerConnectExecAndListPorts(t *testing.T) {
@@ -155,6 +156,96 @@ func TestTunnelManagerListListeningPortsFallbackToProcNet(t *testing.T) {
 	}
 	if len(ports) != 1 || ports[0] != 8080 {
 		t.Fatalf("unexpected ports %v", ports)
+	}
+}
+
+func TestTunnelManagerExecForwardsAgent(t *testing.T) {
+	keyPath, pubKey := writeSSHKeyPair(t)
+	keyring := xagent.NewKeyring()
+	localAgentDir := filepath.Join("/tmp", fmt.Sprintf("okdev-agent-%d", time.Now().UnixNano()))
+	if err := os.MkdirAll(localAgentDir, 0o755); err != nil {
+		t.Fatalf("mkdir local agent dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(localAgentDir) })
+	localAgentSock := filepath.Join(localAgentDir, "agent.sock")
+	listener, err := net.Listen("unix", localAgentSock)
+	if err != nil {
+		t.Fatalf("listen local agent socket: %v", err)
+	}
+	defer func() {
+		_ = listener.Close()
+	}()
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				_ = xagent.ServeAgent(keyring, conn)
+				_ = conn.Close()
+			}()
+		}
+	}()
+
+	srv, addr := startTestSSHServerWithHandler(t, pubKey, func(s gssh.Session) {
+		if !gssh.AgentRequested(s) {
+			io.WriteString(s.Stderr(), "agent forwarding not requested")
+			_ = s.Exit(1)
+			return
+		}
+		l, err := gssh.NewAgentListener()
+		if err != nil {
+			io.WriteString(s.Stderr(), err.Error())
+			_ = s.Exit(1)
+			return
+		}
+		defer l.Close()
+		go gssh.ForwardAgentConnections(l, s)
+
+		conn, err := net.Dial("unix", l.Addr().String())
+		if err != nil {
+			io.WriteString(s.Stderr(), err.Error())
+			_ = s.Exit(1)
+			return
+		}
+		defer conn.Close()
+		agentClient := xagent.NewClient(conn)
+		keys, err := agentClient.List()
+		if err != nil {
+			io.WriteString(s.Stderr(), err.Error())
+			_ = s.Exit(1)
+			return
+		}
+		fmt.Fprintf(s, "%d", len(keys))
+		_ = s.Exit(0)
+	})
+	defer func() {
+		_ = srv.Close()
+	}()
+
+	tm := &TunnelManager{
+		SSHUser:          "tester",
+		SSHKeyPath:       keyPath,
+		ForwardAgentSock: localAgentSock,
+		RemotePort:       addr.Port,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := tm.Connect(ctx, addr.IP.String(), addr.Port); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer func() {
+		_ = tm.Close()
+	}()
+
+	out, err := tm.Exec("ignored")
+	if err != nil {
+		t.Fatalf("Exec with forwarded agent: %v", err)
+	}
+	if string(out) != "0" {
+		t.Fatalf("expected forwarded agent list count, got %q", string(out))
 	}
 }
 

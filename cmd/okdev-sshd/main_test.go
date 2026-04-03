@@ -157,7 +157,7 @@ func TestBuildInteractiveLoginScriptWithoutWorkspaceOrTmux(t *testing.T) {
 
 func TestDevTmuxBootstrapScriptIncludesFallbackWarning(t *testing.T) {
 	script := devTmuxBootstrapScript()
-	for _, want := range []string{"tmux", "warning: tmux not available"} {
+	for _, want := range []string{"tmux", "warning: tmux not available", "set-environment -g SSH_AUTH_SOCK"} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("expected tmux bootstrap script to contain %q: %s", want, script)
 		}
@@ -209,7 +209,7 @@ func TestSessionEnvMap(t *testing.T) {
 func TestBuildCmdInteractiveShell(t *testing.T) {
 	t.Setenv("OKDEV_WORKSPACE", "")
 	t.Setenv("OKDEV_TMUX", "")
-	cmd := buildCmd(fakeSessionCmd{}, "/bin/sh")
+	cmd := buildCmd(fakeSessionCmd{}, "/bin/sh", nil)
 	want := `/bin/sh -lc if [ "${TERM:-}" = "xterm-ghostty" ]; then export TERM=xterm-256color; fi; exec '/bin/sh' -l`
 	if got := strings.Join(cmd.Args, " "); got != want {
 		t.Fatalf("unexpected interactive args: %q", got)
@@ -217,12 +217,15 @@ func TestBuildCmdInteractiveShell(t *testing.T) {
 }
 
 func TestBuildCmdRawCommandUsesLoginShellCommandMode(t *testing.T) {
-	cmd := buildCmd(fakeSessionCmd{raw: "echo hi", env: []string{"A=B"}}, "/bin/bash")
+	cmd := buildCmd(fakeSessionCmd{raw: "echo hi", env: []string{"A=B"}}, "/bin/bash", []string{"SSH_AUTH_SOCK=/tmp/agent.sock"})
 	if got := strings.Join(cmd.Args, " "); got != "/bin/bash -lc echo hi" {
 		t.Fatalf("unexpected raw command args: %q", got)
 	}
 	if !contains(cmd.Env, "A=B") {
 		t.Fatalf("expected session env to be appended: %#v", cmd.Env)
+	}
+	if !contains(cmd.Env, "SSH_AUTH_SOCK=/tmp/agent.sock") {
+		t.Fatalf("expected extra env to be appended: %#v", cmd.Env)
 	}
 }
 

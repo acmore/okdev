@@ -26,7 +26,7 @@
 - `okdev agent list`
 - `okdev exec [--shell /bin/bash] [--cmd "..."] [--no-tty]`
 - `okdev logs [session] [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
-- `okdev ssh [session] [--setup-key] [--user root] [--cmd "..."] [--no-tmux]`
+- `okdev ssh [session] [--setup-key] [--user root] [--cmd "..."] [--no-tmux] [--forward-agent|--no-forward-agent]`
 - `okdev ports`
 - `okdev sync [--mode up|down|bi] [--foreground] [--reset] [--dry-run]`
 - `okdev prune [--ttl-hours 72] [--all-namespaces] [--all-users] [--include-pvc] [--dry-run]`
@@ -93,12 +93,15 @@
 - `--output json`: emits a machine-readable summary of the planned or completed deletion and local cleanup steps.
 - `--delete-pvc` remains accepted for compatibility but is ignored; `okdev` no longer manages PVC lifecycle automatically.
 
-### `okdev ssh [session] [--setup-key] [--user root] [--cmd "..."] [--no-tmux]`
+### `okdev ssh [session] [--setup-key] [--user root] [--cmd "..."] [--no-tmux] [--forward-agent|--no-forward-agent]`
 
 - Targets `okdev-sshd` in the `dev` container.
 - When `session` is provided, `okdev` can resolve the saved config from session metadata even outside the repo.
 - Maintains managed host alias in `~/.ssh/config` as `okdev-<session>`.
 - `--no-tmux`: bypass tmux for this SSH session when tmux mode is enabled.
+- `--forward-agent`: forwards the local `SSH_AUTH_SOCK` into the live SSH session so Git/SSH inside the workload can use your local agent.
+- `--no-forward-agent`: disables forwarding for this SSH session even when `spec.ssh.forwardAgent: true`.
+- Agent forwarding only applies to the live `okdev ssh` connection; keys are not copied into the workload.
 
 ### `okdev logs [session] [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
 
