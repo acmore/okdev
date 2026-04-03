@@ -852,13 +852,16 @@ func (e *syncthingRateEstimator) Estimate(now time.Time, totalBytes int64) (int6
 // from session state so `okdev up` only continues once initial sync has fully
 // converged in both directions.
 //
+// onStatus is called during the setup phase (port-forward, API readiness, etc.)
+// so the caller can surface intermediate progress before polling begins.
+//
 // When bootstrapResume is true the function inspects the remote folder config
 // (reusing the port-forward it already opened) and auto-upgrades the effective
 // mode to "two-phase" if a previous bootstrap did not finish.  This avoids
 // opening a second port-forward just for the probe.
 func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
-}, namespace, pod, sessionName, mode string, bootstrapResume bool, timeout time.Duration, onProgress func(syncthingInitialSyncProgress)) error {
+}, namespace, pod, sessionName, mode string, bootstrapResume bool, timeout time.Duration, onStatus func(string), onProgress func(syncthingInitialSyncProgress)) error {
 	folderID := "okdev-" + sessionName
 	localHome, err := localSyncthingStatusHome(sessionName)
 	if err != nil {
@@ -869,17 +872,26 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 		return fmt.Errorf("read local syncthing endpoint: %w", err)
 	}
 
+	if onStatus != nil {
+		onStatus("reading remote syncthing credentials")
+	}
 	remoteKey, err := readRemoteSyncthingAPIKey(ctx, k, namespace, pod)
 	if err != nil {
 		return fmt.Errorf("read remote syncthing API key: %w", err)
 	}
 
+	if onStatus != nil {
+		onStatus("connecting to syncthing sidecar")
+	}
 	cancelPF, remoteBase, _, err := startSyncthingPortForward(opts, namespace, pod)
 	if err != nil {
 		return fmt.Errorf("port-forward to syncthing sidecar: %w", err)
 	}
 	defer cancelPF()
 
+	if onStatus != nil {
+		onStatus("waiting for syncthing API")
+	}
 	if err := waitSyncthingAPI(ctx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
 		return fmt.Errorf("remote syncthing not ready: %w", err)
 	}
@@ -891,6 +903,9 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 	// already-open port-forward to probe whether the previous bootstrap
 	// finished.  This avoids a second port-forward round-trip.
 	if bootstrapResume && mode != "two-phase" {
+		if onStatus != nil {
+			onStatus("checking bootstrap state")
+		}
 		cfg, cfgErr := syncthingGetConfig(ctx, remoteBase, remoteKey)
 		if cfgErr != nil {
 			slog.Debug("failed to read remote syncthing config for bootstrap probe", "error", cfgErr)
@@ -904,6 +919,9 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 		}
 	}
 
+	if onStatus != nil {
+		onStatus("reading device identities")
+	}
 	localID, err := syncthingDeviceID(ctx, localBase, localKey)
 	if err != nil {
 		return fmt.Errorf("read local syncthing device id: %w", err)
@@ -918,6 +936,9 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 	defer ticker.Stop()
 	uploadRate := &syncthingRateEstimator{}
 	downloadRate := &syncthingRateEstimator{}
+
+	// Fire the first poll immediately so the user sees progress without
+	// waiting for the initial tick interval (5 s).
 
 	for {
 		localPct, localNeed, localErr := syncthingCompletion(ctx, localBase, localKey, folderID, remoteID)

@@ -605,7 +605,9 @@ func upSetup(state *upState) error {
 		if err != nil {
 			return fmt.Errorf("refresh target before initial sync wait: %w", err)
 		}
-		if err := waitForInitialSync(state.ctx, state.opts, state.command.kube, state.command.namespace, target.PodName, state.command.sessionName, syncStartMode, bootstrapResume, initialSyncTimeout, func(progress syncthingInitialSyncProgress) {
+		if err := waitForInitialSync(state.ctx, state.opts, state.command.kube, state.command.namespace, target.PodName, state.command.sessionName, syncStartMode, bootstrapResume, initialSyncTimeout, func(status string) {
+			state.ui.stepRun("initial sync", status)
+		}, func(progress syncthingInitialSyncProgress) {
 			state.ui.stepRun("initial sync", formatInitialSyncProgressDetail(progress))
 		}); err != nil {
 			return fmt.Errorf("wait for initial sync: %w", err)
