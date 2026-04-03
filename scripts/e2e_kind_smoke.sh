@@ -105,17 +105,17 @@ for path in "$SESSION_DIR" "$SESSION_JSON" "$TARGET_JSON" "$SYNC_JSON" "$SYNC_HO
     exit 1
   fi
 done
-if ! grep -q "\"configPath\": \"$CFG_PATH\"" "$SESSION_JSON"; then
+if ! grep -Eq "\"configPath\"[[:space:]]*:[[:space:]]*\"$CFG_PATH\"" "$SESSION_JSON"; then
   echo "ERROR: expected session.json to contain configPath=$CFG_PATH" >&2
   cat "$SESSION_JSON" >&2
   exit 1
 fi
-if ! grep -q "\"namespace\": \"$NAMESPACE\"" "$SESSION_JSON"; then
+if ! grep -Eq "\"namespace\"[[:space:]]*:[[:space:]]*\"$NAMESPACE\"" "$SESSION_JSON"; then
   echo "ERROR: expected session.json to contain namespace=$NAMESPACE" >&2
   cat "$SESSION_JSON" >&2
   exit 1
 fi
-if ! grep -q "\"repoRoot\": \"$WORKDIR\"" "$SESSION_JSON"; then
+if ! grep -Eq "\"repoRoot\"[[:space:]]*:[[:space:]]*\"$WORKDIR\"" "$SESSION_JSON"; then
   echo "ERROR: expected session.json to contain repoRoot=$WORKDIR" >&2
   cat "$SESSION_JSON" >&2
   exit 1
