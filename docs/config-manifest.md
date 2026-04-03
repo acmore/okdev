@@ -315,7 +315,8 @@ spec:
 setup (e.g. editable Python installs). It assumes the synced workspace is
 shared across pods, typically via a common PVC mounted at the workspace path.
 `okdev up` blocks until the initial syncthing sync finishes for that shared
-workspace, then executes the command on every running session pod in parallel.
+workspace, only treating it as complete once both local and remote pending-byte
+counters reach zero, then executes the command on every running session pod in parallel.
 Each pod is tracked via the `okdev.io/post-sync-done` annotation to prevent
 re-execution. Falls back to `.okdev/post-sync.sh` if no explicit command is
 configured.

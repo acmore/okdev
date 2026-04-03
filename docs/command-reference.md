@@ -81,7 +81,7 @@
 - tmux-backed persistent interactive shells are enabled by default.
 - `--tmux`: explicitly enable tmux mode in the dev container.
 - `--no-tmux`: disable tmux mode for this pod.
-- When `sync.engine=syncthing`, `okdev up` refreshes the session's local Syncthing processes and starts background sync in bidirectional mode by default.
+- When `sync.engine=syncthing`, `okdev up` refreshes the session's local Syncthing processes, starts background sync in bidirectional mode by default, and waits for the initial sync to converge before exiting.
 - `spec.ports` is materialized as SSH `LocalForward` or `RemoteForward` based on `direction`.
 
 ### `okdev down [session] [--delete-pvc] [--dry-run] [--output json]`

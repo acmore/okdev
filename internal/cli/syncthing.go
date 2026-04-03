@@ -685,7 +685,7 @@ func runSyncthingProgressReporter(ctx context.Context, out io.Writer, localBase,
 			warnLargeSyncEntries(out, localPath, maxInt64(upNeed, downNeed))
 			warnedLargeSync = true
 		}
-		if upNeed == 0 && downNeed == 0 && upPct >= 99.9 && downPct >= 99.9 {
+		if syncthingInitialSyncComplete(upPct, upNeed, downPct, downNeed) {
 			return true
 		}
 		return false
@@ -726,6 +726,15 @@ func syncthingCompletion(ctx context.Context, base, key, folderID, deviceID stri
 		return 0, 0, err
 	}
 	return payload.Completion, payload.NeedBytes, nil
+}
+
+type syncthingInitialSyncProgress struct {
+	LocalNeedBytes  int64
+	RemoteNeedBytes int64
+}
+
+func syncthingInitialSyncComplete(localPct float64, localNeedBytes int64, remotePct float64, remoteNeedBytes int64) bool {
+	return localNeedBytes == 0 && remoteNeedBytes == 0 && localPct >= 99.9 && remotePct >= 99.9
 }
 
 // syncthingFolderNeedBytes queries the remote syncthing for the number of
@@ -772,14 +781,23 @@ func syncthingPeerConnected(ctx context.Context, base, key, peerID string) (bool
 	return false, nil
 }
 
-// waitForInitialSync blocks until the remote syncthing reports that the
-// configured folder has completed its initial sync (needBytes == 0).
-// It opens a temporary port-forward to the target pod's syncthing sidecar
-// to poll the REST API.
+// waitForInitialSync blocks until both local->remote and remote->local pending
+// bytes reach zero for the managed folder. It opens a temporary port-forward to
+// the target pod's Syncthing sidecar and reads the local Syncthing endpoint
+// from session state so `okdev up` only continues once initial sync has fully
+// converged in both directions.
 func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
-}, namespace, pod, sessionName string, timeout time.Duration, onProgress func(needBytes int64)) error {
+}, namespace, pod, sessionName string, timeout time.Duration, onProgress func(syncthingInitialSyncProgress)) error {
 	folderID := "okdev-" + sessionName
+	localHome, err := localSyncthingStatusHome(sessionName)
+	if err != nil {
+		return fmt.Errorf("resolve local syncthing home: %w", err)
+	}
+	localBase, localKey, err := readLocalSyncthingEndpoint(localHome)
+	if err != nil {
+		return fmt.Errorf("read local syncthing endpoint: %w", err)
+	}
 
 	remoteKey, err := readRemoteSyncthingAPIKey(ctx, k, namespace, pod)
 	if err != nil {
@@ -795,20 +813,40 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 	if err := waitSyncthingAPI(ctx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
 		return fmt.Errorf("remote syncthing not ready: %w", err)
 	}
+	if err := waitSyncthingAPI(ctx, localBase, localKey, syncthingAPIReadyTimeout); err != nil {
+		return fmt.Errorf("local syncthing not ready: %w", err)
+	}
+
+	localID, err := syncthingDeviceID(ctx, localBase, localKey)
+	if err != nil {
+		return fmt.Errorf("read local syncthing device id: %w", err)
+	}
+	remoteID, err := syncthingDeviceID(ctx, remoteBase, remoteKey)
+	if err != nil {
+		return fmt.Errorf("read remote syncthing device id: %w", err)
+	}
 
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(syncthingProgressInterval)
 	defer ticker.Stop()
 
 	for {
-		need, err := syncthingFolderNeedBytes(ctx, remoteBase, remoteKey, folderID)
-		if err != nil {
-			slog.Debug("syncthing initial sync poll failed", "error", err)
-		} else {
+		localPct, localNeed, localErr := syncthingCompletion(ctx, localBase, localKey, folderID, remoteID)
+		remotePct, remoteNeed, remoteErr := syncthingCompletion(ctx, remoteBase, remoteKey, folderID, localID)
+		if localErr != nil {
+			slog.Debug("syncthing initial sync local poll failed", "error", localErr)
+		}
+		if remoteErr != nil {
+			slog.Debug("syncthing initial sync remote poll failed", "error", remoteErr)
+		}
+		if localErr == nil && remoteErr == nil {
 			if onProgress != nil {
-				onProgress(need)
+				onProgress(syncthingInitialSyncProgress{
+					LocalNeedBytes:  localNeed,
+					RemoteNeedBytes: remoteNeed,
+				})
 			}
-			if need == 0 {
+			if syncthingInitialSyncComplete(localPct, localNeed, remotePct, remoteNeed) {
 				return nil
 			}
 		}
@@ -821,6 +859,13 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 		case <-ticker.C:
 		}
 	}
+}
+
+func formatSyncthingMiB(bytes int64) string {
+	if bytes <= 0 {
+		return "0.0 MiB"
+	}
+	return fmt.Sprintf("%.1f MiB", float64(bytes)/(1024*1024))
 }
 
 // syncthingSyncConfig bundles the user-configurable knobs passed through to

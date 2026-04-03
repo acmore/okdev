@@ -104,6 +104,30 @@ func TestSyncthingFolderNeedBytesZeroWhenSynced(t *testing.T) {
 	}
 }
 
+func TestSyncthingInitialSyncComplete(t *testing.T) {
+	if !syncthingInitialSyncComplete(100, 0, 99.9, 0) {
+		t.Fatal("expected zero local and remote bytes to be treated as complete")
+	}
+	if syncthingInitialSyncComplete(100, 1, 100, 0) {
+		t.Fatal("expected local pending bytes to block completion")
+	}
+	if syncthingInitialSyncComplete(100, 0, 100, 1) {
+		t.Fatal("expected remote pending bytes to block completion")
+	}
+	if syncthingInitialSyncComplete(99.8, 0, 100, 0) {
+		t.Fatal("expected sub-threshold local completion percentage to block completion")
+	}
+}
+
+func TestFormatSyncthingMiB(t *testing.T) {
+	if got := formatSyncthingMiB(0); got != "0.0 MiB" {
+		t.Fatalf("unexpected zero format %q", got)
+	}
+	if got := formatSyncthingMiB(1572864); got != "1.5 MiB" {
+		t.Fatalf("unexpected MiB format %q", got)
+	}
+}
+
 func TestBuildSTIgnoreContent(t *testing.T) {
 	content, ok := buildSTIgnoreContent([]string{" .git/ ", "", "node_modules/"})
 	if !ok {

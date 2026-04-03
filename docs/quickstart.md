@@ -129,7 +129,7 @@ Use `okdev ssh` when you want the tmux-backed interactive shell managed by okdev
 
 ## File Sync
 
-`okdev up` starts bidirectional Syncthing sync automatically. For manual control:
+`okdev up` starts bidirectional Syncthing sync automatically and waits for the initial sync to finish before exiting. For manual control:
 
 ```bash
 # Detached background sync (default)

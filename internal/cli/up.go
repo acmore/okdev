@@ -597,18 +597,26 @@ func upSetup(state *upState) error {
 		return syncErr
 	}
 
-	postSyncCmd := resolvePostSyncCommand(state.command.cfg, state.command.cfgPath)
-	if postSyncCmd != "" && len(state.syncPairs) > 0 {
-		state.ui.stepRun("postSync", "waiting for initial sync")
+	if len(state.syncPairs) > 0 {
+		state.ui.stepRun("initial sync", "waiting for syncthing convergence")
 		target, err = refreshTargetRef(state.ctx, state.opts, state.command.cfg, state.command.namespace, state.command.sessionName, state.command.kube, target)
 		if err != nil {
-			return fmt.Errorf("refresh target before postSync: %w", err)
+			return fmt.Errorf("refresh target before initial sync wait: %w", err)
 		}
-		if err := waitForInitialSync(state.ctx, state.opts, state.command.kube, state.command.namespace, target.PodName, state.command.sessionName, initialSyncTimeout, func(needBytes int64) {
-			state.ui.stepRun("postSync", fmt.Sprintf("syncing (%d bytes remaining)", needBytes))
+		if err := waitForInitialSync(state.ctx, state.opts, state.command.kube, state.command.namespace, target.PodName, state.command.sessionName, initialSyncTimeout, func(progress syncthingInitialSyncProgress) {
+			state.ui.stepRun("initial sync", fmt.Sprintf(
+				"local->remote %s remaining, remote->local %s remaining",
+				formatSyncthingMiB(progress.LocalNeedBytes),
+				formatSyncthingMiB(progress.RemoteNeedBytes),
+			))
 		}); err != nil {
 			return fmt.Errorf("wait for initial sync: %w", err)
 		}
+		state.ui.stepDone("initial sync", "complete")
+	}
+
+	postSyncCmd := resolvePostSyncCommand(state.command.cfg, state.command.cfgPath)
+	if postSyncCmd != "" && len(state.syncPairs) > 0 {
 		state.ui.stepRun("postSync", "running on all pods with shared workspace")
 		summary, err := runPostSyncOnAllPods(state.ctx, state.command.kube, state.command.namespace, state.labels, target.Container, postSyncCmd, state.ui.warnWriter())
 		if err != nil {
