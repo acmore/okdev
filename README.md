@@ -53,6 +53,32 @@ You can run the same formatter check on demand with:
 .venv/bin/pre-commit run --all-files --hook-stage manual okdev-gofmt
 ```
 
+For local end-to-end checks before merge, use the reusable Kind runner:
+
+```bash
+bash scripts/e2e_local_kind.sh
+```
+
+That runs the local smoke, deployment, job, and multi-session checks against a reusable Kind cluster. For sync-heavy changes, you can also add:
+
+```bash
+RUN_PYTORCHJOB=1 bash scripts/e2e_local_kind.sh
+```
+
+For a local-only large-repo sync stress check, you can point it at an existing clone:
+
+```bash
+RUN_LARGE_REPO=1 LARGE_REPO_PATH=~/workspace/pytorch bash scripts/e2e_local_kind.sh
+```
+
+Or let the script clone a temporary repo and clean it up afterward:
+
+```bash
+RUN_LARGE_REPO=1 LARGE_REPO_URL=https://github.com/pytorch/pytorch.git bash scripts/e2e_local_kind.sh
+```
+
+The large-repo script is intentionally local-only and is not part of GitHub Actions.
+
 ## GitHub Pages Docs
 
 Docs are published from `docs/` via GitHub Actions + MkDocs.

@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+. "$(dirname "$0")/e2e_lib.sh"
+
 OKDEV_BIN="${OKDEV_BIN:-$(pwd)/bin/okdev}"
 SIDECAR_IMAGE="${SIDECAR_IMAGE:-okdev-sidecar:v0.0.0-e2e}"
 NAMESPACE="${NAMESPACE:-default}"
 SESSION_A="${SESSION_A:-e2e-multi-a}"
 SESSION_B="${SESSION_B:-e2e-multi-b}"
-WORKDIR="$(mktemp -d)"
+WORKDIR="$(make_workdir)"
 HOME_DIR="${HOME_DIR:-$WORKDIR/home}"
 ORIG_HOME="${HOME}"
 ORIG_KUBECONFIG="${KUBECONFIG:-}"
@@ -68,8 +70,8 @@ init_pod_config() {
     echo "ERROR: okdev init did not write a config file for $name" >&2
     exit 1
   fi
-  sed -i 's/persistentSession: true/persistentSession: false/' "$cfg_path" 2>/dev/null || true
-  grep -q 'persistentSession' "$cfg_path" || sed -i '/ssh:/a\    persistentSession: false' "$cfg_path"
+  replace_all_in_file "$cfg_path" 'persistentSession: true' 'persistentSession: false'
+  insert_after_line_once "$cfg_path" '  ssh:' '    persistentSession: false'
   printf '%s\n' "$cfg_path"
 }
 

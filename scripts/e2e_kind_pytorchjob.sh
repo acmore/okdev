@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+. "$(dirname "$0")/e2e_lib.sh"
+
 OKDEV_BIN="${OKDEV_BIN:-$(pwd)/bin/okdev}"
 SIDECAR_IMAGE="${SIDECAR_IMAGE:-okdev-sidecar:v0.0.0-e2e}"
 SESSION_NAME="${SESSION_NAME:-e2e-ptjob}"
 NAMESPACE="${NAMESPACE:-default}"
 PVC_NAME="${PVC_NAME:-${SESSION_NAME}-workspace}"
-WORKDIR="$(mktemp -d)"
+WORKDIR="$(make_workdir)"
 HOME_DIR="${HOME_DIR:-$WORKDIR/home}"
 CFG_PATH="$WORKDIR/.okdev/okdev.yaml"
 SYNC_DIR="$WORKDIR/workspace"
@@ -55,11 +57,11 @@ cd "$WORKDIR"
 # The training-operator webhook requires a container named "pytorch".
 # The scaffold uses "dev", so patch the manifest and config.
 MANIFEST_PATH="$WORKDIR/.okdev/pytorchjob.yaml"
-sed -i 's/name: dev/name: pytorch/g' "$MANIFEST_PATH"
-sed -i 's/image: # TODO:.*/image: ubuntu:22.04/g' "$MANIFEST_PATH"
-sed -i 's/command: \["sleep", "infinity"\]/command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]/g' "$MANIFEST_PATH"
+replace_all_in_file "$MANIFEST_PATH" 'name: dev' 'name: pytorch'
+replace_all_in_file "$MANIFEST_PATH" 'image: # TODO: replace with your image' 'image: ubuntu:22.04'
+replace_all_in_file "$MANIFEST_PATH" 'command: ["sleep", "infinity"]' 'command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]'
 perl -0pi -e 's/- name: workspace\n              emptyDir: \{\}/- name: workspace\n              persistentVolumeClaim:\n                claimName: '"$PVC_NAME"'/g' "$MANIFEST_PATH"
-sed -i 's/container: dev/container: pytorch/' "$CFG_PATH"
+replace_all_in_file "$CFG_PATH" 'container: dev' 'container: pytorch'
 python3 - <<'PY' "$CFG_PATH"
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
@@ -72,10 +74,19 @@ path.write_text(text.replace(old, new, 1))
 PY
 
 # Set 2 worker replicas for multi-pod testing (1 master + 2 workers = 3 pods).
-sed -i '/Worker:/,/replicas:/ s/replicas: 1/replicas: 2/' "$MANIFEST_PATH"
+python3 - <<'PY' "$MANIFEST_PATH"
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+old = "Worker:\n      replicas: 1"
+new = "Worker:\n      replicas: 2"
+if old in text:
+    text = text.replace(old, new, 1)
+path.write_text(text)
+PY
 
 # Disable persistent SSH sessions for CI
-sed -i '/ssh:/a\    persistentSession: false' "$CFG_PATH"
+insert_after_line_once "$CFG_PATH" '  ssh:' '    persistentSession: false'
 
 # Add lifecycle hooks for verification.
 # postCreate runs only on target pod; postSync runs on all pods after sync;
@@ -320,7 +331,7 @@ if [[ "$POST_RESET_SYNC_OK" != "true" ]]; then
 fi
 
 echo "Changing controller workload spec to trigger drift detection"
-sed -i 's/image: ubuntu:22.04/image: ubuntu:24.04/g' "$MANIFEST_PATH"
+replace_all_in_file "$MANIFEST_PATH" 'image: ubuntu:22.04' 'image: ubuntu:24.04'
 
 echo "Verifying non-interactive up fails with reconcile guidance"
 set +e

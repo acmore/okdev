@@ -48,6 +48,7 @@ This file is the canonical repository guidance for coding agents working in `okd
 - If an e2e test creates cluster resources, local background processes, SSH config entries, port-forwards, or temporary files, clean them up before finishing unless the user explicitly asks to keep them.
 - For `okdev` session tests, prefer tearing down with `okdev down` after verification when the session was created only for the test.
 - If cleanup cannot be completed, say exactly what was left behind and where.
+- Prefer `bash scripts/e2e_local_kind.sh` before merge for local validation; enable `RUN_PYTORCHJOB=1` or `RUN_LARGE_REPO=1` with either `LARGE_REPO_PATH=/path/to/repo` or `LARGE_REPO_URL=https://...` only when the change touches sync, session state, or reconcile-heavy paths.
 
 ## Repo-Specific Expectations
 

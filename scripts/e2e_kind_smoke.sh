@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+. "$(dirname "$0")/e2e_lib.sh"
+
 OKDEV_BIN="${OKDEV_BIN:-$(pwd)/bin/okdev}"
 SIDECAR_IMAGE="${SIDECAR_IMAGE:-okdev-sidecar:v0.0.0-e2e}"
 SESSION_NAME="${SESSION_NAME:-e2e-smoke}"
 NAMESPACE="${NAMESPACE:-default}"
-WORKDIR="$(mktemp -d)"
+WORKDIR="$(make_workdir)"
 HOME_DIR="${HOME_DIR:-$WORKDIR/home}"
 CFG_PATH=""
 FOLDER_CFG_PATH="$WORKDIR/.okdev/okdev.yaml"
@@ -65,8 +67,8 @@ else
 fi
 
 # Disable persistent SSH sessions for CI
-sed -i 's/persistentSession: true/persistentSession: false/' "$CFG_PATH" 2>/dev/null || true
-grep -q 'persistentSession' "$CFG_PATH" || sed -i '/ssh:/a\    persistentSession: false' "$CFG_PATH"
+replace_all_in_file "$CFG_PATH" 'persistentSession: true' 'persistentSession: false'
+insert_after_line_once "$CFG_PATH" '  ssh:' '    persistentSession: false'
 
 echo "Generated config:"
 cat "$CFG_PATH"
@@ -192,7 +194,7 @@ ORIGINAL_POD_UID=$(kubectl -n "$NAMESPACE" get pod "okdev-${SESSION_NAME}" -o js
 echo "Original pod UID: $ORIGINAL_POD_UID"
 
 echo "Changing pod workload spec to trigger drift detection"
-sed -i '0,/image: ubuntu:22.04/s//image: ubuntu:24.04/' "$CFG_PATH"
+replace_first_in_file "$CFG_PATH" 'image: ubuntu:22.04' 'image: ubuntu:24.04'
 
 echo "Verifying non-interactive up fails with reconcile guidance"
 set +e
