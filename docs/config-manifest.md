@@ -287,6 +287,8 @@ spec:
 
 **Validation:** both keepalive values must be `> 0`; timeout must be `>= interval`.
 
+When `forwardAgent: true`, `okdev ssh` forwards the local `SSH_AUTH_SOCK` only for that live SSH session. This lets Git/SSH in the workload use your local agent for operations like `git push`, but it requires that your local machine already has an active ssh-agent with identities loaded via `ssh-add`.
+
 ```yaml
 spec:
   ssh:

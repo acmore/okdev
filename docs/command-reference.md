@@ -102,6 +102,7 @@
 - `--forward-agent`: forwards the local `SSH_AUTH_SOCK` into the live SSH session so Git/SSH inside the workload can use your local agent.
 - `--no-forward-agent`: disables forwarding for this SSH session even when `spec.ssh.forwardAgent: true`.
 - Agent forwarding only applies to the live `okdev ssh` connection; keys are not copied into the workload.
+- Requires a local SSH agent with identities already loaded, for example `eval "$(ssh-agent -s)"` and `ssh-add ~/.ssh/id_ed25519`.
 
 ### `okdev logs [session] [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
 
