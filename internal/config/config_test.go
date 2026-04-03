@@ -63,6 +63,9 @@ func TestSetDefaults(t *testing.T) {
 	if cfg.Spec.SSH.AutoDetectPorts == nil || !*cfg.Spec.SSH.AutoDetectPorts {
 		t.Fatal("expected ssh autoDetectPorts default true")
 	}
+	if cfg.Spec.SSH.ForwardAgent != nil {
+		t.Fatal("expected ssh forwardAgent to remain nil (off by default)")
+	}
 	if cfg.Spec.Sidecar.Image == "" {
 		t.Fatal("expected sidecar image default to be set")
 	}
@@ -117,6 +120,18 @@ func TestSetDefaultsPersistentSessionNil(t *testing.T) {
 	cfg.SetDefaults()
 	if cfg.Spec.SSH.PersistentSession != nil {
 		t.Fatal("expected persistentSession to remain nil (off by default)")
+	}
+}
+
+func TestSSHSpecForwardAgentEnabled(t *testing.T) {
+	var s SSHSpec
+	if s.ForwardAgentEnabled() {
+		t.Fatal("expected nil forwardAgent to default false")
+	}
+	v := true
+	s.ForwardAgent = &v
+	if !s.ForwardAgentEnabled() {
+		t.Fatal("expected explicit forwardAgent=true to be enabled")
 	}
 }
 

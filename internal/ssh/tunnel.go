@@ -19,6 +19,7 @@ import (
 	"time"
 
 	xssh "golang.org/x/crypto/ssh"
+	xagent "golang.org/x/crypto/ssh/agent"
 	"golang.org/x/term"
 )
 
@@ -43,6 +44,7 @@ var ErrLocalPortInUse = errors.New("local port already in use")
 type TunnelManager struct {
 	SSHUser           string
 	SSHKeyPath        string
+	ForwardAgentSock  string
 	RemotePort        int
 	Env               map[string]string
 	KeepAliveInterval time.Duration
@@ -130,7 +132,14 @@ func (tm *TunnelManager) dialSSH(host string, port int) (*xssh.Client, error) {
 		_ = conn.Close()
 		return nil, fmt.Errorf("ssh new conn: %w", err)
 	}
-	return xssh.NewClient(sshConn, chans, reqs), nil
+	client := xssh.NewClient(sshConn, chans, reqs)
+	if strings.TrimSpace(tm.ForwardAgentSock) != "" {
+		if err := xagent.ForwardToRemote(client, tm.ForwardAgentSock); err != nil {
+			_ = client.Close()
+			return nil, fmt.Errorf("enable ssh agent forwarding: %w", err)
+		}
+	}
+	return client, nil
 }
 
 func (tm *TunnelManager) SetConnectionStateCallback(cb func(ConnectionState)) {
@@ -323,6 +332,11 @@ func (tm *TunnelManager) ExecContext(ctx context.Context, cmd string) ([]byte, e
 		return nil, fmt.Errorf("new ssh session: %w", err)
 	}
 	defer s.Close()
+	if strings.TrimSpace(tm.ForwardAgentSock) != "" {
+		if err := xagent.RequestAgentForwarding(s); err != nil {
+			return nil, fmt.Errorf("request ssh agent forwarding: %w", err)
+		}
+	}
 	type execResult struct {
 		out []byte
 		err error
@@ -357,6 +371,11 @@ func (tm *TunnelManager) OpenShell() error {
 		return fmt.Errorf("new ssh session: %w", err)
 	}
 	defer s.Close()
+	if strings.TrimSpace(tm.ForwardAgentSock) != "" {
+		if err := xagent.RequestAgentForwarding(s); err != nil {
+			return fmt.Errorf("request ssh agent forwarding: %w", err)
+		}
+	}
 
 	for k, v := range tm.Env {
 		_ = s.Setenv(k, v)

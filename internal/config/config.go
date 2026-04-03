@@ -146,6 +146,7 @@ type SSHSpec struct {
 	User              string `yaml:"user"`
 	PrivateKeyPath    string `yaml:"privateKeyPath"`
 	AutoDetectPorts   *bool  `yaml:"autoDetectPorts"`
+	ForwardAgent      *bool  `yaml:"forwardAgent"`
 	PersistentSession *bool  `yaml:"persistentSession"`
 	KeepAliveInterval int    `yaml:"keepAliveIntervalSeconds"`
 	KeepAliveTimeout  int    `yaml:"keepAliveTimeoutSeconds"`
@@ -332,6 +333,13 @@ func (s SSHSpec) PersistentSessionEnabled() bool {
 		return true
 	}
 	return *s.PersistentSession
+}
+
+func (s SSHSpec) ForwardAgentEnabled() bool {
+	if s.ForwardAgent == nil {
+		return false
+	}
+	return *s.ForwardAgent
 }
 
 func (s SyncthingSpec) AutoInstallEnabled() bool {

@@ -280,11 +280,14 @@ spec:
 | `user` | `string` | `root` | SSH user |
 | `privateKeyPath` | `string` | — | Path to SSH private key |
 | `autoDetectPorts` | `bool` | `true` | Auto-detect listening ports in the container |
+| `forwardAgent` | `bool` | `false` | Forward the local SSH agent for live `okdev ssh` sessions |
 | `persistentSession` | `bool` | `true` | Enable tmux-backed interactive sessions |
 | `keepAliveIntervalSeconds` | `int` | `10` | SSH keepalive interval |
 | `keepAliveTimeoutSeconds` | `int` | `10` | SSH keepalive timeout |
 
 **Validation:** both keepalive values must be `> 0`; timeout must be `>= interval`.
+
+When `forwardAgent: true`, `okdev ssh` forwards the local `SSH_AUTH_SOCK` only for that live SSH session. This lets Git/SSH in the workload use your local agent for operations like `git push`, but it requires that your local machine already has an active ssh-agent with identities loaded via `ssh-add`.
 
 ```yaml
 spec:
@@ -292,6 +295,7 @@ spec:
     user: root
     privateKeyPath: ~/.okdev/ssh/id_ed25519
     autoDetectPorts: true
+    forwardAgent: false
     persistentSession: true
     keepAliveIntervalSeconds: 30
     keepAliveTimeoutSeconds: 90
