@@ -933,6 +933,7 @@ func syncthingSessionActive(sessionName string) bool {
 
 type workloadExistenceChecker interface {
 	ResourceExists(context.Context, string, string, string, string) (bool, error)
+	GetPodSummary(context.Context, string, string) (*kube.PodSummary, error)
 }
 
 func shouldReuseExistingWorkload(ctx context.Context, k workloadExistenceChecker, namespace string, runtime workload.Runtime) (bool, error) {
@@ -947,6 +948,22 @@ func shouldReuseExistingWorkload(ctx context.Context, k workloadExistenceChecker
 	exists, err := k.ResourceExists(ctx, namespace, apiVersion, kind, name)
 	if err != nil {
 		return false, fmt.Errorf("check %s/%s existence: %w", kind, name, err)
+	}
+	if !exists {
+		return false, nil
+	}
+	if kind == workload.TypePod {
+		summary, err := k.GetPodSummary(ctx, namespace, name)
+		if err != nil {
+			return false, fmt.Errorf("get pod/%s status: %w", name, err)
+		}
+		if summary.Deleting {
+			return false, nil
+		}
+		switch corev1.PodPhase(summary.Phase) {
+		case corev1.PodSucceeded, corev1.PodFailed:
+			return false, nil
+		}
 	}
 	return exists, nil
 }
