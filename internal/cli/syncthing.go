@@ -16,8 +16,10 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -36,10 +38,15 @@ const (
 	syncthingContainerName = "okdev-sidecar"
 )
 
-// defaultSyncExcludes are applied when the user has not configured any
-// spec.sync.exclude patterns.  They prevent common large or noisy
-// directories from being synced by default.
-var defaultSyncExcludes = []string{"node_modules", "vendor", "__pycache__", ".DS_Store"}
+// defaultSyncExcludes are written to a starter .stignore when one does not
+// already exist. They prevent common large or noisy directories from being
+// synced by default.
+var defaultSyncExcludes = []string{".git/", "node_modules", "vendor", "__pycache__", ".DS_Store"}
+
+const (
+	largeSyncWarnThreshold = 100 * 1024 * 1024
+	largeSyncWarnLimit     = 10
+)
 
 var syncthingHTTPClient = &http.Client{Timeout: syncthingHTTPClientTimeout}
 
@@ -84,16 +91,13 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	if err := os.MkdirAll(absLocal, 0o755); err != nil {
 		return err
 	}
-	if err := writeLocalSTIgnore(absLocal, cfg.Spec.Sync.Exclude); err != nil {
+	if err := writeLocalSTIgnore(absLocal); err != nil {
 		return err
 	}
+	warnLargeSyncFiles(cmd.ErrOrStderr(), absLocal)
 	if _, err := execInSyncthingContainer(ctx, k, namespace, pod, fmt.Sprintf("mkdir -p %s", syncengine.ShellEscape(pair.Remote))); err != nil {
 		return err
 	}
-	if err := writeRemoteSTIgnoreInPod(ctx, k, namespace, pod, pair.Remote, cfg.Spec.Sync.RemoteExclude); err != nil {
-		return err
-	}
-
 	localHome, err := localSyncthingHome(sessionName)
 	if err != nil {
 		return err
@@ -238,23 +242,14 @@ func writeSTIgnore(localPath string, excludes []string) error {
 	return os.WriteFile(filepath.Join(localPath, ".stignore"), []byte(content), 0o644)
 }
 
-func writeLocalSTIgnore(localPath string, excludes []string) error {
-	if len(excludes) == 0 {
-		stignorePath := filepath.Join(localPath, ".stignore")
-		if _, err := os.Stat(stignorePath); err == nil {
-			return nil
-		} else if !os.IsNotExist(err) {
-			return err
-		}
+func writeLocalSTIgnore(localPath string) error {
+	stignorePath := filepath.Join(localPath, ".stignore")
+	if _, err := os.Stat(stignorePath); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
 	}
-	return writeSTIgnore(localPath, effectiveLocalExcludes(excludes))
-}
-
-func effectiveLocalExcludes(excludes []string) []string {
-	if len(excludes) == 0 {
-		return defaultSyncExcludes
-	}
-	return excludes
+	return writeSTIgnore(localPath, defaultSyncExcludes)
 }
 
 func buildSTIgnoreContent(excludes []string) (string, bool) {
@@ -276,22 +271,6 @@ func buildSTIgnoreContent(excludes []string) (string, bool) {
 		return "", false
 	}
 	return b.String(), true
-}
-
-func writeRemoteSTIgnoreInPod(ctx context.Context, k interface {
-	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
-}, namespace, pod, remotePath string, excludes []string) error {
-	content, ok := buildSTIgnoreContent(excludes)
-	if !ok {
-		return nil
-	}
-	ignorePath := strings.TrimRight(remotePath, "/") + "/.stignore"
-	if ignorePath == "/.stignore" || strings.TrimSpace(ignorePath) == "" {
-		return fmt.Errorf("invalid remote sync path %q for remoteExclude", remotePath)
-	}
-	cmd := fmt.Sprintf("printf %%s %s > %s", syncengine.ShellEscape(content), syncengine.ShellEscape(ignorePath))
-	_, err := execInSyncthingContainer(ctx, k, namespace, pod, cmd)
-	return err
 }
 
 func localSyncthingHome(sessionName string) (string, error) {
@@ -1305,15 +1284,13 @@ func resetRemoteWorkspace(ctx context.Context, k interface {
 }
 
 type syncthingSessionConfigState struct {
-	Engine                string   `json:"engine"`
-	LocalPath             string   `json:"localPath"`
-	RemotePath            string   `json:"remotePath"`
-	Exclude               []string `json:"exclude,omitempty"`
-	RemoteExclude         []string `json:"remoteExclude,omitempty"`
-	WatcherDelaySeconds   int      `json:"watcherDelaySeconds,omitempty"`
-	RescanIntervalSeconds int      `json:"rescanIntervalSeconds,omitempty"`
-	RelaysEnabled         bool     `json:"relaysEnabled,omitempty"`
-	Compression           bool     `json:"compression,omitempty"`
+	Engine                string `json:"engine"`
+	LocalPath             string `json:"localPath"`
+	RemotePath            string `json:"remotePath"`
+	WatcherDelaySeconds   int    `json:"watcherDelaySeconds,omitempty"`
+	RescanIntervalSeconds int    `json:"rescanIntervalSeconds,omitempty"`
+	RelaysEnabled         bool   `json:"relaysEnabled,omitempty"`
+	Compression           bool   `json:"compression,omitempty"`
 }
 
 func syncthingSessionConfigHash(cfg *config.DevEnvironment, localPath, remotePath string) string {
@@ -1324,8 +1301,6 @@ func syncthingSessionConfigHash(cfg *config.DevEnvironment, localPath, remotePat
 		Engine:                strings.TrimSpace(cfg.Spec.Sync.Engine),
 		LocalPath:             localPath,
 		RemotePath:            remotePath,
-		Exclude:               append([]string(nil), cfg.Spec.Sync.Exclude...),
-		RemoteExclude:         append([]string(nil), cfg.Spec.Sync.RemoteExclude...),
 		WatcherDelaySeconds:   cfg.Spec.Sync.Syncthing.WatcherDelaySeconds,
 		RescanIntervalSeconds: cfg.Spec.Sync.Syncthing.RescanIntervalSeconds,
 		RelaysEnabled:         cfg.Spec.Sync.Syncthing.RelaysEnabled,
@@ -1337,6 +1312,145 @@ func syncthingSessionConfigHash(cfg *config.DevEnvironment, localPath, remotePat
 	}
 	sum := sha256.Sum256(b)
 	return fmt.Sprintf("%x", sum[:])
+}
+
+type syncLargeFile struct {
+	Path string
+	Size int64
+}
+
+func warnLargeSyncFiles(w io.Writer, localPath string) {
+	files, err := detectLargeSyncFiles(localPath, largeSyncWarnThreshold, largeSyncWarnLimit)
+	if err != nil || len(files) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "warning: %d large file(s) will be synced from %s\n", len(files), localPath)
+	for _, f := range files {
+		fmt.Fprintf(w, "- %s  %s\n", humanSizeIEC(f.Size), f.Path)
+	}
+	fmt.Fprintln(w, "consider adding large generated or dataset files to .stignore")
+}
+
+func detectLargeSyncFiles(root string, threshold int64, limit int) ([]syncLargeFile, error) {
+	ignores, err := loadSTIgnorePatterns(root)
+	if err != nil {
+		return nil, err
+	}
+	var files []syncLargeFile
+	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if matchesSTIgnore(rel, d.IsDir(), ignores) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.Size() >= threshold {
+			files = append(files, syncLargeFile{Path: rel, Size: info.Size()})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Size > files[j].Size })
+	if len(files) > limit {
+		files = files[:limit]
+	}
+	return files, nil
+}
+
+func loadSTIgnorePatterns(root string) ([]string, error) {
+	content, err := os.ReadFile(filepath.Join(root, ".stignore"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return defaultSyncExcludes, nil
+		}
+		return nil, err
+	}
+	var patterns []string
+	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "//") || strings.HasPrefix(line, "!") {
+			continue
+		}
+		patterns = append(patterns, line)
+	}
+	return patterns, nil
+}
+
+func matchesSTIgnore(rel string, isDir bool, patterns []string) bool {
+	base := path.Base(rel)
+	for _, raw := range patterns {
+		p := strings.TrimSpace(filepath.ToSlash(raw))
+		if p == "" {
+			continue
+		}
+		dirOnly := strings.HasSuffix(p, "/")
+		if dirOnly {
+			p = strings.TrimSuffix(p, "/")
+			if !isDir {
+				if rel == p || strings.HasPrefix(rel, p+"/") {
+					return true
+				}
+				continue
+			}
+			if rel == p || strings.HasPrefix(rel, p+"/") || base == p {
+				return true
+			}
+			continue
+		}
+		if strings.HasPrefix(p, "/") {
+			p = strings.TrimPrefix(p, "/")
+			if ok, _ := path.Match(p, rel); ok {
+				return true
+			}
+			continue
+		}
+		if strings.ContainsAny(p, "*?[") {
+			if ok, _ := path.Match(p, rel); ok {
+				return true
+			}
+			if ok, _ := path.Match(p, base); ok {
+				return true
+			}
+			continue
+		}
+		if rel == p || strings.HasPrefix(rel, p+"/") || base == p {
+			return true
+		}
+	}
+	return false
+}
+
+func humanSizeIEC(size int64) string {
+	const unit = 1024
+	if size < unit {
+		return fmt.Sprintf("%dB", size)
+	}
+	div, exp := int64(unit), 0
+	for n := size / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%ciB", float64(size)/float64(div), "KMGTPE"[exp])
 }
 
 // syncHealthStatus represents the sync health as checked by the CLI.

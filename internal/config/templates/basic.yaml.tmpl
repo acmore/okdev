@@ -15,7 +15,6 @@ spec:
       autoInstall: true
     paths:
       - "{{ .SyncLocal }}:{{ .SyncRemote }}"
-    remoteExclude: []
   ports:
     - name: app
       local: 8080

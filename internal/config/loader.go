@@ -26,6 +26,9 @@ func Load(configPath string) (*DevEnvironment, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("read config %q: %w", path, err)
 	}
+	if removed := removedSyncIgnoreField(raw); removed != "" {
+		return nil, "", fmt.Errorf("validate config %q: %w", path, &MigrationEligibleError{Err: fmt.Errorf("%s is removed; manage local ignores with .stignore in the synced local workspace instead", removed)})
+	}
 
 	var cfg DevEnvironment
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
@@ -37,6 +40,28 @@ func Load(configPath string) (*DevEnvironment, string, error) {
 	}
 
 	return &cfg, path, nil
+}
+
+func removedSyncIgnoreField(raw []byte) string {
+	var payload map[string]any
+	if err := yaml.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	specMap, ok := payload["spec"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	syncMap, ok := specMap["sync"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	if _, ok := syncMap["exclude"]; ok {
+		return "spec.sync.exclude"
+	}
+	if _, ok := syncMap["remoteExclude"]; ok {
+		return "spec.sync.remoteExclude"
+	}
+	return ""
 }
 
 func ResolvePath(configPath string) (string, error) {
