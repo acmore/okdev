@@ -17,6 +17,7 @@ import (
 
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/logx"
+	"github.com/acmore/okdev/internal/session"
 	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
 )
@@ -202,15 +203,14 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 	if err != nil {
 		return "", false, err
 	}
-	home, err := os.UserHomeDir()
+	syncthingHome, err := localSyncthingHome(sessionName)
 	if err != nil {
 		return "", false, err
 	}
-	logDir := filepath.Join(home, ".okdev", "logs")
-	if err := os.MkdirAll(logDir, 0o755); err != nil {
+	logPath, err := localSyncthingLogPath(syncthingHome)
+	if err != nil {
 		return "", false, err
 	}
-	logPath := filepath.Join(logDir, "syncthing-"+sessionName+".log")
 	pidPath, err := syncthingPIDPath(sessionName)
 	if err != nil {
 		return "", false, err
@@ -345,24 +345,16 @@ func readFileTail(path string, maxBytes int) string {
 }
 
 func syncthingPIDPath(sessionName string) (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := localSyncthingHome(sessionName)
 	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(home, ".okdev", "syncthing", sessionName)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, "sync.pid"), nil
 }
 
 func syncthingReadyPath(sessionName string) (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := localSyncthingHome(sessionName)
 	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(home, ".okdev", "syncthing", sessionName)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, "sync.ready"), nil
@@ -414,15 +406,11 @@ func stopDetachedSyncthingSync(sessionName string) error {
 }
 
 func syncthingTargetStatePath(sessionName string) (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := session.SessionDir(sessionName)
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".okdev", "syncthing", sessionName)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "target.json"), nil
+	return filepath.Join(dir, "sync.json"), nil
 }
 
 func loadSyncthingTargetSessionState(sessionName string) (syncthingSessionTargetState, error) {

@@ -26,6 +26,7 @@ import (
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/logx"
+	"github.com/acmore/okdev/internal/session"
 	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/acmore/okdev/internal/syncthing"
 	"github.com/spf13/cobra"
@@ -293,16 +294,8 @@ func writeRemoteSTIgnoreInPod(ctx context.Context, k interface {
 	return err
 }
 
-func localSyncthingHome(session string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	p := filepath.Join(home, ".okdev", "syncthing", session)
-	if err := os.MkdirAll(p, 0o755); err != nil {
-		return "", err
-	}
-	return p, nil
+func localSyncthingHome(sessionName string) (string, error) {
+	return session.SyncthingDir(sessionName)
 }
 
 func startLocalSyncthing(binary, home, localGUIAddr string) (int, error) {
@@ -1080,11 +1073,15 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 	if err != nil {
 		return err
 	}
+	filteredFolders := make([]any, 0, len(folders))
 	foundFolder := false
-	for i, f := range folders {
+	for _, f := range folders {
 		fm, err := syncthingObjectMap(f, "folders")
 		if err != nil {
 			return err
+		}
+		if asString(fm["id"]) == "default" {
+			continue
 		}
 		if asString(fm["id"]) == folderID {
 			fm["path"] = folderPath
@@ -1095,10 +1092,11 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 				map[string]any{"deviceID": peerID},
 			}
 			applyManagedSyncthingFolderDefaults(fm, rescanIntervalSeconds, watcherDelaySeconds, ignoreDelete)
-			folders[i] = fm
+			filteredFolders = append(filteredFolders, fm)
 			foundFolder = true
-			break
+			continue
 		}
+		filteredFolders = append(filteredFolders, fm)
 	}
 	if !foundFolder {
 		folder := map[string]any{
@@ -1113,9 +1111,9 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 			},
 		}
 		applyManagedSyncthingFolderDefaults(folder, rescanIntervalSeconds, watcherDelaySeconds, ignoreDelete)
-		folders = append(folders, folder)
+		filteredFolders = append(filteredFolders, folder)
 	}
-	cfg["folders"] = folders
+	cfg["folders"] = filteredFolders
 
 	if err := syncthingSetConfig(ctx, base, key, cfg); err != nil {
 		return err

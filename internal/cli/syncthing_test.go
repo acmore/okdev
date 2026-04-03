@@ -842,7 +842,14 @@ func TestSyncthingAPIRequestWithContextRejectsErrorStatus(t *testing.T) {
 func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	cfg := map[string]any{
 		"devices": []any{},
-		"folders": []any{},
+		"folders": []any{
+			map[string]any{
+				"id":         "default",
+				"label":      "Default Folder",
+				"path":       "/Users/test/Sync",
+				"markerName": ".stfolder",
+			},
+		},
 	}
 	var putBodies [][]byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -907,6 +914,9 @@ func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	folder, err := syncthingObjectMap(folders[0], "folders")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got := asString(folder["id"]); got != "okdev-test" {
+		t.Fatalf("unexpected folder id %q", got)
 	}
 	if got := asString(folder["path"]); got != "/tmp/updated" {
 		t.Fatalf("unexpected folder path %q", got)

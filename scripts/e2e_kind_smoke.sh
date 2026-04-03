@@ -32,10 +32,8 @@ cleanup() {
   if [[ "$status" -ne 0 ]]; then
     echo "--- local okdev logs ---"
     ls -R "$HOME_DIR/.okdev" 2>/dev/null || true
-    echo "--- background sync log ---"
-    cat "$HOME_DIR/.okdev/logs/syncthing-${SESSION_NAME}.log" 2>/dev/null || true
-    echo "--- local syncthing log ---"
-    cat "$HOME_DIR/.okdev/syncthing/${SESSION_NAME}/local.log" 2>/dev/null || true
+    echo "--- session sync log ---"
+    cat "$HOME_DIR/.okdev/sessions/${SESSION_NAME}/syncthing/local.log" 2>/dev/null || true
   fi
   if [[ -n "$CFG_PATH" && -f "$CFG_PATH" ]]; then
     "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes >/dev/null 2>&1 || true
@@ -94,6 +92,40 @@ for i in $(seq 1 15); do
   sleep 2
 done
 echo "Sync health status verified"
+
+echo "Checking local session state layout"
+SESSION_DIR="$HOME_DIR/.okdev/sessions/${SESSION_NAME}"
+SESSION_JSON="$SESSION_DIR/session.json"
+TARGET_JSON="$SESSION_DIR/target.json"
+SYNC_JSON="$SESSION_DIR/sync.json"
+SYNC_HOME="$SESSION_DIR/syncthing"
+for path in "$SESSION_DIR" "$SESSION_JSON" "$TARGET_JSON" "$SYNC_JSON" "$SYNC_HOME"; do
+  if [[ ! -e "$path" ]]; then
+    echo "ERROR: expected session state path to exist: $path" >&2
+    exit 1
+  fi
+done
+if ! grep -q "\"configPath\": \"$CFG_PATH\"" "$SESSION_JSON"; then
+  echo "ERROR: expected session.json to contain configPath=$CFG_PATH" >&2
+  cat "$SESSION_JSON" >&2
+  exit 1
+fi
+if ! grep -q "\"namespace\": \"$NAMESPACE\"" "$SESSION_JSON"; then
+  echo "ERROR: expected session.json to contain namespace=$NAMESPACE" >&2
+  cat "$SESSION_JSON" >&2
+  exit 1
+fi
+if ! grep -q "\"repoRoot\": \"$WORKDIR\"" "$SESSION_JSON"; then
+  echo "ERROR: expected session.json to contain repoRoot=$WORKDIR" >&2
+  cat "$SESSION_JSON" >&2
+  exit 1
+fi
+if [[ -e "$HOME_DIR/Sync/.stfolder" ]]; then
+  echo "ERROR: unexpected Syncthing default folder marker created at $HOME_DIR/Sync/.stfolder" >&2
+  find "$HOME_DIR/Sync" -maxdepth 3 -ls >&2 || true
+  exit 1
+fi
+echo "Session state layout verified"
 
 echo "Waiting for synced file to appear remotely with correct content"
 SYNC_OK=false
