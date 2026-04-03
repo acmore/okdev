@@ -75,6 +75,10 @@ func newDownCmd(opts *Options) *cobra.Command {
 			ui.stepDone("ownership", "ok")
 			ctx, cancel := defaultContext()
 			defer cancel()
+			exists, err := shouldReuseExistingWorkload(ctx, cc.kube, cc.namespace, runtime)
+			if err != nil {
+				return err
+			}
 			if dryRun {
 				payload := downOutput{
 					Session:   cc.sessionName,
@@ -88,15 +92,45 @@ func newDownCmd(opts *Options) *cobra.Command {
 				if deletePVC {
 					payload.Notes = append(payload.Notes, "--delete-pvc ignored: okdev no longer manages PVC lifecycle")
 				}
+				if !exists {
+					payload.Status = "already stopped"
+					payload.Notes = append(payload.Notes, "session workload already absent")
+				}
 				if opts.Output == "json" {
 					return outputJSON(cmd.OutOrStdout(), payload)
 				}
 				ui.section("Dry Run")
 				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: session=%s namespace=%s\n", cc.sessionName, cc.namespace)
-				fmt.Fprintf(cmd.OutOrStdout(), "- would delete %s/%s\n", runtime.Kind(), runtime.WorkloadName())
+				if exists {
+					fmt.Fprintf(cmd.OutOrStdout(), "- would delete %s/%s\n", runtime.Kind(), runtime.WorkloadName())
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "- %s/%s already absent\n", runtime.Kind(), runtime.WorkloadName())
+				}
 				if deletePVC {
 					fmt.Fprintln(cmd.OutOrStdout(), "- note: --delete-pvc is ignored (okdev no longer manages PVC lifecycle)")
 				}
+				return nil
+			}
+
+			if !exists {
+				payload := downOutput{
+					Session:   cc.sessionName,
+					Namespace: cc.namespace,
+					Kind:      runtime.Kind(),
+					Workload:  runtime.WorkloadName(),
+					DryRun:    false,
+					Deleted:   false,
+					Status:    "already stopped",
+					Notes:     []string{"session workload already absent"},
+				}
+				if opts.Output == "json" {
+					return outputJSON(cmd.OutOrStdout(), payload)
+				}
+				ui.section("Ready")
+				fmt.Fprintf(cmd.OutOrStdout(), "session:   %s\n", cc.sessionName)
+				fmt.Fprintf(cmd.OutOrStdout(), "namespace: %s\n", cc.namespace)
+				fmt.Fprintln(cmd.OutOrStdout(), "status:    already stopped")
+				fmt.Fprintln(cmd.OutOrStdout(), "workspace: workload already absent; nothing to delete")
 				return nil
 			}
 

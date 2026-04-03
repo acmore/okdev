@@ -81,6 +81,8 @@ func TestNewDownCmdDryRunOutputsJSON(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/v1/namespaces/demo/pods":
 			_, _ = io.WriteString(w, `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"namespace":"demo","name":"okdev-sess-a","creationTimestamp":"2026-03-29T00:00:00Z","labels":{"okdev.io/session":"sess-a","okdev.io/owner":"alice","okdev.io/workload-type":"pod"}},"status":{"phase":"Running","containerStatuses":[{"name":"dev","ready":true}]}}]}`)
+		case "/api/v1/namespaces/demo/pods/okdev-sess-a":
+			_, _ = io.WriteString(w, `{"metadata":{"namespace":"demo","name":"okdev-sess-a","labels":{"okdev.io/session":"sess-a","okdev.io/owner":"alice","okdev.io/workload-type":"pod"}},"status":{"phase":"Running","containerStatuses":[{"name":"dev","ready":true}]}}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -109,5 +111,83 @@ func TestNewDownCmdDryRunOutputsJSON(t *testing.T) {
 	}
 	if payload.Session != "sess-a" || payload.Namespace != "demo" || payload.Kind != "pod" || payload.Workload != "okdev-sess-a" {
 		t.Fatalf("unexpected payload identity: %#v", payload)
+	}
+}
+
+func TestNewDownCmdSkipsMissingWorkloadWithoutConfirmation(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/namespaces/demo/pods":
+			_, _ = io.WriteString(w, `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"namespace":"demo","name":"other","creationTimestamp":"2026-03-29T00:00:00Z","labels":{"okdev.io/session":"other","okdev.io/owner":"alice","okdev.io/workload-type":"pod"}},"status":{"phase":"Running","containerStatuses":[{"name":"dev","ready":true}]}}]}`)
+		case "/api/v1/namespaces/demo/pods/okdev-sess-a":
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("KUBECONFIG", writeCLITLSTestKubeconfig(t, server))
+	cfgPath := writeCLIConfig(t, "demo")
+	opts := &Options{ConfigPath: cfgPath, Context: "dev", Session: "sess-a", Owner: "alice", Output: "json"}
+	cmd := newDownCmd(opts)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetIn(strings.NewReader("n\n"))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("down execute: %v", err)
+	}
+
+	var payload downOutput
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("json unmarshal: %v\n%s", err, out.String())
+	}
+	if payload.Deleted {
+		t.Fatalf("expected deleted=false, got %#v", payload)
+	}
+	if payload.Status != "already stopped" {
+		t.Fatalf("expected status already stopped, got %#v", payload)
+	}
+}
+
+func TestNewDownCmdDryRunReportsMissingWorkload(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/namespaces/demo/pods":
+			_, _ = io.WriteString(w, `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"namespace":"demo","name":"other","creationTimestamp":"2026-03-29T00:00:00Z","labels":{"okdev.io/session":"other","okdev.io/owner":"alice","okdev.io/workload-type":"pod"}},"status":{"phase":"Running","containerStatuses":[{"name":"dev","ready":true}]}}]}`)
+		case "/api/v1/namespaces/demo/pods/okdev-sess-a":
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("KUBECONFIG", writeCLITLSTestKubeconfig(t, server))
+	cfgPath := writeCLIConfig(t, "demo")
+	opts := &Options{ConfigPath: cfgPath, Context: "dev", Session: "sess-a", Owner: "alice", Output: "json"}
+	cmd := newDownCmd(opts)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--dry-run"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("down execute: %v", err)
+	}
+
+	var payload downOutput
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("json unmarshal: %v\n%s", err, out.String())
+	}
+	if payload.Status != "already stopped" {
+		t.Fatalf("expected status already stopped, got %#v", payload)
+	}
+	if len(payload.Notes) == 0 || payload.Notes[0] != "session workload already absent" {
+		t.Fatalf("expected absent-workload note, got %#v", payload)
 	}
 }
