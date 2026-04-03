@@ -669,7 +669,6 @@ func runSyncthingProgressReporter(ctx context.Context, out io.Writer, localBase,
 	ticker := time.NewTicker(syncthingProgressInterval)
 	defer ticker.Stop()
 	warnedLargeSync := false
-	eta := &syncETAEstimator{}
 	emit := func() bool {
 		upPct, upNeed, err := syncthingCompletion(ctx, localBase, localKey, folderID, remoteID)
 		if err != nil {
@@ -681,13 +680,11 @@ func runSyncthingProgressReporter(ctx context.Context, out io.Writer, localBase,
 			slog.Debug("syncthing progress read failed", "side", "remote", "error", err)
 			return false
 		}
-		totalNeed := upNeed + downNeed
-		remainingETA, etaOK := eta.Estimate(time.Now(), totalNeed)
 		fmt.Fprintf(out, "Syncthing progress: %s\n", formatInitialSyncProgressDetail(syncthingInitialSyncProgress{
 			Mode:            "bi",
 			LocalNeedBytes:  upNeed,
 			RemoteNeedBytes: downNeed,
-		}, remainingETA, etaOK))
+		}))
 		if !warnedLargeSync && maxInt64(upNeed, downNeed) >= largeSyncNeedWarnBytes {
 			warnLargeSyncEntries(out, localPath, maxInt64(upNeed, downNeed))
 			warnedLargeSync = true
@@ -747,39 +744,6 @@ func syncthingInitialSyncComplete(localPct float64, localNeedBytes int64, remote
 
 func syncthingBootstrapInitialSyncComplete(localPct float64, localNeedBytes int64) bool {
 	return localNeedBytes == 0 && localPct >= 99.9
-}
-
-type syncETAEstimator struct {
-	lastAt        time.Time
-	lastRemaining int64
-	initialized   bool
-}
-
-func (e *syncETAEstimator) Estimate(now time.Time, remaining int64) (time.Duration, bool) {
-	if remaining <= 0 {
-		e.lastAt = now
-		e.lastRemaining = remaining
-		e.initialized = true
-		return 0, true
-	}
-	if !e.initialized {
-		e.lastAt = now
-		e.lastRemaining = remaining
-		e.initialized = true
-		return 0, false
-	}
-	elapsed := now.Sub(e.lastAt)
-	progress := e.lastRemaining - remaining
-	e.lastAt = now
-	e.lastRemaining = remaining
-	if elapsed <= 0 || progress <= 0 {
-		return 0, false
-	}
-	etaSeconds := float64(remaining) / (float64(progress) / elapsed.Seconds())
-	if etaSeconds <= 0 {
-		return 0, false
-	}
-	return time.Duration(etaSeconds * float64(time.Second)), true
 }
 
 // syncthingFolderNeedBytes queries the remote syncthing for the number of
@@ -918,53 +882,24 @@ func formatSyncthingMiB(bytes int64) string {
 	return fmt.Sprintf("%.1f MiB", float64(bytes)/(1024*1024))
 }
 
-func formatSyncETA(eta time.Duration, ok bool) string {
-	if !ok {
-		return "estimating"
-	}
-	if eta <= 0 {
-		return "<1s"
-	}
-	eta = eta.Round(time.Second)
-	if eta < time.Minute {
-		return eta.String()
-	}
-	if eta < time.Hour {
-		minutes := int(eta / time.Minute)
-		seconds := int((eta % time.Minute) / time.Second)
-		if seconds == 0 {
-			return fmt.Sprintf("%dm", minutes)
-		}
-		return fmt.Sprintf("%dm%02ds", minutes, seconds)
-	}
-	hours := int(eta / time.Hour)
-	minutes := int((eta % time.Hour) / time.Minute)
-	if minutes == 0 {
-		return fmt.Sprintf("%dh", hours)
-	}
-	return fmt.Sprintf("%dh%02dm", hours, minutes)
-}
-
-func formatInitialSyncProgressDetail(progress syncthingInitialSyncProgress, eta time.Duration, etaOK bool) string {
+func formatInitialSyncProgressDetail(progress syncthingInitialSyncProgress) string {
 	if progress.Mode == "two-phase" {
 		return fmt.Sprintf(
-			"%s remaining to remote, eta %s",
+			"%s remaining to remote",
 			formatSyncthingMiB(progress.LocalNeedBytes),
-			formatSyncETA(eta, etaOK),
 		)
 	}
 	totalNeedBytes := progress.LocalNeedBytes + progress.RemoteNeedBytes
 	return fmt.Sprintf(
-		"%s remaining (local->remote %s, remote->local %s), eta %s",
+		"%s remaining (local->remote %s, remote->local %s)",
 		formatSyncthingMiB(totalNeedBytes),
 		formatSyncthingMiB(progress.LocalNeedBytes),
 		formatSyncthingMiB(progress.RemoteNeedBytes),
-		formatSyncETA(eta, etaOK),
 	)
 }
 
-func formatTwoPhaseNeedProgress(label string, needBytes int64, eta time.Duration, etaOK bool) string {
-	return fmt.Sprintf("%s: %s remaining, eta %s", label, formatSyncthingMiB(needBytes), formatSyncETA(eta, etaOK))
+func formatTwoPhaseNeedProgress(label string, needBytes int64) string {
+	return fmt.Sprintf("%s: %s remaining", label, formatSyncthingMiB(needBytes))
 }
 
 // syncthingSyncConfig bundles the user-configurable knobs passed through to
@@ -1000,8 +935,6 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 	deadline := time.Now().Add(initialSyncTimeout)
 	ticker := time.NewTicker(syncthingProgressInterval)
 	defer ticker.Stop()
-	phase1ETA := &syncETAEstimator{}
-
 	for {
 		// Force local state onto remote.
 		if err := syncthingOverrideFolder(ctx, localBase, localKey, folderID); err != nil {
@@ -1012,8 +945,7 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 		if err != nil {
 			slog.Debug("syncthing initial sync poll failed", "error", err)
 		} else {
-			remainingETA, etaOK := phase1ETA.Estimate(time.Now(), need)
-			fmt.Fprintf(out, "  %s\n", formatTwoPhaseNeedProgress("initial sync", need, remainingETA, etaOK))
+			fmt.Fprintf(out, "  %s\n", formatTwoPhaseNeedProgress("initial sync", need))
 			if need == 0 {
 				localConnected, localErr := syncthingPeerConnected(ctx, localBase, localKey, remoteID)
 				remoteConnected, remoteErr := syncthingPeerConnected(ctx, remoteBase, remoteKey, localID)
@@ -1047,7 +979,6 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, peerAddr, folderID, localPath, "sendonly", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
 		return fmt.Errorf("configure local (phase 1b): %w", err)
 	}
-	phase1bETA := &syncETAEstimator{}
 	for {
 		if err := syncthingOverrideFolder(ctx, localBase, localKey, folderID); err != nil {
 			slog.Debug("syncthing override (phase 1b) failed", "error", err)
@@ -1056,8 +987,7 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 		if err != nil {
 			slog.Debug("syncthing phase 1b poll failed", "error", err)
 		} else {
-			remainingETA, etaOK := phase1bETA.Estimate(time.Now(), need)
-			fmt.Fprintf(out, "  %s\n", formatTwoPhaseNeedProgress("deletion propagation", need, remainingETA, etaOK))
+			fmt.Fprintf(out, "  %s\n", formatTwoPhaseNeedProgress("deletion propagation", need))
 			if need == 0 {
 				break
 			}
