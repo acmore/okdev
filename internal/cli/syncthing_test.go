@@ -104,6 +104,153 @@ func TestSyncthingFolderNeedBytesZeroWhenSynced(t *testing.T) {
 	}
 }
 
+func TestSyncthingInitialSyncComplete(t *testing.T) {
+	if !syncthingInitialSyncComplete(100, 0, 99.9, 0) {
+		t.Fatal("expected zero local and remote bytes to be treated as complete")
+	}
+	if syncthingInitialSyncComplete(100, 1, 100, 0) {
+		t.Fatal("expected local pending bytes to block completion")
+	}
+	if syncthingInitialSyncComplete(100, 0, 100, 1) {
+		t.Fatal("expected remote pending bytes to block completion")
+	}
+	if syncthingInitialSyncComplete(99.8, 0, 100, 0) {
+		t.Fatal("expected sub-threshold local completion percentage to block completion")
+	}
+}
+
+func TestSyncthingBootstrapInitialSyncComplete(t *testing.T) {
+	if !syncthingBootstrapInitialSyncComplete(100, 0) {
+		t.Fatal("expected bootstrap sync with zero local pending bytes to be complete")
+	}
+	if syncthingBootstrapInitialSyncComplete(99.8, 0) {
+		t.Fatal("expected bootstrap sync to require near-complete local percentage")
+	}
+	if syncthingBootstrapInitialSyncComplete(100, 1) {
+		t.Fatal("expected bootstrap sync to block on local pending bytes")
+	}
+}
+
+func TestFormatSyncthingMiB(t *testing.T) {
+	if got := formatSyncthingMiB(0); got != "0.0 MiB" {
+		t.Fatalf("unexpected zero format %q", got)
+	}
+	if got := formatSyncthingMiB(1572864); got != "1.5 MiB" {
+		t.Fatalf("unexpected MiB format %q", got)
+	}
+}
+
+func TestFormatSyncthingSpeed(t *testing.T) {
+	if got := formatSyncthingSpeed(0); got != "0.0 MiB/s" {
+		t.Fatalf("unexpected zero speed format %q", got)
+	}
+	if got := formatSyncthingSpeed(1572864); got != "1.5 MiB/s" {
+		t.Fatalf("unexpected speed format %q", got)
+	}
+}
+
+func TestSyncthingManagedFolderType(t *testing.T) {
+	cfg := map[string]any{
+		"folders": []any{
+			map[string]any{"id": "okdev-a", "type": "receiveonly"},
+			map[string]any{"id": "okdev-b", "type": "sendreceive"},
+		},
+	}
+	got, found, err := syncthingManagedFolderType(cfg, "okdev-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || got != "sendreceive" {
+		t.Fatalf("unexpected folder lookup found=%v type=%q", found, got)
+	}
+}
+
+func TestShouldResumeTwoPhaseBootstrap(t *testing.T) {
+	if !shouldResumeTwoPhaseBootstrap("", false) {
+		t.Fatal("expected missing managed folder to resume two-phase")
+	}
+	if !shouldResumeTwoPhaseBootstrap("receiveonly", true) {
+		t.Fatal("expected receiveonly folder to resume two-phase")
+	}
+	if shouldResumeTwoPhaseBootstrap("sendreceive", true) {
+		t.Fatal("expected sendreceive folder to skip two-phase resume")
+	}
+}
+
+func TestSyncthingPeerConnectionTotals(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rest/system/connections" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"connections":{"REMOTEID":{"inBytesTotal":2048,"outBytesTotal":4096}}}`))
+	}))
+	defer srv.Close()
+
+	stats, err := syncthingPeerConnectionTotals(context.Background(), srv.URL, "k", "REMOTEID")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.InBytesTotal != 2048 || stats.OutBytesTotal != 4096 {
+		t.Fatalf("unexpected stats %+v", stats)
+	}
+}
+
+func TestSyncthingRateEstimator(t *testing.T) {
+	var est syncthingRateEstimator
+	start := time.Unix(100, 0)
+	if _, ok := est.Estimate(start, 1024); ok {
+		t.Fatal("expected first sample to have no rate")
+	}
+	got, ok := est.Estimate(start.Add(2*time.Second), 3*1024*1024)
+	if !ok {
+		t.Fatal("expected rate after second sample")
+	}
+	if got <= 0 {
+		t.Fatalf("expected positive rate, got %d", got)
+	}
+}
+
+func TestFormatInitialSyncProgressDetail(t *testing.T) {
+	got := formatInitialSyncProgressDetail(syncthingInitialSyncProgress{
+		Mode:            "bi",
+		LocalNeedBytes:  10 * 1024 * 1024,
+		RemoteNeedBytes: 5 * 1024 * 1024,
+		UploadBps:       2 * 1024 * 1024,
+		DownloadBps:     512 * 1024,
+		HasUploadBps:    true,
+		HasDownloadBps:  true,
+	})
+	for _, want := range []string{"15.0 MiB remaining", "local->remote 10.0 MiB", "remote->local 5.0 MiB", "up 2.0 MiB/s", "down 0.5 MiB/s"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "eta") {
+		t.Fatalf("did not expect ETA in %q", got)
+	}
+}
+
+func TestFormatInitialSyncProgressDetailTwoPhase(t *testing.T) {
+	got := formatInitialSyncProgressDetail(syncthingInitialSyncProgress{
+		Mode:            "two-phase",
+		LocalNeedBytes:  10 * 1024 * 1024,
+		RemoteNeedBytes: 5 * 1024 * 1024,
+		UploadBps:       3 * 1024 * 1024,
+		HasUploadBps:    true,
+	})
+	for _, want := range []string{"10.0 MiB remaining to remote", "3.0 MiB/s"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "remote->local") {
+		t.Fatalf("did not expect remote->local detail in two-phase output: %q", got)
+	}
+	if strings.Contains(got, "eta") {
+		t.Fatalf("did not expect ETA in %q", got)
+	}
+}
+
 func TestBuildSTIgnoreContent(t *testing.T) {
 	content, ok := buildSTIgnoreContent([]string{" .git/ ", "", "node_modules/"})
 	if !ok {
@@ -247,6 +394,27 @@ func TestApplyManagedSyncthingFolderDefaults(t *testing.T) {
 	}
 	if got := folder["ignoreDelete"]; got != false {
 		t.Fatalf("expected ignoreDelete=false, got %#v", got)
+	}
+	if got := folder["filesystemType"]; got != "basic" {
+		t.Fatalf("expected filesystemType=basic, got %#v", got)
+	}
+	if got := folder["order"]; got != "random" {
+		t.Fatalf("expected order=random, got %#v", got)
+	}
+	if got := folder["scanProgressIntervalS"]; got != 1 {
+		t.Fatalf("expected scanProgressIntervalS=1, got %#v", got)
+	}
+	if got := folder["disableSparseFiles"]; got != false {
+		t.Fatalf("expected disableSparseFiles=false, got %#v", got)
+	}
+	if got := folder["disableTempIndexes"]; got != false {
+		t.Fatalf("expected disableTempIndexes=false, got %#v", got)
+	}
+	if got := folder["useLargeBlocks"]; got != false {
+		t.Fatalf("expected useLargeBlocks=false, got %#v", got)
+	}
+	if got := folder["copyRangeMethod"]; got != "all" {
+		t.Fatalf("expected copyRangeMethod=all, got %#v", got)
 	}
 }
 
@@ -542,8 +710,8 @@ func TestRunTwoPhaseInitialSyncWaitsForDeletionConvergence(t *testing.T) {
 
 	// Output should show non-zero needBytes during phase 1b.
 	out := buf.String()
-	if !strings.Contains(out, "deletion propagation: remote needBytes=512") {
-		t.Fatalf("expected phase 1b progress with needBytes=512, got: %s", out)
+	if !strings.Contains(out, "deletion propagation: 0.0 MiB remaining") {
+		t.Fatalf("expected simplified phase 1b progress output, got: %s", out)
 	}
 }
 
@@ -611,8 +779,8 @@ func TestRunTwoPhaseInitialSyncWaitsForPeerConnection(t *testing.T) {
 	if overrideCalls == 0 {
 		t.Fatal("expected override calls during startup")
 	}
-	if !strings.Contains(buf.String(), "peer connection: local=false remote=false") {
-		t.Fatalf("expected connection progress output, got: %s", buf.String())
+	if !strings.Contains(buf.String(), "waiting for peer connection") {
+		t.Fatalf("expected waiting-for-peer output, got: %s", buf.String())
 	}
 }
 
@@ -652,6 +820,43 @@ func TestApplyManagedSyncthingGlobalDefaults(t *testing.T) {
 	}
 	if got := options["natEnabled"]; got != false {
 		t.Fatalf("expected natEnabled=false, got %#v", got)
+	}
+	if got := options["reconnectionIntervalS"]; got != 1 {
+		t.Fatalf("expected reconnectionIntervalS=1, got %#v", got)
+	}
+	if got := options["progressUpdateIntervalS"]; got != 1 {
+		t.Fatalf("expected progressUpdateIntervalS=1, got %#v", got)
+	}
+	if got := options["setLowPriority"]; got != false {
+		t.Fatalf("expected setLowPriority=false, got %#v", got)
+	}
+	if got := options["keepTemporariesH"]; got != 24 {
+		t.Fatalf("expected keepTemporariesH=24, got %#v", got)
+	}
+	if got := options["tempIndexMinBlocks"]; got != 10 {
+		t.Fatalf("expected tempIndexMinBlocks=10, got %#v", got)
+	}
+}
+
+func TestApplyManagedSyncthingDeviceDefaults(t *testing.T) {
+	device := map[string]any{"deviceID": "REMOTE"}
+
+	applyManagedSyncthingDeviceDefaults(device)
+
+	if got := device["paused"]; got != false {
+		t.Fatalf("expected paused=false, got %#v", got)
+	}
+	if got := device["autoAcceptFolders"]; got != false {
+		t.Fatalf("expected autoAcceptFolders=false, got %#v", got)
+	}
+	if got := device["maxSendKbps"]; got != 0 {
+		t.Fatalf("expected maxSendKbps=0, got %#v", got)
+	}
+	if got := device["maxRecvKbps"]; got != 0 {
+		t.Fatalf("expected maxRecvKbps=0, got %#v", got)
+	}
+	if got := device["maxRequestKiB"]; got != 0 {
+		t.Fatalf("expected maxRequestKiB=0, got %#v", got)
 	}
 }
 
@@ -857,6 +1062,12 @@ func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	if got := asString(device["compression"]); got != "metadata" {
 		t.Fatalf("expected compression=metadata, got %q", got)
 	}
+	if got := device["autoAcceptFolders"]; got != false {
+		t.Fatalf("expected autoAcceptFolders=false, got %#v", got)
+	}
+	if got := device["maxRequestKiB"]; got != float64(0) {
+		t.Fatalf("expected maxRequestKiB=0, got %#v", got)
+	}
 
 	folders, err := syncthingObjectArray(cfg, "folders")
 	if err != nil {
@@ -890,6 +1101,21 @@ func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	if got := folder["ignoreDelete"]; got != false {
 		t.Fatalf("expected ignoreDelete=false, got %#v", got)
 	}
+	if got := folder["filesystemType"]; got != "basic" {
+		t.Fatalf("expected filesystemType=basic, got %#v", got)
+	}
+	if got := folder["scanProgressIntervalS"]; got != float64(1) {
+		t.Fatalf("expected scanProgressIntervalS=1, got %#v", got)
+	}
+	if got := folder["disableTempIndexes"]; got != false {
+		t.Fatalf("expected disableTempIndexes=false, got %#v", got)
+	}
+	if got := folder["useLargeBlocks"]; got != false {
+		t.Fatalf("expected useLargeBlocks=false, got %#v", got)
+	}
+	if got := folder["copyRangeMethod"]; got != "all" {
+		t.Fatalf("expected copyRangeMethod=all, got %#v", got)
+	}
 	options, err := syncthingObjectMap(cfg["options"], "options")
 	if err != nil {
 		t.Fatal(err)
@@ -914,6 +1140,15 @@ func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	}
 	if got := options["natEnabled"]; got != false {
 		t.Fatalf("unexpected natEnabled %#v", got)
+	}
+	if got := options["reconnectionIntervalS"]; got != float64(1) {
+		t.Fatalf("unexpected reconnectionIntervalS %#v", got)
+	}
+	if got := options["progressUpdateIntervalS"]; got != float64(1) {
+		t.Fatalf("unexpected progressUpdateIntervalS %#v", got)
+	}
+	if got := options["setLowPriority"]; got != false {
+		t.Fatalf("unexpected setLowPriority %#v", got)
 	}
 }
 

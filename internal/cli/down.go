@@ -75,6 +75,10 @@ func newDownCmd(opts *Options) *cobra.Command {
 			ui.stepDone("ownership", "ok")
 			ctx, cancel := defaultContext()
 			defer cancel()
+			exists, err := shouldReuseExistingWorkload(ctx, cc.kube, cc.namespace, runtime)
+			if err != nil {
+				return err
+			}
 			if dryRun {
 				payload := downOutput{
 					Session:   cc.sessionName,
@@ -88,15 +92,50 @@ func newDownCmd(opts *Options) *cobra.Command {
 				if deletePVC {
 					payload.Notes = append(payload.Notes, "--delete-pvc ignored: okdev no longer manages PVC lifecycle")
 				}
+				if !exists {
+					payload.Status = "already stopped"
+					payload.Notes = append(payload.Notes, "session workload already absent")
+				}
 				if opts.Output == "json" {
 					return outputJSON(cmd.OutOrStdout(), payload)
 				}
 				ui.section("Dry Run")
 				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: session=%s namespace=%s\n", cc.sessionName, cc.namespace)
-				fmt.Fprintf(cmd.OutOrStdout(), "- would delete %s/%s\n", runtime.Kind(), runtime.WorkloadName())
+				if exists {
+					fmt.Fprintf(cmd.OutOrStdout(), "- would delete %s/%s\n", runtime.Kind(), runtime.WorkloadName())
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "- %s/%s already absent\n", runtime.Kind(), runtime.WorkloadName())
+				}
 				if deletePVC {
 					fmt.Fprintln(cmd.OutOrStdout(), "- note: --delete-pvc is ignored (okdev no longer manages PVC lifecycle)")
 				}
+				return nil
+			}
+
+			if !exists {
+				payload := downOutput{
+					Session:   cc.sessionName,
+					Namespace: cc.namespace,
+					Kind:      runtime.Kind(),
+					Workload:  runtime.WorkloadName(),
+					DryRun:    false,
+					Deleted:   false,
+					Status:    "already stopped",
+					Notes:     []string{"session workload already absent"},
+					Cleanup:   map[string]any{},
+				}
+				if err := downCleanupLocal(ui, &payload, cc.sessionName); err != nil {
+					return err
+				}
+				if opts.Output == "json" {
+					return outputJSON(cmd.OutOrStdout(), payload)
+				}
+				ui.printWarnings()
+				ui.section("Ready")
+				fmt.Fprintf(cmd.OutOrStdout(), "session:   %s\n", cc.sessionName)
+				fmt.Fprintf(cmd.OutOrStdout(), "namespace: %s\n", cc.namespace)
+				fmt.Fprintln(cmd.OutOrStdout(), "status:    already stopped")
+				fmt.Fprintln(cmd.OutOrStdout(), "workspace: workload already absent; local session state cleaned")
 				return nil
 			}
 
@@ -146,58 +185,8 @@ func newDownCmd(opts *Options) *cobra.Command {
 			}
 			ui.stepDone("pvc", "not managed")
 			payload.Cleanup["pvc"] = "not managed"
-			alias := sshHostAlias(cc.sessionName)
-			ui.section("Cleanup")
-			if err := session.RequestShutdown(cc.sessionName); err != nil {
-				ui.warnf("failed to request shutdown for local clients: %v", err)
-				payload.Cleanup["localClients"] = "warning"
-			} else {
-				ui.stepDone("local clients", "shutdown requested")
-				payload.Cleanup["localClients"] = "shutdown requested"
-			}
-			if err := stopDetachedSyncthingSync(cc.sessionName); err != nil {
-				ui.warnf("failed to stop background sync: %v", err)
-				payload.Cleanup["sync"] = "warning"
-			} else {
-				ui.stepDone("sync", "stopped")
-				payload.Cleanup["sync"] = "stopped"
-			}
-			if err := stopLocalSyncthingForSession(cc.sessionName); err != nil {
-				ui.warnf("failed to stop local syncthing: %v", err)
-				payload.Cleanup["syncthing"] = "warning"
-			} else {
-				ui.stepDone("syncthing", "stopped")
-				payload.Cleanup["syncthing"] = "stopped"
-			}
-			if err := stopManagedSSHForward(alias); err != nil {
-				slog.Debug("failed to stop managed SSH forward", "alias", alias, "error", err)
-				payload.Cleanup["sshForward"] = "warning"
-			} else {
-				payload.Cleanup["sshForward"] = "stopped"
-			}
-			ui.stepDone("ssh forward", "stopped")
-			if err := removeSSHConfigEntry(alias); err != nil {
-				ui.warnf("failed to remove SSH config entry for %s: %v", alias, err)
-				payload.Cleanup["sshConfig"] = "warning"
-			} else {
-				ui.stepDone("ssh config", "cleaned")
-				payload.Cleanup["sshConfig"] = "cleaned"
-			}
-			if active, err := session.LoadActiveSession(); err == nil && active == cc.sessionName {
-				if clearErr := session.ClearActiveSession(); clearErr != nil {
-					ui.warnf("failed to clear active session: %v", clearErr)
-					payload.Cleanup["activeSession"] = "warning"
-				} else {
-					ui.stepDone("active session", "cleared")
-					payload.Cleanup["activeSession"] = "cleared"
-				}
-			}
-			if err := session.ClearTarget(cc.sessionName); err != nil {
-				ui.warnf("failed to clear target state: %v", err)
-				payload.Cleanup["target"] = "warning"
-			} else {
-				ui.stepDone("target", "cleared")
-				payload.Cleanup["target"] = "cleared"
+			if err := downCleanupLocal(ui, &payload, cc.sessionName); err != nil {
+				return err
 			}
 			if opts.Output == "json" {
 				return outputJSON(cmd.OutOrStdout(), payload)
@@ -254,4 +243,74 @@ func removeSSHConfigEntry(hostAlias string) error {
 		}
 		return updated + "\n"
 	})
+}
+
+func downCleanupLocal(ui *upUI, payload *downOutput, sessionName string) error {
+	if ui == nil || payload == nil {
+		return nil
+	}
+	if payload.Cleanup == nil {
+		payload.Cleanup = map[string]any{}
+	}
+	alias := sshHostAlias(sessionName)
+	ui.section("Cleanup")
+	if err := session.RequestShutdown(sessionName); err != nil {
+		ui.warnf("failed to request shutdown for local clients: %v", err)
+		payload.Cleanup["localClients"] = "warning"
+	} else {
+		ui.stepDone("local clients", "shutdown requested")
+		payload.Cleanup["localClients"] = "shutdown requested"
+	}
+	if err := stopDetachedSyncthingSync(sessionName); err != nil {
+		ui.warnf("failed to stop background sync: %v", err)
+		payload.Cleanup["sync"] = "warning"
+	} else {
+		ui.stepDone("sync", "stopped")
+		payload.Cleanup["sync"] = "stopped"
+	}
+	if err := stopLocalSyncthingForSession(sessionName); err != nil {
+		ui.warnf("failed to stop local syncthing: %v", err)
+		payload.Cleanup["syncthing"] = "warning"
+	} else {
+		ui.stepDone("syncthing", "stopped")
+		payload.Cleanup["syncthing"] = "stopped"
+	}
+	if err := stopManagedSSHForward(alias); err != nil {
+		slog.Debug("failed to stop managed SSH forward", "alias", alias, "error", err)
+		payload.Cleanup["sshForward"] = "warning"
+	} else {
+		payload.Cleanup["sshForward"] = "stopped"
+	}
+	ui.stepDone("ssh forward", "stopped")
+	if err := removeSSHConfigEntry(alias); err != nil {
+		ui.warnf("failed to remove SSH config entry for %s: %v", alias, err)
+		payload.Cleanup["sshConfig"] = "warning"
+	} else {
+		ui.stepDone("ssh config", "cleaned")
+		payload.Cleanup["sshConfig"] = "cleaned"
+	}
+	if active, err := session.LoadActiveSession(); err == nil && active == sessionName {
+		if clearErr := session.ClearActiveSession(); clearErr != nil {
+			ui.warnf("failed to clear active session: %v", clearErr)
+			payload.Cleanup["activeSession"] = "warning"
+		} else {
+			ui.stepDone("active session", "cleared")
+			payload.Cleanup["activeSession"] = "cleared"
+		}
+	}
+	if err := session.ClearTarget(sessionName); err != nil {
+		ui.warnf("failed to clear target state: %v", err)
+		payload.Cleanup["target"] = "warning"
+	} else {
+		ui.stepDone("target", "cleared")
+		payload.Cleanup["target"] = "cleared"
+	}
+	if err := saveSyncthingTargetSessionState(sessionName, syncthingSessionTargetState{}); err != nil {
+		ui.warnf("failed to clear syncthing sync state: %v", err)
+		payload.Cleanup["syncState"] = "warning"
+	} else {
+		ui.stepDone("sync state", "cleared")
+		payload.Cleanup["syncState"] = "cleared"
+	}
+	return nil
 }

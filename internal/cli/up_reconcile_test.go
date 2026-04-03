@@ -9,6 +9,7 @@ import (
 
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/workload"
+	corev1 "k8s.io/api/core/v1"
 )
 
 type fakeWorkloadExistenceChecker struct {
@@ -38,6 +39,26 @@ func (f *fakeWorkloadExistenceChecker) ListPods(_ context.Context, _ string, _ b
 	}
 	f.listCalls++
 	return f.podsSeq[idx], f.err
+}
+
+func (f *fakeWorkloadExistenceChecker) GetPodSummary(_ context.Context, _ string, name string) (*kube.PodSummary, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if len(f.podsSeq) == 0 {
+		return &kube.PodSummary{Name: name}, nil
+	}
+	idx := f.listCalls
+	if idx >= len(f.podsSeq) {
+		idx = len(f.podsSeq) - 1
+	}
+	for _, pod := range f.podsSeq[idx] {
+		if pod.Name == name {
+			p := pod
+			return &p, nil
+		}
+	}
+	return &kube.PodSummary{Name: name}, nil
 }
 
 type fakeRefRuntime struct {
@@ -98,7 +119,12 @@ func TestShouldReuseExistingWorkloadForExistingControllerBackedRuntime(t *testin
 }
 
 func TestShouldReuseExistingWorkloadReusesExistingPodAndSkipsForReconcile(t *testing.T) {
-	k := &fakeWorkloadExistenceChecker{exists: true}
+	k := &fakeWorkloadExistenceChecker{
+		exists: true,
+		podsSeq: [][]kube.PodSummary{{
+			{Name: "okdev-sess", Phase: string(corev1.PodRunning)},
+		}},
+	}
 
 	reuse, err := shouldReuseExistingWorkload(context.Background(), k, "default", &fakeRefRuntime{kind: workload.TypePod, apiVersion: "v1", name: "okdev-sess"})
 	if err != nil {
@@ -117,6 +143,40 @@ func TestShouldReuseExistingWorkloadReusesExistingPodAndSkipsForReconcile(t *tes
 	}
 	if !reuse {
 		t.Fatal("expected existing controller-backed workload to be detected")
+	}
+}
+
+func TestShouldReuseExistingWorkloadSkipsTerminatingPod(t *testing.T) {
+	k := &fakeWorkloadExistenceChecker{
+		exists: true,
+		podsSeq: [][]kube.PodSummary{{
+			{Name: "okdev-sess", Phase: string(corev1.PodRunning), Deleting: true},
+		}},
+	}
+
+	reuse, err := shouldReuseExistingWorkload(context.Background(), k, "default", &fakeRefRuntime{kind: workload.TypePod, apiVersion: "v1", name: "okdev-sess"})
+	if err != nil {
+		t.Fatalf("pod shouldReuseExistingWorkload: %v", err)
+	}
+	if reuse {
+		t.Fatal("expected terminating pod runtime to skip reuse")
+	}
+}
+
+func TestShouldReuseExistingWorkloadSkipsTerminalPod(t *testing.T) {
+	k := &fakeWorkloadExistenceChecker{
+		exists: true,
+		podsSeq: [][]kube.PodSummary{{
+			{Name: "okdev-sess", Phase: string(corev1.PodSucceeded)},
+		}},
+	}
+
+	reuse, err := shouldReuseExistingWorkload(context.Background(), k, "default", &fakeRefRuntime{kind: workload.TypePod, apiVersion: "v1", name: "okdev-sess"})
+	if err != nil {
+		t.Fatalf("pod shouldReuseExistingWorkload: %v", err)
+	}
+	if reuse {
+		t.Fatal("expected terminal pod runtime to skip reuse")
 	}
 }
 

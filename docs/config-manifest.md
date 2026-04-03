@@ -225,7 +225,7 @@ spec:
 
 **Validation:** `engine` must be `syncthing`; each `paths[]` entry must be `local:remote`.
 
-Local ignore rules come from the synced workspace's `.stignore`. `okdev init` writes a starter `.stignore` for built-in templates, and `okdev up` creates one with default patterns if the local sync root does not already have one. Editing `.stignore` takes effect automatically as Syncthing notices the change, but it does not remove files that were already synced to the remote workspace.
+Local ignore rules come from the synced workspace's `.stignore`. `okdev init` writes a starter `.stignore` for built-in templates, and `okdev up` creates one with default patterns if the local sync root does not already have one. Editing `.stignore` takes effect automatically as Syncthing notices the change, but it does not remove files that were already synced to the remote workspace. For faster initial syncs, consider ignoring large generated build outputs or local test artifacts such as `debug/`, `release/`, caches, and dataset directories when they do not need to exist remotely.
 
 The `syncthing.version` field controls the local binary on your machine. The Syncthing binary inside the sidecar comes from `spec.sidecar.image`.
 
@@ -315,7 +315,8 @@ spec:
 setup (e.g. editable Python installs). It assumes the synced workspace is
 shared across pods, typically via a common PVC mounted at the workspace path.
 `okdev up` blocks until the initial syncthing sync finishes for that shared
-workspace, then executes the command on every running session pod in parallel.
+workspace, only treating it as complete once both local and remote pending-byte
+counters reach zero, then executes the command on every running session pod in parallel.
 Each pod is tracked via the `okdev.io/post-sync-done` annotation to prevent
 re-execution. Falls back to `.okdev/post-sync.sh` if no explicit command is
 configured.

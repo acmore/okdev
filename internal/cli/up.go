@@ -575,6 +575,8 @@ func upSetup(state *upState) error {
 	sshSummary := "disabled"
 	syncSummary := "disabled"
 	syncModeSymbol := ""
+	syncStartMode := ""
+	bootstrapResume := false
 
 	wg.Add(1)
 	go func() {
@@ -585,7 +587,7 @@ func upSetup(state *upState) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		syncSummary, syncModeSymbol, syncErr = upSetupSync(state, target)
+		syncSummary, syncModeSymbol, syncStartMode, bootstrapResume, syncErr = upSetupSync(state, target)
 	}()
 
 	wg.Wait()
@@ -597,18 +599,24 @@ func upSetup(state *upState) error {
 		return syncErr
 	}
 
-	postSyncCmd := resolvePostSyncCommand(state.command.cfg, state.command.cfgPath)
-	if postSyncCmd != "" && len(state.syncPairs) > 0 {
-		state.ui.stepRun("postSync", "waiting for initial sync")
+	if len(state.syncPairs) > 0 {
+		state.ui.stepRun("initial sync", "waiting for syncthing convergence")
 		target, err = refreshTargetRef(state.ctx, state.opts, state.command.cfg, state.command.namespace, state.command.sessionName, state.command.kube, target)
 		if err != nil {
-			return fmt.Errorf("refresh target before postSync: %w", err)
+			return fmt.Errorf("refresh target before initial sync wait: %w", err)
 		}
-		if err := waitForInitialSync(state.ctx, state.opts, state.command.kube, state.command.namespace, target.PodName, state.command.sessionName, initialSyncTimeout, func(needBytes int64) {
-			state.ui.stepRun("postSync", fmt.Sprintf("syncing (%d bytes remaining)", needBytes))
+		if err := waitForInitialSync(state.ctx, state.opts, state.command.kube, state.command.namespace, target.PodName, state.command.sessionName, syncStartMode, bootstrapResume, initialSyncTimeout, func(status string) {
+			state.ui.stepRun("initial sync", status)
+		}, func(progress syncthingInitialSyncProgress) {
+			state.ui.stepRun("initial sync", formatInitialSyncProgressDetail(progress))
 		}); err != nil {
 			return fmt.Errorf("wait for initial sync: %w", err)
 		}
+		state.ui.stepDone("initial sync", "complete")
+	}
+
+	postSyncCmd := resolvePostSyncCommand(state.command.cfg, state.command.cfgPath)
+	if postSyncCmd != "" && len(state.syncPairs) > 0 {
 		state.ui.stepRun("postSync", "running on all pods with shared workspace")
 		summary, err := runPostSyncOnAllPods(state.ctx, state.command.kube, state.command.namespace, state.labels, target.Container, postSyncCmd, state.ui.warnWriter())
 		if err != nil {
@@ -826,16 +834,18 @@ func shouldRetrySetupTargetError(err error) bool {
 		strings.Contains(msg, "not found")
 }
 
-func upSetupSync(state *upState, target workload.TargetRef) (string, string, error) {
+func upSetupSync(state *upState, target workload.TargetRef) (string, string, string, bool, error) {
 	summary := "disabled"
 	modeSym := ""
+	startMode := ""
+	bootstrapResume := false
 	if state.command.cfg.Spec.Sync.Engine != "" && state.command.cfg.Spec.Sync.Engine != "syncthing" {
-		return summary, modeSym, nil
+		return summary, modeSym, startMode, bootstrapResume, nil
 	}
 	state.ui.stepRun("sync", "reconciling state")
 	targetReset := false
 	if reset, err := ensureSyncthingTargetSessionState(state.ctx, state.command.kube, state.command.namespace, state.command.sessionName, target.PodName); err != nil {
-		return "", "", fmt.Errorf("reconcile local syncthing session state: %w", err)
+		return "", "", "", false, fmt.Errorf("reconcile local syncthing session state: %w", err)
 	} else if reset {
 		targetReset = true
 		state.ui.stepDone("sync state", "reset after target pod recreation")
@@ -845,12 +855,12 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, err
 	if len(state.syncPairs) == 1 {
 		localPath, err := filepath.Abs(state.syncPairs[0].Local)
 		if err != nil {
-			return "", "", fmt.Errorf("resolve sync path: %w", err)
+			return "", "", "", false, fmt.Errorf("resolve sync path: %w", err)
 		}
 		configHash = syncthingSessionConfigHash(state.command.cfg, localPath, state.syncPairs[0].Remote)
 		stored, err := loadSyncthingTargetSessionState(state.command.sessionName)
 		if err != nil {
-			return "", "", fmt.Errorf("load syncthing config state: %w", err)
+			return "", "", "", false, fmt.Errorf("load syncthing config state: %w", err)
 		}
 		hasConfigState = strings.TrimSpace(stored.ConfigHash) != ""
 	}
@@ -858,29 +868,32 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, err
 	if configHash != "" {
 		changed, err := syncthingConfigChanged(state.command.sessionName, configHash)
 		if err != nil {
-			return "", "", fmt.Errorf("compare syncthing config state: %w", err)
+			return "", "", "", false, fmt.Errorf("compare syncthing config state: %w", err)
 		}
 		configChanged = changed
 	}
 	active := syncthingSessionActive(state.command.sessionName)
 	restartRequired := state.flags.resetWorkspace || configChanged || !active
-	startMode := syncStartMode(state.flags.resetWorkspace, targetReset, hasConfigState, configChanged, active)
+	startMode = syncStartMode(state.flags.resetWorkspace, targetReset, hasConfigState, configChanged, active)
+	// Signal waitForInitialSync to probe the remote folder type for an
+	// incomplete bootstrap, reusing the port-forward it already opens.
+	bootstrapResume = len(state.syncPairs) == 1 && hasConfigState && !state.flags.resetWorkspace && !targetReset
 	if restartRequired {
 		if err := refreshSyncthingSessionProcesses(state.command.sessionName); err != nil {
-			return "", "", fmt.Errorf("refresh local syncthing session state: %w", err)
+			return "", "", "", false, fmt.Errorf("refresh local syncthing session state: %w", err)
 		}
 	}
 
 	if state.flags.resetWorkspace {
 		if len(state.syncPairs) != 1 {
-			return "", "", fmt.Errorf("--reset-workspace requires exactly one sync path mapping, got %d", len(state.syncPairs))
+			return "", "", "", false, fmt.Errorf("--reset-workspace requires exactly one sync path mapping, got %d", len(state.syncPairs))
 		}
 		state.ui.stepRun("sync", "resetting remote workspace")
 		if err := resetSyncthingSessionState(state.command.sessionName); err != nil {
-			return "", "", fmt.Errorf("reset sync state: %w", err)
+			return "", "", "", false, fmt.Errorf("reset sync state: %w", err)
 		}
 		if err := resetRemoteWorkspace(state.ctx, state.command.kube, state.command.namespace, target.PodName, state.syncPairs[0].Remote, state.command.cfg.Spec.Sync.PreservePaths); err != nil {
-			return "", "", fmt.Errorf("clear remote workspace: %w", err)
+			return "", "", "", false, fmt.Errorf("clear remote workspace: %w", err)
 		}
 		state.ui.stepDone("sync", "remote workspace cleared")
 	}
@@ -890,13 +903,13 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, err
 		syncPathSummary := syncPairsSummary(state.syncPairs, modeSym)
 		summary = "already active (" + modeSym + ")"
 		state.ui.stepDone("sync", fmt.Sprintf("already active (%s), %s", modeSym, syncPathSummary))
-		return summary, modeSym, nil
+		return summary, modeSym, startMode, bootstrapResume, nil
 	}
 
 	state.ui.stepRun("sync", "starting")
 	logPath, started, err := startDetachedSyncthingSync(state.opts, startMode, state.command.sessionName, state.command.namespace, state.command.cfgPath)
 	if err != nil {
-		return "", "", fmt.Errorf("start syncthing background sync: %w", err)
+		return "", "", "", false, fmt.Errorf("start syncthing background sync: %w", err)
 	}
 	modeSym = modeSymbol(startMode)
 	syncPathSummary := syncPairsSummary(state.syncPairs, modeSym)
@@ -907,7 +920,7 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, err
 		summary = "already active (" + modeSym + ")"
 		state.ui.stepDone("sync", fmt.Sprintf("already active (%s), %s, logs: %s", modeSym, syncPathSummary, logPath))
 	}
-	return summary, modeSym, nil
+	return summary, modeSym, startMode, bootstrapResume, nil
 }
 
 func syncthingSessionActive(sessionName string) bool {
@@ -920,6 +933,7 @@ func syncthingSessionActive(sessionName string) bool {
 
 type workloadExistenceChecker interface {
 	ResourceExists(context.Context, string, string, string, string) (bool, error)
+	GetPodSummary(context.Context, string, string) (*kube.PodSummary, error)
 }
 
 func shouldReuseExistingWorkload(ctx context.Context, k workloadExistenceChecker, namespace string, runtime workload.Runtime) (bool, error) {
@@ -934,6 +948,22 @@ func shouldReuseExistingWorkload(ctx context.Context, k workloadExistenceChecker
 	exists, err := k.ResourceExists(ctx, namespace, apiVersion, kind, name)
 	if err != nil {
 		return false, fmt.Errorf("check %s/%s existence: %w", kind, name, err)
+	}
+	if !exists {
+		return false, nil
+	}
+	if kind == workload.TypePod {
+		summary, err := k.GetPodSummary(ctx, namespace, name)
+		if err != nil {
+			return false, fmt.Errorf("get pod/%s status: %w", name, err)
+		}
+		if summary.Deleting {
+			return false, nil
+		}
+		switch corev1.PodPhase(summary.Phase) {
+		case corev1.PodSucceeded, corev1.PodFailed:
+			return false, nil
+		}
 	}
 	return exists, nil
 }

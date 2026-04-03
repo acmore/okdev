@@ -36,6 +36,7 @@ This file is the canonical repository guidance for coding agents working in `okd
 - `edge` images must always be built and pushed explicitly as `linux/amd64`.
 - If the user asks to rebuild `edge`, treat that as build-and-push by default unless they explicitly say local-only.
 - Do not stop at a successful local `edge` rebuild; push the image in the same task unless the user explicitly asked for a local-only build.
+- When a task changes the CLI code and a local install path exists, rebuild the CLI binary and update the local install before finishing unless the user explicitly asked for a repo-local build only.
 - If the user asks to rebuild the CLI binary and a local install path exists, update the local install in the same task unless the user explicitly asked for a repo-local build only.
 - Do not rely on the local Docker default platform when publishing `edge`.
 - When asked to update a local install to a release, prefer the published release asset over a workspace build.

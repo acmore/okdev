@@ -680,12 +680,16 @@ func runSyncthingProgressReporter(ctx context.Context, out io.Writer, localBase,
 			slog.Debug("syncthing progress read failed", "side", "remote", "error", err)
 			return false
 		}
-		fmt.Fprintf(out, "Syncthing progress: up %.1f%% (need=%dB), down %.1f%% (need=%dB)\n", upPct, upNeed, downPct, downNeed)
+		fmt.Fprintf(out, "Syncthing progress: %s\n", formatInitialSyncProgressDetail(syncthingInitialSyncProgress{
+			Mode:            "bi",
+			LocalNeedBytes:  upNeed,
+			RemoteNeedBytes: downNeed,
+		}))
 		if !warnedLargeSync && maxInt64(upNeed, downNeed) >= largeSyncNeedWarnBytes {
 			warnLargeSyncEntries(out, localPath, maxInt64(upNeed, downNeed))
 			warnedLargeSync = true
 		}
-		if upNeed == 0 && downNeed == 0 && upPct >= 99.9 && downPct >= 99.9 {
+		if syncthingInitialSyncComplete(upPct, upNeed, downPct, downNeed) {
 			return true
 		}
 		return false
@@ -726,6 +730,30 @@ func syncthingCompletion(ctx context.Context, base, key, folderID, deviceID stri
 		return 0, 0, err
 	}
 	return payload.Completion, payload.NeedBytes, nil
+}
+
+type syncthingInitialSyncProgress struct {
+	Mode string
+	// LocalNeedBytes is the number of bytes the remote device still needs,
+	// as reported by querying the local Syncthing completion endpoint for
+	// the remote device ID.  This represents local→remote (upload) traffic.
+	LocalNeedBytes int64
+	// RemoteNeedBytes is the number of bytes the local device still needs,
+	// as reported by querying the remote Syncthing completion endpoint for
+	// the local device ID.  This represents remote→local (download) traffic.
+	RemoteNeedBytes int64
+	UploadBps       int64
+	DownloadBps     int64
+	HasUploadBps    bool
+	HasDownloadBps  bool
+}
+
+func syncthingInitialSyncComplete(localPct float64, localNeedBytes int64, remotePct float64, remoteNeedBytes int64) bool {
+	return localNeedBytes == 0 && remoteNeedBytes == 0 && localPct >= 99.9 && remotePct >= 99.9
+}
+
+func syncthingBootstrapInitialSyncComplete(localPct float64, localNeedBytes int64) bool {
+	return localNeedBytes == 0 && localPct >= 99.9
 }
 
 // syncthingFolderNeedBytes queries the remote syncthing for the number of
@@ -772,43 +800,183 @@ func syncthingPeerConnected(ctx context.Context, base, key, peerID string) (bool
 	return false, nil
 }
 
-// waitForInitialSync blocks until the remote syncthing reports that the
-// configured folder has completed its initial sync (needBytes == 0).
-// It opens a temporary port-forward to the target pod's syncthing sidecar
-// to poll the REST API.
+type syncthingConnectionStats struct {
+	InBytesTotal  int64 `json:"inBytesTotal"`
+	OutBytesTotal int64 `json:"outBytesTotal"`
+}
+
+func syncthingPeerConnectionTotals(ctx context.Context, base, key, peerID string) (syncthingConnectionStats, error) {
+	body, err := syncthingAPIRequestWithContext(ctx, http.MethodGet, base, key, "/rest/system/connections", nil, "")
+	if err != nil {
+		return syncthingConnectionStats{}, err
+	}
+	var conns struct {
+		Connections map[string]syncthingConnectionStats `json:"connections"`
+	}
+	if err := json.Unmarshal(body, &conns); err != nil {
+		return syncthingConnectionStats{}, err
+	}
+	stats, ok := conns.Connections[peerID]
+	if !ok {
+		return syncthingConnectionStats{}, fmt.Errorf("peer %s not found in syncthing connections", peerID)
+	}
+	return stats, nil
+}
+
+type syncthingRateEstimator struct {
+	lastAt      time.Time
+	lastBytes   int64
+	initialized bool
+}
+
+func (e *syncthingRateEstimator) Estimate(now time.Time, totalBytes int64) (int64, bool) {
+	if !e.initialized {
+		e.lastAt = now
+		e.lastBytes = totalBytes
+		e.initialized = true
+		return 0, false
+	}
+	elapsed := now.Sub(e.lastAt)
+	delta := totalBytes - e.lastBytes
+	e.lastAt = now
+	e.lastBytes = totalBytes
+	if elapsed <= 0 || delta < 0 {
+		return 0, false
+	}
+	return int64(float64(delta) / elapsed.Seconds()), true
+}
+
+// waitForInitialSync blocks until both local→remote and remote→local pending
+// bytes reach zero for the managed folder. It opens a temporary port-forward to
+// the target pod's Syncthing sidecar and reads the local Syncthing endpoint
+// from session state so `okdev up` only continues once initial sync has fully
+// converged in both directions.
+//
+// onStatus is called during the setup phase (port-forward, API readiness, etc.)
+// so the caller can surface intermediate progress before polling begins.
+//
+// When bootstrapResume is true the function inspects the remote folder config
+// (reusing the port-forward it already opened) and auto-upgrades the effective
+// mode to "two-phase" if a previous bootstrap did not finish.  This avoids
+// opening a second port-forward just for the probe.
 func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
-}, namespace, pod, sessionName string, timeout time.Duration, onProgress func(needBytes int64)) error {
+}, namespace, pod, sessionName, mode string, bootstrapResume bool, timeout time.Duration, onStatus func(string), onProgress func(syncthingInitialSyncProgress)) error {
 	folderID := "okdev-" + sessionName
+	localHome, err := localSyncthingStatusHome(sessionName)
+	if err != nil {
+		return fmt.Errorf("resolve local syncthing home: %w", err)
+	}
+	localBase, localKey, err := readLocalSyncthingEndpoint(localHome)
+	if err != nil {
+		return fmt.Errorf("read local syncthing endpoint: %w", err)
+	}
 
+	if onStatus != nil {
+		onStatus("reading remote syncthing credentials")
+	}
 	remoteKey, err := readRemoteSyncthingAPIKey(ctx, k, namespace, pod)
 	if err != nil {
 		return fmt.Errorf("read remote syncthing API key: %w", err)
 	}
 
+	if onStatus != nil {
+		onStatus("connecting to syncthing sidecar")
+	}
 	cancelPF, remoteBase, _, err := startSyncthingPortForward(opts, namespace, pod)
 	if err != nil {
 		return fmt.Errorf("port-forward to syncthing sidecar: %w", err)
 	}
 	defer cancelPF()
 
+	if onStatus != nil {
+		onStatus("waiting for syncthing API")
+	}
 	if err := waitSyncthingAPI(ctx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
 		return fmt.Errorf("remote syncthing not ready: %w", err)
+	}
+	if err := waitSyncthingAPI(ctx, localBase, localKey, syncthingAPIReadyTimeout); err != nil {
+		return fmt.Errorf("local syncthing not ready: %w", err)
+	}
+
+	// If the caller indicates a prior config state exists, reuse the
+	// already-open port-forward to probe whether the previous bootstrap
+	// finished.  This avoids a second port-forward round-trip.
+	if bootstrapResume && mode != "two-phase" {
+		if onStatus != nil {
+			onStatus("checking bootstrap state")
+		}
+		cfg, cfgErr := syncthingGetConfig(ctx, remoteBase, remoteKey)
+		if cfgErr != nil {
+			slog.Debug("failed to read remote syncthing config for bootstrap probe", "error", cfgErr)
+		} else {
+			folderType, found, ftErr := syncthingManagedFolderType(cfg, folderID)
+			if ftErr != nil {
+				slog.Debug("failed to inspect remote syncthing folder for bootstrap probe", "error", ftErr)
+			} else if shouldResumeTwoPhaseBootstrap(folderType, found) {
+				mode = "two-phase"
+			}
+		}
+	}
+
+	if onStatus != nil {
+		onStatus("reading device identities")
+	}
+	localID, err := syncthingDeviceID(ctx, localBase, localKey)
+	if err != nil {
+		return fmt.Errorf("read local syncthing device id: %w", err)
+	}
+	remoteID, err := syncthingDeviceID(ctx, remoteBase, remoteKey)
+	if err != nil {
+		return fmt.Errorf("read remote syncthing device id: %w", err)
 	}
 
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(syncthingProgressInterval)
 	defer ticker.Stop()
+	uploadRate := &syncthingRateEstimator{}
+	downloadRate := &syncthingRateEstimator{}
+
+	// Fire the first poll immediately so the user sees progress without
+	// waiting for the initial tick interval (5 s).
 
 	for {
-		need, err := syncthingFolderNeedBytes(ctx, remoteBase, remoteKey, folderID)
-		if err != nil {
-			slog.Debug("syncthing initial sync poll failed", "error", err)
-		} else {
-			if onProgress != nil {
-				onProgress(need)
+		localPct, localNeed, localErr := syncthingCompletion(ctx, localBase, localKey, folderID, remoteID)
+		remotePct, remoteNeed, remoteErr := syncthingCompletion(ctx, remoteBase, remoteKey, folderID, localID)
+		connStats, connErr := syncthingPeerConnectionTotals(ctx, localBase, localKey, remoteID)
+		if localErr != nil {
+			slog.Debug("syncthing initial sync local poll failed", "error", localErr)
+		}
+		if remoteErr != nil {
+			slog.Debug("syncthing initial sync remote poll failed", "error", remoteErr)
+		}
+		if connErr != nil {
+			slog.Debug("syncthing initial sync connection stats poll failed", "error", connErr)
+		}
+		if localErr == nil && remoteErr == nil {
+			var uploadBps, downloadBps int64
+			var hasUploadBps, hasDownloadBps bool
+			if connErr == nil {
+				now := time.Now()
+				uploadBps, hasUploadBps = uploadRate.Estimate(now, connStats.OutBytesTotal)
+				downloadBps, hasDownloadBps = downloadRate.Estimate(now, connStats.InBytesTotal)
 			}
-			if need == 0 {
+			if onProgress != nil {
+				onProgress(syncthingInitialSyncProgress{
+					Mode:            mode,
+					LocalNeedBytes:  localNeed,
+					RemoteNeedBytes: remoteNeed,
+					UploadBps:       uploadBps,
+					DownloadBps:     downloadBps,
+					HasUploadBps:    hasUploadBps,
+					HasDownloadBps:  hasDownloadBps,
+				})
+			}
+			if mode == "two-phase" {
+				if syncthingBootstrapInitialSyncComplete(localPct, localNeed) {
+					return nil
+				}
+			} else if syncthingInitialSyncComplete(localPct, localNeed, remotePct, remoteNeed) {
 				return nil
 			}
 		}
@@ -821,6 +989,58 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 		case <-ticker.C:
 		}
 	}
+}
+
+func formatSyncthingMiB(bytes int64) string {
+	if bytes <= 0 {
+		return "0.0 MiB"
+	}
+	return fmt.Sprintf("%.1f MiB", float64(bytes)/(1024*1024))
+}
+
+func formatSyncthingSpeed(bps int64) string {
+	if bps <= 0 {
+		return "0.0 MiB/s"
+	}
+	return fmt.Sprintf("%.1f MiB/s", float64(bps)/(1024*1024))
+}
+
+func formatInitialSyncProgressDetail(progress syncthingInitialSyncProgress) string {
+	if progress.Mode == "two-phase" {
+		speed := ""
+		if progress.HasUploadBps {
+			speed = fmt.Sprintf(" at %s", formatSyncthingSpeed(progress.UploadBps))
+		}
+		return fmt.Sprintf(
+			"%s remaining to remote%s",
+			formatSyncthingMiB(progress.LocalNeedBytes),
+			speed,
+		)
+	}
+	totalNeedBytes := progress.LocalNeedBytes + progress.RemoteNeedBytes
+	speed := ""
+	if progress.HasUploadBps || progress.HasDownloadBps {
+		up := "measuring"
+		down := "measuring"
+		if progress.HasUploadBps {
+			up = formatSyncthingSpeed(progress.UploadBps)
+		}
+		if progress.HasDownloadBps {
+			down = formatSyncthingSpeed(progress.DownloadBps)
+		}
+		speed = fmt.Sprintf(", up %s, down %s", up, down)
+	}
+	return fmt.Sprintf(
+		"%s remaining (local->remote %s, remote->local %s)%s",
+		formatSyncthingMiB(totalNeedBytes),
+		formatSyncthingMiB(progress.LocalNeedBytes),
+		formatSyncthingMiB(progress.RemoteNeedBytes),
+		speed,
+	)
+}
+
+func formatTwoPhaseNeedProgress(label string, needBytes int64) string {
+	return fmt.Sprintf("%s: %s remaining", label, formatSyncthingMiB(needBytes))
 }
 
 // syncthingSyncConfig bundles the user-configurable knobs passed through to
@@ -856,7 +1076,6 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 	deadline := time.Now().Add(initialSyncTimeout)
 	ticker := time.NewTicker(syncthingProgressInterval)
 	defer ticker.Stop()
-
 	for {
 		// Force local state onto remote.
 		if err := syncthingOverrideFolder(ctx, localBase, localKey, folderID); err != nil {
@@ -867,7 +1086,7 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 		if err != nil {
 			slog.Debug("syncthing initial sync poll failed", "error", err)
 		} else {
-			fmt.Fprintf(out, "  initial sync: remote needBytes=%d\n", need)
+			fmt.Fprintf(out, "  %s\n", formatTwoPhaseNeedProgress("initial sync", need))
 			if need == 0 {
 				localConnected, localErr := syncthingPeerConnected(ctx, localBase, localKey, remoteID)
 				remoteConnected, remoteErr := syncthingPeerConnected(ctx, remoteBase, remoteKey, localID)
@@ -877,10 +1096,10 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 				if remoteErr != nil {
 					slog.Debug("syncthing remote connection poll failed", "error", remoteErr)
 				}
-				fmt.Fprintf(out, "  peer connection: local=%t remote=%t\n", localConnected, remoteConnected)
 				if localConnected && remoteConnected {
 					break
 				}
+				fmt.Fprintln(out, "  waiting for peer connection …")
 			}
 		}
 		if time.Now().After(deadline) {
@@ -909,7 +1128,7 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 		if err != nil {
 			slog.Debug("syncthing phase 1b poll failed", "error", err)
 		} else {
-			fmt.Fprintf(out, "  deletion propagation: remote needBytes=%d\n", need)
+			fmt.Fprintf(out, "  %s\n", formatTwoPhaseNeedProgress("deletion propagation", need))
 			if need == 0 {
 				break
 			}
@@ -1045,18 +1264,21 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 		if asString(m["deviceID"]) == peerID {
 			m["addresses"] = addresses
 			m["compression"] = compressionMode
+			applyManagedSyncthingDeviceDefaults(m)
 			devices[i] = m
 			foundDevice = true
 			break
 		}
 	}
 	if !foundDevice {
-		devices = append(devices, map[string]any{
+		device := map[string]any{
 			"deviceID":    peerID,
 			"name":        "okdev-peer",
 			"addresses":   addresses,
 			"compression": compressionMode,
-		})
+		}
+		applyManagedSyncthingDeviceDefaults(device)
+		devices = append(devices, device)
 	}
 	cfg["devices"] = devices
 
@@ -1124,11 +1346,22 @@ func applyManagedSyncthingFolderDefaults(folder map[string]any, rescanIntervalSe
 	if delay <= 0 {
 		delay = syncthingWatcherDelayS
 	}
+	folder["filesystemType"] = "basic"
 	folder["fsWatcherEnabled"] = true
 	folder["fsWatcherDelayS"] = delay
 	folder["rescanIntervalS"] = rescanIntervalSeconds
 	folder["maxConflicts"] = 0
 	folder["ignoreDelete"] = ignoreDelete
+	folder["order"] = "random"
+	folder["scanProgressIntervalS"] = 1
+	folder["pullerPauseS"] = 0
+	folder["disableSparseFiles"] = false
+	folder["disableTempIndexes"] = false
+	folder["paused"] = false
+	folder["weakHashThresholdPct"] = 25
+	folder["markerName"] = "."
+	folder["useLargeBlocks"] = false
+	folder["copyRangeMethod"] = "all"
 }
 
 func applyManagedSyncthingGlobalDefaults(cfg map[string]any, relaysEnabled bool) {
@@ -1143,7 +1376,28 @@ func applyManagedSyncthingGlobalDefaults(cfg map[string]any, relaysEnabled bool)
 	options["globalAnnounceEnabled"] = false
 	options["localAnnounceEnabled"] = false
 	options["natEnabled"] = false
+	options["reconnectionIntervalS"] = 1
+	options["startBrowser"] = false
+	options["restartOnWakeup"] = true
+	options["keepTemporariesH"] = 24
+	options["cacheIgnoredFiles"] = false
+	options["progressUpdateIntervalS"] = 1
+	options["limitBandwidthInLan"] = false
+	options["releasesURL"] = ""
+	options["overwriteRemoteDeviceNamesOnConnect"] = false
+	options["tempIndexMinBlocks"] = 10
+	options["trafficClass"] = 0
+	options["setLowPriority"] = false
+	options["crashReportingEnabled"] = false
 	cfg["options"] = options
+}
+
+func applyManagedSyncthingDeviceDefaults(device map[string]any) {
+	device["paused"] = false
+	device["autoAcceptFolders"] = false
+	device["maxSendKbps"] = 0
+	device["maxRecvKbps"] = 0
+	device["maxRequestKiB"] = 0
 }
 
 func syncthingGetConfig(ctx context.Context, base, key string) (map[string]any, error) {
@@ -1156,6 +1410,69 @@ func syncthingGetConfig(ctx context.Context, base, key string) (map[string]any, 
 		return nil, err
 	}
 	return cfg, nil
+}
+
+func syncthingManagedFolderType(cfg map[string]any, folderID string) (string, bool, error) {
+	folders, err := syncthingObjectArray(cfg, "folders")
+	if err != nil {
+		return "", false, err
+	}
+	for _, f := range folders {
+		fm, err := syncthingObjectMap(f, "folder entry")
+		if err != nil {
+			return "", false, err
+		}
+		if asString(fm["id"]) == folderID {
+			return asString(fm["type"]), true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// shouldResumeTwoPhaseBootstrap returns true when the remote folder config
+// indicates that a previous two-phase bootstrap did not finish.  A missing
+// folder or a folder still set to a unidirectional type (sendonly/receiveonly)
+// means phase 2 (sendreceive) was never reached.
+//
+// Callers must gate invocation on hasConfigState so that a brand-new session
+// (where the folder simply hasn't been created yet) does not falsely trigger
+// a two-phase resume.
+func shouldResumeTwoPhaseBootstrap(folderType string, folderFound bool) bool {
+	if !folderFound {
+		return true
+	}
+	return strings.TrimSpace(folderType) != "sendreceive"
+}
+
+// remoteSyncthingBootstrapIncomplete checks whether a previous two-phase
+// bootstrap did not complete by inspecting the remote folder type.  It opens
+// its own port-forward; prefer passing bootstrapResume=true to
+// waitForInitialSync instead to share the port-forward.
+func remoteSyncthingBootstrapIncomplete(ctx context.Context, opts *Options, k interface {
+	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+}, namespace, pod, sessionName string) (bool, error) {
+	folderID := "okdev-" + sessionName
+	remoteKey, err := readRemoteSyncthingAPIKey(ctx, k, namespace, pod)
+	if err != nil {
+		return false, fmt.Errorf("read remote syncthing API key: %w", err)
+	}
+	cancelPF, remoteBase, _, err := startSyncthingPortForward(opts, namespace, pod)
+	if err != nil {
+		return false, fmt.Errorf("port-forward to syncthing sidecar: %w", err)
+	}
+	defer cancelPF()
+	if err := waitSyncthingAPI(ctx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
+		return false, fmt.Errorf("remote syncthing not ready: %w", err)
+	}
+	cfg, err := syncthingGetConfig(ctx, remoteBase, remoteKey)
+	if err != nil {
+		return false, fmt.Errorf("read remote syncthing config: %w", err)
+	}
+	folderType, found, err := syncthingManagedFolderType(cfg, folderID)
+	if err != nil {
+		return false, fmt.Errorf("inspect remote syncthing folder %s: %w", folderID, err)
+	}
+	return shouldResumeTwoPhaseBootstrap(folderType, found), nil
 }
 
 func syncthingSetConfig(ctx context.Context, base, key string, cfg map[string]any) error {
