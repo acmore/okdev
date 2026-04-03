@@ -151,6 +151,11 @@ func TestNewDownCmdSkipsMissingWorkloadWithoutConfirmation(t *testing.T) {
 	if payload.Status != "already stopped" {
 		t.Fatalf("expected status already stopped, got %#v", payload)
 	}
+	for _, key := range []string{"localClients", "sync", "syncthing", "sshForward", "sshConfig", "target", "syncState"} {
+		if _, ok := payload.Cleanup[key]; !ok {
+			t.Fatalf("expected cleanup key %q in payload: %#v", key, payload)
+		}
+	}
 }
 
 func TestNewDownCmdDryRunReportsMissingWorkload(t *testing.T) {
