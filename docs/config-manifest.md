@@ -84,7 +84,6 @@ Phase 1 currently supports:
 
 Current limits:
 
-- shareable sessions skip auth staging and warn
 - env-only auth sources are detected but still require manual login inside the container
 - existing real auth files inside the container are left alone instead of being overwritten
 
@@ -99,7 +98,6 @@ Users continue to launch agent CLIs manually through `okdev ssh`, plain SSH, or 
 | `defaultNameTemplate` | `string` | — | Go template for inferred session name |
 | `ttlHours` | `int` | from template | Reserved for lifecycle policy |
 | `idleTimeoutMinutes` | `int` | from template | Reserved for lifecycle policy |
-| `shareable` | `bool` | — | Marks intent for team sharing workflows |
 
 **Validation:** `ttlHours >= 0`, `idleTimeoutMinutes >= 0`.
 
@@ -109,7 +107,6 @@ spec:
     defaultNameTemplate: "{{ .Repo }}-{{ .User }}"
     ttlHours: 72
     idleTimeoutMinutes: 120
-    shareable: true
 ```
 
 ---
@@ -520,7 +517,7 @@ spec:
 
 ### Multi-GPU LLM Fine-Tuning
 
-4x GPU, shared session naming, model cache volume, long keepalive for stable training connections.
+4x GPU, model cache volume, long keepalive for stable training connections.
 
 ```yaml
 apiVersion: okdev.io/v1alpha1
@@ -532,7 +529,6 @@ spec:
   session:
     defaultNameTemplate: "{{ .Repo }}-{{ .User }}"
     ttlHours: 168
-    shareable: true
   volumes:
     - name: workspace
       persistentVolumeClaim:

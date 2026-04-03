@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/acmore/okdev/internal/config"
-	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
 	syncengine "github.com/acmore/okdev/internal/sync"
 )
@@ -35,7 +34,6 @@ type detailedStatus struct {
 	Reason           string               `json:"reason"`
 	Age              string               `json:"age"`
 	PodCount         int                  `json:"podCount"`
-	Shareable        bool                 `json:"shareable"`
 	Target           detailedStatusTarget `json:"target"`
 	Pods             []detailedStatusPod  `json:"pods"`
 	SSH              detailedStatusSSH    `json:"ssh"`
@@ -103,10 +101,6 @@ func gatherDetailedStatus(ctx context.Context, cfg *config.DevEnvironment, cfgPa
 		Reason:    view.Reason,
 		Age:       age(view.CreatedAt),
 		PodCount:  view.PodCount,
-	}
-
-	if selected, ok := selectedStatusPod(view); ok {
-		detail.Shareable = isSessionShareable(selected)
 	}
 
 	target, pods := buildDetailedTarget(view, cfg)
@@ -264,10 +258,6 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 		fmt.Fprintf(w, "Reason: %s\n", detail.Reason)
 	}
 	fmt.Fprintf(w, "Age: %s\n", detail.Age)
-	if detail.Shareable {
-		fmt.Fprintln(w, "Shareable: true")
-	}
-
 	fmt.Fprintln(w, "\nTarget:")
 	fmt.Fprintf(w, "- selected: %s/%s\n", detail.Target.SelectedPod, detail.Target.SelectedContainer)
 	if detail.Target.PinnedPod != "" || detail.Target.PinnedContainer != "" {
@@ -480,15 +470,6 @@ func managedSSHConfigPresent(hostAlias string) (bool, error) {
 		return false, err
 	}
 	return strings.Contains(string(content), "# BEGIN OKDEV "+hostAlias), nil
-}
-
-func selectedStatusPod(view sessionView) (kube.PodSummary, bool) {
-	for _, pod := range view.Pods {
-		if pod.Name == view.TargetPod {
-			return pod, true
-		}
-	}
-	return kube.PodSummary{}, false
 }
 
 func writeIndentedBlock(w io.Writer, content, indent string) {

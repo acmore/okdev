@@ -40,14 +40,14 @@ func (f fakeSessionAccessReader) ListPods(_ context.Context, _ string, _ bool, _
 }
 
 func TestEnsureSessionAccessRequiresExistingSessionWhenRequested(t *testing.T) {
-	err := ensureSessionAccess(&Options{}, fakeSessionAccessReader{}, "default", "old", true, true)
+	err := ensureSessionAccess(&Options{}, fakeSessionAccessReader{}, "default", "old", true)
 	if err == nil || !strings.Contains(err.Error(), `session "old" does not exist in namespace "default"`) {
 		t.Fatalf("expected missing session error, got %v", err)
 	}
 }
 
 func TestEnsureSessionAccessAllowsMissingSessionWhenNotRequired(t *testing.T) {
-	err := ensureSessionAccess(&Options{}, fakeSessionAccessReader{}, "default", "old", true, false)
+	err := ensureSessionAccess(&Options{}, fakeSessionAccessReader{}, "default", "old", false)
 	if err != nil {
 		t.Fatalf("expected missing session to be allowed, got %v", err)
 	}
@@ -58,18 +58,17 @@ func TestEnsureSessionAccessRejectsOtherOwner(t *testing.T) {
 	err := ensureSessionAccess(&Options{}, fakeSessionAccessReader{
 		pod: &kube.PodSummary{
 			Labels: map[string]string{
-				"okdev.io/owner":     "bob",
-				"okdev.io/shareable": "false",
+				"okdev.io/owner": "bob",
 			},
 			Annotations: map[string]string{},
 		},
-	}, "default", "team", false, true)
+	}, "default", "team", true)
 	if err == nil || !strings.Contains(err.Error(), `session "team" is owned by "bob"`) {
 		t.Fatalf("expected owner mismatch error, got %v", err)
 	}
 }
 
-func TestEnsureSessionAccessAllowsShareableOtherOwner(t *testing.T) {
+func TestEnsureSessionAccessRejectsOtherOwnerEvenIfShareableMetadataExists(t *testing.T) {
 	t.Setenv("USER", "alice")
 	err := ensureSessionAccess(&Options{}, fakeSessionAccessReader{
 		pod: &kube.PodSummary{
@@ -81,9 +80,9 @@ func TestEnsureSessionAccessAllowsShareableOtherOwner(t *testing.T) {
 				"okdev.io/shareable": "true",
 			},
 		},
-	}, "default", "team", true, true)
-	if err != nil {
-		t.Fatalf("expected shareable session to be allowed, got %v", err)
+	}, "default", "team", true)
+	if err == nil || !strings.Contains(err.Error(), `session "team" is owned by "bob"`) {
+		t.Fatalf("expected owner mismatch error, got %v", err)
 	}
 }
 
@@ -96,7 +95,7 @@ func TestEnsureSessionAccessAllowsCurrentOwner(t *testing.T) {
 			},
 			Annotations: map[string]string{},
 		},
-	}, "default", "team", false, true)
+	}, "default", "team", true)
 	if err != nil {
 		t.Fatalf("expected current owner to be allowed, got %v", err)
 	}

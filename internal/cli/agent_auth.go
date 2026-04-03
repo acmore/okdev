@@ -14,16 +14,11 @@ import (
 	syncengine "github.com/acmore/okdev/internal/sync"
 )
 
-func ensureConfiguredAgentAuth(ctx context.Context, client agentExecClient, namespace, pod, container string, shareable bool, agents []config.AgentSpec, warnf func(string, ...any)) []string {
+func ensureConfiguredAgentAuth(ctx context.Context, client agentExecClient, namespace, pod, container string, agents []config.AgentSpec, warnf func(string, ...any)) []string {
 	results := make([]string, 0, len(agents))
 	for _, agent := range agents {
 		spec, ok := agentcatalog.Lookup(agent.Name)
 		if !ok {
-			continue
-		}
-		if shareable {
-			warnf("skipping %s auth staging: shareable sessions are not a strong trust boundary", spec.Name)
-			results = append(results, spec.Name+": skipped (shareable session)")
 			continue
 		}
 		result, err := ensureAgentAuthStaged(ctx, client, namespace, pod, container, agent, spec)

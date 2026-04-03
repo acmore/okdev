@@ -24,9 +24,6 @@ func TestNamesAndLabels(t *testing.T) {
 	if labels["okdev.io/owner"] != "alice" {
 		t.Fatalf("owner label mismatch: %+v", labels)
 	}
-	if labels["okdev.io/shareable"] != "false" {
-		t.Fatalf("shareable label mismatch: %+v", labels)
-	}
 	if podName("sess1") != "okdev-sess1" {
 		t.Fatalf("unexpected pod name %q", podName("sess1"))
 	}

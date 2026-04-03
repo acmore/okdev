@@ -48,7 +48,7 @@ func newTargetShowCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := ensureSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName, true); err != nil {
+			if err := ensureSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 				return err
 			}
 			view, err := loadCurrentSessionView(cmd, cc.kube, cc.namespace, cc.sessionName)
@@ -132,7 +132,7 @@ func newTargetSetCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := ensureSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName, true); err != nil {
+			if err := ensureSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 				return err
 			}
 			view, err := loadCurrentSessionView(cmd, cc.kube, cc.namespace, cc.sessionName)

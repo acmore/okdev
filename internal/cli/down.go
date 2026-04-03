@@ -67,7 +67,7 @@ func newDownCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := ensureSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName, false); err != nil {
+			if err := ensureSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 				return err
 			}
 			ui.stepDone("ownership", "ok")

@@ -68,7 +68,6 @@ type SessionSpec struct {
 	DefaultNameTemplate string `yaml:"defaultNameTemplate"`
 	TTLHours            int    `yaml:"ttlHours"`
 	IdleTimeoutMinutes  int    `yaml:"idleTimeoutMinutes"`
-	Shareable           bool   `yaml:"shareable"`
 }
 
 type WorkloadSpec struct {
