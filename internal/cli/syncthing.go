@@ -1363,6 +1363,57 @@ func syncthingGetConfig(ctx context.Context, base, key string) (map[string]any, 
 	return cfg, nil
 }
 
+func syncthingManagedFolderType(cfg map[string]any, folderID string) (string, bool, error) {
+	folders, err := syncthingObjectArray(cfg, "folders")
+	if err != nil {
+		return "", false, err
+	}
+	for _, f := range folders {
+		fm, err := syncthingObjectMap(f, "folders")
+		if err != nil {
+			return "", false, err
+		}
+		if asString(fm["id"]) == folderID {
+			return asString(fm["type"]), true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func shouldResumeTwoPhaseBootstrap(folderType string, folderFound bool) bool {
+	if !folderFound {
+		return true
+	}
+	return strings.TrimSpace(folderType) != "sendreceive"
+}
+
+func remoteSyncthingBootstrapIncomplete(ctx context.Context, opts *Options, k interface {
+	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+}, namespace, pod, sessionName string) (bool, error) {
+	folderID := "okdev-" + sessionName
+	remoteKey, err := readRemoteSyncthingAPIKey(ctx, k, namespace, pod)
+	if err != nil {
+		return false, fmt.Errorf("read remote syncthing API key: %w", err)
+	}
+	cancelPF, remoteBase, _, err := startSyncthingPortForward(opts, namespace, pod)
+	if err != nil {
+		return false, fmt.Errorf("port-forward to syncthing sidecar: %w", err)
+	}
+	defer cancelPF()
+	if err := waitSyncthingAPI(ctx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
+		return false, fmt.Errorf("remote syncthing not ready: %w", err)
+	}
+	cfg, err := syncthingGetConfig(ctx, remoteBase, remoteKey)
+	if err != nil {
+		return false, fmt.Errorf("read remote syncthing config: %w", err)
+	}
+	folderType, found, err := syncthingManagedFolderType(cfg, folderID)
+	if err != nil {
+		return false, fmt.Errorf("inspect remote syncthing folder %s: %w", folderID, err)
+	}
+	return shouldResumeTwoPhaseBootstrap(folderType, found), nil
+}
+
 func syncthingSetConfig(ctx context.Context, base, key string, cfg map[string]any) error {
 	b, err := json.Marshal(cfg)
 	if err != nil {

@@ -871,6 +871,16 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, str
 	active := syncthingSessionActive(state.command.sessionName)
 	restartRequired := state.flags.resetWorkspace || configChanged || !active
 	startMode = syncStartMode(state.flags.resetWorkspace, targetReset, hasConfigState, configChanged, active)
+	if len(state.syncPairs) == 1 && hasConfigState && !state.flags.resetWorkspace && !targetReset {
+		bootstrapIncomplete, err := remoteSyncthingBootstrapIncomplete(state.ctx, state.opts, state.command.kube, state.command.namespace, target.PodName, state.command.sessionName)
+		if err != nil {
+			state.ui.warnf("failed to inspect remote sync state: %v", err)
+		} else if bootstrapIncomplete {
+			startMode = "two-phase"
+			restartRequired = true
+			state.ui.stepDone("sync state", "initial sync incomplete; resuming two-phase bootstrap")
+		}
+	}
 	if restartRequired {
 		if err := refreshSyncthingSessionProcesses(state.command.sessionName); err != nil {
 			return "", "", "", fmt.Errorf("refresh local syncthing session state: %w", err)

@@ -149,6 +149,34 @@ func TestFormatSyncthingSpeed(t *testing.T) {
 	}
 }
 
+func TestSyncthingManagedFolderType(t *testing.T) {
+	cfg := map[string]any{
+		"folders": []any{
+			map[string]any{"id": "okdev-a", "type": "receiveonly"},
+			map[string]any{"id": "okdev-b", "type": "sendreceive"},
+		},
+	}
+	got, found, err := syncthingManagedFolderType(cfg, "okdev-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || got != "sendreceive" {
+		t.Fatalf("unexpected folder lookup found=%v type=%q", found, got)
+	}
+}
+
+func TestShouldResumeTwoPhaseBootstrap(t *testing.T) {
+	if !shouldResumeTwoPhaseBootstrap("", false) {
+		t.Fatal("expected missing managed folder to resume two-phase")
+	}
+	if !shouldResumeTwoPhaseBootstrap("receiveonly", true) {
+		t.Fatal("expected receiveonly folder to resume two-phase")
+	}
+	if shouldResumeTwoPhaseBootstrap("sendreceive", true) {
+		t.Fatal("expected sendreceive folder to skip two-phase resume")
+	}
+}
+
 func TestSyncthingPeerConnectionTotals(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/rest/system/connections" {
