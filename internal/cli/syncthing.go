@@ -683,7 +683,11 @@ func runSyncthingProgressReporter(ctx context.Context, out io.Writer, localBase,
 		}
 		totalNeed := upNeed + downNeed
 		remainingETA, etaOK := eta.Estimate(time.Now(), totalNeed)
-		fmt.Fprintf(out, "Syncthing progress: %s\n", formatInitialSyncProgressDetail(upNeed, downNeed, remainingETA, etaOK))
+		fmt.Fprintf(out, "Syncthing progress: %s\n", formatInitialSyncProgressDetail(syncthingInitialSyncProgress{
+			Mode:            "bi",
+			LocalNeedBytes:  upNeed,
+			RemoteNeedBytes: downNeed,
+		}, remainingETA, etaOK))
 		if !warnedLargeSync && maxInt64(upNeed, downNeed) >= largeSyncNeedWarnBytes {
 			warnLargeSyncEntries(out, localPath, maxInt64(upNeed, downNeed))
 			warnedLargeSync = true
@@ -732,12 +736,17 @@ func syncthingCompletion(ctx context.Context, base, key, folderID, deviceID stri
 }
 
 type syncthingInitialSyncProgress struct {
+	Mode            string
 	LocalNeedBytes  int64
 	RemoteNeedBytes int64
 }
 
 func syncthingInitialSyncComplete(localPct float64, localNeedBytes int64, remotePct float64, remoteNeedBytes int64) bool {
 	return localNeedBytes == 0 && remoteNeedBytes == 0 && localPct >= 99.9 && remotePct >= 99.9
+}
+
+func syncthingBootstrapInitialSyncComplete(localPct float64, localNeedBytes int64) bool {
+	return localNeedBytes == 0 && localPct >= 99.9
 }
 
 type syncETAEstimator struct {
@@ -824,7 +833,7 @@ func syncthingPeerConnected(ctx context.Context, base, key, peerID string) (bool
 // converged in both directions.
 func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
-}, namespace, pod, sessionName string, timeout time.Duration, onProgress func(syncthingInitialSyncProgress)) error {
+}, namespace, pod, sessionName, mode string, timeout time.Duration, onProgress func(syncthingInitialSyncProgress)) error {
 	folderID := "okdev-" + sessionName
 	localHome, err := localSyncthingStatusHome(sessionName)
 	if err != nil {
@@ -878,11 +887,16 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 		if localErr == nil && remoteErr == nil {
 			if onProgress != nil {
 				onProgress(syncthingInitialSyncProgress{
+					Mode:            mode,
 					LocalNeedBytes:  localNeed,
 					RemoteNeedBytes: remoteNeed,
 				})
 			}
-			if syncthingInitialSyncComplete(localPct, localNeed, remotePct, remoteNeed) {
+			if mode == "two-phase" {
+				if syncthingBootstrapInitialSyncComplete(localPct, localNeed) {
+					return nil
+				}
+			} else if syncthingInitialSyncComplete(localPct, localNeed, remotePct, remoteNeed) {
 				return nil
 			}
 		}
@@ -931,13 +945,20 @@ func formatSyncETA(eta time.Duration, ok bool) string {
 	return fmt.Sprintf("%dh%02dm", hours, minutes)
 }
 
-func formatInitialSyncProgressDetail(localNeedBytes, remoteNeedBytes int64, eta time.Duration, etaOK bool) string {
-	totalNeedBytes := localNeedBytes + remoteNeedBytes
+func formatInitialSyncProgressDetail(progress syncthingInitialSyncProgress, eta time.Duration, etaOK bool) string {
+	if progress.Mode == "two-phase" {
+		return fmt.Sprintf(
+			"%s remaining to remote, eta %s",
+			formatSyncthingMiB(progress.LocalNeedBytes),
+			formatSyncETA(eta, etaOK),
+		)
+	}
+	totalNeedBytes := progress.LocalNeedBytes + progress.RemoteNeedBytes
 	return fmt.Sprintf(
 		"%s remaining (local->remote %s, remote->local %s), eta %s",
 		formatSyncthingMiB(totalNeedBytes),
-		formatSyncthingMiB(localNeedBytes),
-		formatSyncthingMiB(remoteNeedBytes),
+		formatSyncthingMiB(progress.LocalNeedBytes),
+		formatSyncthingMiB(progress.RemoteNeedBytes),
 		formatSyncETA(eta, etaOK),
 	)
 }

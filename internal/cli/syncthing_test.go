@@ -119,6 +119,18 @@ func TestSyncthingInitialSyncComplete(t *testing.T) {
 	}
 }
 
+func TestSyncthingBootstrapInitialSyncComplete(t *testing.T) {
+	if !syncthingBootstrapInitialSyncComplete(100, 0) {
+		t.Fatal("expected bootstrap sync with zero local pending bytes to be complete")
+	}
+	if syncthingBootstrapInitialSyncComplete(99.8, 0) {
+		t.Fatal("expected bootstrap sync to require near-complete local percentage")
+	}
+	if syncthingBootstrapInitialSyncComplete(100, 1) {
+		t.Fatal("expected bootstrap sync to block on local pending bytes")
+	}
+}
+
 func TestFormatSyncthingMiB(t *testing.T) {
 	if got := formatSyncthingMiB(0); got != "0.0 MiB" {
 		t.Fatalf("unexpected zero format %q", got)
@@ -159,11 +171,31 @@ func TestFormatSyncETA(t *testing.T) {
 }
 
 func TestFormatInitialSyncProgressDetail(t *testing.T) {
-	got := formatInitialSyncProgressDetail(10*1024*1024, 5*1024*1024, 95*time.Second, true)
+	got := formatInitialSyncProgressDetail(syncthingInitialSyncProgress{
+		Mode:            "bi",
+		LocalNeedBytes:  10 * 1024 * 1024,
+		RemoteNeedBytes: 5 * 1024 * 1024,
+	}, 95*time.Second, true)
 	for _, want := range []string{"15.0 MiB remaining", "local->remote 10.0 MiB", "remote->local 5.0 MiB", "eta 1m35s"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected %q in %q", want, got)
 		}
+	}
+}
+
+func TestFormatInitialSyncProgressDetailTwoPhase(t *testing.T) {
+	got := formatInitialSyncProgressDetail(syncthingInitialSyncProgress{
+		Mode:            "two-phase",
+		LocalNeedBytes:  10 * 1024 * 1024,
+		RemoteNeedBytes: 5 * 1024 * 1024,
+	}, 95*time.Second, true)
+	for _, want := range []string{"10.0 MiB remaining to remote", "eta 1m35s"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "remote->local") {
+		t.Fatalf("did not expect remote->local detail in two-phase output: %q", got)
 	}
 }
 
