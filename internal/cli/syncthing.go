@@ -846,14 +846,19 @@ func (e *syncthingRateEstimator) Estimate(now time.Time, totalBytes int64) (int6
 	return int64(float64(delta) / elapsed.Seconds()), true
 }
 
-// waitForInitialSync blocks until both local->remote and remote->local pending
+// waitForInitialSync blocks until both local→remote and remote→local pending
 // bytes reach zero for the managed folder. It opens a temporary port-forward to
 // the target pod's Syncthing sidecar and reads the local Syncthing endpoint
 // from session state so `okdev up` only continues once initial sync has fully
 // converged in both directions.
+//
+// When bootstrapResume is true the function inspects the remote folder config
+// (reusing the port-forward it already opened) and auto-upgrades the effective
+// mode to "two-phase" if a previous bootstrap did not finish.  This avoids
+// opening a second port-forward just for the probe.
 func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
-}, namespace, pod, sessionName, mode string, timeout time.Duration, onProgress func(syncthingInitialSyncProgress)) error {
+}, namespace, pod, sessionName, mode string, bootstrapResume bool, timeout time.Duration, onProgress func(syncthingInitialSyncProgress)) error {
 	folderID := "okdev-" + sessionName
 	localHome, err := localSyncthingStatusHome(sessionName)
 	if err != nil {
@@ -880,6 +885,23 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 	}
 	if err := waitSyncthingAPI(ctx, localBase, localKey, syncthingAPIReadyTimeout); err != nil {
 		return fmt.Errorf("local syncthing not ready: %w", err)
+	}
+
+	// If the caller indicates a prior config state exists, reuse the
+	// already-open port-forward to probe whether the previous bootstrap
+	// finished.  This avoids a second port-forward round-trip.
+	if bootstrapResume && mode != "two-phase" {
+		cfg, cfgErr := syncthingGetConfig(ctx, remoteBase, remoteKey)
+		if cfgErr != nil {
+			slog.Debug("failed to read remote syncthing config for bootstrap probe", "error", cfgErr)
+		} else {
+			folderType, found, ftErr := syncthingManagedFolderType(cfg, folderID)
+			if ftErr != nil {
+				slog.Debug("failed to inspect remote syncthing folder for bootstrap probe", "error", ftErr)
+			} else if shouldResumeTwoPhaseBootstrap(folderType, found) {
+				mode = "two-phase"
+			}
+		}
 	}
 
 	localID, err := syncthingDeviceID(ctx, localBase, localKey)
@@ -1401,6 +1423,10 @@ func shouldResumeTwoPhaseBootstrap(folderType string, folderFound bool) bool {
 	return strings.TrimSpace(folderType) != "sendreceive"
 }
 
+// remoteSyncthingBootstrapIncomplete checks whether a previous two-phase
+// bootstrap did not complete by inspecting the remote folder type.  It opens
+// its own port-forward; prefer passing bootstrapResume=true to
+// waitForInitialSync instead to share the port-forward.
 func remoteSyncthingBootstrapIncomplete(ctx context.Context, opts *Options, k interface {
 	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
 }, namespace, pod, sessionName string) (bool, error) {
