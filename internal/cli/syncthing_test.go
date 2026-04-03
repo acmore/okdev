@@ -944,7 +944,7 @@ func TestWriteLocalSTIgnorePropagatesStatError(t *testing.T) {
 	}
 }
 
-func TestDetectLargeSyncFilesHonorsSTIgnore(t *testing.T) {
+func TestDetectLargeSyncEntriesHonorsSTIgnoreAndReportsDirs(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".stignore"), []byte(".git/\nlarge.bin\nignored/\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -967,12 +967,73 @@ func TestDetectLargeSyncFilesHonorsSTIgnore(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "tracked.bin"), bytes.Repeat([]byte("a"), 2048), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	files, err := detectLargeSyncFiles(dir, 1024, 10)
+	if err := os.Mkdir(filepath.Join(dir, "dataset"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "dataset", "part1.bin"), bytes.Repeat([]byte("a"), 700), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "dataset", "part2.bin"), bytes.Repeat([]byte("a"), 700), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files, dirs, err := detectLargeSyncEntries(dir, 1024, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(files) != 1 || files[0].Path != "tracked.bin" {
 		t.Fatalf("expected only tracked.bin to be reported, got %+v", files)
+	}
+	if len(dirs) != 1 || dirs[0].Path != "dataset" {
+		t.Fatalf("expected dataset dir to be reported, got %+v", dirs)
+	}
+}
+
+func TestWarnLargeSyncEntriesIncludesFilesAndDirs(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cacheBlob, err := os.Create(filepath.Join(dir, "cache", "blob.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cacheBlob.Truncate(60 * 1024 * 1024); err != nil {
+		t.Fatal(err)
+	}
+	if err := cacheBlob.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cacheBlob2, err := os.Create(filepath.Join(dir, "cache", "blob2.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cacheBlob2.Truncate(60 * 1024 * 1024); err != nil {
+		t.Fatal(err)
+	}
+	if err := cacheBlob2.Close(); err != nil {
+		t.Fatal(err)
+	}
+	weights, err := os.Create(filepath.Join(dir, "weights.pt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := weights.Truncate(101 * 1024 * 1024); err != nil {
+		t.Fatal(err)
+	}
+	if err := weights.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	warnLargeSyncEntries(&out, dir, 700*1024*1024)
+	got := out.String()
+	if !strings.Contains(got, "warning: sync still needs") {
+		t.Fatalf("expected warning header, got %q", got)
+	}
+	if !strings.Contains(got, "file 101.0MiB  weights.pt") {
+		t.Fatalf("expected large file in warning, got %q", got)
+	}
+	if !strings.Contains(got, "dir  120.0MiB  cache/") {
+		t.Fatalf("expected large dir in warning, got %q", got)
 	}
 }
 
