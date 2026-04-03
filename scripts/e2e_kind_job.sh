@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+. "$(dirname "$0")/e2e_lib.sh"
+
 OKDEV_BIN="${OKDEV_BIN:-$(pwd)/bin/okdev}"
 SIDECAR_IMAGE="${SIDECAR_IMAGE:-okdev-sidecar:v0.0.0-e2e}"
 SESSION_NAME="${SESSION_NAME:-e2e-job}"
 NAMESPACE="${NAMESPACE:-default}"
-WORKDIR="$(mktemp -d)"
+WORKDIR="$(make_workdir)"
 HOME_DIR="${HOME_DIR:-$WORKDIR/home}"
 CFG_PATH="$WORKDIR/.okdev/okdev.yaml"
 MANIFEST_PATH="$WORKDIR/.okdev/job.yaml"
@@ -51,9 +53,9 @@ cd "$WORKDIR"
   --sync-local "$SYNC_DIR" \
   --sync-remote /workspace
 
-sed -i 's/image: # TODO:.*/image: ubuntu:22.04/g' "$MANIFEST_PATH"
-sed -i 's/command: \["sleep", "infinity"\]/command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]/g' "$MANIFEST_PATH"
-sed -i '/ssh:/a\    persistentSession: false' "$CFG_PATH"
+replace_all_in_file "$MANIFEST_PATH" 'image: # TODO: replace with your image' 'image: ubuntu:22.04'
+replace_all_in_file "$MANIFEST_PATH" 'command: ["sleep", "infinity"]' 'command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]'
+insert_after_line_once "$CFG_PATH" '  ssh:' '    persistentSession: false'
 
 echo "hello from job e2e" >"$SYNC_DIR/hello.txt"
 
@@ -92,7 +94,7 @@ ORIGINAL_JOB_UID=$(kubectl -n "$NAMESPACE" get job "$SESSION_NAME" -o jsonpath='
 ORIGINAL_POD_UID=$(kubectl -n "$NAMESPACE" get pods -l "job-name=$SESSION_NAME" -o jsonpath='{.items[0].metadata.uid}')
 
 echo "Changing job workload spec to trigger drift detection"
-sed -i '0,/image: ubuntu:22.04/s//image: ubuntu:24.04/' "$MANIFEST_PATH"
+replace_first_in_file "$MANIFEST_PATH" 'image: ubuntu:22.04' 'image: ubuntu:24.04'
 
 set +e
 DRIFT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m 2>&1)
