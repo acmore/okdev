@@ -736,6 +736,10 @@ type syncthingInitialSyncProgress struct {
 	Mode            string
 	LocalNeedBytes  int64
 	RemoteNeedBytes int64
+	UploadBps       int64
+	DownloadBps     int64
+	HasUploadBps    bool
+	HasDownloadBps  bool
 }
 
 func syncthingInitialSyncComplete(localPct float64, localNeedBytes int64, remotePct float64, remoteNeedBytes int64) bool {
@@ -790,6 +794,52 @@ func syncthingPeerConnected(ctx context.Context, base, key, peerID string) (bool
 	return false, nil
 }
 
+type syncthingConnectionStats struct {
+	InBytesTotal  int64 `json:"inBytesTotal"`
+	OutBytesTotal int64 `json:"outBytesTotal"`
+}
+
+func syncthingPeerConnectionTotals(ctx context.Context, base, key, peerID string) (syncthingConnectionStats, error) {
+	body, err := syncthingAPIRequestWithContext(ctx, http.MethodGet, base, key, "/rest/system/connections", nil, "")
+	if err != nil {
+		return syncthingConnectionStats{}, err
+	}
+	var conns struct {
+		Connections map[string]syncthingConnectionStats `json:"connections"`
+	}
+	if err := json.Unmarshal(body, &conns); err != nil {
+		return syncthingConnectionStats{}, err
+	}
+	stats, ok := conns.Connections[peerID]
+	if !ok {
+		return syncthingConnectionStats{}, fmt.Errorf("peer %s not found in syncthing connections", peerID)
+	}
+	return stats, nil
+}
+
+type syncthingRateEstimator struct {
+	lastAt      time.Time
+	lastBytes   int64
+	initialized bool
+}
+
+func (e *syncthingRateEstimator) Estimate(now time.Time, totalBytes int64) (int64, bool) {
+	if !e.initialized {
+		e.lastAt = now
+		e.lastBytes = totalBytes
+		e.initialized = true
+		return 0, false
+	}
+	elapsed := now.Sub(e.lastAt)
+	delta := totalBytes - e.lastBytes
+	e.lastAt = now
+	e.lastBytes = totalBytes
+	if elapsed <= 0 || delta < 0 {
+		return 0, false
+	}
+	return int64(float64(delta) / elapsed.Seconds()), true
+}
+
 // waitForInitialSync blocks until both local->remote and remote->local pending
 // bytes reach zero for the managed folder. It opens a temporary port-forward to
 // the target pod's Syncthing sidecar and reads the local Syncthing endpoint
@@ -838,22 +888,39 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(syncthingProgressInterval)
 	defer ticker.Stop()
+	uploadRate := &syncthingRateEstimator{}
+	downloadRate := &syncthingRateEstimator{}
 
 	for {
 		localPct, localNeed, localErr := syncthingCompletion(ctx, localBase, localKey, folderID, remoteID)
 		remotePct, remoteNeed, remoteErr := syncthingCompletion(ctx, remoteBase, remoteKey, folderID, localID)
+		connStats, connErr := syncthingPeerConnectionTotals(ctx, localBase, localKey, remoteID)
 		if localErr != nil {
 			slog.Debug("syncthing initial sync local poll failed", "error", localErr)
 		}
 		if remoteErr != nil {
 			slog.Debug("syncthing initial sync remote poll failed", "error", remoteErr)
 		}
+		if connErr != nil {
+			slog.Debug("syncthing initial sync connection stats poll failed", "error", connErr)
+		}
 		if localErr == nil && remoteErr == nil {
+			var uploadBps, downloadBps int64
+			var hasUploadBps, hasDownloadBps bool
+			if connErr == nil {
+				now := time.Now()
+				uploadBps, hasUploadBps = uploadRate.Estimate(now, connStats.OutBytesTotal)
+				downloadBps, hasDownloadBps = downloadRate.Estimate(now, connStats.InBytesTotal)
+			}
 			if onProgress != nil {
 				onProgress(syncthingInitialSyncProgress{
 					Mode:            mode,
 					LocalNeedBytes:  localNeed,
 					RemoteNeedBytes: remoteNeed,
+					UploadBps:       uploadBps,
+					DownloadBps:     downloadBps,
+					HasUploadBps:    hasUploadBps,
+					HasDownloadBps:  hasDownloadBps,
 				})
 			}
 			if mode == "two-phase" {
@@ -882,19 +949,44 @@ func formatSyncthingMiB(bytes int64) string {
 	return fmt.Sprintf("%.1f MiB", float64(bytes)/(1024*1024))
 }
 
+func formatSyncthingSpeed(bps int64) string {
+	if bps <= 0 {
+		return "0.0 MiB/s"
+	}
+	return fmt.Sprintf("%.1f MiB/s", float64(bps)/(1024*1024))
+}
+
 func formatInitialSyncProgressDetail(progress syncthingInitialSyncProgress) string {
 	if progress.Mode == "two-phase" {
+		speed := ""
+		if progress.HasUploadBps {
+			speed = fmt.Sprintf(" at %s", formatSyncthingSpeed(progress.UploadBps))
+		}
 		return fmt.Sprintf(
-			"%s remaining to remote",
+			"%s remaining to remote%s",
 			formatSyncthingMiB(progress.LocalNeedBytes),
+			speed,
 		)
 	}
 	totalNeedBytes := progress.LocalNeedBytes + progress.RemoteNeedBytes
+	speed := ""
+	if progress.HasUploadBps || progress.HasDownloadBps {
+		up := "measuring"
+		down := "measuring"
+		if progress.HasUploadBps {
+			up = formatSyncthingSpeed(progress.UploadBps)
+		}
+		if progress.HasDownloadBps {
+			down = formatSyncthingSpeed(progress.DownloadBps)
+		}
+		speed = fmt.Sprintf(", up %s, down %s", up, down)
+	}
 	return fmt.Sprintf(
-		"%s remaining (local->remote %s, remote->local %s)",
+		"%s remaining (local->remote %s, remote->local %s)%s",
 		formatSyncthingMiB(totalNeedBytes),
 		formatSyncthingMiB(progress.LocalNeedBytes),
 		formatSyncthingMiB(progress.RemoteNeedBytes),
+		speed,
 	)
 }
 
@@ -1123,18 +1215,21 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 		if asString(m["deviceID"]) == peerID {
 			m["addresses"] = addresses
 			m["compression"] = compressionMode
+			applyManagedSyncthingDeviceDefaults(m)
 			devices[i] = m
 			foundDevice = true
 			break
 		}
 	}
 	if !foundDevice {
-		devices = append(devices, map[string]any{
+		device := map[string]any{
 			"deviceID":    peerID,
 			"name":        "okdev-peer",
 			"addresses":   addresses,
 			"compression": compressionMode,
-		})
+		}
+		applyManagedSyncthingDeviceDefaults(device)
+		devices = append(devices, device)
 	}
 	cfg["devices"] = devices
 
@@ -1202,11 +1297,22 @@ func applyManagedSyncthingFolderDefaults(folder map[string]any, rescanIntervalSe
 	if delay <= 0 {
 		delay = syncthingWatcherDelayS
 	}
+	folder["filesystemType"] = "basic"
 	folder["fsWatcherEnabled"] = true
 	folder["fsWatcherDelayS"] = delay
 	folder["rescanIntervalS"] = rescanIntervalSeconds
 	folder["maxConflicts"] = 0
 	folder["ignoreDelete"] = ignoreDelete
+	folder["order"] = "random"
+	folder["scanProgressIntervalS"] = 1
+	folder["pullerPauseS"] = 0
+	folder["disableSparseFiles"] = false
+	folder["disableTempIndexes"] = false
+	folder["paused"] = false
+	folder["weakHashThresholdPct"] = 25
+	folder["markerName"] = "."
+	folder["useLargeBlocks"] = false
+	folder["copyRangeMethod"] = "all"
 }
 
 func applyManagedSyncthingGlobalDefaults(cfg map[string]any, relaysEnabled bool) {
@@ -1221,7 +1327,28 @@ func applyManagedSyncthingGlobalDefaults(cfg map[string]any, relaysEnabled bool)
 	options["globalAnnounceEnabled"] = false
 	options["localAnnounceEnabled"] = false
 	options["natEnabled"] = false
+	options["reconnectionIntervalS"] = 1
+	options["startBrowser"] = false
+	options["restartOnWakeup"] = true
+	options["keepTemporariesH"] = 24
+	options["cacheIgnoredFiles"] = false
+	options["progressUpdateIntervalS"] = 1
+	options["limitBandwidthInLan"] = false
+	options["releasesURL"] = ""
+	options["overwriteRemoteDeviceNamesOnConnect"] = false
+	options["tempIndexMinBlocks"] = 10
+	options["trafficClass"] = 0
+	options["setLowPriority"] = false
+	options["crashReportingEnabled"] = false
 	cfg["options"] = options
+}
+
+func applyManagedSyncthingDeviceDefaults(device map[string]any) {
+	device["paused"] = false
+	device["autoAcceptFolders"] = false
+	device["maxSendKbps"] = 0
+	device["maxRecvKbps"] = 0
+	device["maxRequestKiB"] = 0
 }
 
 func syncthingGetConfig(ctx context.Context, base, key string) (map[string]any, error) {
