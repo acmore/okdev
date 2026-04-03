@@ -425,11 +425,11 @@ func looksLikeSyncthingConflict(path string) bool {
 }
 
 func syncthingBackgroundLogPath(sessionName string) (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := session.SyncthingDir(sessionName)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".okdev", "logs", "syncthing-"+sessionName+".log"), nil
+	return filepath.Join(home, "local.log"), nil
 }
 
 func sshControlSocketStatusPath(hostAlias string) (string, error) {
@@ -441,19 +441,15 @@ func sshControlSocketStatusPath(hostAlias string) (string, error) {
 }
 
 func syncthingPIDStatusPath(sessionName string) (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := session.SyncthingDir(sessionName)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".okdev", "syncthing", sessionName, "sync.pid"), nil
+	return filepath.Join(home, "sync.pid"), nil
 }
 
 func localSyncthingStatusHome(sessionName string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".okdev", "syncthing", sessionName), nil
+	return session.SyncthingDir(sessionName)
 }
 
 func managedSSHConfigPresent(hostAlias string) (bool, error) {
