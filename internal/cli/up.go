@@ -605,10 +605,21 @@ func upSetup(state *upState) error {
 		if err != nil {
 			return fmt.Errorf("refresh target before initial sync wait: %w", err)
 		}
+		localPath := ""
+		if len(state.syncPairs) > 0 {
+			localPath = state.syncPairs[0].Local
+		}
+		warnedLargeSync := false
 		if err := waitForInitialSync(state.ctx, state.opts, state.command.kube, state.command.namespace, target.PodName, state.command.sessionName, syncStartMode, bootstrapResume, initialSyncTimeout, func(status string) {
 			state.ui.stepRun("initial sync", status)
 		}, func(progress syncthingInitialSyncProgress) {
 			state.ui.stepRun("initial sync", formatInitialSyncProgressDetail(progress))
+			if progress.NeedWarnLargeSync && !warnedLargeSync && localPath != "" {
+				state.ui.stopActive()
+				warnLargeSyncEntries(state.ui.out, localPath, progress.MaxNeedBytes)
+				state.ui.warnf("sync is processing unusually large files; see earlier logs")
+				warnedLargeSync = true
+			}
 		}); err != nil {
 			return fmt.Errorf("wait for initial sync: %w", err)
 		}
@@ -1448,12 +1459,36 @@ func (u *upUI) stepDone(step, detail string) {
 	defer u.mu.Unlock()
 	// Always clear any active spinner before printing a done line,
 	// even if it belongs to a different step (parallel setup).
+	var oldStep, oldMsg string
+	var oldStarted time.Time
+	if u.active != nil {
+		oldStep = u.activeStep
+		u.active.mu.Lock()
+		oldMsg = u.active.message
+		oldStarted = u.active.started
+		u.active.mu.Unlock()
+	}
+
 	u.stopActiveLocked()
 	if detail == "" {
 		fmt.Fprintf(u.out, "✔ %s\n", step)
-		return
+	} else {
+		fmt.Fprintf(u.out, "✔ %s: %s\n", step, u.formatStepDetail(step, detail))
 	}
-	fmt.Fprintf(u.out, "✔ %s: %s\n", step, u.formatStepDetail(step, detail))
+
+	// Resurrect the spinner if this step completion interrupted a concurrent step's status
+	if oldStep != "" && oldStep != step && u.interactive {
+		u.activeStep = oldStep
+		u.active = newTransientStatusWithMode(u.out, oldMsg, true)
+		if u.active.enabled {
+			u.active.mu.Lock()
+			u.active.started = oldStarted
+			u.active.mu.Unlock()
+		} else {
+			u.active = nil
+			u.activeStep = ""
+		}
+	}
 }
 
 func (u *upUI) stepMessage(step, detail string) string {

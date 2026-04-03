@@ -741,11 +741,13 @@ type syncthingInitialSyncProgress struct {
 	// RemoteNeedBytes is the number of bytes the local device still needs,
 	// as reported by querying the remote Syncthing completion endpoint for
 	// the local device ID.  This represents remote→local (download) traffic.
-	RemoteNeedBytes int64
-	UploadBps       int64
-	DownloadBps     int64
-	HasUploadBps    bool
-	HasDownloadBps  bool
+	RemoteNeedBytes   int64
+	UploadBps         int64
+	DownloadBps       int64
+	HasUploadBps      bool
+	HasDownloadBps    bool
+	NeedWarnLargeSync bool
+	MaxNeedBytes      int64
 }
 
 func syncthingInitialSyncComplete(localPct float64, localNeedBytes int64, remotePct float64, remoteNeedBytes int64) bool {
@@ -961,15 +963,18 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 				uploadBps, hasUploadBps = uploadRate.Estimate(now, connStats.OutBytesTotal)
 				downloadBps, hasDownloadBps = downloadRate.Estimate(now, connStats.InBytesTotal)
 			}
+			maxNeed := maxInt64(localNeed, remoteNeed)
 			if onProgress != nil {
 				onProgress(syncthingInitialSyncProgress{
-					Mode:            mode,
-					LocalNeedBytes:  localNeed,
-					RemoteNeedBytes: remoteNeed,
-					UploadBps:       uploadBps,
-					DownloadBps:     downloadBps,
-					HasUploadBps:    hasUploadBps,
-					HasDownloadBps:  hasDownloadBps,
+					Mode:              mode,
+					LocalNeedBytes:    localNeed,
+					RemoteNeedBytes:   remoteNeed,
+					UploadBps:         uploadBps,
+					DownloadBps:       downloadBps,
+					HasUploadBps:      hasUploadBps,
+					HasDownloadBps:    hasDownloadBps,
+					NeedWarnLargeSync: maxNeed >= largeSyncNeedWarnBytes,
+					MaxNeedBytes:      maxNeed,
 				})
 			}
 			if mode == "two-phase" {
