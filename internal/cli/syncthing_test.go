@@ -128,6 +128,45 @@ func TestFormatSyncthingMiB(t *testing.T) {
 	}
 }
 
+func TestSyncETAEstimator(t *testing.T) {
+	var eta syncETAEstimator
+	start := time.Unix(100, 0)
+	if _, ok := eta.Estimate(start, 200*1024*1024); ok {
+		t.Fatal("expected first sample to have no ETA")
+	}
+	got, ok := eta.Estimate(start.Add(10*time.Second), 100*1024*1024)
+	if !ok {
+		t.Fatal("expected ETA after progress sample")
+	}
+	if got < 9*time.Second || got > 11*time.Second {
+		t.Fatalf("unexpected ETA %s", got)
+	}
+	if _, ok := eta.Estimate(start.Add(20*time.Second), 110*1024*1024); ok {
+		t.Fatal("expected ETA to be suppressed when remaining bytes increase")
+	}
+}
+
+func TestFormatSyncETA(t *testing.T) {
+	if got := formatSyncETA(0, false); got != "estimating" {
+		t.Fatalf("unexpected unknown ETA format %q", got)
+	}
+	if got := formatSyncETA(0, true); got != "<1s" {
+		t.Fatalf("unexpected zero ETA format %q", got)
+	}
+	if got := formatSyncETA(95*time.Second, true); got != "1m35s" {
+		t.Fatalf("unexpected minute ETA format %q", got)
+	}
+}
+
+func TestFormatInitialSyncProgressDetail(t *testing.T) {
+	got := formatInitialSyncProgressDetail(10*1024*1024, 5*1024*1024, 95*time.Second, true)
+	for _, want := range []string{"15.0 MiB remaining", "local->remote 10.0 MiB", "remote->local 5.0 MiB", "eta 1m35s"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in %q", want, got)
+		}
+	}
+}
+
 func TestBuildSTIgnoreContent(t *testing.T) {
 	content, ok := buildSTIgnoreContent([]string{" .git/ ", "", "node_modules/"})
 	if !ok {
@@ -566,8 +605,8 @@ func TestRunTwoPhaseInitialSyncWaitsForDeletionConvergence(t *testing.T) {
 
 	// Output should show non-zero needBytes during phase 1b.
 	out := buf.String()
-	if !strings.Contains(out, "deletion propagation: remote needBytes=512") {
-		t.Fatalf("expected phase 1b progress with needBytes=512, got: %s", out)
+	if !strings.Contains(out, "deletion propagation: 0.0 MiB remaining") {
+		t.Fatalf("expected simplified phase 1b progress output, got: %s", out)
 	}
 }
 
@@ -635,8 +674,8 @@ func TestRunTwoPhaseInitialSyncWaitsForPeerConnection(t *testing.T) {
 	if overrideCalls == 0 {
 		t.Fatal("expected override calls during startup")
 	}
-	if !strings.Contains(buf.String(), "peer connection: local=false remote=false") {
-		t.Fatalf("expected connection progress output, got: %s", buf.String())
+	if !strings.Contains(buf.String(), "waiting for peer connection") {
+		t.Fatalf("expected waiting-for-peer output, got: %s", buf.String())
 	}
 }
 

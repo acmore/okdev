@@ -603,12 +603,10 @@ func upSetup(state *upState) error {
 		if err != nil {
 			return fmt.Errorf("refresh target before initial sync wait: %w", err)
 		}
+		progressETA := &syncETAEstimator{}
 		if err := waitForInitialSync(state.ctx, state.opts, state.command.kube, state.command.namespace, target.PodName, state.command.sessionName, initialSyncTimeout, func(progress syncthingInitialSyncProgress) {
-			state.ui.stepRun("initial sync", fmt.Sprintf(
-				"local->remote %s remaining, remote->local %s remaining",
-				formatSyncthingMiB(progress.LocalNeedBytes),
-				formatSyncthingMiB(progress.RemoteNeedBytes),
-			))
+			remainingETA, etaOK := progressETA.Estimate(time.Now(), progress.LocalNeedBytes+progress.RemoteNeedBytes)
+			state.ui.stepRun("initial sync", formatInitialSyncProgressDetail(progress.LocalNeedBytes, progress.RemoteNeedBytes, remainingETA, etaOK))
 		}); err != nil {
 			return fmt.Errorf("wait for initial sync: %w", err)
 		}
