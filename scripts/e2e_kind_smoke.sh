@@ -127,6 +127,24 @@ if [[ -e "$HOME_DIR/Sync/.stfolder" ]]; then
 fi
 echo "Session state layout verified"
 
+echo "Verifying session commands work outside repo with positional session arg"
+cd "$HOME_DIR"
+STATUS_OUTSIDE=$("$OKDEV_BIN" status "$SESSION_NAME" --details)
+if [[ "$STATUS_OUTSIDE" != *"Session: ${SESSION_NAME}"* && "$STATUS_OUTSIDE" != *"Session:"* ]]; then
+  echo "ERROR: expected config-free status to succeed outside repo" >&2
+  echo "$STATUS_OUTSIDE" >&2
+  exit 1
+fi
+LOGS_OUTSIDE=$("$OKDEV_BIN" logs "$SESSION_NAME" --all --follow=false --tail 5)
+if [[ "$LOGS_OUTSIDE" != *"[okdev-sidecar]"* ]]; then
+  echo "ERROR: expected config-free logs to include sidecar output outside repo" >&2
+  echo "$LOGS_OUTSIDE" >&2
+  exit 1
+fi
+"$OKDEV_BIN" ssh "$SESSION_NAME" --setup-key --cmd 'test -f /workspace/hello.txt'
+cd "$WORKDIR"
+echo "Config-free positional session commands verified"
+
 echo "Waiting for synced file to appear remotely with correct content"
 SYNC_OK=false
 for i in $(seq 1 30); do

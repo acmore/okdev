@@ -65,30 +65,59 @@ func loadConfigAndNamespace(opts *Options) (*config.DevEnvironment, string, erro
 }
 
 func resolveCommandContext(opts *Options, resolver sessionResolver) (*commandContext, error) {
-	cfg, namespace, err := loadConfigAndNamespace(opts)
+	effectiveOpts, err := optionsWithSessionConfig(opts)
 	if err != nil {
 		return nil, err
 	}
-	cfgPath, err := config.ResolvePath(opts.ConfigPath)
+	cfg, namespace, err := loadConfigAndNamespace(effectiveOpts)
+	if err != nil {
+		return nil, err
+	}
+	cfgPath, err := config.ResolvePath(effectiveOpts.ConfigPath)
 	if err != nil {
 		return nil, err
 	}
 	cc := &commandContext{
-		opts:      opts,
+		opts:      effectiveOpts,
 		cfg:       cfg,
 		cfgPath:   cfgPath,
 		namespace: namespace,
-		kube:      newKubeClient(opts),
+		kube:      newKubeClient(effectiveOpts),
 	}
 	if resolver == nil {
 		return cc, nil
 	}
-	sessionName, err := resolver(opts, cfg, namespace)
+	sessionName, err := resolver(effectiveOpts, cfg, namespace)
 	if err != nil {
 		return nil, err
 	}
 	cc.sessionName = sessionName
 	return cc, nil
+}
+
+func optionsWithSessionConfig(opts *Options) (*Options, error) {
+	if opts == nil {
+		return &Options{}, nil
+	}
+	cloned := *opts
+	if strings.TrimSpace(cloned.ConfigPath) != "" || strings.TrimSpace(cloned.Session) == "" {
+		return &cloned, nil
+	}
+	info, err := session.LoadInfo(cloned.Session)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(info.ConfigPath) == "" {
+		return nil, fmt.Errorf("session %q has no saved config path; run from the repo or pass --config", cloned.Session)
+	}
+	cloned.ConfigPath = info.ConfigPath
+	if strings.TrimSpace(cloned.Context) == "" && strings.TrimSpace(info.KubeContext) != "" {
+		cloned.Context = info.KubeContext
+	}
+	if strings.TrimSpace(cloned.Namespace) == "" && strings.TrimSpace(info.Namespace) != "" {
+		cloned.Namespace = info.Namespace
+	}
+	return &cloned, nil
 }
 
 func withQuietConfigAnnounce(fn func() error) error {
