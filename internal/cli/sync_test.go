@@ -306,16 +306,9 @@ func TestSyncthingSessionConfigHashTracksSyncSettings(t *testing.T) {
 		t.Fatal("expected non-empty sync config hash")
 	}
 
-	cfg.Spec.Sync.RemoteExclude = []string{"dist"}
+	cfg.Spec.Sync.Syncthing.WatcherDelaySeconds = 7
 	hashB := syncthingSessionConfigHash(cfg, "/tmp/local", "/workspace")
 	if hashA == hashB {
-		t.Fatal("expected remoteExclude change to affect sync config hash")
-	}
-
-	cfg.Spec.Sync.RemoteExclude = nil
-	cfg.Spec.Sync.Syncthing.WatcherDelaySeconds = 7
-	hashC := syncthingSessionConfigHash(cfg, "/tmp/local", "/workspace")
-	if hashA == hashC {
 		t.Fatal("expected watcher delay change to affect sync config hash")
 	}
 }

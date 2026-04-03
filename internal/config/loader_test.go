@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -221,6 +222,51 @@ func TestResolvePathStopsAtGitRoot(t *testing.T) {
 
 	if _, err := ResolvePath(""); err == nil {
 		t.Fatal("expected no config found because discovery should stop at git root")
+	}
+}
+
+func TestLoadRejectsRemovedSyncExclude(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, DefaultFile)
+	writeFile(t, cfgPath, `apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: demo
+spec:
+  sync:
+    engine: syncthing
+    paths:
+      - ".:/workspace"
+    exclude:
+      - .git/
+`)
+	_, _, err := Load(cfgPath)
+	if err == nil || !strings.Contains(err.Error(), "spec.sync.exclude is removed") {
+		t.Fatalf("expected removed sync.exclude error, got %v", err)
+	}
+}
+
+func TestLoadRejectsRemovedSyncRemoteExclude(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, DefaultFile)
+	raw := []byte(`
+apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: test
+spec:
+  sync:
+    engine: syncthing
+    paths: [".:/workspace"]
+    remoteExclude: [".venv/"]
+`)
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, _, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "spec.sync.remoteExclude is removed") {
+		t.Fatalf("expected removed sync.remoteExclude error, got %v", err)
 	}
 }
 

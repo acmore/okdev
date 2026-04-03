@@ -216,8 +216,6 @@ spec:
 |-------|------|---------|-------------|
 | `engine` | `string` | — | Sync engine (currently only `syncthing`) |
 | `paths` | `[]string` | — | Mappings in `local:remote` format (max 1 entry) |
-| `exclude` | `[]string` | — | Local ignore patterns. Prefer `.stignore` for day-to-day local ignore management. |
-| `remoteExclude` | `[]string` | — | Remote-only ignore patterns (written to `.stignore`) |
 | `syncthing.version` | `string` | `v1.29.7` | Local Syncthing binary version |
 | `syncthing.autoInstall` | `bool` | `true` | Auto-install local Syncthing |
 | `syncthing.image` | `string` | `ghcr.io/acmore/okdev:<version>` | Sidecar image (fallback: `edge`) |
@@ -226,6 +224,8 @@ spec:
 | `syncthing.compression` | `bool` | `false` | Use Syncthing `always` compression for peer connections instead of the default `metadata` mode |
 
 **Validation:** `engine` must be `syncthing`; each `paths[]` entry must be `local:remote`.
+
+Local ignore rules come from the synced workspace's `.stignore`. `okdev init` writes a starter `.stignore` for built-in templates, and `okdev up` creates one with default patterns if the local sync root does not already have one. Editing `.stignore` takes effect automatically as Syncthing notices the change, but it does not remove files that were already synced to the remote workspace.
 
 The `syncthing.version` field controls the local binary on your machine. The Syncthing binary inside the sidecar comes from `spec.sidecar.image`.
 
@@ -241,8 +241,6 @@ spec:
       compression: false
     paths:
       - .:/workspace
-    remoteExclude:
-      - ".cache/"
 ```
 
 ---
@@ -469,13 +467,6 @@ spec:
     engine: syncthing
     paths:
       - .:/workspace
-    exclude:
-      - .git/
-      - .venv/
-      - __pycache__/
-      - wandb/
-    remoteExclude:
-      - ".cache/"
   ports:
     - name: jupyter
       local: 8888
@@ -540,12 +531,6 @@ spec:
     engine: syncthing
     paths:
       - .:/workspace
-    exclude:
-      - .git/
-      - checkpoints/
-      - "*.safetensors"
-    remoteExclude:
-      - ".cache/"
   ports:
     - name: vllm
       local: 8000

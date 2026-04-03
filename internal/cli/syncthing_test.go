@@ -130,7 +130,7 @@ func TestWriteSTIgnore(t *testing.T) {
 
 func TestWriteLocalSTIgnoreWritesDefaultsWhenMissing(t *testing.T) {
 	dir := t.TempDir()
-	if err := writeLocalSTIgnore(dir, nil); err != nil {
+	if err := writeLocalSTIgnore(dir); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(filepath.Join(dir, ".stignore"))
@@ -150,7 +150,7 @@ func TestWriteLocalSTIgnorePreservesExistingFileWhenDefaultsImplicit(t *testing.
 	if err := os.WriteFile(stignorePath, []byte("custom/\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeLocalSTIgnore(dir, nil); err != nil {
+	if err := writeLocalSTIgnore(dir); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(stignorePath)
@@ -159,24 +159,6 @@ func TestWriteLocalSTIgnorePreservesExistingFileWhenDefaultsImplicit(t *testing.
 	}
 	if string(got) != "custom/\n" {
 		t.Fatalf("expected existing stignore to be preserved, got %q", got)
-	}
-}
-
-func TestWriteLocalSTIgnoreOverridesExistingFileWhenExcludesExplicit(t *testing.T) {
-	dir := t.TempDir()
-	stignorePath := filepath.Join(dir, ".stignore")
-	if err := os.WriteFile(stignorePath, []byte("custom/\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeLocalSTIgnore(dir, []string{".git/"}); err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(stignorePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != ".git/\n" {
-		t.Fatalf("expected explicit excludes to replace file, got %q", got)
 	}
 }
 
@@ -229,34 +211,6 @@ func (r *syncthingExecRecorder) ExecShInContainer(_ context.Context, namespace, 
 	r.container = container
 	r.script = script
 	return r.out, r.err
-}
-
-func TestWriteRemoteSTIgnoreInPod(t *testing.T) {
-	rec := &syncthingExecRecorder{}
-	err := writeRemoteSTIgnoreInPod(context.Background(), rec, "ns", "pod", "/workspace", []string{".git/", "node_modules/"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rec.namespace != "ns" || rec.pod != "pod" || rec.container != syncthingContainerName {
-		t.Fatalf("unexpected exec target: %+v", rec)
-	}
-	if !strings.Contains(rec.script, "/workspace/.stignore") {
-		t.Fatalf("expected .stignore path in script, got %q", rec.script)
-	}
-	if !strings.Contains(rec.script, ".git/\nnode_modules/\n") {
-		t.Fatalf("expected ignore content in script, got %q", rec.script)
-	}
-	if strings.Contains(rec.script, "OKDEV_STIGNORE_EOF") {
-		t.Fatalf("did not expect heredoc sentinel in script, got %q", rec.script)
-	}
-}
-
-func TestWriteRemoteSTIgnoreInPodRejectsInvalidRemotePath(t *testing.T) {
-	rec := &syncthingExecRecorder{}
-	err := writeRemoteSTIgnoreInPod(context.Background(), rec, "ns", "pod", "/", []string{".git/"})
-	if err == nil {
-		t.Fatal("expected invalid remote path error")
-	}
 }
 
 func TestAllocateLocalSyncthingAPIEndpoint(t *testing.T) {
@@ -963,31 +917,9 @@ func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	}
 }
 
-func TestEffectiveLocalExcludes(t *testing.T) {
-	got := effectiveLocalExcludes(nil)
-	if len(got) != len(defaultSyncExcludes) {
-		t.Fatalf("expected defaults, got %v", got)
-	}
-	for i, v := range defaultSyncExcludes {
-		if got[i] != v {
-			t.Fatalf("expected %q at index %d, got %q", v, i, got[i])
-		}
-	}
-	custom := []string{".idea", "build"}
-	got = effectiveLocalExcludes(custom)
-	if len(got) != 2 || got[0] != ".idea" || got[1] != "build" {
-		t.Fatalf("expected custom excludes, got %v", got)
-	}
-	for _, v := range effectiveLocalExcludes(nil) {
-		if v == ".git" {
-			t.Fatal("did not expect .git in default excludes")
-		}
-	}
-}
-
 func TestWriteSTIgnoreDefaultExcludes(t *testing.T) {
 	dir := t.TempDir()
-	if err := writeSTIgnore(dir, effectiveLocalExcludes(nil)); err != nil {
+	if err := writeSTIgnore(dir, defaultSyncExcludes); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(filepath.Join(dir, ".stignore"))
@@ -1007,8 +939,40 @@ func TestWriteLocalSTIgnorePropagatesStatError(t *testing.T) {
 	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeLocalSTIgnore(filePath, nil); err == nil {
+	if err := writeLocalSTIgnore(filePath); err == nil {
 		t.Fatal("expected stat error for invalid local path")
+	}
+}
+
+func TestDetectLargeSyncFilesHonorsSTIgnore(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".stignore"), []byte(".git/\nlarge.bin\nignored/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "ignored"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ignored", "nested.bin"), bytes.Repeat([]byte("a"), 2048), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".git", "index"), bytes.Repeat([]byte("a"), 2048), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "large.bin"), bytes.Repeat([]byte("a"), 2048), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tracked.bin"), bytes.Repeat([]byte("a"), 2048), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files, err := detectLargeSyncFiles(dir, 1024, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].Path != "tracked.bin" {
+		t.Fatalf("expected only tracked.bin to be reported, got %+v", files)
 	}
 }
 

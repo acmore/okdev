@@ -109,8 +109,6 @@ type MetadataMap struct {
 
 type SyncSpec struct {
 	Paths         []string      `yaml:"paths"`
-	Exclude       []string      `yaml:"exclude"`
-	RemoteExclude []string      `yaml:"remoteExclude"`
 	PreservePaths []string      `yaml:"preservePaths"`
 	Engine        string        `yaml:"engine"`
 	Syncthing     SyncthingSpec `yaml:"syncthing"`
