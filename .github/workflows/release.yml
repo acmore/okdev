@@ -1,43 +1,20 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_run:
+    workflows: ["E2E Kind"]
+    types:
+      - completed
 
 jobs:
-  smoke:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - uses: helm/kind-action@v1.12.0
-        with:
-          cluster_name: okdev-e2e
-      - name: Build okdev CLI
-        run: go build -o bin/okdev ./cmd/okdev
-      - name: Build sidecar image
-        run: docker build -f infra/sidecar/Dockerfile -t okdev-sidecar:v0.0.0-e2e .
-      - name: Load sidecar image into kind
-        run: kind load docker-image okdev-sidecar:v0.0.0-e2e --name okdev-e2e
-      - name: Run smoke test
-        run: bash scripts/e2e_kind_smoke.sh
-      - name: Dump cluster state on failure
-        if: failure()
-        run: |
-          kubectl get pods -A -o wide || true
-          kubectl get events -A --sort-by=.lastTimestamp | tail -n 200 || true
-          kubectl -n default logs okdev-e2e-smoke -c okdev-sidecar || true
-          kubectl -n default logs okdev-e2e-smoke -c dev || true
-          kubectl -n default exec okdev-e2e-smoke -c dev -- sh -lc 'ps aux || ps' || true
-          kubectl -n default exec okdev-e2e-smoke -c dev -- sh -lc 'ls -R /var/okdev /tmp 2>/dev/null | sed -n "1,200p"' || true
-
   build:
+    if: >-
+      ${{
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        startsWith(github.event.workflow_run.head_branch, 'v')
+      }}
     runs-on: ubuntu-latest
-    needs: smoke
     permissions:
       contents: write
     strategy:
@@ -46,6 +23,8 @@ jobs:
         goarch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -54,8 +33,8 @@ jobs:
           POSTHOG_PROJECT_KEY: ${{ secrets.POSTHOG_PROJECT_KEY }}
         run: |
           mkdir -p dist
-          VERSION="${GITHUB_REF_NAME}"
-          COMMIT="${GITHUB_SHA}"
+          VERSION="${{ github.event.workflow_run.head_branch }}"
+          COMMIT="${{ github.event.workflow_run.head_sha }}"
           BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           BIN="okdev_${{ matrix.goos }}_${{ matrix.goarch }}"
           OUT_DIR="dist/${BIN}"
@@ -76,6 +55,12 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     needs: build
+    if: >-
+      ${{
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        startsWith(github.event.workflow_run.head_branch, 'v')
+      }}
     permissions:
       contents: write
     steps:
@@ -94,7 +79,9 @@ jobs:
       - name: Publish GitHub release assets
         uses: softprops/action-gh-release@v2
         with:
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          tag_name: ${{ github.event.workflow_run.head_branch }}
+          target_commitish: ${{ github.event.workflow_run.head_sha }}
+          prerelease: ${{ contains(github.event.workflow_run.head_branch, '-') }}
           files: |
             dist/okdev_*.tar.gz
             dist/checksums.txt

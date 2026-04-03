@@ -7,6 +7,10 @@ on:
         description: Syncthing version (e.g. v1.29.7)
         required: false
         default: v1.29.7
+  workflow_run:
+    workflows: ["E2E Kind"]
+    types:
+      - completed
   push:
     branches: [main]
     paths:
@@ -19,17 +23,28 @@ on:
       - "internal/cli/ssh.go"
       - "internal/cli/up.go"
       - "internal/workload/**"
-    tags:
-      - "v*"
 
 jobs:
   build-and-push:
+    if: >-
+      ${{
+        github.event_name == 'workflow_dispatch' ||
+        github.event_name == 'push' ||
+        (
+          github.event_name == 'workflow_run' &&
+          github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.event == 'push' &&
+          startsWith(github.event.workflow_run.head_branch, 'v')
+        )
+      }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set variables
         id: vars
@@ -60,8 +75,8 @@ jobs:
           tags: |
             type=raw,value=edge,enable={{is_default_branch}}
             type=sha,prefix=edge-
-            type=ref,event=tag
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
+            type=raw,value=${{ github.event.workflow_run.head_branch }},enable=${{ github.event_name == 'workflow_run' && startsWith(github.event.workflow_run.head_branch, 'v') }}
+            type=raw,value=latest,enable=${{ github.event_name == 'workflow_run' && startsWith(github.event.workflow_run.head_branch, 'v') && !contains(github.event.workflow_run.head_branch, '-') }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
