@@ -58,7 +58,6 @@
 - Codex uses `~/.codex/auth.json` by default, but `spec.agents[].auth.localPath` can point at a different local auth file.
 - `okdev down` removes staged agent auth symlinks/runtime files when it can still reach the target container.
 - `okdev` does not own agent process launch; users run `codex`, `claude`, `gemini`, `opencode`, or similar CLIs manually after connecting.
-- shareable sessions skip auth staging by default.
 
 ### `okdev init [--workload pod|job|pytorchjob|generic] [--template basic|<registry>|<path>|<url>] [--stignore-preset default|python|node|go|rust] [--force]`
 

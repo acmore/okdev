@@ -431,7 +431,6 @@ func TestEnsureConfiguredAgentAuthStagesLocalFile(t *testing.T) {
 		"default",
 		"pod",
 		"dev",
-		false,
 		[]config.AgentSpec{{Name: "codex", Auth: &config.AgentAuth{LocalPath: localAuth}}},
 		func(string, ...any) {},
 	)
@@ -475,7 +474,6 @@ func TestEnsureConfiguredAgentAuthPreservesLocalBasename(t *testing.T) {
 		"default",
 		"pod",
 		"dev",
-		false,
 		[]config.AgentSpec{{Name: "codex", Auth: &config.AgentAuth{LocalPath: localAuth}}},
 		func(string, ...any) {},
 	)
@@ -513,7 +511,6 @@ func TestEnsureConfiguredAgentAuthDoesNotClobberExistingRemoteFile(t *testing.T)
 		"default",
 		"pod",
 		"dev",
-		false,
 		[]config.AgentSpec{{Name: "codex", Auth: &config.AgentAuth{LocalPath: localAuth}}},
 		func(string, ...any) {},
 	)
@@ -529,32 +526,6 @@ func TestEnsureConfiguredAgentAuthDoesNotClobberExistingRemoteFile(t *testing.T)
 	}
 }
 
-func TestEnsureConfiguredAgentAuthSkipsShareableSessions(t *testing.T) {
-	client := &fakeAgentExecClient{results: map[string]error{}}
-	var warnings []string
-
-	results := ensureConfiguredAgentAuth(
-		context.Background(),
-		client,
-		"default",
-		"pod",
-		"dev",
-		true,
-		[]config.AgentSpec{{Name: "codex"}},
-		func(format string, args ...any) { warnings = append(warnings, format) },
-	)
-
-	if len(results) != 1 || results[0] != "codex: skipped (shareable session)" {
-		t.Fatalf("unexpected results %#v", results)
-	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "skipping %s auth staging") {
-		t.Fatalf("unexpected warnings %#v", warnings)
-	}
-	if len(client.scripts) != 0 || len(client.copyCalls) != 0 {
-		t.Fatalf("expected no remote operations, got scripts=%#v copyCalls=%#v", client.scripts, client.copyCalls)
-	}
-}
-
 func TestEnsureConfiguredAgentAuthWarnsForEnvOnlySource(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "secret")
 	client := &fakeAgentExecClient{results: map[string]error{}}
@@ -565,7 +536,6 @@ func TestEnsureConfiguredAgentAuthWarnsForEnvOnlySource(t *testing.T) {
 		"default",
 		"pod",
 		"dev",
-		false,
 		[]config.AgentSpec{{Name: "claude-code", Auth: &config.AgentAuth{Env: "ANTHROPIC_API_KEY"}}},
 		func(string, ...any) {},
 	)

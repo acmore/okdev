@@ -83,7 +83,6 @@ func TestGatherDetailedStatusIncludesDiagnostics(t *testing.T) {
 				CreatedAt: time.Now().Add(-time.Hour),
 				Labels: map[string]string{
 					"okdev.io/workload-role": "Trainer",
-					"okdev.io/shareable":     "true",
 				},
 			},
 			{
@@ -127,9 +126,6 @@ func TestGatherDetailedStatusIncludesDiagnostics(t *testing.T) {
 	}
 	if detail.Target.PinnedPod != "worker-0" || detail.Target.PinnedContainer != "trainer" {
 		t.Fatalf("unexpected pinned target: %+v", detail.Target)
-	}
-	if !detail.Shareable {
-		t.Fatal("expected selected pod shareable=true")
 	}
 	if detail.SSH.ManagedForwardStatus != "running" || !detail.SSH.ConfigPresent {
 		t.Fatalf("unexpected ssh detail: %+v", detail.SSH)

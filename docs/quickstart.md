@@ -124,7 +124,6 @@ Current scope:
 - `okdev down` cleans that staged runtime auth up before session deletion when the target is still reachable
 - `okdev agent list` reports configured agents, install status, and auth staging status
 - users still launch agent CLIs manually through `okdev ssh`, plain SSH, or editor remote sessions
-- shareable sessions skip auth staging and warn instead
 
 Use `okdev ssh` when you want the tmux-backed interactive shell managed by okdev. Use `ssh okdev-<session>` when you want a plain SSH session for editors, remote IDEs, or direct tool execution.
 

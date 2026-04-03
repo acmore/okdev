@@ -64,7 +64,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					return err
 				}
 				stopOwnership := startTransientStatus(errOut, "Verifying session access")
-				if err := ensureExistingSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName, true); err != nil {
+				if err := ensureExistingSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 					stopOwnership()
 					return err
 				}
@@ -554,7 +554,7 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if err := ensureExistingSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName, true); err != nil {
+				if err := ensureExistingSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 					return err
 				}
 				target, err := resolveTargetRef(cmd.Context(), opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)

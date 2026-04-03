@@ -39,7 +39,6 @@
   - the dev container can run as root when package bootstrap is needed
   - `bash` and `curl` are present or installable
   - `node -v` and `npm -v` work inside the container
-- shareable sessions intentionally skip auth staging by default. If auth is expected to be staged, confirm `spec.session.shareable: false`.
 - `okdev` does not launch the agent for you; after setup, connect with `okdev ssh` and run the agent CLI manually.
 
 ## Port Forward Disconnects

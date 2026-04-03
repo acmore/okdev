@@ -412,24 +412,11 @@ func labelsForSession(opts *Options, cfg *config.DevEnvironment, sessionName str
 		"okdev.io/owner":         owner,
 		"okdev.io/repo":          repo,
 		"okdev.io/workload-type": cfg.Spec.Workload.Type,
-		"okdev.io/shareable": func() string {
-			if cfg.Spec.Session.Shareable {
-				return "true"
-			}
-			return "false"
-		}(),
 	}
 }
 
 func annotationsForSession(cfg *config.DevEnvironment) map[string]string {
-	out := map[string]string{
-		"okdev.io/shareable": func() string {
-			if cfg.Spec.Session.Shareable {
-				return "true"
-			}
-			return "false"
-		}(),
-	}
+	out := map[string]string{}
 	if cfg.Spec.Session.TTLHours > 0 {
 		out["okdev.io/ttl-hours"] = fmt.Sprintf("%d", cfg.Spec.Session.TTLHours)
 	}
@@ -541,19 +528,12 @@ func ownerLabelSelector(opts *Options) string {
 	return "okdev.io/owner=" + currentOwner(opts)
 }
 
-func isSessionShareable(p kube.PodSummary) bool {
-	if strings.EqualFold(strings.TrimSpace(p.Annotations["okdev.io/shareable"]), "true") {
-		return true
-	}
-	return strings.EqualFold(strings.TrimSpace(p.Labels["okdev.io/shareable"]), "true")
+func ensureSessionOwnership(opts *Options, k *kube.Client, namespace, sessionName string) error {
+	return ensureSessionAccess(opts, k, namespace, sessionName, false)
 }
 
-func ensureSessionOwnership(opts *Options, k *kube.Client, namespace, sessionName string, allowShareable bool) error {
-	return ensureSessionAccess(opts, k, namespace, sessionName, allowShareable, false)
-}
-
-func ensureExistingSessionOwnership(opts *Options, k *kube.Client, namespace, sessionName string, allowShareable bool) error {
-	return ensureSessionAccess(opts, k, namespace, sessionName, allowShareable, true)
+func ensureExistingSessionOwnership(opts *Options, k *kube.Client, namespace, sessionName string) error {
+	return ensureSessionAccess(opts, k, namespace, sessionName, true)
 }
 
 type sessionAccessReader interface {
@@ -561,7 +541,7 @@ type sessionAccessReader interface {
 	ListPods(context.Context, string, bool, string) ([]kube.PodSummary, error)
 }
 
-func ensureSessionAccess(opts *Options, k sessionAccessReader, namespace, sessionName string, allowShareable bool, requireExisting bool) error {
+func ensureSessionAccess(opts *Options, k sessionAccessReader, namespace, sessionName string, requireExisting bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), sessionAccessTimeout)
 	defer cancel()
 	pods, err := k.ListPods(ctx, namespace, false, "okdev.io/managed=true,okdev.io/session="+sessionName)
@@ -583,10 +563,7 @@ func ensureSessionAccess(opts *Options, k sessionAccessReader, namespace, sessio
 	if otherOwner == "" || otherOwner == owner {
 		return nil
 	}
-	if allowShareable && isSessionShareable(*pod) {
-		return nil
-	}
-	return fmt.Errorf("session %q is owned by %q (current owner: %q); set --owner %s or mark session as shareable", sessionName, otherOwner, owner, otherOwner)
+	return fmt.Errorf("session %q is owned by %q (current owner: %q); set --owner %s", sessionName, otherOwner, owner, otherOwner)
 }
 
 func ensureCommand(name string) error {

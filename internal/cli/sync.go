@@ -42,7 +42,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := ensureExistingSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName, true); err != nil {
+			if err := ensureExistingSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 				return err
 			}
 			engine := cc.cfg.Spec.Sync.Engine
@@ -147,7 +147,7 @@ synced workspace subtree is cleared.`,
 			if err != nil {
 				return err
 			}
-			if err := ensureExistingSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName, true); err != nil {
+			if err := ensureExistingSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 				return err
 			}
 			pairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))

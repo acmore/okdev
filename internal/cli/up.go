@@ -192,7 +192,7 @@ func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, e
 
 func upReconcile(state *upState, applyWorkload bool) error {
 	state.ui.section("Reconcile")
-	if err := ensureSessionOwnership(state.opts, state.command.kube, state.command.namespace, state.command.sessionName, true); err != nil {
+	if err := ensureSessionOwnership(state.opts, state.command.kube, state.command.namespace, state.command.sessionName); err != nil {
 		return err
 	}
 	state.ui.stepDone("ownership", "ok")
@@ -633,7 +633,7 @@ func upSetup(state *upState) error {
 		results := ensureConfiguredAgentsInstalled(state.ctx, state.command.kube, state.command.namespace, target.PodName, target.Container, state.command.cfg.Spec.Agents, state.ui.warnf, func(detail string) {
 			state.ui.stepRun("agents", detail)
 		})
-		authResults := ensureConfiguredAgentAuth(state.ctx, state.command.kube, state.command.namespace, target.PodName, target.Container, state.command.cfg.Spec.Session.Shareable, state.command.cfg.Spec.Agents, state.ui.warnf)
+		authResults := ensureConfiguredAgentAuth(state.ctx, state.command.kube, state.command.namespace, target.PodName, target.Container, state.command.cfg.Spec.Agents, state.ui.warnf)
 		if len(results) == 0 && len(authResults) == 0 {
 			state.ui.stepDone("agents", "no configured agents")
 		} else {
