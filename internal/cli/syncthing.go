@@ -733,8 +733,14 @@ func syncthingCompletion(ctx context.Context, base, key, folderID, deviceID stri
 }
 
 type syncthingInitialSyncProgress struct {
-	Mode            string
-	LocalNeedBytes  int64
+	Mode string
+	// LocalNeedBytes is the number of bytes the remote device still needs,
+	// as reported by querying the local Syncthing completion endpoint for
+	// the remote device ID.  This represents local→remote (upload) traffic.
+	LocalNeedBytes int64
+	// RemoteNeedBytes is the number of bytes the local device still needs,
+	// as reported by querying the remote Syncthing completion endpoint for
+	// the local device ID.  This represents remote→local (download) traffic.
 	RemoteNeedBytes int64
 	UploadBps       int64
 	DownloadBps     int64
@@ -1369,7 +1375,7 @@ func syncthingManagedFolderType(cfg map[string]any, folderID string) (string, bo
 		return "", false, err
 	}
 	for _, f := range folders {
-		fm, err := syncthingObjectMap(f, "folders")
+		fm, err := syncthingObjectMap(f, "folder entry")
 		if err != nil {
 			return "", false, err
 		}
@@ -1380,6 +1386,14 @@ func syncthingManagedFolderType(cfg map[string]any, folderID string) (string, bo
 	return "", false, nil
 }
 
+// shouldResumeTwoPhaseBootstrap returns true when the remote folder config
+// indicates that a previous two-phase bootstrap did not finish.  A missing
+// folder or a folder still set to a unidirectional type (sendonly/receiveonly)
+// means phase 2 (sendreceive) was never reached.
+//
+// Callers must gate invocation on hasConfigState so that a brand-new session
+// (where the folder simply hasn't been created yet) does not falsely trigger
+// a two-phase resume.
 func shouldResumeTwoPhaseBootstrap(folderType string, folderFound bool) bool {
 	if !folderFound {
 		return true

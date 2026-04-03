@@ -871,6 +871,9 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, str
 	active := syncthingSessionActive(state.command.sessionName)
 	restartRequired := state.flags.resetWorkspace || configChanged || !active
 	startMode = syncStartMode(state.flags.resetWorkspace, targetReset, hasConfigState, configChanged, active)
+	// Only probe the remote folder type when a prior config state exists
+	// (hasConfigState), which ensures we skip brand-new sessions where the
+	// remote folder simply hasn't been created yet.
 	if len(state.syncPairs) == 1 && hasConfigState && !state.flags.resetWorkspace && !targetReset {
 		bootstrapIncomplete, err := remoteSyncthingBootstrapIncomplete(state.ctx, state.opts, state.command.kube, state.command.namespace, target.PodName, state.command.sessionName)
 		if err != nil {
