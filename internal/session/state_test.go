@@ -14,14 +14,12 @@ func resetRepoRootCache() {
 	repoRootErr = nil
 }
 
-func TestActiveSessionPathUsesHomeDir(t *testing.T) {
-	tmp := t.TempDir()
-	home := filepath.Join(tmp, "home")
-	repo := filepath.Join(tmp, "repo")
+func chdirRepo(t *testing.T, home, repo string) {
+	t.Helper()
 	if err := os.MkdirAll(home, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(repo, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	origWd, _ := os.Getwd()
@@ -31,47 +29,37 @@ func TestActiveSessionPathUsesHomeDir(t *testing.T) {
 	}
 	t.Setenv("HOME", home)
 	resetRepoRootCache()
+}
+
+func TestActiveSessionPathUsesWorkspaceDir(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "home")
+	repo := filepath.Join(tmp, "repo")
+	chdirRepo(t, home, repo)
 
 	p, err := ActiveSessionPath()
 	if err != nil {
 		t.Fatalf("ActiveSessionPath error: %v", err)
 	}
-	if !strings.HasPrefix(p, filepath.Join(home, ".okdev", "sessions")+string(os.PathSeparator)) {
-		t.Fatalf("expected path under ~/.okdev/sessions, got %q", p)
-	}
-	if strings.Contains(p, filepath.Join(repo, ".okdev")) {
-		t.Fatalf("path should not be inside repo: %q", p)
+	if !strings.HasPrefix(p, filepath.Join(home, ".okdev", "workspaces")+string(os.PathSeparator)) {
+		t.Fatalf("expected path under ~/.okdev/workspaces, got %q", p)
 	}
 }
 
-func TestLoadActiveSessionFallsBackToLegacyPath(t *testing.T) {
+func TestSessionDirUsesGlobalSessionsRoot(t *testing.T) {
 	tmp := t.TempDir()
-	home := filepath.Join(tmp, "home")
-	repo := filepath.Join(tmp, "repo")
-	if err := os.MkdirAll(home, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(repo, ".okdev"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	origWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(origWd) })
-	if err := os.Chdir(repo); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HOME", home)
-	resetRepoRootCache()
+	t.Setenv("HOME", tmp)
 
-	if err := os.WriteFile(filepath.Join(repo, ".okdev", "active_session"), []byte("legacy-session\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := LoadActiveSession()
+	dir, err := SessionDir("My Session")
 	if err != nil {
-		t.Fatalf("LoadActiveSession error: %v", err)
+		t.Fatalf("SessionDir error: %v", err)
 	}
-	if got != "legacy-session" {
-		t.Fatalf("unexpected session: got %q want %q", got, "legacy-session")
+	wantPrefix := filepath.Join(tmp, ".okdev", "sessions") + string(os.PathSeparator)
+	if !strings.HasPrefix(dir, wantPrefix) {
+		t.Fatalf("expected session dir under %q, got %q", wantPrefix, dir)
+	}
+	if filepath.Base(dir) != "my-session" {
+		t.Fatalf("unexpected sanitized session dir %q", dir)
 	}
 }
 
@@ -79,19 +67,7 @@ func TestShutdownRequestLifecycle(t *testing.T) {
 	tmp := t.TempDir()
 	home := filepath.Join(tmp, "home")
 	repo := filepath.Join(tmp, "repo")
-	if err := os.MkdirAll(home, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	origWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(origWd) })
-	if err := os.Chdir(repo); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HOME", home)
-	resetRepoRootCache()
+	chdirRepo(t, home, repo)
 
 	requested, err := ShutdownRequested("test-session")
 	if err != nil {
@@ -109,8 +85,8 @@ func TestShutdownRequestLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ShutdownRequestPath error: %v", err)
 	}
-	if !strings.HasPrefix(p, filepath.Join(home, ".okdev", shutdownRequestDirName)+string(os.PathSeparator)) {
-		t.Fatalf("expected global shutdown request path, got %q", p)
+	if !strings.Contains(p, filepath.Join(".okdev", "sessions", "test-session", shutdownMarkerName)) {
+		t.Fatalf("unexpected shutdown marker path %q", p)
 	}
 
 	requested, err = ShutdownRequested("test-session")
@@ -134,51 +110,6 @@ func TestShutdownRequestLifecycle(t *testing.T) {
 	}
 }
 
-func TestShutdownRequestedIgnoresLegacyRepoScopedMarker(t *testing.T) {
-	tmp := t.TempDir()
-	home := filepath.Join(tmp, "home")
-	repo := filepath.Join(tmp, "repo")
-	if err := os.MkdirAll(home, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	origWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(origWd) })
-	if err := os.Chdir(repo); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HOME", home)
-	resetRepoRootCache()
-
-	legacy, err := legacyShutdownRequestPath("test-session")
-	if err != nil {
-		t.Fatalf("legacyShutdownRequestPath error: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(legacy, []byte("1\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	requested, err := ShutdownRequested("test-session")
-	if err != nil {
-		t.Fatalf("ShutdownRequested error: %v", err)
-	}
-	if requested {
-		t.Fatal("expected legacy repo-scoped shutdown marker to be ignored")
-	}
-
-	if err := ClearShutdownRequest("test-session"); err != nil {
-		t.Fatalf("ClearShutdownRequest error: %v", err)
-	}
-	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
-		t.Fatalf("expected ClearShutdownRequest to remove legacy marker, got err=%v", err)
-	}
-}
-
 func TestRepoStateKeyIncludesSanitizedBaseAndHash(t *testing.T) {
 	got := repoStateKey("/tmp/My Repo")
 	if !strings.HasPrefix(got, "my-repo-") {
@@ -189,31 +120,14 @@ func TestRepoStateKeyIncludesSanitizedBaseAndHash(t *testing.T) {
 	}
 }
 
-func TestSaveActiveSessionRemovesLegacyState(t *testing.T) {
+func TestSaveLoadActiveSession(t *testing.T) {
 	tmp := t.TempDir()
 	home := filepath.Join(tmp, "home")
 	repo := filepath.Join(tmp, "repo")
-	if err := os.MkdirAll(filepath.Join(repo, ".okdev"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	origWd, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(origWd) })
-	if err := os.Chdir(repo); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HOME", home)
-	resetRepoRootCache()
-
-	legacy := filepath.Join(repo, ".okdev", "active_session")
-	if err := os.WriteFile(legacy, []byte("old\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	chdirRepo(t, home, repo)
 
 	if err := SaveActiveSession("new-session"); err != nil {
 		t.Fatalf("SaveActiveSession error: %v", err)
-	}
-	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
-		t.Fatalf("expected legacy state to be removed, got err=%v", err)
 	}
 	got, err := LoadActiveSession()
 	if err != nil {
@@ -221,5 +135,33 @@ func TestSaveActiveSessionRemovesLegacyState(t *testing.T) {
 	}
 	if got != "new-session" {
 		t.Fatalf("unexpected active session %q", got)
+	}
+}
+
+func TestSaveLoadSessionInfo(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	if err := SaveInfo(Info{
+		Name:         "sess-a",
+		RepoRoot:     "/tmp/repo",
+		ConfigPath:   "/tmp/repo/.okdev.yaml",
+		Namespace:    "default",
+		KubeContext:  "dev",
+		Owner:        "alice",
+		WorkloadType: "deployment",
+	}); err != nil {
+		t.Fatalf("SaveInfo error: %v", err)
+	}
+
+	info, err := LoadInfo("sess-a")
+	if err != nil {
+		t.Fatalf("LoadInfo error: %v", err)
+	}
+	if info.Name != "sess-a" || info.ConfigPath != "/tmp/repo/.okdev.yaml" || info.WorkloadType != "deployment" {
+		t.Fatalf("unexpected session info: %+v", info)
+	}
+	if info.CreatedAt.IsZero() || info.LastUsedAt.IsZero() {
+		t.Fatalf("expected timestamps to be set: %+v", info)
 	}
 }

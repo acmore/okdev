@@ -694,6 +694,20 @@ func upSetup(state *upState) error {
 	if err := session.SaveActiveSession(state.command.sessionName); err != nil {
 		return err
 	}
+	repoRoot, repoErr := session.RepoRoot()
+	if repoErr != nil {
+		state.ui.warnf("failed to resolve repo root for session metadata: %v", repoErr)
+	} else if infoErr := session.SaveInfo(session.Info{
+		Name:         state.command.sessionName,
+		RepoRoot:     repoRoot,
+		ConfigPath:   state.command.cfgPath,
+		Namespace:    state.command.namespace,
+		KubeContext:  state.opts.Context,
+		Owner:        state.command.opts.Owner,
+		WorkloadType: state.command.cfg.Spec.Workload.Type,
+	}); infoErr != nil {
+		state.ui.warnf("failed to persist session metadata: %v", infoErr)
+	}
 	state.ui.stepDone("active session", state.command.sessionName)
 	if err := session.ClearShutdownRequest(state.command.sessionName); err != nil {
 		state.ui.warnf("failed to clear prior shutdown request: %v", err)

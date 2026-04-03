@@ -11,15 +11,33 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/acmore/okdev/internal/workload"
 )
 
-const stateDirName = ".okdev"
-const sessionsDirName = "sessions"
-const sessionFileName = "active_session"
-const shutdownRequestDirName = "shutdown_requests"
-const targetStateDirName = "targets"
+const (
+	stateDirName       = ".okdev"
+	workspacesDirName  = "workspaces"
+	sessionsDirName    = "sessions"
+	sessionFileName    = "active_session"
+	targetStateName    = "target.json"
+	sessionInfoName    = "session.json"
+	shutdownMarkerName = "shutdown_requested"
+	syncthingDirName   = "syncthing"
+)
+
+type Info struct {
+	Name         string    `json:"name"`
+	RepoRoot     string    `json:"repoRoot,omitempty"`
+	ConfigPath   string    `json:"configPath,omitempty"`
+	Namespace    string    `json:"namespace,omitempty"`
+	KubeContext  string    `json:"kubeContext,omitempty"`
+	Owner        string    `json:"owner,omitempty"`
+	WorkloadType string    `json:"workloadType,omitempty"`
+	CreatedAt    time.Time `json:"createdAt,omitempty"`
+	LastUsedAt   time.Time `json:"lastUsedAt,omitempty"`
+}
 
 var (
 	repoRootOnce sync.Once
@@ -45,27 +63,7 @@ func RepoRoot() (string, error) {
 	return repoRootVal, repoRootErr
 }
 
-func ActiveSessionPath() (string, error) {
-	root, err := activeSessionRootDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(root, sessionFileName), nil
-}
-
-func activeSessionRootDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	root, err := RepoRoot()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, stateDirName, sessionsDirName, repoStateKey(root)), nil
-}
-
-func globalStateRootDir() (string, error) {
+func stateRootDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
@@ -73,12 +71,60 @@ func globalStateRootDir() (string, error) {
 	return filepath.Join(home, stateDirName), nil
 }
 
-func legacyActiveSessionPath() (string, error) {
-	root, err := RepoRoot()
+func SessionDir(name string) (string, error) {
+	root, err := stateRootDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(root, stateDirName, sessionFileName), nil
+	dir := filepath.Join(root, sessionsDirName, sanitize(name))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create session directory: %w", err)
+	}
+	return dir, nil
+}
+
+func SyncthingDir(name string) (string, error) {
+	dir, err := SessionDir(name)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, syncthingDirName)
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return "", fmt.Errorf("create syncthing directory: %w", err)
+	}
+	return path, nil
+}
+
+func SessionInfoPath(name string) (string, error) {
+	dir, err := SessionDir(name)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, sessionInfoName), nil
+}
+
+func ActiveSessionPath() (string, error) {
+	root, err := workspaceStateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, sessionFileName), nil
+}
+
+func workspaceStateDir() (string, error) {
+	root, err := stateRootDir()
+	if err != nil {
+		return "", err
+	}
+	repoRoot, err := RepoRoot()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(root, workspacesDirName, repoStateKey(repoRoot))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create workspace state directory: %w", err)
+	}
+	return dir, nil
 }
 
 func repoStateKey(repoRoot string) string {
@@ -100,18 +146,7 @@ func LoadActiveSession() (string, error) {
 	b, err := os.ReadFile(p)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			lp, lerr := legacyActiveSessionPath()
-			if lerr != nil {
-				return "", lerr
-			}
-			lb, lreadErr := os.ReadFile(lp)
-			if lreadErr != nil {
-				if errors.Is(lreadErr, os.ErrNotExist) {
-					return "", nil
-				}
-				return "", fmt.Errorf("read active session (legacy): %w", lreadErr)
-			}
-			return strings.TrimSpace(string(lb)), nil
+			return "", nil
 		}
 		return "", fmt.Errorf("read active session: %w", err)
 	}
@@ -124,14 +159,10 @@ func SaveActiveSession(name string) error {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return fmt.Errorf("create state directory: %w", err)
+		return fmt.Errorf("create workspace state directory: %w", err)
 	}
 	if err := os.WriteFile(p, []byte(name+"\n"), 0o644); err != nil {
 		return fmt.Errorf("write active session: %w", err)
-	}
-	if lp, lerr := legacyActiveSessionPath(); lerr == nil {
-		_ = os.Remove(lp)
-		_ = os.Remove(filepath.Dir(lp))
 	}
 	return nil
 }
@@ -144,19 +175,15 @@ func ClearActiveSession() error {
 	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("clear active session: %w", err)
 	}
-	if lp, lerr := legacyActiveSessionPath(); lerr == nil {
-		_ = os.Remove(lp)
-		_ = os.Remove(filepath.Dir(lp))
-	}
 	return nil
 }
 
 func TargetStatePath(name string) (string, error) {
-	root, err := activeSessionRootDir()
+	dir, err := SessionDir(name)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(root, targetStateDirName, sanitize(name)+".json"), nil
+	return filepath.Join(dir, targetStateName), nil
 }
 
 func SaveTarget(name string, target workload.TargetRef) error {
@@ -166,9 +193,6 @@ func SaveTarget(name string, target workload.TargetRef) error {
 	p, err := TargetStatePath(name)
 	if err != nil {
 		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return fmt.Errorf("create target state directory: %w", err)
 	}
 	payload, err := json.Marshal(target)
 	if err != nil {
@@ -216,20 +240,87 @@ func ClearTarget(name string) error {
 	return nil
 }
 
-func ShutdownRequestPath(name string) (string, error) {
-	root, err := globalStateRootDir()
-	if err != nil {
-		return "", err
+func SaveInfo(info Info) error {
+	name := sanitize(info.Name)
+	if strings.TrimSpace(name) == "" {
+		return nil
 	}
-	return filepath.Join(root, shutdownRequestDirName, sanitize(name)), nil
+	path, err := SessionInfoPath(name)
+	if err != nil {
+		return err
+	}
+	existing, err := LoadInfo(name)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	if existing.CreatedAt.IsZero() {
+		existing.CreatedAt = now
+	}
+	if existing.Name == "" {
+		existing.Name = name
+	}
+	if strings.TrimSpace(info.Name) != "" {
+		existing.Name = name
+	}
+	if strings.TrimSpace(info.RepoRoot) != "" {
+		existing.RepoRoot = info.RepoRoot
+	}
+	if strings.TrimSpace(info.ConfigPath) != "" {
+		existing.ConfigPath = info.ConfigPath
+	}
+	if strings.TrimSpace(info.Namespace) != "" {
+		existing.Namespace = info.Namespace
+	}
+	if strings.TrimSpace(info.KubeContext) != "" {
+		existing.KubeContext = info.KubeContext
+	}
+	if strings.TrimSpace(info.Owner) != "" {
+		existing.Owner = info.Owner
+	}
+	if strings.TrimSpace(info.WorkloadType) != "" {
+		existing.WorkloadType = info.WorkloadType
+	}
+	existing.LastUsedAt = now
+
+	payload, err := json.Marshal(existing)
+	if err != nil {
+		return fmt.Errorf("marshal session info: %w", err)
+	}
+	if err := os.WriteFile(path, append(payload, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write session info: %w", err)
+	}
+	return nil
 }
 
-func legacyShutdownRequestPath(name string) (string, error) {
-	root, err := activeSessionRootDir()
+func LoadInfo(name string) (Info, error) {
+	if strings.TrimSpace(name) == "" {
+		return Info{}, nil
+	}
+	path, err := SessionInfoPath(name)
+	if err != nil {
+		return Info{}, err
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Info{}, nil
+		}
+		return Info{}, fmt.Errorf("read session info: %w", err)
+	}
+	var info Info
+	if err := json.Unmarshal(b, &info); err != nil {
+		return Info{}, fmt.Errorf("decode session info: %w", err)
+	}
+	return info, nil
+}
+
+func ShutdownRequestPath(name string) (string, error) {
+	dir, err := SessionDir(name)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(root, shutdownRequestDirName, sanitize(name)), nil
+	return filepath.Join(dir, shutdownMarkerName), nil
 }
 
 func RequestShutdown(name string) error {
@@ -239,9 +330,6 @@ func RequestShutdown(name string) error {
 	p, err := ShutdownRequestPath(name)
 	if err != nil {
 		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return fmt.Errorf("create shutdown request directory: %w", err)
 	}
 	if err := os.WriteFile(p, []byte("1\n"), 0o644); err != nil {
 		return fmt.Errorf("write shutdown request: %w", err)
@@ -277,9 +365,6 @@ func ClearShutdownRequest(name string) error {
 	}
 	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("clear shutdown request: %w", err)
-	}
-	if lp, lerr := legacyShutdownRequestPath(name); lerr == nil {
-		_ = os.Remove(lp)
 	}
 	return nil
 }
