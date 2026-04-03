@@ -16,6 +16,7 @@ SYNC_DIR="$WORKDIR/workspace"
 ORIG_HOME="${HOME}"
 ORIG_KUBECONFIG="${KUBECONFIG:-}"
 KUBECONFIG_PATH="$HOME_DIR/.kube/config"
+SSH_AGENT_PID=""
 
 mkdir -p "$HOME_DIR" "$SYNC_DIR" "$HOME_DIR/.kube"
 if [[ -n "$ORIG_KUBECONFIG" ]]; then
@@ -39,6 +40,9 @@ cleanup() {
   fi
   if [[ -n "$CFG_PATH" && -f "$CFG_PATH" ]]; then
     "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$SSH_AGENT_PID" ]]; then
+    ssh-agent -k >/dev/null 2>&1 || true
   fi
   return "$status"
 }
@@ -69,6 +73,7 @@ fi
 # Disable persistent SSH sessions for CI
 replace_all_in_file "$CFG_PATH" 'persistentSession: true' 'persistentSession: false'
 insert_after_line_once "$CFG_PATH" '  ssh:' '    persistentSession: false'
+insert_after_line_once "$CFG_PATH" '  ssh:' '    forwardAgent: true'
 
 echo "Generated config:"
 cat "$CFG_PATH"
@@ -129,6 +134,13 @@ if [[ -e "$HOME_DIR/Sync/.stfolder" ]]; then
 fi
 echo "Session state layout verified"
 
+echo "Starting temporary local ssh-agent"
+eval "$(ssh-agent -s)" >/dev/null
+SSH_AGENT_KEY="$WORKDIR/agent_id_ed25519"
+ssh-keygen -q -t ed25519 -N '' -f "$SSH_AGENT_KEY" >/dev/null
+ssh-add "$SSH_AGENT_KEY" >/dev/null
+ssh-add -l >/dev/null
+
 echo "Verifying session commands work outside repo with positional session arg"
 cd "$HOME_DIR"
 STATUS_OUTSIDE=$("$OKDEV_BIN" status "$SESSION_NAME" --details)
@@ -147,6 +159,18 @@ SSH_OUTSIDE=$("$OKDEV_BIN" ssh "$SESSION_NAME" --setup-key --cmd 'echo ssh-ok')
 if [[ "$SSH_OUTSIDE" != *"ssh-ok"* ]]; then
   echo "ERROR: expected config-free ssh to succeed outside repo" >&2
   echo "$SSH_OUTSIDE" >&2
+  exit 1
+fi
+SSH_AGENT_OUTSIDE=$("$OKDEV_BIN" ssh "$SESSION_NAME" --setup-key --cmd 'if [ -S "${SSH_AUTH_SOCK:-}" ]; then echo ssh-agent-ok; fi')
+if [[ "$SSH_AGENT_OUTSIDE" != *"ssh-agent-ok"* ]]; then
+  echo "ERROR: expected config-derived ssh agent forwarding to succeed outside repo" >&2
+  echo "$SSH_AGENT_OUTSIDE" >&2
+  exit 1
+fi
+SSH_NO_AGENT_OUTSIDE=$("$OKDEV_BIN" ssh "$SESSION_NAME" --setup-key --no-forward-agent --cmd 'if [ -z "${SSH_AUTH_SOCK:-}" ]; then echo no-agent-ok; fi')
+if [[ "$SSH_NO_AGENT_OUTSIDE" != *"no-agent-ok"* ]]; then
+  echo "ERROR: expected --no-forward-agent to disable forwarding outside repo" >&2
+  echo "$SSH_NO_AGENT_OUTSIDE" >&2
   exit 1
 fi
 cd "$WORKDIR"
