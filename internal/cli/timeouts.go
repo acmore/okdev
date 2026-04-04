@@ -117,10 +117,10 @@ const (
 	dataFlowWatchdogInterval = 5 * time.Second
 
 	// Data-flow watchdog idle timeout.
-	dataFlowWatchdogIdleTimeout = 15 * time.Second
+	dataFlowWatchdogIdleTimeout = 1 * time.Minute
 
 	// TCP keepalive period for proxy sockets.
-	proxySocketKeepAlivePeriod = 5 * time.Second
+	proxySocketKeepAlivePeriod = 15 * time.Second
 
 	// SSHD readiness poll interval.
 	sshdReadinessPollInterval = 300 * time.Millisecond
