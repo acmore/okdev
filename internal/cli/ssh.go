@@ -610,6 +610,10 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				if remotePort == 0 {
 					remotePort = sshPort
 				}
+
+				stopMaintenance := startSessionMaintenance(opts, cc.namespace, cc.sessionName, cmd.ErrOrStderr(), true)
+				defer stopMaintenance()
+
 				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(cc.kube, cc.namespace, target.PodName, 2222, remotePort)
 				if err != nil {
 					return err
