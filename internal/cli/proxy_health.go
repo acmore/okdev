@@ -82,7 +82,7 @@ func setTCPKeepAliveProxyTuning(conn net.Conn) {
 		slog.Debug("ssh-proxy: failed to get syscall conn for TCP_KEEPCNT", "error", err)
 		return
 	}
-	if err := setTCPKeepCnt(raw, 2); err != nil {
+	if err := setTCPKeepCnt(raw, 4); err != nil {
 		logx.Printf("time=%s source=ssh-proxy msg=%q err=%q\n", time.Now().Format("2006-01-02T15:04:05.000Z07:00"), "TCP_KEEPCNT not set", err)
 		slog.Debug("ssh-proxy: TCP_KEEPCNT not set (unsupported or failed)", "error", err)
 	}
