@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -219,6 +221,62 @@ func TestEnsureSyncthingTargetSessionStateResetsWhenPodRecreated(t *testing.T) {
 	}
 	if _, err := os.Stat(staleFile); !os.IsNotExist(err) {
 		t.Fatalf("expected stale local sync state to be removed, got err=%v", err)
+	}
+}
+
+func TestStartDetachedSyncthingSyncIncludesResolvedContext(t *testing.T) {
+	home := t.TempDir()
+	origHome := os.Getenv("HOME")
+	if err := os.Setenv("HOME", home); err != nil {
+		t.Fatalf("set HOME: %v", err)
+	}
+	defer func() {
+		_ = os.Setenv("HOME", origHome)
+	}()
+
+	origExecutable := osExecutable
+	origExecCommand := execCommand
+	origWait := waitForDetachedSyncthingStartFn
+	t.Cleanup(func() {
+		osExecutable = origExecutable
+		execCommand = origExecCommand
+		waitForDetachedSyncthingStartFn = origWait
+	})
+
+	osExecutable = func() (string, error) {
+		return "/tmp/fake-okdev", nil
+	}
+	var gotName string
+	var gotArgs []string
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		gotName = name
+		gotArgs = append([]string(nil), args...)
+		return exec.Command("sleep", "5")
+	}
+	waitForDetachedSyncthingStartFn = func(pid int, readyPath string, maxWait time.Duration) error {
+		return nil
+	}
+
+	_, started, err := startDetachedSyncthingSync(&Options{Context: "team-staging", Verbose: true}, "bi", "sess-a", "team-a", "/repo/.okdev.yaml")
+	if err != nil {
+		t.Fatalf("startDetachedSyncthingSync: %v", err)
+	}
+	if !started {
+		t.Fatal("expected detached sync process to start")
+	}
+	if gotName != "/tmp/fake-okdev" {
+		t.Fatalf("unexpected executable %q", gotName)
+	}
+	wantArgs := []string{
+		"--config", "/repo/.okdev.yaml",
+		"--session", "sess-a",
+		"--namespace", "team-a",
+		"--context", "team-staging",
+		"--verbose",
+		"sync", "--mode", "bi",
+	}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("unexpected args:\nwant %#v\ngot  %#v", wantArgs, gotArgs)
 	}
 }
 

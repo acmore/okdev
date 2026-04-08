@@ -69,16 +69,16 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					return err
 				}
 				stopOwnership := startTransientStatus(errOut, "Verifying session access")
-				if err := ensureExistingSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
+				if err := ensureExistingSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 					stopOwnership()
 					return err
 				}
 				stopOwnership()
-				target, err := resolveTargetRef(cmd.Context(), opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
+				target, err := resolveTargetRef(cmd.Context(), cc.opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
 				if err != nil {
 					return err
 				}
-				stopMaintenance := startSessionMaintenance(opts, cc.namespace, cc.sessionName, cmd.OutOrStdout(), true)
+				stopMaintenance := startSessionMaintenanceWithClient(cc.kube, cc.namespace, cc.sessionName, cmd.OutOrStdout(), true)
 				defer stopMaintenance()
 
 				if user == "" {
@@ -99,14 +99,14 @@ func newSSHCmd(opts *Options) *cobra.Command {
 
 				if setupKey {
 					stopKeySetup := startTransientStatus(errOut, "Installing SSH key")
-					if err := ensureSSHKeyOnPod(opts, cc.namespace, target.PodName, target.Container, keyPath); err != nil {
+					if err := ensureSSHKeyOnPod(cc.opts, cc.namespace, target.PodName, target.Container, keyPath); err != nil {
 						stopKeySetup()
 						return err
 					}
 					stopKeySetup()
 				}
 				stopSSHDReady := startTransientStatus(errOut, "Waiting for SSH service")
-				if err := waitForSSHReady(opts, cc.namespace, target.PodName, target.Container, sshServiceWaitTimeout); err != nil {
+				if err := waitForSSHReady(cc.opts, cc.namespace, target.PodName, target.Container, sshServiceWaitTimeout); err != nil {
 					stopSSHDReady()
 					fmt.Fprintf(errOut, "warning: ssh service not ready yet (%v); continuing with SSH tunnel setup anyway\n", err)
 				} else {
@@ -600,10 +600,10 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if err := ensureExistingSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
+				if err := ensureExistingSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 					return err
 				}
-				target, err := resolveTargetRef(cmd.Context(), opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
+				target, err := resolveTargetRef(cmd.Context(), cc.opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
 				if err != nil {
 					return err
 				}
@@ -611,7 +611,7 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 					remotePort = sshPort
 				}
 
-				stopMaintenance := startSessionMaintenance(opts, cc.namespace, cc.sessionName, cmd.ErrOrStderr(), true)
+				stopMaintenance := startSessionMaintenanceWithClient(cc.kube, cc.namespace, cc.sessionName, cmd.ErrOrStderr(), true)
 				defer stopMaintenance()
 
 				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(cc.kube, cc.namespace, target.PodName, 2222, remotePort)
