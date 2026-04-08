@@ -384,6 +384,52 @@ spec:
               nvidia.com/gpu: "1"
 ```
 
+### Interactive Container Selection
+
+`okdev` needs one container to treat as the main interactive container for `okdev ssh`, `okdev exec`, runtime mounts, and helper env vars.
+
+- For `spec.workload.type: pod`, the default interactive container name is `dev`.
+- For manifest-backed workloads (`job`, `generic`, `pytorchjob`), the default interactive container name is also `dev`.
+- If your main container uses a different name, set `spec.workload.attach.container` to that container name.
+- For manifest-backed workloads, if no configured attach container is found in an injected pod template, okdev falls back to the first container in that pod template.
+
+This means env vars like `LANG` should usually be added to the container that okdev will attach to.
+
+Default pod example:
+
+```yaml
+spec:
+  podTemplate:
+    spec:
+      containers:
+        - name: dev
+          image: ubuntu:22.04
+          command: ["sleep", "infinity"]
+          env:
+            - name: LANG
+              value: en_US.UTF-8
+            - name: LC_ALL
+              value: en_US.UTF-8
+```
+
+Non-default container example:
+
+```yaml
+spec:
+  workload:
+    attach:
+      container: trainer
+  podTemplate:
+    spec:
+      containers:
+        - name: trainer
+          image: python:3.12
+          command: ["sleep", "infinity"]
+          env:
+            - name: LANG
+              value: en_US.UTF-8
+```
+
 ---
 
 ## Full Examples

@@ -95,7 +95,8 @@
 
 ### `okdev ssh [session] [--setup-key] [--user root] [--cmd "..."] [--no-tmux] [--forward-agent|--no-forward-agent]`
 
-- Targets `okdev-sshd` in the `dev` container.
+- Targets `okdev-sshd` in the resolved interactive container.
+- The default interactive container name is `dev`; override it with `spec.workload.attach.container` when your workload uses a different main container name.
 - When `session` is provided, `okdev` can resolve the saved config from session metadata even outside the repo.
 - Maintains managed host alias in `~/.ssh/config` as `okdev-<session>`.
 - `--no-tmux`: bypass tmux for this SSH session when tmux mode is enabled.
@@ -109,6 +110,7 @@
 - Streams logs from the resolved target pod for the current session.
 - When `session` is provided, `okdev` can resolve the saved config from session metadata even outside the repo.
 - Defaults to the pinned target container when `--container` is omitted.
+- The default target container name is `dev` unless `spec.workload.attach.container` selects a different interactive container.
 - `--all`: streams all regular containers in the target pod and prefixes each line with `[container]`.
 - `--follow`: follows logs by default; use `--follow=false` for a bounded dump.
 - `--tail` and `--since` mirror the usual Kubernetes log filters.
