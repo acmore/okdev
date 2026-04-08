@@ -23,6 +23,7 @@ type GenericRuntime struct {
 	ManifestPath        string
 	WorkspaceMountPath  string
 	SidecarImage        string
+	SidecarResources    corev1.ResourceRequirements
 	Tmux                bool
 	PreStop             string
 	TargetContainer     string
@@ -101,7 +102,7 @@ func (r *GenericRuntime) Apply(ctx context.Context, k ApplyClient, namespace str
 		template.Labels = templateLabels
 		template.Annotations = templateAnnotations
 		if inject.Sidecar == nil || *inject.Sidecar {
-			template.Spec, err = kube.PreparePodSpecForTarget(template.Spec, r.Volumes, r.WorkspaceMountPath, r.SidecarImage, r.Tmux, r.PreStop, r.interactiveContainer())
+			template.Spec, err = kube.PreparePodSpecForTarget(template.Spec, r.Volumes, r.WorkspaceMountPath, r.SidecarImage, r.SidecarResources, r.Tmux, r.PreStop, r.interactiveContainer())
 			if err != nil {
 				return err
 			}

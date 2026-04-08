@@ -53,6 +53,7 @@ spec:
 		ManifestPath:       manifestPath,
 		WorkspaceMountPath: "/workspace",
 		SidecarImage:       "ghcr.io/acmore/okdev:edge",
+		SidecarResources:   corev1.ResourceRequirements{},
 		TargetContainer:    "trainer",
 		Volumes: []corev1.Volume{{
 			Name:         "workspace",

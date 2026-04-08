@@ -61,7 +61,8 @@ type DevEnvSpec struct {
 }
 
 type SidecarSpec struct {
-	Image string `yaml:"image"`
+	Image     string                      `yaml:"image"`
+	Resources corev1.ResourceRequirements `yaml:"resources,omitempty"`
 }
 
 type SessionSpec struct {

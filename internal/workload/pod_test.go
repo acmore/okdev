@@ -76,7 +76,7 @@ func TestPodRuntimeLifecycle(t *testing.T) {
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		}},
 		"/workspace", "ghcr.io/acmore/okdev:edge",
-		false, "", "",
+		corev1.ResourceRequirements{}, false, "", "",
 	)
 	if rt.Kind() != TypePod {
 		t.Fatalf("unexpected kind: %s", rt.Kind())
@@ -128,7 +128,7 @@ func TestPodRuntimeSelectTargetUsesConfiguredContainer(t *testing.T) {
 		map[string]string{"okdev.io/managed": "true"}, nil,
 		corev1.PodSpec{},
 		nil, "/workspace", "ghcr.io/acmore/okdev:edge",
-		false, "", "trainer",
+		corev1.ResourceRequirements{}, false, "", "trainer",
 	)
 	target, err := rt.SelectTarget(context.Background(), &fakeTargetClient{}, "default")
 	if err != nil {

@@ -336,12 +336,22 @@ spec:
 | Field | Type | Description |
 |-------|------|-------------|
 | `image` | `string` | Sidecar container image (use release-aligned tag) |
+| `resources` | `object` | Kubernetes container resources for the injected `okdev-sidecar` container |
 
 ```yaml
 spec:
   sidecar:
     image: ghcr.io/acmore/okdev:v0.2.16
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+      limits:
+        cpu: "250m"
+        memory: "512Mi"
 ```
+
+This applies to the injected `okdev-sidecar` container. To get `Guaranteed` QoS, set equal requests and limits on every container in the pod, including both `dev` and `okdev-sidecar`.
 
 ---
 

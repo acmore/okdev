@@ -32,6 +32,7 @@ spec:
 		ManifestPath:        manifest,
 		WorkspaceMountPath:  "/workspace",
 		SidecarImage:        "sidecar:1",
+		SidecarResources:    config.DevEnvironment{}.Spec.Sidecar.Resources,
 		TargetContainer:     "dev",
 		Inject:              []config.WorkloadInjectSpec{{Path: "spec.template"}},
 		LastAppliedSpecJSON: `{"version":"v1"}`,

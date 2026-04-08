@@ -4,10 +4,11 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 func TestPreparePodSpecShareProcessNamespace(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", corev1.ResourceRequirements{}, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -17,7 +18,7 @@ func TestPreparePodSpecShareProcessNamespace(t *testing.T) {
 }
 
 func TestPreparePodSpecWorkspaceDefaultsToEmptyDir(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", corev1.ResourceRequirements{}, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +44,7 @@ func TestPreparePodSpecUsesConfiguredWorkspaceVolume(t *testing.T) {
 			},
 		},
 	}
-	spec, err := PreparePodSpec(corev1.PodSpec{}, volumes, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, volumes, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", corev1.ResourceRequirements{}, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +60,7 @@ func TestPreparePodSpecUsesConfiguredWorkspaceVolume(t *testing.T) {
 }
 
 func TestPreparePodSpecAddsWorkspaceMountOnDevAndSidecar(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", corev1.ResourceRequirements{}, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +96,7 @@ func TestPreparePodSpecAddsWorkspaceMountOnDevAndSidecar(t *testing.T) {
 }
 
 func TestPreparePodSpecErrorsOnEmptyImage(t *testing.T) {
-	if _, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "", false, ""); err == nil {
+	if _, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "", corev1.ResourceRequirements{}, false, ""); err == nil {
 		t.Fatal("expected error for empty sidecar image")
 	}
 }
@@ -129,7 +130,7 @@ func findContainer(containers []corev1.Container, name string) *corev1.Container
 }
 
 func TestPreparePodSpecSetsDevTmuxEnvWhenEnabled(t *testing.T) {
-	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", true, "")
+	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", corev1.ResourceRequirements{}, true, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +152,7 @@ func TestPreparePodSpecForTargetUsesNamedContainer(t *testing.T) {
 			{Name: "trainer", Image: "python:3.12"},
 			{Name: "helper", Image: "busybox"},
 		},
-	}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "echo bye", "trainer")
+	}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", corev1.ResourceRequirements{}, false, "echo bye", "trainer")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +209,7 @@ func TestPreparePodSpecDefaultsWorkspacePathAndTargetContainer(t *testing.T) {
 		Containers: []corev1.Container{
 			{Name: "dev", Image: "ubuntu"},
 		},
-	}, nil, "", "ghcr.io/acmore/okdev-sidecar:edge", false, "", "")
+	}, nil, "", "ghcr.io/acmore/okdev-sidecar:edge", corev1.ResourceRequirements{}, false, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +234,7 @@ func TestPreparePodSpecFallsBackToFirstContainerWhenTargetMissing(t *testing.T) 
 			{Name: "first", Image: "ubuntu"},
 			{Name: "second", Image: "ubuntu"},
 		},
-	}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "", "missing")
+	}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", corev1.ResourceRequirements{}, false, "", "missing")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +257,7 @@ func TestPreparePodSpecDoesNotDuplicateExistingSidecar(t *testing.T) {
 			{Name: "dev", Image: "ubuntu"},
 			{Name: "okdev-sidecar", Image: "existing"},
 		},
-	}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", false, "")
+	}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", corev1.ResourceRequirements{}, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,6 +269,35 @@ func TestPreparePodSpecDoesNotDuplicateExistingSidecar(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected one sidecar container, got %d", count)
+	}
+}
+
+func TestPreparePodSpecAppliesSidecarResources(t *testing.T) {
+	spec, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("250m"),
+			corev1.ResourceMemory: resource.MustParse("512Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("250m"),
+			corev1.ResourceMemory: resource.MustParse("512Mi"),
+		},
+	}, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sidecar := findContainer(spec.Containers, "okdev-sidecar")
+	if sidecar == nil {
+		t.Fatal("sidecar container not found")
+	}
+	if got := sidecar.Resources.Requests.Cpu().String(); got != "250m" {
+		t.Fatalf("unexpected cpu request %q", got)
+	}
+	if got := sidecar.Resources.Requests.Memory().String(); got != "512Mi" {
+		t.Fatalf("unexpected memory request %q", got)
+	}
+	if got := sidecar.Resources.Limits.Cpu().String(); got != "250m" {
+		t.Fatalf("unexpected cpu limit %q", got)
 	}
 }
 

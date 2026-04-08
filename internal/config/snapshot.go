@@ -16,18 +16,19 @@ const (
 )
 
 type LastAppliedWorkloadSpec struct {
-	Version            string          `json:"version"`
-	WorkloadKind       string          `json:"workloadKind"`
-	Workload           WorkloadSpec    `json:"workload"`
-	PodTemplate        PodTemplateRef  `json:"podTemplate"`
-	Volumes            []corev1.Volume `json:"volumes"`
-	SidecarImage       string          `json:"sidecarImage"`
-	WorkspaceMountPath string          `json:"workspaceMountPath"`
-	TargetContainer    string          `json:"targetContainer"`
-	Tmux               bool            `json:"tmux"`
-	PreStop            string          `json:"preStop"`
-	ManifestPath       string          `json:"manifestPath,omitempty"`
-	ManifestSHA256     string          `json:"manifestSHA256,omitempty"`
+	Version            string                      `json:"version"`
+	WorkloadKind       string                      `json:"workloadKind"`
+	Workload           WorkloadSpec                `json:"workload"`
+	PodTemplate        PodTemplateRef              `json:"podTemplate"`
+	Volumes            []corev1.Volume             `json:"volumes"`
+	SidecarImage       string                      `json:"sidecarImage"`
+	SidecarResources   corev1.ResourceRequirements `json:"sidecarResources,omitempty"`
+	WorkspaceMountPath string                      `json:"workspaceMountPath"`
+	TargetContainer    string                      `json:"targetContainer"`
+	Tmux               bool                        `json:"tmux"`
+	PreStop            string                      `json:"preStop"`
+	ManifestPath       string                      `json:"manifestPath,omitempty"`
+	ManifestSHA256     string                      `json:"manifestSHA256,omitempty"`
 }
 
 func BuildWorkloadSnapshot(cfg *DevEnvironment, workspaceMountPath, targetContainer string, tmux bool, preStop, manifestPath, manifestResolvedPath string) LastAppliedWorkloadSpec {
@@ -42,6 +43,7 @@ func BuildWorkloadSnapshot(cfg *DevEnvironment, workspaceMountPath, targetContai
 		PodTemplate:        cfg.Spec.PodTemplate,
 		Volumes:            cfg.Spec.Volumes,
 		SidecarImage:       cfg.Spec.Sidecar.Image,
+		SidecarResources:   cfg.Spec.Sidecar.Resources,
 		WorkspaceMountPath: workspaceMountPath,
 		TargetContainer:    targetContainer,
 		Tmux:               tmux,

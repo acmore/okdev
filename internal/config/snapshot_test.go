@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 func TestBuildWorkloadSnapshotPod(t *testing.T) {
@@ -17,7 +18,14 @@ func TestBuildWorkloadSnapshotPod(t *testing.T) {
 				},
 			},
 			Volumes: []corev1.Volume{{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}},
-			Sidecar: SidecarSpec{Image: "ghcr.io/acmore/okdev-sidecar:edge"},
+			Sidecar: SidecarSpec{
+				Image: "ghcr.io/acmore/okdev-sidecar:edge",
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceCPU: resource.MustParse("250m"),
+					},
+				},
+			},
 		},
 	}
 	snap := BuildWorkloadSnapshot(cfg, "/workspace", "dev", true, "echo bye", "", "")
@@ -30,6 +38,9 @@ func TestBuildWorkloadSnapshotPod(t *testing.T) {
 	if snap.SidecarImage != "ghcr.io/acmore/okdev-sidecar:edge" {
 		t.Fatalf("unexpected sidecarImage: %s", snap.SidecarImage)
 	}
+	if got := snap.SidecarResources.Requests.Cpu().String(); got != "250m" {
+		t.Fatalf("unexpected sidecar cpu request: %s", got)
+	}
 	if snap.Tmux != true {
 		t.Fatal("expected tmux true")
 	}
@@ -38,6 +49,38 @@ func TestBuildWorkloadSnapshotPod(t *testing.T) {
 	}
 	if snap.ManifestSHA256 != "" {
 		t.Fatal("pod workload should have empty manifest hash")
+	}
+}
+
+func TestWorkloadSnapshotHashIncludesSidecarResources(t *testing.T) {
+	cfg1 := &DevEnvironment{
+		Spec: DevEnvSpec{
+			Workload: WorkloadSpec{Type: "pod"},
+			Sidecar: SidecarSpec{
+				Image: "img:1",
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("250m")},
+				},
+			},
+		},
+	}
+	cfg2 := &DevEnvironment{
+		Spec: DevEnvSpec{
+			Workload: WorkloadSpec{Type: "pod"},
+			Sidecar: SidecarSpec{
+				Image: "img:1",
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("500m")},
+				},
+			},
+		},
+	}
+	snap1 := BuildWorkloadSnapshot(cfg1, "/workspace", "dev", false, "", "", "")
+	snap2 := BuildWorkloadSnapshot(cfg2, "/workspace", "dev", false, "", "", "")
+	h1, _ := snap1.SHA256()
+	h2, _ := snap2.SHA256()
+	if h1 == h2 {
+		t.Fatal("expected sidecar resource changes to affect workload hash")
 	}
 }
 
