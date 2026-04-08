@@ -69,7 +69,7 @@ func newDownCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := ensureSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
+			if err := ensureSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 				return err
 			}
 			ui.stepDone("ownership", "ok")
@@ -96,7 +96,7 @@ func newDownCmd(opts *Options) *cobra.Command {
 					payload.Status = "already stopped"
 					payload.Notes = append(payload.Notes, "session workload already absent")
 				}
-				if opts.Output == "json" {
+				if cc.opts.Output == "json" {
 					return outputJSON(cmd.OutOrStdout(), payload)
 				}
 				ui.section("Dry Run")
@@ -127,7 +127,7 @@ func newDownCmd(opts *Options) *cobra.Command {
 				if err := downCleanupLocal(ui, &payload, cc.sessionName); err != nil {
 					return err
 				}
-				if opts.Output == "json" {
+				if cc.opts.Output == "json" {
 					return outputJSON(cmd.OutOrStdout(), payload)
 				}
 				ui.printWarnings()
@@ -161,7 +161,7 @@ func newDownCmd(opts *Options) *cobra.Command {
 				Cleanup:   map[string]any{},
 			}
 			if len(cc.cfg.Spec.Agents) > 0 {
-				if target, err := resolveTargetRef(ctx, opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube); err != nil {
+				if target, err := resolveTargetRef(ctx, cc.opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube); err != nil {
 					ui.warnf("failed to resolve target before agent auth cleanup: %v", err)
 					payload.Cleanup["agentAuth"] = "warning"
 				} else {
@@ -188,7 +188,7 @@ func newDownCmd(opts *Options) *cobra.Command {
 			if err := downCleanupLocal(ui, &payload, cc.sessionName); err != nil {
 				return err
 			}
-			if opts.Output == "json" {
+			if cc.opts.Output == "json" {
 				return outputJSON(cmd.OutOrStdout(), payload)
 			}
 			ui.printWarnings()

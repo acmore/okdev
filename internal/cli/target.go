@@ -48,19 +48,19 @@ func newTargetShowCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := ensureSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
+			if err := ensureSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 				return err
 			}
 			view, err := loadCurrentSessionView(cmd, cc.kube, cc.namespace, cc.sessionName)
 			if err != nil {
 				return err
 			}
-			target, err := resolveTargetRef(cmd.Context(), opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
+			target, err := resolveTargetRef(cmd.Context(), cc.opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
 			if err != nil {
 				return err
 			}
 			payload := buildTargetShowOutput(view, target)
-			if opts.Output == "json" {
+			if cc.opts.Output == "json" {
 				return outputJSON(cmd.OutOrStdout(), payload)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "session:   %s\n", view.Session)
@@ -132,7 +132,7 @@ func newTargetSetCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := ensureSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
+			if err := ensureSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 				return err
 			}
 			view, err := loadCurrentSessionView(cmd, cc.kube, cc.namespace, cc.sessionName)

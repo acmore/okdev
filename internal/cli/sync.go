@@ -22,6 +22,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	osExecutable                    = os.Executable
+	execCommand                     = exec.Command
+	waitForDetachedSyncthingStartFn = waitForDetachedSyncthingStart
+)
+
 type syncthingSessionTargetState struct {
 	PodName    string `json:"podName"`
 	CreatedAt  string `json:"createdAt"`
@@ -43,7 +49,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := ensureExistingSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
+			if err := ensureExistingSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 				return err
 			}
 			engine := cc.cfg.Spec.Sync.Engine
@@ -74,10 +80,10 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				}
 				return nil
 			}
-			stopMaintenance := startSessionMaintenance(opts, cc.namespace, cc.sessionName, cmd.OutOrStdout(), true)
+			stopMaintenance := startSessionMaintenanceWithClient(cc.kube, cc.namespace, cc.sessionName, cmd.OutOrStdout(), true)
 			defer stopMaintenance()
 
-			target, err := resolveTargetRef(cmd.Context(), opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
+			target, err := resolveTargetRef(cmd.Context(), cc.opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
 			if err != nil {
 				return err
 			}
@@ -107,7 +113,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			}
 
 			if background && os.Getenv("OKDEV_SYNCTHING_BACKGROUND_CHILD") != "1" {
-				logPath, started, err := startDetachedSyncthingSync(opts, mode, cc.sessionName, cc.namespace, cc.cfgPath)
+				logPath, started, err := startDetachedSyncthingSync(cc.opts, mode, cc.sessionName, cc.namespace, cc.cfgPath)
 				if err != nil {
 					return err
 				}
@@ -119,7 +125,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(), "Logs: %s\n", logPath)
 				return nil
 			}
-			return runSyncthingSync(cmd, opts, cc.cfg, cc.namespace, cc.sessionName, mode, pairs, cc.kube)
+			return runSyncthingSync(cmd, cc.opts, cc.cfg, cc.namespace, cc.sessionName, mode, pairs, cc.kube)
 		},
 	}
 
@@ -148,7 +154,7 @@ synced workspace subtree is cleared.`,
 			if err != nil {
 				return err
 			}
-			if err := ensureExistingSessionOwnership(opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
+			if err := ensureExistingSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 				return err
 			}
 			pairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
@@ -159,7 +165,7 @@ synced workspace subtree is cleared.`,
 				return fmt.Errorf("reset-remote requires exactly one sync path mapping, got %d", len(pairs))
 			}
 
-			target, err := resolveTargetRef(cmd.Context(), opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
+			target, err := resolveTargetRef(cmd.Context(), cc.opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
 			if err != nil {
 				return err
 			}
@@ -177,7 +183,7 @@ synced workspace subtree is cleared.`,
 			}
 
 			fmt.Fprintln(cmd.OutOrStdout(), "Re-establishing sync …")
-			logPath, started, err := startDetachedSyncthingSync(opts, "two-phase", cc.sessionName, cc.namespace, cc.cfgPath)
+			logPath, started, err := startDetachedSyncthingSync(cc.opts, "two-phase", cc.sessionName, cc.namespace, cc.cfgPath)
 			if err != nil {
 				return fmt.Errorf("restart sync: %w", err)
 			}
@@ -199,7 +205,7 @@ func reportSyncthingTargetReset(w io.Writer, sessionName string, reset bool) {
 }
 
 func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfgPath string) (string, bool, error) {
-	exe, err := os.Executable()
+	exe, err := osExecutable()
 	if err != nil {
 		return "", false, err
 	}
@@ -253,7 +259,7 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 	}
 	args = append(args, "sync", "--mode", mode)
 
-	cmd := exec.Command(exe, args...)
+	cmd := execCommand(exe, args...)
 	cmd.Env = append(os.Environ(), "OKDEV_SYNCTHING_BACKGROUND_CHILD=1")
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
@@ -271,7 +277,7 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 		}
 		return "", false, err
 	}
-	if err := waitForDetachedSyncthingStart(cmd.Process.Pid, readyPath, syncthingDetachedStartupTimeout(mode)); err != nil {
+	if err := waitForDetachedSyncthingStartFn(cmd.Process.Pid, readyPath, syncthingDetachedStartupTimeout(mode)); err != nil {
 		if closeErr := logFile.Close(); closeErr != nil {
 			slog.Debug("failed to close log file after early exit", "path", logPath, "error", closeErr)
 		}

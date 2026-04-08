@@ -173,7 +173,7 @@ func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, e
 	previousTarget, _ := loadTargetRef(cc.sessionName)
 	return &upState{
 		cmd:            cmd,
-		opts:           opts,
+		opts:           cc.opts,
 		flags:          flags,
 		ui:             ui,
 		command:        cc,
