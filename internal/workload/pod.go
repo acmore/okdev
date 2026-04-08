@@ -18,6 +18,7 @@ type PodRuntime struct {
 	Volumes             []corev1.Volume
 	WorkspaceMountPath  string
 	SidecarImage        string
+	SidecarResources    corev1.ResourceRequirements
 	Tmux                bool
 	PreStop             string
 	TargetContainer     string
@@ -25,7 +26,7 @@ type PodRuntime struct {
 	LastAppliedSpecHash string
 }
 
-func NewPodRuntime(sessionName string, labels, annotations map[string]string, podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, tmux bool, preStop, targetContainer string) *PodRuntime {
+func NewPodRuntime(sessionName string, labels, annotations map[string]string, podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, sidecarResources corev1.ResourceRequirements, tmux bool, preStop, targetContainer string) *PodRuntime {
 	return &PodRuntime{
 		SessionName:        sessionName,
 		Labels:             labels,
@@ -34,6 +35,7 @@ func NewPodRuntime(sessionName string, labels, annotations map[string]string, po
 		Volumes:            volumes,
 		WorkspaceMountPath: workspaceMountPath,
 		SidecarImage:       sidecarImage,
+		SidecarResources:   sidecarResources,
 		Tmux:               tmux,
 		PreStop:            preStop,
 		TargetContainer:    targetContainer,
@@ -53,7 +55,7 @@ func (r *PodRuntime) WorkloadRef() (string, string, string, error) {
 }
 
 func (r *PodRuntime) Apply(ctx context.Context, k ApplyClient, namespace string) error {
-	prepared, err := kube.PreparePodSpecForTarget(r.PodSpec, r.Volumes, r.WorkspaceMountPath, r.SidecarImage, r.Tmux, r.PreStop, r.effectiveTargetContainer())
+	prepared, err := kube.PreparePodSpecForTarget(r.PodSpec, r.Volumes, r.WorkspaceMountPath, r.SidecarImage, r.SidecarResources, r.Tmux, r.PreStop, r.effectiveTargetContainer())
 	if err != nil {
 		return err
 	}

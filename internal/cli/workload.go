@@ -30,7 +30,7 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName string, lab
 	case "", workload.TypePod:
 		rt := workload.NewPodRuntime(
 			sessionName, labels, annotations, podSpec,
-			volumes, workspaceMountPath, cfg.Spec.Sidecar.Image,
+			volumes, workspaceMountPath, cfg.Spec.Sidecar.Image, cfg.Spec.Sidecar.Resources,
 			tmux, preStop, targetContainer,
 		)
 		rt.LastAppliedSpecJSON = snapJSON
@@ -42,6 +42,7 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName string, lab
 			ManifestPath:        manifestResolvedPath,
 			WorkspaceMountPath:  workspaceMountPath,
 			SidecarImage:        cfg.Spec.Sidecar.Image,
+			SidecarResources:    cfg.Spec.Sidecar.Resources,
 			Tmux:                tmux,
 			PreStop:             preStop,
 			TargetContainer:     targetContainer,

@@ -201,6 +201,41 @@ func TestLoadParsesQuotedResourceQuantities(t *testing.T) {
 	}
 }
 
+func TestLoadParsesSidecarResources(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, DefaultFile)
+	writeFile(t, cfgPath, ""+
+		"apiVersion: okdev.io/v1alpha1\n"+
+		"kind: DevEnvironment\n"+
+		"metadata:\n"+
+		"  name: demo\n"+
+		"spec:\n"+
+		"  namespace: default\n"+
+		"  sidecar:\n"+
+		"    image: ghcr.io/acmore/okdev:v0.6.5\n"+
+		"    resources:\n"+
+		"      requests:\n"+
+		"        cpu: \"250m\"\n"+
+		"        memory: \"512Mi\"\n"+
+		"      limits:\n"+
+		"        cpu: \"250m\"\n"+
+		"        memory: \"512Mi\"\n")
+
+	cfg, _, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("expected sidecar resources to parse, got error: %v", err)
+	}
+	if got := cfg.Spec.Sidecar.Resources.Requests.Cpu().String(); got != "250m" {
+		t.Fatalf("unexpected sidecar cpu request %q", got)
+	}
+	if got := cfg.Spec.Sidecar.Resources.Requests.Memory().String(); got != "512Mi" {
+		t.Fatalf("unexpected sidecar memory request %q", got)
+	}
+	if got := cfg.Spec.Sidecar.Resources.Limits.Cpu().String(); got != "250m" {
+		t.Fatalf("unexpected sidecar cpu limit %q", got)
+	}
+}
+
 func TestResolvePathStopsAtGitRoot(t *testing.T) {
 	tmp := t.TempDir()
 	repo := filepath.Join(tmp, "repo")

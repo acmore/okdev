@@ -10,11 +10,11 @@ import (
 
 var semverTagPattern = regexp.MustCompile(`^v?\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$`)
 
-func PreparePodSpec(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, tmux bool, preStop string) (corev1.PodSpec, error) {
-	return PreparePodSpecForTarget(podSpec, volumes, workspaceMountPath, sidecarImage, tmux, preStop, "dev")
+func PreparePodSpec(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, sidecarResources corev1.ResourceRequirements, tmux bool, preStop string) (corev1.PodSpec, error) {
+	return PreparePodSpecForTarget(podSpec, volumes, workspaceMountPath, sidecarImage, sidecarResources, tmux, preStop, "dev")
 }
 
-func PreparePodSpecForTarget(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, tmux bool, preStop string, targetContainer string) (corev1.PodSpec, error) {
+func PreparePodSpecForTarget(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, sidecarResources corev1.ResourceRequirements, tmux bool, preStop string, targetContainer string) (corev1.PodSpec, error) {
 	if strings.TrimSpace(sidecarImage) == "" {
 		return corev1.PodSpec{}, fmt.Errorf("sidecar image cannot be empty")
 	}
@@ -90,6 +90,7 @@ func PreparePodSpecForTarget(podSpec corev1.PodSpec, volumes []corev1.Volume, wo
 			Name:            "okdev-sidecar",
 			Image:           sidecarImage,
 			ImagePullPolicy: syncthingImagePullPolicy(sidecarImage),
+			Resources:       sidecarResources,
 			SecurityContext: &corev1.SecurityContext{
 				Privileged: &privileged,
 			},

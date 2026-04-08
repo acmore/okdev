@@ -42,6 +42,7 @@ spec:
 		ManifestPath:       manifestPath,
 		WorkspaceMountPath: "/workspace",
 		SidecarImage:       "ghcr.io/acmore/okdev:edge",
+		SidecarResources:   corev1.ResourceRequirements{},
 		TargetContainer:    "trainer",
 		Volumes: []corev1.Volume{{
 			Name:         "workspace",
@@ -208,6 +209,7 @@ spec:
 		ManifestPath:       manifestPath,
 		WorkspaceMountPath: "/workspace",
 		SidecarImage:       "ghcr.io/acmore/okdev:edge",
+		SidecarResources:   corev1.ResourceRequirements{},
 		TargetContainer:    "pytorch",
 		PreStop:            "touch /tmp/pre-stop-marker",
 		Inject: []config.WorkloadInjectSpec{
