@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
+	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/logx"
 	"github.com/acmore/okdev/internal/session"
 	"github.com/acmore/okdev/internal/shellutil"
@@ -226,7 +227,23 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					}
 					return nil
 				}
-				return runSSHShellWithReconnect(cmd.Context(), tm, cc.sessionName, cmd.ErrOrStderr())
+				var baselineRestarts int32
+				if ri, riErr := cc.kube.GetContainerRestartInfo(cmd.Context(), cc.namespace, target.PodName, target.Container); riErr == nil && ri != nil {
+					baselineRestarts = ri.RestartCount
+				}
+				checkRestart := func() *kube.ContainerRestartInfo {
+					ctx, cancel := context.WithTimeout(context.Background(), sessionAccessTimeout)
+					defer cancel()
+					ri, err := cc.kube.GetContainerRestartInfo(ctx, cc.namespace, target.PodName, target.Container)
+					if err != nil || ri == nil {
+						return nil
+					}
+					if ri.RestartCount > baselineRestarts {
+						return ri
+					}
+					return nil
+				}
+				return runSSHShellWithReconnectAndRestartCheck(cmd.Context(), tm, cc.sessionName, cmd.ErrOrStderr(), checkRestart)
 			})
 		},
 	}
@@ -285,7 +302,16 @@ type sshShellRunner interface {
 
 const rapidFailureThreshold = 20
 
+// containerRestartCheck is called during SSH reconnection to detect if the
+// dev container restarted. It returns the restart info if the restart count
+// increased since baseline, or nil if unchanged / unavailable.
+type containerRestartCheck func() *kube.ContainerRestartInfo
+
 func runSSHShellWithReconnect(ctx context.Context, tm sshShellRunner, sessionName string, errOut io.Writer) error {
+	return runSSHShellWithReconnectAndRestartCheck(ctx, tm, sessionName, errOut, nil)
+}
+
+func runSSHShellWithReconnectAndRestartCheck(ctx context.Context, tm sshShellRunner, sessionName string, errOut io.Writer, checkRestart containerRestartCheck) error {
 	rapidFailures := 0
 	readinessFailures := 0
 	var firstRapidFailure time.Time
@@ -309,6 +335,12 @@ func runSSHShellWithReconnect(ctx context.Context, tm sshShellRunner, sessionNam
 			return nil
 		}
 		if !inRecovery {
+			if checkRestart != nil {
+				if info := checkRestart(); info != nil {
+					printContainerRestartNotice(errOut, info)
+					return nil
+				}
+			}
 			fmt.Fprintln(errOut, "\nConnection lost. Reconnecting...")
 			inRecovery = true
 			recoveryStart = time.Now()
@@ -354,6 +386,19 @@ func runSSHShellWithReconnect(ctx context.Context, tm sshShellRunner, sessionNam
 		fmt.Fprintln(errOut, "Reconnected.")
 		inRecovery = false
 	}
+}
+
+func printContainerRestartNotice(w io.Writer, info *kube.ContainerRestartInfo) {
+	reason := info.LastReason
+	if reason == "" {
+		reason = "unknown"
+	}
+	fmt.Fprintf(w, "\nContainer restarted (%s).", reason)
+	if info.CurrentWaiting != "" {
+		fmt.Fprintf(w, " Status: %s.", info.CurrentWaiting)
+	}
+	fmt.Fprintln(w, " tmux sessions and running processes were lost.")
+	fmt.Fprintln(w, "Run \"okdev ssh\" to reconnect after the container is ready.")
 }
 
 func ensureSSHKeyOnPod(opts *Options, namespace, pod, container, keyPath string) error {

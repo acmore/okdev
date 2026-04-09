@@ -781,6 +781,46 @@ func (c *Client) GetPodSummary(ctx context.Context, namespace, name string) (*Po
 	return &s, nil
 }
 
+// ContainerRestartInfo holds restart details for a single container.
+type ContainerRestartInfo struct {
+	RestartCount   int32
+	LastExitCode   int32
+	LastReason     string // e.g. "OOMKilled", "Error"
+	LastMessage    string
+	CurrentWaiting string // e.g. "CrashLoopBackOff"
+}
+
+// GetContainerRestartInfo returns restart information for a specific container
+// in a pod. Returns nil if the container is not found.
+func (c *Client) GetContainerRestartInfo(ctx context.Context, namespace, pod, container string) (*ContainerRestartInfo, error) {
+	cs, _, err := c.clientset()
+	if err != nil {
+		return nil, err
+	}
+	p, err := cs.CoreV1().Pods(namespace).Get(ctx, pod, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	for _, st := range p.Status.ContainerStatuses {
+		if st.Name != container {
+			continue
+		}
+		info := &ContainerRestartInfo{
+			RestartCount: st.RestartCount,
+		}
+		if t := st.LastTerminationState.Terminated; t != nil {
+			info.LastExitCode = t.ExitCode
+			info.LastReason = t.Reason
+			info.LastMessage = t.Message
+		}
+		if w := st.State.Waiting; w != nil {
+			info.CurrentWaiting = w.Reason
+		}
+		return info, nil
+	}
+	return nil, nil
+}
+
 func (c *Client) PersistentVolumeClaimExists(ctx context.Context, namespace, name string) (bool, error) {
 	cs, _, err := c.clientset()
 	if err != nil {
