@@ -299,6 +299,12 @@ func runSyncHealthLoopWithConfig(sigCh <-chan os.Signal, errOut io.Writer, check
 
 			slog.Info("sync: peer disconnected, restoring port-forward", "attempt", retries)
 			if err := checker.restorePortForward(); err != nil {
+				if isFatalSyncRestoreError(err) {
+					slog.Error("sync: port-forward restoration hit fatal error, stopping", "error", err)
+					fmt.Fprintf(errOut, "sync: cannot restore — %v\n", err)
+					<-sigCh
+					return
+				}
 				slog.Warn("sync: port-forward restoration failed", "attempt", retries, "error", err)
 			} else {
 				slog.Info("sync: port-forward restored, waiting for peer reconnection")
@@ -315,6 +321,26 @@ func runSyncHealthLoopWithConfig(sigCh <-chan os.Signal, errOut io.Writer, check
 			ticker.Reset(currentInterval)
 		}
 	}
+}
+
+// isFatalSyncRestoreError returns true for errors that indicate the target
+// workload is permanently gone and retrying would be pointless.
+func isFatalSyncRestoreError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	fatal := []string{
+		"not found",
+		"forbidden",
+		"unauthorized",
+	}
+	for _, s := range fatal {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // restoreSyncPortForward cancels the old port-forward, creates a new one,

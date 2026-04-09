@@ -173,6 +173,50 @@ func TestSyncHealthLoopResetsRetriesOnReconnect(t *testing.T) {
 	}
 }
 
+func TestSyncHealthLoopStopsOnFatalError(t *testing.T) {
+	sigCh := make(chan os.Signal, 1)
+	checker := &fakeSyncHealthChecker{
+		connected:  []bool{false},
+		restoreErr: []error{errors.New("pod my-pod not found")},
+	}
+	var buf bytes.Buffer
+
+	go func() {
+		// Signal to unblock the <-sigCh after fatal error detection.
+		time.Sleep(100 * time.Millisecond)
+		sigCh <- os.Interrupt
+	}()
+
+	runSyncHealthLoopWithConfig(sigCh, &buf, checker, testSyncHealthConfig)
+
+	if checker.restoreCalls != 1 {
+		t.Fatalf("expected 1 restore call before fatal stop, got %d", checker.restoreCalls)
+	}
+	if !strings.Contains(buf.String(), "cannot restore") {
+		t.Fatalf("expected fatal error message, got %q", buf.String())
+	}
+}
+
+func TestIsFatalSyncRestoreError(t *testing.T) {
+	tests := []struct {
+		err   string
+		fatal bool
+	}{
+		{"pods \"my-pod\" not found", true},
+		{"forbidden: User cannot create pods", true},
+		{"unauthorized", true},
+		{"connection refused", false},
+		{"timeout waiting for port-forward readiness", false},
+		{"i/o timeout", false},
+	}
+	for _, tt := range tests {
+		got := isFatalSyncRestoreError(errors.New(tt.err))
+		if got != tt.fatal {
+			t.Errorf("isFatalSyncRestoreError(%q) = %v, want %v", tt.err, got, tt.fatal)
+		}
+	}
+}
+
 func TestSyncHealthLoopRestoreFailureStillRetries(t *testing.T) {
 	sigCh := make(chan os.Signal, 1)
 	// 3 disconnects: first two restores fail, third succeeds, then connected.
