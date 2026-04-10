@@ -72,7 +72,7 @@ func TestPromptInteractiveSkipsOverriddenFields(t *testing.T) {
 	}
 	applyOverrides(vars, overrides)
 
-	input := strings.NewReader("custom-image\n./src\n/app\nalice\n")
+	input := strings.NewReader("./src\n/app\nalice\n")
 	var out bytes.Buffer
 	if err := promptInteractive(vars, overrides, input, &out, false, true); err != nil {
 		t.Fatalf("promptInteractive returned error: %v", err)
@@ -83,9 +83,6 @@ func TestPromptInteractiveSkipsOverriddenFields(t *testing.T) {
 	}
 	if vars.Namespace != "flag-ns" {
 		t.Fatalf("expected overridden namespace to remain unchanged, got %q", vars.Namespace)
-	}
-	if vars.SidecarImage != "custom-image" {
-		t.Fatalf("expected prompted sidecar image, got %q", vars.SidecarImage)
 	}
 	if vars.SyncLocal != "./src" {
 		t.Fatalf("expected prompted sync local, got %q", vars.SyncLocal)
@@ -103,7 +100,7 @@ func TestPromptInteractiveSkipsOverriddenFields(t *testing.T) {
 
 func TestPromptInteractiveUsesExplanatoryLabels(t *testing.T) {
 	vars := config.NewTemplateVars()
-	input := strings.NewReader("\n\n\n\n\n\n\n")
+	input := strings.NewReader("\n\n\n\n\n\n")
 	var out bytes.Buffer
 
 	if err := promptInteractive(vars, InitOverrides{}, input, &out, false, true); err != nil {
@@ -115,7 +112,6 @@ func TestPromptInteractiveUsesExplanatoryLabels(t *testing.T) {
 		"Environment name (used for session labels and default naming)",
 		"Namespace (where the dev workload will run)",
 		"Workload type (pod=simple dev pod, job=batch workload, pytorchjob=distributed training, generic=custom manifest)",
-		"Sidecar image (okdev SSH/sync helper image)",
 		"Sync local path (project directory on this machine)",
 		"Sync remote path (workspace path in the container)",
 		"SSH user (login user inside the dev container)",
