@@ -300,6 +300,27 @@ func TestInitUsesRootConfigForPod(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(tmp, ".okdev.yaml")); err != nil {
 		t.Fatalf("expected root config, got err=%v", err)
 	}
+	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev.yaml"))
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	cfg := string(cfgRaw)
+	for _, want := range []string{
+		"podTemplate:",
+		"name: dev",
+		"image: ubuntu:22.04",
+		"resources:",
+		"cpu: \"500m\"",
+		"memory: 512Mi",
+		"cpu: \"250m\"",
+	} {
+		if !strings.Contains(cfg, want) {
+			t.Fatalf("expected generated pod config to contain %q, got:\n%s", want, cfg)
+		}
+	}
+	if strings.Count(cfg, "cpu: \"500m\"") != 2 || strings.Count(cfg, "cpu: \"250m\"") != 2 || strings.Count(cfg, "memory: 512Mi") != 4 {
+		t.Fatalf("expected generated pod config to use equal requests and limits for Guaranteed QoS, got:\n%s", cfg)
+	}
 }
 
 func TestInitScaffoldsJobManifest(t *testing.T) {
