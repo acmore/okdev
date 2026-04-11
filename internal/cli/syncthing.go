@@ -251,11 +251,34 @@ var defaultSyncHealthLoopConfig = syncHealthLoopConfig{
 	maxRetries:    syncHealthCheckMaxRetries,
 }
 
+func syncHealthLoopConfigFromEnv(cfg syncHealthLoopConfig) syncHealthLoopConfig {
+	if d, ok := durationFromEnv("OKDEV_SYNC_HEALTH_CHECK_INTERVAL"); ok {
+		cfg.interval = d
+	}
+	if d, ok := durationFromEnv("OKDEV_SYNC_HEALTH_CHECK_MAX_INTERVAL"); ok {
+		cfg.maxInterval = d
+	}
+	return cfg
+}
+
+func durationFromEnv(name string) (time.Duration, bool) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return 0, false
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil || d <= 0 {
+		slog.Debug("ignoring invalid duration environment override", "name", name, "value", value)
+		return 0, false
+	}
+	return d, true
+}
+
 // runSyncHealthLoop monitors Syncthing peer connectivity and restores the
 // port-forward when the peer is disconnected. It returns when a signal is
 // received on sigCh.
 func runSyncHealthLoop(sigCh <-chan os.Signal, errOut io.Writer, checker syncHealthChecker) {
-	runSyncHealthLoopWithConfig(sigCh, errOut, checker, defaultSyncHealthLoopConfig)
+	runSyncHealthLoopWithConfig(sigCh, errOut, checker, syncHealthLoopConfigFromEnv(defaultSyncHealthLoopConfig))
 }
 
 func runSyncHealthLoopWithConfig(sigCh <-chan os.Signal, errOut io.Writer, checker syncHealthChecker, cfg syncHealthLoopConfig) {

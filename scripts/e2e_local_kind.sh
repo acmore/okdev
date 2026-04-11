@@ -8,6 +8,7 @@ CLUSTER_NAME="${CLUSTER_NAME:-okdev-e2e}"
 OKDEV_BIN="${OKDEV_BIN:-$ROOT_DIR/bin/okdev}"
 SIDECAR_IMAGE="${SIDECAR_IMAGE:-okdev-sidecar:v0.0.0-e2e}"
 RUN_PYTORCHJOB="${RUN_PYTORCHJOB:-0}"
+RUN_SYNC_HEALTH="${RUN_SYNC_HEALTH:-1}"
 RUN_LARGE_REPO="${RUN_LARGE_REPO:-0}"
 LARGE_REPO_PATH="${LARGE_REPO_PATH:-}"
 LARGE_REPO_URL="${LARGE_REPO_URL:-}"
@@ -62,6 +63,10 @@ bash scripts/e2e_kind_smoke.sh
 bash scripts/e2e_kind_deployment.sh
 bash scripts/e2e_kind_job.sh
 bash scripts/e2e_kind_multi_session.sh
+
+if [[ "$RUN_SYNC_HEALTH" == "1" ]]; then
+  bash scripts/e2e_kind_sync_health.sh
+fi
 
 if [[ "$RUN_PYTORCHJOB" == "1" ]]; then
   echo "Installing Kubeflow Training Operator"
