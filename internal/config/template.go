@@ -240,7 +240,7 @@ func RenderTemplateWithVars(ctx context.Context, ref string, vars *TemplateVars,
 	if data.Vars == nil {
 		data.Vars = map[string]any{}
 	}
-	tmpl, err := template.New("okdev").Funcs(sprig.FuncMap()).Parse(body)
+	tmpl, err := template.New("okdev").Funcs(sprig.HermeticTxtFuncMap()).Parse(body)
 	if err != nil {
 		return "", fmt.Errorf("parse template: %w", err)
 	}
@@ -383,7 +383,7 @@ func RenderEmbeddedTemplate(path string, vars *TemplateVars) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read embedded template %q: %w", path, err)
 	}
-	tmpl, err := template.New(filepath.Base(path)).Funcs(sprig.FuncMap()).Parse(string(raw))
+	tmpl, err := template.New(filepath.Base(path)).Funcs(sprig.HermeticTxtFuncMap()).Parse(string(raw))
 	if err != nil {
 		return "", fmt.Errorf("parse embedded template %q: %w", path, err)
 	}

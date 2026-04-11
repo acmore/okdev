@@ -110,6 +110,7 @@ type migrateTemplateResult struct {
 }
 
 func runMigrateTemplate(cmd *cobra.Command, cfgPath, templateRef string, setFlags []string, yes, dryRun, noBackup bool) error {
+	warnMigrateUnknownSets(cmd.ErrOrStderr(), templateRef, setFlags, config.RootDir(cfgPath))
 	result, err := mergeTemplateConfig(cfgPath, templateRef, setFlags, nil, config.RootDir(cfgPath), yes)
 	if err != nil {
 		return err
@@ -226,11 +227,34 @@ func mergeTemplateConfig(cfgPath, templateRef string, setFlags []string, storedV
 	if err != nil {
 		return nil, fmt.Errorf("marshal merged config: %w", err)
 	}
+	var validationCfg config.DevEnvironment
+	if err := sigs_yaml.Unmarshal(out, &validationCfg); err != nil {
+		return nil, fmt.Errorf("parse merged config for validation: %w", err)
+	}
+	validationCfg.SetDefaults()
+	if err := validationCfg.Validate(); err != nil {
+		return nil, fmt.Errorf("merged config is invalid: %w", err)
+	}
 	summary := "Template migration summary: added template fields and preserved existing values."
 	if preserved > 0 {
-		summary = fmt.Sprintf("Template migration summary: preserved %d existing value(s); added missing template fields.", preserved)
+		summary = fmt.Sprintf("Template migration summary: preserved %d existing value(s); added missing template fields.\nNote: spec.template.vars records the new variable values, but preserved config fields retain their prior values.", preserved)
 	}
 	return &migrateTemplateResult{merged: string(out), summary: summary}, nil
+}
+
+func warnMigrateUnknownSets(w io.Writer, templateRef string, setFlags []string, projectDir string) {
+	if len(setFlags) == 0 {
+		return
+	}
+	raw, err := config.ResolveTemplateFromDir(context.Background(), templateRef, projectDir)
+	if err != nil {
+		return
+	}
+	meta, _, err := config.ParseFrontmatter(raw)
+	if err != nil {
+		return
+	}
+	warnUnknownTemplateSets(w, meta, parseSetFlags(setFlags))
 }
 
 func mergeMaps(base, overlay map[string]any, path string) (map[string]any, int) {

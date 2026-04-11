@@ -111,7 +111,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rendered, err = persistTemplateRefIfNeeded(rendered, templateRef, customVars)
+			rendered, err = persistTemplateRefIfNeeded(rendered, templateRef, customVars, projectDir)
 			if err != nil {
 				return err
 			}
@@ -225,9 +225,8 @@ func resolveInitTemplateVars(meta *config.TemplateMeta, sets map[string]string, 
 			resolved[v.Name] = val
 			continue
 		}
-		if v.HasDefault() {
-			resolved[v.Name] = v.Default
-		}
+		// Don't pre-populate defaults here — let promptTemplateVars
+		// show the default as a hint so the user can override it.
 	}
 	if !interactive {
 		return nil, fmt.Errorf("interactive init requires a TTY; rerun with --yes or pass explicit --set values")
@@ -236,12 +235,12 @@ func resolveInitTemplateVars(meta *config.TemplateMeta, sets map[string]string, 
 	return promptTemplateVars(reader, out, meta, resolved)
 }
 
-func persistTemplateRefIfNeeded(rendered, templateRef string, customVars map[string]any) (string, error) {
+func persistTemplateRefIfNeeded(rendered, templateRef string, customVars map[string]any, projectDir string) (string, error) {
 	ref := strings.TrimSpace(templateRef)
 	if ref == "" {
 		ref = "basic"
 	}
-	if usesBuiltinBasicTemplate(ref) && len(customVars) == 0 {
+	if isActualBuiltinBasic(ref, projectDir) && len(customVars) == 0 {
 		return rendered, nil
 	}
 
@@ -468,6 +467,22 @@ func scaffoldInitWorkload(configPath, templateRef string, vars *config.TemplateV
 
 func usesBuiltinBasicTemplate(ref string) bool {
 	return strings.TrimSpace(ref) == "" || strings.TrimSpace(ref) == "basic"
+}
+
+// isActualBuiltinBasic checks whether the ref resolves to the actual built-in
+// basic template, not a project/user template that shadows the name.
+func isActualBuiltinBasic(ref, projectDir string) bool {
+	if !usesBuiltinBasicTemplate(ref) {
+		return false
+	}
+	// If a project-local or user template shadows "basic", it's not the built-in.
+	if names, _ := config.ProjectTemplateNames(projectDir); containsString(names, "basic") {
+		return false
+	}
+	if names, _ := config.UserTemplateNames(); containsString(names, "basic") {
+		return false
+	}
+	return true
 }
 
 func scaffoldsInitWorkload(templateRef string, vars *config.TemplateVars) bool {
