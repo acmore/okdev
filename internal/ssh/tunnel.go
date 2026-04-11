@@ -530,7 +530,10 @@ func (tm *TunnelManager) sendKeepAlive(client *xssh.Client, timeout time.Duratio
 		}
 		return time.Since(start), err
 	case <-time.After(timeout):
-		slog.Debug("ssh keepalive request timed out", "timeout", timeout)
+		slog.Debug("ssh keepalive request timed out, closing client to unblock goroutine", "timeout", timeout)
+		// Close the client to unblock the goroutine stuck in SendRequest.
+		// Without this, the goroutine leaks on every keepalive timeout.
+		_ = client.Close()
 		return 0, errKeepAliveTimeout
 	case <-tm.contextDone():
 		return 0, context.Canceled

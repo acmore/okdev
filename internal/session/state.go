@@ -287,7 +287,7 @@ func SaveInfo(info Info) error {
 	if err != nil {
 		return fmt.Errorf("marshal session info: %w", err)
 	}
-	if err := os.WriteFile(path, append(payload, '\n'), 0o644); err != nil {
+	if err := atomicWriteFile(path, append(payload, '\n'), 0o644); err != nil {
 		return fmt.Errorf("write session info: %w", err)
 	}
 	return nil
@@ -367,4 +367,32 @@ func ClearShutdownRequest(name string) error {
 		return fmt.Errorf("clear shutdown request: %w", err)
 	}
 	return nil
+}
+
+// atomicWriteFile writes data to a temporary file in the same directory,
+// then renames it to the target path. This prevents partial writes from
+// corrupting the file if the process is killed mid-write.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, ".okdev-tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := f.Name()
+	defer func() {
+		// Clean up the temp file on any failure path.
+		_ = os.Remove(tmpPath)
+	}()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Chmod(perm); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
