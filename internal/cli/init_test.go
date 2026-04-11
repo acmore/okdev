@@ -646,3 +646,99 @@ spec:
 		}
 	}
 }
+
+func TestInitProjectTemplateShadowingBasicIsNotTreatedAsBuiltin(t *testing.T) {
+	tmp := t.TempDir()
+	tmplDir := filepath.Join(tmp, ".okdev", "templates")
+	if err := os.MkdirAll(tmplDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmplDir, "basic.yaml.tmpl"), []byte(`apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: {{ .Name }}
+spec:
+  namespace: {{ .Namespace }}
+  sync:
+    paths:
+      - ".:/workspace"
+  ssh:
+    user: root
+  sidecar:
+    image: ghcr.io/acmore/okdev:edge
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newInitCmd(&Options{})
+	cmd.SetArgs([]string{"--yes", "--template", "basic", "--workload", "job"})
+	cmd.SetIn(strings.NewReader(""))
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected shadowed basic template to be validated as a custom template")
+	}
+	if !strings.Contains(err.Error(), "custom template must render spec.workload") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev", "job.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("expected no built-in job scaffold for shadowed basic, err=%v", err)
+	}
+}
+
+func TestInitProjectTemplateShadowingBasicDoesNotWriteBuiltinSTIgnore(t *testing.T) {
+	tmp := t.TempDir()
+	tmplDir := filepath.Join(tmp, ".okdev", "templates")
+	if err := os.MkdirAll(tmplDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmplDir, "basic.yaml.tmpl"), []byte(`apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: {{ .Name }}
+spec:
+  namespace: {{ .Namespace }}
+  sync:
+    paths:
+      - ".:/workspace"
+  ssh:
+    user: root
+  sidecar:
+    image: ghcr.io/acmore/okdev:edge
+  podTemplate:
+    spec:
+      containers:
+        - name: dev
+          image: ubuntu:22.04
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newInitCmd(&Options{})
+	cmd.SetArgs([]string{"--yes", "--template", "basic", "--name", "demo"})
+	cmd.SetIn(strings.NewReader(""))
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init execute: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".stignore")); !os.IsNotExist(err) {
+		t.Fatalf("expected no built-in .stignore for shadowed basic, err=%v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(tmp, ".okdev.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "template:") || !strings.Contains(string(raw), "name: basic") {
+		t.Fatalf("expected shadowed basic template ref to be persisted, got:\n%s", string(raw))
+	}
+}

@@ -35,10 +35,7 @@ func newTemplateListCmd(opts *Options) *cobra.Command {
 		Short: "List available templates",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if projectDir == "" {
-				wd, err := os.Getwd()
-				if err == nil {
-					projectDir = wd
-				}
+				projectDir = defaultTemplateProjectDir()
 			}
 			entries := collectTemplateEntries(projectDir, showAll)
 
@@ -64,10 +61,7 @@ func newTemplateShowCmd(opts *Options) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if projectDir == "" {
-				wd, err := os.Getwd()
-				if err == nil {
-					projectDir = wd
-				}
+				projectDir = defaultTemplateProjectDir()
 			}
 			name := args[0]
 			raw, err := config.ResolveTemplateFromDir(context.Background(), name, projectDir)
@@ -112,6 +106,17 @@ func newTemplateShowCmd(opts *Options) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&projectDir, "project-dir", "", "Project directory (defaults to cwd)")
 	return cmd
+}
+
+func defaultTemplateProjectDir() string {
+	if path, err := config.ResolvePath(""); err == nil {
+		return config.RootDir(path)
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return wd
 }
 
 func collectTemplateEntries(projectDir string, showAll bool) []templateEntry {

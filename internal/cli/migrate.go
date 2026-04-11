@@ -111,7 +111,7 @@ type migrateTemplateResult struct {
 
 func runMigrateTemplate(cmd *cobra.Command, cfgPath, templateRef string, setFlags []string, yes, dryRun, noBackup bool) error {
 	warnMigrateUnknownSets(cmd.ErrOrStderr(), templateRef, setFlags, config.RootDir(cfgPath))
-	result, err := mergeTemplateConfig(cfgPath, templateRef, setFlags, nil, config.RootDir(cfgPath), yes)
+	result, err := mergeTemplateConfigWithPrompt(cfgPath, templateRef, setFlags, nil, config.RootDir(cfgPath), yes, isTerminalReader(cmd.InOrStdin()), cmd.InOrStdin(), cmd.OutOrStdout())
 	if err != nil {
 		return err
 	}
@@ -168,6 +168,10 @@ func promptMigrateApply(in io.Reader, out io.Writer) (bool, error) {
 }
 
 func mergeTemplateConfig(cfgPath, templateRef string, setFlags []string, storedVars map[string]any, projectDir string, nonInteractive bool) (*migrateTemplateResult, error) {
+	return mergeTemplateConfigWithPrompt(cfgPath, templateRef, setFlags, storedVars, projectDir, nonInteractive, false, nil, io.Discard)
+}
+
+func mergeTemplateConfigWithPrompt(cfgPath, templateRef string, setFlags []string, storedVars map[string]any, projectDir string, nonInteractive bool, interactive bool, in io.Reader, promptOut io.Writer) (*migrateTemplateResult, error) {
 	existingRaw, err := os.ReadFile(cfgPath)
 	if err != nil {
 		return nil, fmt.Errorf("read existing config: %w", err)
@@ -189,7 +193,8 @@ func mergeTemplateConfig(cfgPath, templateRef string, setFlags []string, storedV
 	if err != nil {
 		return nil, err
 	}
-	customVars, err := config.ResolveVariables(meta, parseSetFlags(setFlags), storedVars)
+	sets := parseSetFlags(setFlags)
+	customVars, err := resolveInitTemplateVars(meta, sets, storedVars, nonInteractive, interactive, in, promptOut)
 	if err != nil {
 		return nil, err
 	}

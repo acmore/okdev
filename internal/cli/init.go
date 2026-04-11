@@ -78,20 +78,24 @@ func newInitCmd(opts *Options) *cobra.Command {
 				return err
 			}
 
+			projectDir, err := initProjectDir(opts.ConfigPath)
+			if err != nil {
+				return err
+			}
 			target := opts.ConfigPath
 			if target == "" {
-				target = defaultInitTargetPath(templateRef, vars)
+				target = defaultInitTargetPath(templateRef, vars, projectDir)
 			}
 			abs, err := filepath.Abs(target)
 			if err != nil {
 				return fmt.Errorf("resolve output path %q: %w", target, err)
 			}
+			projectDir = config.RootDir(abs)
 			if _, err := os.Stat(abs); err == nil && !force {
 				return fmt.Errorf("config already exists at %q (use --force to overwrite)", abs)
 			}
 			normalizeInitManifestPathForTarget(abs, vars, overrides.hasManifestPath())
 
-			projectDir := config.RootDir(abs)
 			rawTemplate, err := config.ResolveTemplateFromDir(context.Background(), templateRef, projectDir)
 			if err != nil {
 				return err
@@ -116,7 +120,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 				return err
 			}
 
-			if err := validateRenderedInitConfig(rendered, templateRef, vars); err != nil {
+			if err := validateRenderedInitConfig(rendered, templateRef, vars, projectDir); err != nil {
 				return err
 			}
 
@@ -130,11 +134,11 @@ func newInitCmd(opts *Options) *cobra.Command {
 			if resolvedPreset == "" {
 				resolvedPreset = detectSTIgnorePreset(config.RootDir(abs))
 			}
-			stignorePath, wroteSTIgnore, err := writeInitSTIgnore(abs, []byte(rendered), templateRef, resolvedPreset, force)
+			stignorePath, wroteSTIgnore, err := writeInitSTIgnore(abs, []byte(rendered), templateRef, resolvedPreset, force, projectDir)
 			if err != nil {
 				return err
 			}
-			scaffolded, err := scaffoldInitWorkload(abs, templateRef, vars, force)
+			scaffolded, err := scaffoldInitWorkload(abs, templateRef, vars, force, projectDir)
 			if err != nil {
 				return err
 			}
@@ -310,8 +314,23 @@ func yamlScalar(value string) *yamlv3.Node {
 	return &yamlv3.Node{Kind: yamlv3.ScalarNode, Value: value}
 }
 
-func defaultInitTargetPath(templateRef string, vars *config.TemplateVars) string {
-	if scaffoldsInitWorkload(templateRef, vars) {
+func initProjectDir(configPath string) (string, error) {
+	if strings.TrimSpace(configPath) != "" {
+		abs, err := filepath.Abs(configPath)
+		if err != nil {
+			return "", fmt.Errorf("resolve output path %q: %w", configPath, err)
+		}
+		return config.RootDir(abs), nil
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("get working directory: %w", err)
+	}
+	return wd, nil
+}
+
+func defaultInitTargetPath(templateRef string, vars *config.TemplateVars, projectDir string) string {
+	if scaffoldsInitWorkload(templateRef, vars, projectDir) {
 		return config.FolderFile
 	}
 	return config.DefaultFile
@@ -411,7 +430,7 @@ func validateInitWorkloadVars(vars *config.TemplateVars) error {
 	return nil
 }
 
-func validateRenderedInitConfig(rendered, templateRef string, vars *config.TemplateVars) error {
+func validateRenderedInitConfig(rendered, templateRef string, vars *config.TemplateVars, projectDir string) error {
 	var cfg config.DevEnvironment
 	if err := yaml.Unmarshal([]byte(rendered), &cfg); err != nil {
 		return fmt.Errorf("parse generated config: %w", err)
@@ -420,14 +439,14 @@ func validateRenderedInitConfig(rendered, templateRef string, vars *config.Templ
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("generated config is invalid: %w", err)
 	}
-	if vars.WorkloadType != "pod" && !usesBuiltinBasicTemplate(templateRef) && strings.TrimSpace(cfg.Spec.Workload.ManifestPath) == "" {
+	if vars.WorkloadType != "pod" && !isActualBuiltinBasic(templateRef, projectDir) && strings.TrimSpace(cfg.Spec.Workload.ManifestPath) == "" {
 		return fmt.Errorf("custom template must render spec.workload for workload type %q", vars.WorkloadType)
 	}
 	return nil
 }
 
-func scaffoldInitWorkload(configPath, templateRef string, vars *config.TemplateVars, force bool) ([]string, error) {
-	if !scaffoldsInitWorkload(templateRef, vars) {
+func scaffoldInitWorkload(configPath, templateRef string, vars *config.TemplateVars, force bool, projectDir string) ([]string, error) {
+	if !scaffoldsInitWorkload(templateRef, vars, projectDir) {
 		return nil, nil
 	}
 	var templatePath string
@@ -485,8 +504,8 @@ func isActualBuiltinBasic(ref, projectDir string) bool {
 	return true
 }
 
-func scaffoldsInitWorkload(templateRef string, vars *config.TemplateVars) bool {
-	if !usesBuiltinBasicTemplate(templateRef) {
+func scaffoldsInitWorkload(templateRef string, vars *config.TemplateVars, projectDir string) bool {
+	if !isActualBuiltinBasic(templateRef, projectDir) {
 		return false
 	}
 	switch strings.TrimSpace(vars.WorkloadType) {
@@ -523,13 +542,20 @@ func detectSTIgnorePreset(dir string) string {
 	return ""
 }
 
-func writeInitSTIgnore(configPath string, rendered []byte, templateRef string, stignorePreset string, force bool) (string, bool, error) {
+func writeInitSTIgnore(configPath string, rendered []byte, templateRef string, stignorePreset string, force bool, projectDirs ...string) (string, bool, error) {
 	var cfg config.DevEnvironment
 	if err := yaml.Unmarshal(rendered, &cfg); err != nil {
 		return "", false, fmt.Errorf("parse generated config for .stignore: %w", err)
 	}
 	cfg.SetDefaults()
-	patterns := config.BuiltinTemplateLocalIgnores(templateRef)
+	projectDir := config.RootDir(configPath)
+	if len(projectDirs) > 0 {
+		projectDir = projectDirs[0]
+	}
+	var patterns []string
+	if isActualBuiltinBasic(templateRef, projectDir) {
+		patterns = config.BuiltinTemplateLocalIgnores(templateRef)
+	}
 	if preset := strings.TrimSpace(stignorePreset); preset != "" {
 		patterns = config.STIgnorePreset(preset)
 		if patterns == nil {
