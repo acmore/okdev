@@ -40,11 +40,25 @@ spec:
 {{- if .SidecarImage }}
     image: {{ .SidecarImage }}
 {{- end }}
-{{- if and (eq .WorkloadType "pod") .DevImage }}
+    resources:
+      requests:
+        cpu: "{{ .SidecarCPU }}"
+        memory: {{ .SidecarMemory }}
+      limits:
+        cpu: "{{ .SidecarCPU }}"
+        memory: {{ .SidecarMemory }}
+{{- if eq .WorkloadType "pod" }}
   podTemplate:
     spec:
       containers:
         - name: dev
           image: {{ .DevImage }}
           command: ["sleep", "infinity"]
+          resources:
+            requests:
+              cpu: "{{ .DevCPURequest }}"
+              memory: {{ .DevMemoryRequest }}
+            limits:
+              cpu: "{{ .DevCPULimit }}"
+              memory: {{ .DevMemoryLimit }}
 {{- end }}

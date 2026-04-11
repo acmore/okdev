@@ -77,7 +77,13 @@ type TemplateVars struct {
 	Name             string
 	Namespace        string
 	DevImage         string
+	DevCPURequest    string
+	DevMemoryRequest string
+	DevCPULimit      string
+	DevMemoryLimit   string
 	SidecarImage     string
+	SidecarCPU       string
+	SidecarMemory    string
 	SyncthingVersion string
 	SyncLocal        string
 	SyncRemote       string
@@ -102,7 +108,14 @@ func NewTemplateVars() *TemplateVars {
 	return &TemplateVars{
 		Name:             "",
 		Namespace:        "default",
+		DevImage:         "ubuntu:22.04",
+		DevCPURequest:    "500m",
+		DevMemoryRequest: "512Mi",
+		DevCPULimit:      "500m",
+		DevMemoryLimit:   "512Mi",
 		SidecarImage:     "",
+		SidecarCPU:       "250m",
+		SidecarMemory:    "512Mi",
 		SyncthingVersion: DefaultSyncthingVersion,
 		SyncLocal:        ".",
 		SyncRemote:       "/workspace",

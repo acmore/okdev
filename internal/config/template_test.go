@@ -28,6 +28,15 @@ func TestDefaultTemplateVars(t *testing.T) {
 	if vars.SyncRemote != "/workspace" {
 		t.Fatalf("expected /workspace sync remote, got %q", vars.SyncRemote)
 	}
+	if vars.DevImage != "ubuntu:22.04" {
+		t.Fatalf("expected default dev image, got %q", vars.DevImage)
+	}
+	if vars.DevCPURequest != "500m" || vars.DevMemoryRequest != "512Mi" || vars.DevCPULimit != "500m" || vars.DevMemoryLimit != "512Mi" {
+		t.Fatalf("unexpected default dev resources: %#v", vars)
+	}
+	if vars.SidecarCPU != "250m" || vars.SidecarMemory != "512Mi" {
+		t.Fatalf("unexpected default sidecar resources: %#v", vars)
+	}
 	if vars.WorkloadType != "pod" {
 		t.Fatalf("expected pod workload type, got %q", vars.WorkloadType)
 	}
@@ -61,6 +70,21 @@ func TestRenderBuiltinBasic(t *testing.T) {
 	}
 	if strings.Contains(out, "\n    exclude:\n") {
 		t.Fatalf("expected starter template to keep local ignore rules out of .okdev.yaml, got:\n%s", out)
+	}
+	if !strings.Contains(out, "podTemplate:") {
+		t.Fatalf("expected default pod template, got:\n%s", out)
+	}
+	if !strings.Contains(out, "image: ubuntu:22.04") {
+		t.Fatalf("expected default dev image, got:\n%s", out)
+	}
+	if !strings.Contains(out, "cpu: \"500m\"") || !strings.Contains(out, "memory: 512Mi") {
+		t.Fatalf("expected default dev resource requests, got:\n%s", out)
+	}
+	if strings.Count(out, "cpu: \"500m\"") != 2 || strings.Count(out, "memory: 512Mi") != 4 {
+		t.Fatalf("expected default dev resource limits, got:\n%s", out)
+	}
+	if strings.Count(out, "cpu: \"250m\"") != 2 {
+		t.Fatalf("expected equal default sidecar CPU request/limit, got:\n%s", out)
 	}
 }
 
