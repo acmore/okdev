@@ -130,19 +130,18 @@ remote_devices = [d for d in devices if d.get("deviceID") and d.get("deviceID") 
 if len(remote_devices) != 1:
     ids = ", ".join(d.get("deviceID", "<missing>") for d in devices)
     raise SystemExit(f"expected one remote device excluding local {local_id}, got {len(remote_devices)} from [{ids}]")
+remote_id = remote_devices[0]["deviceID"]
+
+# Pause the remote device to drop the active connection, then set the stale
+# address and resume.  This avoids POST /rest/system/restart which terminates
+# the detached Syncthing process instead of re-execing it in CI.
+request("POST", f"/rest/system/pause?device={remote_id}")
+time.sleep(1)
+
 remote_devices[0]["addresses"] = ["tcp://127.0.0.1:1"]
 request("PUT", "/rest/config", config)
-request("POST", "/rest/system/restart")
 
-deadline = time.time() + 30
-while time.time() < deadline:
-    try:
-        request("GET", "/rest/system/status")
-        break
-    except Exception:
-        time.sleep(0.5)
-else:
-    raise SystemExit("local Syncthing API did not recover after restart")
+request("POST", f"/rest/system/resume?device={remote_id}")
 PY
 
 echo "Waiting for sync health loop to restore peer connection"
