@@ -31,6 +31,8 @@ okdev init --workload job
 okdev init --workload generic --generic-preset deployment
 # Go project with a Go-oriented local sync ignore preset
 okdev init --template basic --stignore-preset go
+# See project, user, and built-in templates
+okdev template list
 ```
 
 This generates `.okdev.yaml` in the current directory for simple pod setups.
@@ -38,7 +40,7 @@ When `okdev init` also scaffolds workload files under `.okdev/` such as `job.yam
 
 For built-in templates, `okdev init` also writes a starter local `.stignore` file for the initialized sync root. Use `--stignore-preset` to override that starter with a project-oriented preset like `python`, `node`, `go`, or `rust`.
 When `--stignore-preset` is omitted, `okdev init` will try to detect a preset from common repo markers like `go.mod`, `package.json`, `Cargo.toml`, or `pyproject.toml`.
-`okdev init --template` also supports user templates from `~/.okdev/templates/` by stem name, in addition to file paths and URLs.
+`okdev init --template` resolves names from project templates in `.okdev/templates/`, user templates in `~/.okdev/templates/`, and then built-in templates. Template files can include YAML frontmatter with custom `string`, `int`, or `bool` variables; pass values with repeated `--set key=value` flags. Custom template usage is recorded in `spec.template` so `okdev migrate --template <name>` can re-render the template later while preserving local config edits.
 
 okdev discovers configuration in this order:
 

@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,7 @@ import (
 	"github.com/acmore/okdev/internal/config"
 	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
+	yamlv3 "gopkg.in/yaml.v3"
 	"sigs.k8s.io/yaml"
 )
 
@@ -29,6 +32,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 	var syncRemoteOverride string
 	var sshUserOverride string
 	var stignorePreset string
+	var setFlags []string
 
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -87,7 +91,27 @@ func newInitCmd(opts *Options) *cobra.Command {
 			}
 			normalizeInitManifestPathForTarget(abs, vars, overrides.hasManifestPath())
 
-			rendered, err := config.RenderTemplateContext(context.Background(), templateRef, vars)
+			projectDir := config.RootDir(abs)
+			rawTemplate, err := config.ResolveTemplateFromDir(context.Background(), templateRef, projectDir)
+			if err != nil {
+				return err
+			}
+			meta, _, err := config.ParseFrontmatter(rawTemplate)
+			if err != nil {
+				return err
+			}
+			sets := parseSetFlags(setFlags)
+			warnUnknownTemplateSets(cmd.ErrOrStderr(), meta, sets)
+			customVars, err := resolveInitTemplateVars(meta, sets, nil, yes, isTerminalReader(cmd.InOrStdin()), cmd.InOrStdin(), cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+
+			rendered, err := config.RenderTemplateWithVars(context.Background(), templateRef, vars, customVars, projectDir)
+			if err != nil {
+				return err
+			}
+			rendered, err = persistTemplateRefIfNeeded(rendered, templateRef, customVars)
 			if err != nil {
 				return err
 			}
@@ -144,18 +168,147 @@ func newInitCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&syncRemoteOverride, "sync-remote", "", "Remote sync path")
 	cmd.Flags().StringVar(&sshUserOverride, "ssh-user", "", "SSH user")
 	cmd.Flags().StringVar(&stignorePreset, "stignore-preset", "", "Local .stignore preset: default|python|node|go|rust")
+	cmd.Flags().StringArrayVar(&setFlags, "set", nil, "Set a template variable (repeatable: --set key=value)")
 	return cmd
 }
 
 func initTemplateUsage() string {
-	names := append([]string{}, config.BuiltinTemplateNames()...)
-	if userNames, err := config.UserTemplateNames(); err == nil {
-		names = append(names, userNames...)
+	return "Template name, file path, or URL (run 'okdev template list' to see available templates)"
+}
+
+func parseSetFlags(flags []string) map[string]string {
+	result := make(map[string]string, len(flags))
+	for _, flag := range flags {
+		parts := strings.SplitN(flag, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		result[strings.TrimSpace(parts[0])] = parts[1]
 	}
-	if len(names) == 0 {
-		return "Template: file path or URL"
+	return result
+}
+
+func warnUnknownTemplateSets(w io.Writer, meta *config.TemplateMeta, sets map[string]string) {
+	if len(sets) == 0 || meta == nil {
+		return
 	}
-	return fmt.Sprintf("Template: %s, file path, or URL", strings.Join(names, "|"))
+	known := make(map[string]bool, len(meta.Variables))
+	for _, v := range meta.Variables {
+		known[v.Name] = true
+	}
+	for name := range sets {
+		if !known[name] {
+			fmt.Fprintf(w, "Warning: template variable %q is not declared by this template\n", name)
+		}
+	}
+}
+
+func resolveInitTemplateVars(meta *config.TemplateMeta, sets map[string]string, stored map[string]any, nonInteractive, interactive bool, in io.Reader, out io.Writer) (map[string]any, error) {
+	if meta == nil || len(meta.Variables) == 0 {
+		return map[string]any{}, nil
+	}
+	if nonInteractive {
+		return config.ResolveVariables(meta, sets, stored)
+	}
+
+	resolved := make(map[string]any, len(meta.Variables))
+	for _, v := range meta.Variables {
+		if raw, ok := sets[v.Name]; ok {
+			coerced, err := config.CoerceVariableValue(v, raw)
+			if err != nil {
+				return nil, err
+			}
+			resolved[v.Name] = coerced
+			continue
+		}
+		if val, ok := stored[v.Name]; ok {
+			resolved[v.Name] = val
+			continue
+		}
+		if v.HasDefault() {
+			resolved[v.Name] = v.Default
+		}
+	}
+	if !interactive {
+		return nil, fmt.Errorf("interactive init requires a TTY; rerun with --yes or pass explicit --set values")
+	}
+	reader := bufio.NewReader(in)
+	return promptTemplateVars(reader, out, meta, resolved)
+}
+
+func persistTemplateRefIfNeeded(rendered, templateRef string, customVars map[string]any) (string, error) {
+	ref := strings.TrimSpace(templateRef)
+	if ref == "" {
+		ref = "basic"
+	}
+	if usesBuiltinBasicTemplate(ref) && len(customVars) == 0 {
+		return rendered, nil
+	}
+
+	var doc yamlv3.Node
+	if err := yamlv3.Unmarshal([]byte(rendered), &doc); err != nil {
+		return "", fmt.Errorf("parse generated config for template metadata: %w", err)
+	}
+	root := yamlDocumentRoot(&doc)
+	if root == nil || root.Kind != yamlv3.MappingNode {
+		return "", fmt.Errorf("generated config must be a YAML mapping")
+	}
+	spec := ensureYAMLMapping(root, "spec")
+	templateNode := &yamlv3.Node{Kind: yamlv3.MappingNode}
+	setYAMLNode(templateNode, "name", yamlScalar(ref))
+	if len(customVars) > 0 {
+		var varsNode yamlv3.Node
+		if err := varsNode.Encode(customVars); err != nil {
+			return "", fmt.Errorf("encode template vars: %w", err)
+		}
+		setYAMLNode(templateNode, "vars", &varsNode)
+	}
+	setYAMLNode(spec, "template", templateNode)
+
+	out, err := yamlv3.Marshal(&doc)
+	if err != nil {
+		return "", fmt.Errorf("marshal generated config with template metadata: %w", err)
+	}
+	return string(out), nil
+}
+
+func yamlDocumentRoot(doc *yamlv3.Node) *yamlv3.Node {
+	if doc.Kind == yamlv3.DocumentNode && len(doc.Content) > 0 {
+		return doc.Content[0]
+	}
+	return doc
+}
+
+func ensureYAMLMapping(parent *yamlv3.Node, key string) *yamlv3.Node {
+	if existing := findYAMLNode(parent, key); existing != nil && existing.Kind == yamlv3.MappingNode {
+		return existing
+	}
+	node := &yamlv3.Node{Kind: yamlv3.MappingNode}
+	setYAMLNode(parent, key, node)
+	return node
+}
+
+func findYAMLNode(parent *yamlv3.Node, key string) *yamlv3.Node {
+	for i := 0; i+1 < len(parent.Content); i += 2 {
+		if parent.Content[i].Value == key {
+			return parent.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func setYAMLNode(parent *yamlv3.Node, key string, value *yamlv3.Node) {
+	for i := 0; i+1 < len(parent.Content); i += 2 {
+		if parent.Content[i].Value == key {
+			parent.Content[i+1] = value
+			return
+		}
+	}
+	parent.Content = append(parent.Content, yamlScalar(key), value)
+}
+
+func yamlScalar(value string) *yamlv3.Node {
+	return &yamlv3.Node{Kind: yamlv3.ScalarNode, Value: value}
 }
 
 func defaultInitTargetPath(templateRef string, vars *config.TemplateVars) string {
