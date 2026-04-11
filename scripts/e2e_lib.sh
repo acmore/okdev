@@ -113,13 +113,5 @@ assert_no_local_sync_processes() {
 }
 
 sync_pid_from_status() {
-  python3 - <<'PY'
-import re
-import sys
-
-status = sys.stdin.read()
-match = re.search(r"background: running \(pid ([0-9]+)\)", status, re.MULTILINE)
-if match:
-    print(match.group(1))
-PY
+  grep -oE 'background: running \(pid [0-9]+\)' | grep -oE '[0-9]+' | head -1
 }

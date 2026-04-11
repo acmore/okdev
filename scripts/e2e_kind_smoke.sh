@@ -195,8 +195,16 @@ if [[ "$SYNC_OK" != "true" ]]; then
 fi
 
 echo "Verifying repeated okdev up reuses active sync"
-STATUS_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
-SYNC_PID_BEFORE=$(printf '%s' "$STATUS_OUTPUT" | sync_pid_from_status)
+SYNC_PID_BEFORE=""
+for i in $(seq 1 5); do
+  STATUS_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
+  SYNC_PID_BEFORE=$(printf '%s' "$STATUS_OUTPUT" | sync_pid_from_status || true)
+  if [[ -n "$SYNC_PID_BEFORE" ]]; then
+    break
+  fi
+  echo "Sync pid not found in status output yet, retrying ($i/5)"
+  sleep 1
+done
 if [[ -z "$SYNC_PID_BEFORE" ]]; then
   echo "ERROR: expected status to include running sync pid before repeated up" >&2
   echo "$STATUS_OUTPUT" >&2
@@ -215,7 +223,7 @@ if [[ "$REPEAT_UP_OUTPUT" != *"sync: already active"* ]]; then
 fi
 REPEAT_STATUS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
 echo "$REPEAT_STATUS"
-SYNC_PID_AFTER=$(printf '%s' "$REPEAT_STATUS" | sync_pid_from_status)
+SYNC_PID_AFTER=$(printf '%s' "$REPEAT_STATUS" | sync_pid_from_status || true)
 if [[ "$SYNC_PID_AFTER" != "$SYNC_PID_BEFORE" ]]; then
   echo "ERROR: expected sync pid to remain $SYNC_PID_BEFORE after repeated up, got ${SYNC_PID_AFTER:-missing}" >&2
   exit 1
