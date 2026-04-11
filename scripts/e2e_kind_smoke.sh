@@ -194,6 +194,44 @@ if [[ "$SYNC_OK" != "true" ]]; then
   exit 1
 fi
 
+echo "Verifying repeated okdev up reuses active sync"
+SYNC_PID_BEFORE=$(printf '%s' "$STATUS_OUTPUT" | sync_pid_from_status)
+if [[ -z "$SYNC_PID_BEFORE" ]]; then
+  echo "ERROR: expected status to include running sync pid before repeated up" >&2
+  echo "$STATUS_OUTPUT" >&2
+  exit 1
+fi
+SYNC_LOG_LINES_BEFORE=$(wc -l <"$SYNC_HOME/local.log")
+REPEAT_UP_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m)
+echo "$REPEAT_UP_OUTPUT"
+if [[ "$REPEAT_UP_OUTPUT" != *"reused existing workload"* ]]; then
+  echo "ERROR: expected repeated up to reuse existing pod workload" >&2
+  exit 1
+fi
+if [[ "$REPEAT_UP_OUTPUT" != *"sync: already active"* ]]; then
+  echo "ERROR: expected repeated up to report already-active sync" >&2
+  exit 1
+fi
+REPEAT_STATUS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
+echo "$REPEAT_STATUS"
+SYNC_PID_AFTER=$(printf '%s' "$REPEAT_STATUS" | sync_pid_from_status)
+if [[ "$SYNC_PID_AFTER" != "$SYNC_PID_BEFORE" ]]; then
+  echo "ERROR: expected sync pid to remain $SYNC_PID_BEFORE after repeated up, got ${SYNC_PID_AFTER:-missing}" >&2
+  exit 1
+fi
+if [[ "$REPEAT_STATUS" != *"health: active"* ]]; then
+  echo "ERROR: expected sync health to remain active after repeated up" >&2
+  exit 1
+fi
+SYNC_LOG_LINES_AFTER=$(wc -l <"$SYNC_HOME/local.log")
+if [[ $((SYNC_LOG_LINES_AFTER - SYNC_LOG_LINES_BEFORE)) -gt 5 ]]; then
+  echo "ERROR: expected repeated up not to restart or churn sync log" >&2
+  tail -20 "$SYNC_HOME/local.log" >&2
+  exit 1
+fi
+STATUS_OUTPUT="$REPEAT_STATUS"
+echo "Repeated okdev up sync reuse verified"
+
 echo "Verifying remote shell and logs"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --setup-key --cmd 'test -f /workspace/hello.txt'
 LOG_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" logs --all --follow=false --tail 10)

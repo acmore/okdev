@@ -111,3 +111,15 @@ assert_no_local_sync_processes() {
   echo "$matches" >&2
   return 1
 }
+
+sync_pid_from_status() {
+  python3 - <<'PY'
+import re
+import sys
+
+status = sys.stdin.read()
+match = re.search(r"background: running \(pid ([0-9]+)\)", status)
+if match:
+    print(match.group(1))
+PY
+}
