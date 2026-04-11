@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,7 @@ import (
 	"github.com/acmore/okdev/internal/config"
 	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
+	yamlv3 "gopkg.in/yaml.v3"
 	"sigs.k8s.io/yaml"
 )
 
@@ -29,6 +32,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 	var syncRemoteOverride string
 	var sshUserOverride string
 	var stignorePreset string
+	var setFlags []string
 
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -74,25 +78,49 @@ func newInitCmd(opts *Options) *cobra.Command {
 				return err
 			}
 
+			projectDir, err := initProjectDir(opts.ConfigPath)
+			if err != nil {
+				return err
+			}
 			target := opts.ConfigPath
 			if target == "" {
-				target = defaultInitTargetPath(templateRef, vars)
+				target = defaultInitTargetPath(templateRef, vars, projectDir)
 			}
 			abs, err := filepath.Abs(target)
 			if err != nil {
 				return fmt.Errorf("resolve output path %q: %w", target, err)
 			}
+			projectDir = config.RootDir(abs)
 			if _, err := os.Stat(abs); err == nil && !force {
 				return fmt.Errorf("config already exists at %q (use --force to overwrite)", abs)
 			}
 			normalizeInitManifestPathForTarget(abs, vars, overrides.hasManifestPath())
 
-			rendered, err := config.RenderTemplateContext(context.Background(), templateRef, vars)
+			rawTemplate, err := config.ResolveTemplateFromDir(context.Background(), templateRef, projectDir)
+			if err != nil {
+				return err
+			}
+			meta, _, err := config.ParseFrontmatter(rawTemplate)
+			if err != nil {
+				return err
+			}
+			sets := parseSetFlags(setFlags)
+			warnUnknownTemplateSets(cmd.ErrOrStderr(), meta, sets)
+			customVars, err := resolveInitTemplateVars(meta, sets, nil, yes, isTerminalReader(cmd.InOrStdin()), cmd.InOrStdin(), cmd.OutOrStdout())
 			if err != nil {
 				return err
 			}
 
-			if err := validateRenderedInitConfig(rendered, templateRef, vars); err != nil {
+			rendered, err := config.RenderTemplateWithVars(context.Background(), templateRef, vars, customVars, projectDir)
+			if err != nil {
+				return err
+			}
+			rendered, err = persistTemplateRefIfNeeded(rendered, templateRef, customVars, projectDir)
+			if err != nil {
+				return err
+			}
+
+			if err := validateRenderedInitConfig(rendered, templateRef, vars, projectDir); err != nil {
 				return err
 			}
 
@@ -106,11 +134,11 @@ func newInitCmd(opts *Options) *cobra.Command {
 			if resolvedPreset == "" {
 				resolvedPreset = detectSTIgnorePreset(config.RootDir(abs))
 			}
-			stignorePath, wroteSTIgnore, err := writeInitSTIgnore(abs, []byte(rendered), templateRef, resolvedPreset, force)
+			stignorePath, wroteSTIgnore, err := writeInitSTIgnore(abs, []byte(rendered), templateRef, resolvedPreset, force, projectDir)
 			if err != nil {
 				return err
 			}
-			scaffolded, err := scaffoldInitWorkload(abs, templateRef, vars, force)
+			scaffolded, err := scaffoldInitWorkload(abs, templateRef, vars, force, projectDir)
 			if err != nil {
 				return err
 			}
@@ -144,22 +172,165 @@ func newInitCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&syncRemoteOverride, "sync-remote", "", "Remote sync path")
 	cmd.Flags().StringVar(&sshUserOverride, "ssh-user", "", "SSH user")
 	cmd.Flags().StringVar(&stignorePreset, "stignore-preset", "", "Local .stignore preset: default|python|node|go|rust")
+	cmd.Flags().StringArrayVar(&setFlags, "set", nil, "Set a template variable (repeatable: --set key=value)")
 	return cmd
 }
 
 func initTemplateUsage() string {
-	names := append([]string{}, config.BuiltinTemplateNames()...)
-	if userNames, err := config.UserTemplateNames(); err == nil {
-		names = append(names, userNames...)
-	}
-	if len(names) == 0 {
-		return "Template: file path or URL"
-	}
-	return fmt.Sprintf("Template: %s, file path, or URL", strings.Join(names, "|"))
+	return "Template name, file path, or URL (run 'okdev template list' to see available templates)"
 }
 
-func defaultInitTargetPath(templateRef string, vars *config.TemplateVars) string {
-	if scaffoldsInitWorkload(templateRef, vars) {
+func parseSetFlags(flags []string) map[string]string {
+	result := make(map[string]string, len(flags))
+	for _, flag := range flags {
+		parts := strings.SplitN(flag, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		result[strings.TrimSpace(parts[0])] = parts[1]
+	}
+	return result
+}
+
+func warnUnknownTemplateSets(w io.Writer, meta *config.TemplateMeta, sets map[string]string) {
+	if len(sets) == 0 || meta == nil {
+		return
+	}
+	known := make(map[string]bool, len(meta.Variables))
+	for _, v := range meta.Variables {
+		known[v.Name] = true
+	}
+	for name := range sets {
+		if !known[name] {
+			fmt.Fprintf(w, "Warning: template variable %q is not declared by this template\n", name)
+		}
+	}
+}
+
+func resolveInitTemplateVars(meta *config.TemplateMeta, sets map[string]string, stored map[string]any, nonInteractive, interactive bool, in io.Reader, out io.Writer) (map[string]any, error) {
+	if meta == nil || len(meta.Variables) == 0 {
+		return map[string]any{}, nil
+	}
+	if nonInteractive {
+		return config.ResolveVariables(meta, sets, stored)
+	}
+
+	resolved := make(map[string]any, len(meta.Variables))
+	for _, v := range meta.Variables {
+		if raw, ok := sets[v.Name]; ok {
+			coerced, err := config.CoerceVariableValue(v, raw)
+			if err != nil {
+				return nil, err
+			}
+			resolved[v.Name] = coerced
+			continue
+		}
+		if val, ok := stored[v.Name]; ok {
+			resolved[v.Name] = val
+			continue
+		}
+		// Don't pre-populate defaults here — let promptTemplateVars
+		// show the default as a hint so the user can override it.
+	}
+	if !interactive {
+		return nil, fmt.Errorf("interactive init requires a TTY; rerun with --yes or pass explicit --set values")
+	}
+	reader := bufio.NewReader(in)
+	return promptTemplateVars(reader, out, meta, resolved)
+}
+
+func persistTemplateRefIfNeeded(rendered, templateRef string, customVars map[string]any, projectDir string) (string, error) {
+	ref := strings.TrimSpace(templateRef)
+	if ref == "" {
+		ref = "basic"
+	}
+	if isActualBuiltinBasic(ref, projectDir) && len(customVars) == 0 {
+		return rendered, nil
+	}
+
+	var doc yamlv3.Node
+	if err := yamlv3.Unmarshal([]byte(rendered), &doc); err != nil {
+		return "", fmt.Errorf("parse generated config for template metadata: %w", err)
+	}
+	root := yamlDocumentRoot(&doc)
+	if root == nil || root.Kind != yamlv3.MappingNode {
+		return "", fmt.Errorf("generated config must be a YAML mapping")
+	}
+	spec := ensureYAMLMapping(root, "spec")
+	templateNode := &yamlv3.Node{Kind: yamlv3.MappingNode}
+	setYAMLNode(templateNode, "name", yamlScalar(ref))
+	if len(customVars) > 0 {
+		var varsNode yamlv3.Node
+		if err := varsNode.Encode(customVars); err != nil {
+			return "", fmt.Errorf("encode template vars: %w", err)
+		}
+		setYAMLNode(templateNode, "vars", &varsNode)
+	}
+	setYAMLNode(spec, "template", templateNode)
+
+	out, err := yamlv3.Marshal(&doc)
+	if err != nil {
+		return "", fmt.Errorf("marshal generated config with template metadata: %w", err)
+	}
+	return string(out), nil
+}
+
+func yamlDocumentRoot(doc *yamlv3.Node) *yamlv3.Node {
+	if doc.Kind == yamlv3.DocumentNode && len(doc.Content) > 0 {
+		return doc.Content[0]
+	}
+	return doc
+}
+
+func ensureYAMLMapping(parent *yamlv3.Node, key string) *yamlv3.Node {
+	if existing := findYAMLNode(parent, key); existing != nil && existing.Kind == yamlv3.MappingNode {
+		return existing
+	}
+	node := &yamlv3.Node{Kind: yamlv3.MappingNode}
+	setYAMLNode(parent, key, node)
+	return node
+}
+
+func findYAMLNode(parent *yamlv3.Node, key string) *yamlv3.Node {
+	for i := 0; i+1 < len(parent.Content); i += 2 {
+		if parent.Content[i].Value == key {
+			return parent.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func setYAMLNode(parent *yamlv3.Node, key string, value *yamlv3.Node) {
+	for i := 0; i+1 < len(parent.Content); i += 2 {
+		if parent.Content[i].Value == key {
+			parent.Content[i+1] = value
+			return
+		}
+	}
+	parent.Content = append(parent.Content, yamlScalar(key), value)
+}
+
+func yamlScalar(value string) *yamlv3.Node {
+	return &yamlv3.Node{Kind: yamlv3.ScalarNode, Value: value}
+}
+
+func initProjectDir(configPath string) (string, error) {
+	if strings.TrimSpace(configPath) != "" {
+		abs, err := filepath.Abs(configPath)
+		if err != nil {
+			return "", fmt.Errorf("resolve output path %q: %w", configPath, err)
+		}
+		return config.RootDir(abs), nil
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("get working directory: %w", err)
+	}
+	return wd, nil
+}
+
+func defaultInitTargetPath(templateRef string, vars *config.TemplateVars, projectDir string) string {
+	if scaffoldsInitWorkload(templateRef, vars, projectDir) {
 		return config.FolderFile
 	}
 	return config.DefaultFile
@@ -259,7 +430,7 @@ func validateInitWorkloadVars(vars *config.TemplateVars) error {
 	return nil
 }
 
-func validateRenderedInitConfig(rendered, templateRef string, vars *config.TemplateVars) error {
+func validateRenderedInitConfig(rendered, templateRef string, vars *config.TemplateVars, projectDir string) error {
 	var cfg config.DevEnvironment
 	if err := yaml.Unmarshal([]byte(rendered), &cfg); err != nil {
 		return fmt.Errorf("parse generated config: %w", err)
@@ -268,14 +439,14 @@ func validateRenderedInitConfig(rendered, templateRef string, vars *config.Templ
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("generated config is invalid: %w", err)
 	}
-	if vars.WorkloadType != "pod" && !usesBuiltinBasicTemplate(templateRef) && strings.TrimSpace(cfg.Spec.Workload.ManifestPath) == "" {
+	if vars.WorkloadType != "pod" && !isActualBuiltinBasic(templateRef, projectDir) && strings.TrimSpace(cfg.Spec.Workload.ManifestPath) == "" {
 		return fmt.Errorf("custom template must render spec.workload for workload type %q", vars.WorkloadType)
 	}
 	return nil
 }
 
-func scaffoldInitWorkload(configPath, templateRef string, vars *config.TemplateVars, force bool) ([]string, error) {
-	if !scaffoldsInitWorkload(templateRef, vars) {
+func scaffoldInitWorkload(configPath, templateRef string, vars *config.TemplateVars, force bool, projectDir string) ([]string, error) {
+	if !scaffoldsInitWorkload(templateRef, vars, projectDir) {
 		return nil, nil
 	}
 	var templatePath string
@@ -317,8 +488,24 @@ func usesBuiltinBasicTemplate(ref string) bool {
 	return strings.TrimSpace(ref) == "" || strings.TrimSpace(ref) == "basic"
 }
 
-func scaffoldsInitWorkload(templateRef string, vars *config.TemplateVars) bool {
-	if !usesBuiltinBasicTemplate(templateRef) {
+// isActualBuiltinBasic checks whether the ref resolves to the actual built-in
+// basic template, not a project/user template that shadows the name.
+func isActualBuiltinBasic(ref, projectDir string) bool {
+	if !usesBuiltinBasicTemplate(ref) {
+		return false
+	}
+	// If a project-local or user template shadows "basic", it's not the built-in.
+	if names, _ := config.ProjectTemplateNames(projectDir); containsString(names, "basic") {
+		return false
+	}
+	if names, _ := config.UserTemplateNames(); containsString(names, "basic") {
+		return false
+	}
+	return true
+}
+
+func scaffoldsInitWorkload(templateRef string, vars *config.TemplateVars, projectDir string) bool {
+	if !isActualBuiltinBasic(templateRef, projectDir) {
 		return false
 	}
 	switch strings.TrimSpace(vars.WorkloadType) {
@@ -355,13 +542,20 @@ func detectSTIgnorePreset(dir string) string {
 	return ""
 }
 
-func writeInitSTIgnore(configPath string, rendered []byte, templateRef string, stignorePreset string, force bool) (string, bool, error) {
+func writeInitSTIgnore(configPath string, rendered []byte, templateRef string, stignorePreset string, force bool, projectDirs ...string) (string, bool, error) {
 	var cfg config.DevEnvironment
 	if err := yaml.Unmarshal(rendered, &cfg); err != nil {
 		return "", false, fmt.Errorf("parse generated config for .stignore: %w", err)
 	}
 	cfg.SetDefaults()
-	patterns := config.BuiltinTemplateLocalIgnores(templateRef)
+	projectDir := config.RootDir(configPath)
+	if len(projectDirs) > 0 {
+		projectDir = projectDirs[0]
+	}
+	var patterns []string
+	if isActualBuiltinBasic(templateRef, projectDir) {
+		patterns = config.BuiltinTemplateLocalIgnores(templateRef)
+	}
 	if preset := strings.TrimSpace(stignorePreset); preset != "" {
 		patterns = config.STIgnorePreset(preset)
 		if patterns == nil {

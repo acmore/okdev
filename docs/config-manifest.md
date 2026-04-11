@@ -22,6 +22,7 @@ spec: {}
 |-------|------|---------|-------------|
 | `namespace` | `string` | `default` | Kubernetes namespace |
 | `kubeContext` | `string` | — | Kubeconfig context for okdev commands |
+| `template` | `object` | — | Template reference and resolved custom variables from `okdev init --template` |
 | `session` | `object` | — | Session naming and lifecycle policy |
 | `agents` | `array` | — | Coding agent configuration and local auth conventions |
 | `volumes` | `array` | — | Kubernetes volume definitions |
@@ -31,6 +32,23 @@ spec: {}
 | `lifecycle` | `object` | — | Post-create, post-sync, and pre-stop hooks |
 | `sidecar` | `object` | — | Sidecar container image |
 | `podTemplate` | `object` | — | Full Kubernetes PodSpec overlay |
+
+---
+
+## `spec.template`
+
+Records the template reference and resolved custom variables used to generate a config. This block is written for non-built-in templates and for templates that declare custom variables.
+
+```yaml
+spec:
+  template:
+    name: pytorch-ddp
+    vars:
+      numWorkers: 4
+      baseImage: pytorch/pytorch:latest
+```
+
+`okdev migrate --template <name>` uses `spec.template.vars` as defaults, applies any `--set key=value` overrides, re-renders the template, and preserves existing config values over template defaults.
 
 ---
 

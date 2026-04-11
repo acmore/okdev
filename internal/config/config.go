@@ -47,6 +47,7 @@ type Metadata struct {
 type DevEnvSpec struct {
 	Namespace   string           `yaml:"namespace"`
 	KubeContext string           `yaml:"kubeContext"`
+	Template    *TemplateRef     `yaml:"template,omitempty"`
 	Session     SessionSpec      `yaml:"session"`
 	Agents      []AgentSpec      `yaml:"agents,omitempty"`
 	Workload    WorkloadSpec     `yaml:"workload"`
@@ -58,6 +59,12 @@ type DevEnvSpec struct {
 	Lifecycle   LifecycleSpec    `yaml:"lifecycle"`
 	Sidecar     SidecarSpec      `yaml:"sidecar"`
 	PodTemplate PodTemplateRef   `yaml:"podTemplate"`
+}
+
+// TemplateRef records which template and variable values produced this config.
+type TemplateRef struct {
+	Name string         `yaml:"name"`
+	Vars map[string]any `yaml:"vars,omitempty"`
 }
 
 type SidecarSpec struct {

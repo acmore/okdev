@@ -194,6 +194,42 @@ func promptInteractive(vars *config.TemplateVars, overrides InitOverrides, in io
 	return nil
 }
 
+func promptTemplateVars(reader *bufio.Reader, out io.Writer, meta *config.TemplateMeta, resolved map[string]any) (map[string]any, error) {
+	if resolved == nil {
+		resolved = map[string]any{}
+	}
+	for _, v := range meta.Variables {
+		if _, ok := resolved[v.Name]; ok {
+			continue
+		}
+		defStr := ""
+		if v.HasDefault() {
+			defStr = fmt.Sprintf("%v", v.Default)
+		}
+		label := v.Description
+		if label == "" {
+			label = v.Name
+		}
+		input, err := promptString(reader, out, fmt.Sprintf("%s (%s)", label, v.Name), defStr)
+		if err != nil {
+			return nil, err
+		}
+		if input == "" && v.HasDefault() {
+			resolved[v.Name] = v.Default
+			continue
+		}
+		if input == "" {
+			return nil, fmt.Errorf("variable %q is required", v.Name)
+		}
+		coerced, err := config.CoerceVariableValue(v, input)
+		if err != nil {
+			return nil, err
+		}
+		resolved[v.Name] = coerced
+	}
+	return resolved, nil
+}
+
 // promptString prints a prompt with a default and reads user input.
 // Returns empty string if user accepts default (just presses Enter).
 func promptString(reader *bufio.Reader, out io.Writer, label, defaultVal string) (string, error) {

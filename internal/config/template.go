@@ -13,6 +13,8 @@ import (
 	"strings"
 	"text/template"
 	"time"
+
+	"github.com/Masterminds/sprig/v3"
 )
 
 type templateHTTPDoer interface {
@@ -132,6 +134,11 @@ func ResolveTemplate(ref string) (string, error) {
 
 // ResolveTemplateContext loads raw template content from a built-in name, file path, or URL.
 func ResolveTemplateContext(ctx context.Context, ref string) (string, error) {
+	return ResolveTemplateFromDir(ctx, ref, "")
+}
+
+// ResolveTemplateFromDir resolves a template with project-local directory awareness.
+func ResolveTemplateFromDir(ctx context.Context, ref, projDir string) (string, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		ref = "basic"
@@ -144,6 +151,12 @@ func ResolveTemplateContext(ctx context.Context, ref string) (string, error) {
 	if hasPathIndicator {
 		if content, err := os.ReadFile(ref); err == nil {
 			return string(content), nil
+		}
+	}
+
+	if !hasPathIndicator && strings.TrimSpace(projDir) != "" {
+		if content, err := resolveProjectTemplate(ref, projDir); err == nil {
+			return content, nil
 		}
 	}
 
@@ -200,18 +213,40 @@ func RenderTemplate(ref string, vars *TemplateVars) (string, error) {
 
 // RenderTemplateContext resolves a template by ref and renders it with the given vars.
 func RenderTemplateContext(ctx context.Context, ref string, vars *TemplateVars) (string, error) {
-	raw, err := ResolveTemplateContext(ctx, ref)
+	return RenderTemplateWithVars(ctx, ref, vars, nil, "")
+}
+
+// templateData wraps TemplateVars and custom variables for template execution.
+type templateData struct {
+	*TemplateVars
+	Vars map[string]any
+}
+
+// RenderTemplateWithVars resolves and renders a template with built-in fields
+// plus custom variables exposed as .Vars.
+func RenderTemplateWithVars(ctx context.Context, ref string, vars *TemplateVars, customVars map[string]any, projDir string) (string, error) {
+	raw, err := ResolveTemplateFromDir(ctx, ref, projDir)
 	if err != nil {
 		return "", err
 	}
-
-	tmpl, err := template.New("okdev").Parse(raw)
+	_, body, err := ParseFrontmatter(raw)
+	if err != nil {
+		return "", err
+	}
+	if vars == nil {
+		vars = NewTemplateVars()
+	}
+	data := templateData{TemplateVars: vars, Vars: customVars}
+	if data.Vars == nil {
+		data.Vars = map[string]any{}
+	}
+	tmpl, err := template.New("okdev").Funcs(sprig.HermeticTxtFuncMap()).Parse(body)
 	if err != nil {
 		return "", fmt.Errorf("parse template: %w", err)
 	}
 
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, vars); err != nil {
+	if err := tmpl.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("render template: %w", err)
 	}
 	return buf.String(), nil
@@ -252,6 +287,35 @@ func UserTemplateNames() ([]string, error) {
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+// ProjectTemplateNames returns template names found in <dir>/.okdev/templates.
+func ProjectTemplateNames(dir string) ([]string, error) {
+	tmplDir := filepath.Join(dir, ".okdev", "templates")
+	entries, err := os.ReadDir(tmplDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read project template registry: %w", err)
+	}
+	return templateNamesFromEntries(entries), nil
+}
+
+func templateNamesFromEntries(entries []os.DirEntry) []string {
+	var names []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".yaml.tmpl") {
+			continue
+		}
+		names = append(names, strings.TrimSuffix(name, ".yaml.tmpl"))
+	}
+	sort.Strings(names)
+	return names
 }
 
 func BuiltinTemplateLocalIgnores(ref string) []string {
@@ -300,12 +364,26 @@ func resolveUserTemplate(name string) (string, error) {
 	return string(content), nil
 }
 
+func resolveProjectTemplate(name, projDir string) (string, error) {
+	dir := filepath.Join(projDir, ".okdev", "templates")
+	path := filepath.Join(dir, name+".yaml.tmpl")
+	rel, err := filepath.Rel(dir, path)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("template name %q resolves outside project registry", name)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return string(content), nil
+}
+
 func RenderEmbeddedTemplate(path string, vars *TemplateVars) (string, error) {
 	raw, err := embeddedTemplates.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read embedded template %q: %w", path, err)
 	}
-	tmpl, err := template.New(filepath.Base(path)).Parse(string(raw))
+	tmpl, err := template.New(filepath.Base(path)).Funcs(sprig.HermeticTxtFuncMap()).Parse(string(raw))
 	if err != nil {
 		return "", fmt.Errorf("parse embedded template %q: %w", path, err)
 	}
