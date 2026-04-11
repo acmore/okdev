@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/acmore/okdev/internal/kube"
 )
 
 func TestEnsureDevSSHDRunning(t *testing.T) {
@@ -158,5 +160,117 @@ func TestRunSSHShellWithReconnectRapidFailures(t *testing.T) {
 	err := runSSHShellWithReconnect(context.Background(), runner, "test-sess", &errOut)
 	if err == nil || !strings.Contains(err.Error(), "failed repeatedly") {
 		t.Fatalf("expected rapid failure circuit breaker, got %v", err)
+	}
+}
+
+func TestRunSSHShellWithReconnectDetectsContainerRestart(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runner := &fakeShellRunner{
+		shellErrors: []error{errors.New("connection reset by peer")},
+	}
+	runner.connected.Store(true)
+
+	checkRestart := func() *kube.ContainerRestartInfo {
+		return &kube.ContainerRestartInfo{
+			RestartCount: 2,
+			LastReason:   "OOMKilled",
+		}
+	}
+
+	var errOut bytes.Buffer
+	err := runSSHShellWithReconnectAndRestartCheck(context.Background(), runner, "test-sess", &errOut, checkRestart)
+	if err != nil {
+		t.Fatalf("expected nil return on container restart, got %v", err)
+	}
+	output := errOut.String()
+	if !strings.Contains(output, "OOMKilled") {
+		t.Fatalf("expected OOMKilled in output, got %q", output)
+	}
+	if !strings.Contains(output, "Container restarted") {
+		t.Fatalf("expected 'Container restarted' in output, got %q", output)
+	}
+}
+
+func TestRunSSHShellWithReconnectNoRestartContinuesRecovery(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runner := &fakeShellRunner{
+		shellErrors: []error{errors.New("connection reset by peer"), nil},
+	}
+	runner.connected.Store(true)
+
+	// checkRestart returns nil — no restart detected, should continue reconnecting.
+	checkRestart := func() *kube.ContainerRestartInfo {
+		return nil
+	}
+
+	var errOut bytes.Buffer
+	err := runSSHShellWithReconnectAndRestartCheck(context.Background(), runner, "test-sess", &errOut, checkRestart)
+	if err != nil {
+		t.Fatalf("expected successful reconnect, got %v", err)
+	}
+	if !strings.Contains(errOut.String(), "Connection lost") {
+		t.Fatalf("expected 'Connection lost' message, got %q", errOut.String())
+	}
+}
+
+func TestRunSSHShellWithReconnectDetectsContainerCrashLoop(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runner := &fakeShellRunner{
+		shellErrors: []error{errors.New("connection reset by peer")},
+	}
+	runner.connected.Store(true)
+
+	checkRestart := func() *kube.ContainerRestartInfo {
+		return &kube.ContainerRestartInfo{
+			RestartCount:   5,
+			LastReason:     "Error",
+			LastExitCode:   137,
+			CurrentWaiting: "CrashLoopBackOff",
+		}
+	}
+
+	var errOut bytes.Buffer
+	err := runSSHShellWithReconnectAndRestartCheck(context.Background(), runner, "test-sess", &errOut, checkRestart)
+	if err != nil {
+		t.Fatalf("expected nil return on container restart, got %v", err)
+	}
+	output := errOut.String()
+	if !strings.Contains(output, "CrashLoopBackOff") {
+		t.Fatalf("expected CrashLoopBackOff in output, got %q", output)
+	}
+}
+
+func TestPrintContainerRestartNotice(t *testing.T) {
+	tests := []struct {
+		name     string
+		info     kube.ContainerRestartInfo
+		contains []string
+	}{
+		{
+			name:     "OOMKilled",
+			info:     kube.ContainerRestartInfo{RestartCount: 1, LastReason: "OOMKilled"},
+			contains: []string{"Container restarted (OOMKilled)", "tmux sessions"},
+		},
+		{
+			name:     "CrashLoopBackOff",
+			info:     kube.ContainerRestartInfo{RestartCount: 5, LastReason: "Error", CurrentWaiting: "CrashLoopBackOff"},
+			contains: []string{"Container restarted (Error)", "CrashLoopBackOff"},
+		},
+		{
+			name:     "unknown reason",
+			info:     kube.ContainerRestartInfo{RestartCount: 1},
+			contains: []string{"Container restarted (unknown)"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printContainerRestartNotice(&buf, &tt.info)
+			for _, want := range tt.contains {
+				if !strings.Contains(buf.String(), want) {
+					t.Errorf("expected output to contain %q, got %q", want, buf.String())
+				}
+			}
+		})
 	}
 }

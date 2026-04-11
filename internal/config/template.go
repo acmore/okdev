@@ -102,7 +102,7 @@ func NewTemplateVars() *TemplateVars {
 	return &TemplateVars{
 		Name:             "",
 		Namespace:        "default",
-		SidecarImage:     DefaultSidecarImage,
+		SidecarImage:     "",
 		SyncthingVersion: DefaultSyncthingVersion,
 		SyncLocal:        ".",
 		SyncRemote:       "/workspace",

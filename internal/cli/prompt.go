@@ -79,7 +79,6 @@ func (o InitOverrides) hasWorkloadType() bool  { return o.WorkloadType != "" }
 func (o InitOverrides) hasManifestPath() bool  { return o.ManifestPath != "" }
 func (o InitOverrides) hasInjectPaths() bool   { return len(o.InjectPaths) > 0 }
 func (o InitOverrides) hasGenericPreset() bool { return o.GenericPreset != "" }
-func (o InitOverrides) hasSidecarImage() bool  { return o.SidecarImage != "" }
 func (o InitOverrides) hasSyncLocal() bool     { return o.SyncLocal != "" }
 func (o InitOverrides) hasSyncRemote() bool    { return o.SyncRemote != "" }
 func (o InitOverrides) hasSSHUser() bool       { return o.SSHUser != "" }
@@ -159,16 +158,6 @@ func promptInteractive(vars *config.TemplateVars, overrides InitOverrides, in io
 		}
 		if input != "" {
 			vars.InjectPaths = splitCommaList(input)
-		}
-	}
-
-	if !overrides.hasSidecarImage() {
-		input, err := promptString(reader, out, "Sidecar image (okdev SSH/sync helper image)", vars.SidecarImage)
-		if err != nil {
-			return err
-		}
-		if input != "" {
-			vars.SidecarImage = input
 		}
 	}
 

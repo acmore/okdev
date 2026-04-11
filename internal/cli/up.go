@@ -963,7 +963,7 @@ func shouldReuseExistingWorkload(ctx context.Context, k workloadExistenceChecker
 	if !exists {
 		return false, nil
 	}
-	if kind == workload.TypePod {
+	if strings.EqualFold(kind, workload.TypePod) {
 		summary, err := k.GetPodSummary(ctx, namespace, name)
 		if err != nil {
 			return false, fmt.Errorf("get pod/%s status: %w", name, err)

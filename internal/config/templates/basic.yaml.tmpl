@@ -37,7 +37,9 @@ spec:
     keepAliveIntervalSeconds: 30
     keepAliveTimeoutSeconds: 90
   sidecar:
+{{- if .SidecarImage }}
     image: {{ .SidecarImage }}
+{{- end }}
 {{- if and (eq .WorkloadType "pod") .DevImage }}
   podTemplate:
     spec:
