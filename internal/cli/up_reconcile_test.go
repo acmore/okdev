@@ -126,14 +126,14 @@ func TestShouldReuseExistingWorkloadReusesExistingPodAndSkipsForReconcile(t *tes
 		}},
 	}
 
-	reuse, err := shouldReuseExistingWorkload(context.Background(), k, "default", &fakeRefRuntime{kind: workload.TypePod, apiVersion: "v1", name: "okdev-sess"})
+	reuse, err := shouldReuseExistingWorkload(context.Background(), k, "default", &fakeRefRuntime{kind: "Pod", apiVersion: "v1", name: "okdev-sess"})
 	if err != nil {
 		t.Fatalf("pod shouldReuseExistingWorkload: %v", err)
 	}
 	if !reuse {
 		t.Fatal("expected pod runtime to reuse existing workload")
 	}
-	if k.apiVersion != "v1" || k.kind != workload.TypePod || k.name != "okdev-sess" {
+	if k.apiVersion != "v1" || k.kind != "Pod" || k.name != "okdev-sess" {
 		t.Fatalf("unexpected pod workload ref lookup: %#v", k)
 	}
 
@@ -154,7 +154,7 @@ func TestShouldReuseExistingWorkloadSkipsTerminatingPod(t *testing.T) {
 		}},
 	}
 
-	reuse, err := shouldReuseExistingWorkload(context.Background(), k, "default", &fakeRefRuntime{kind: workload.TypePod, apiVersion: "v1", name: "okdev-sess"})
+	reuse, err := shouldReuseExistingWorkload(context.Background(), k, "default", &fakeRefRuntime{kind: "Pod", apiVersion: "v1", name: "okdev-sess"})
 	if err != nil {
 		t.Fatalf("pod shouldReuseExistingWorkload: %v", err)
 	}
@@ -171,12 +171,59 @@ func TestShouldReuseExistingWorkloadSkipsTerminalPod(t *testing.T) {
 		}},
 	}
 
-	reuse, err := shouldReuseExistingWorkload(context.Background(), k, "default", &fakeRefRuntime{kind: workload.TypePod, apiVersion: "v1", name: "okdev-sess"})
+	reuse, err := shouldReuseExistingWorkload(context.Background(), k, "default", &fakeRefRuntime{kind: "Pod", apiVersion: "v1", name: "okdev-sess"})
 	if err != nil {
 		t.Fatalf("pod shouldReuseExistingWorkload: %v", err)
 	}
 	if reuse {
 		t.Fatal("expected terminal pod runtime to skip reuse")
+	}
+}
+
+// Regression: PodRuntime.WorkloadRef() returns API kind "Pod" (capital P),
+// while workload.TypePod is "pod" (lowercase). The reuse check must handle
+// both casings so that terminating/terminal pod checks are not skipped.
+func TestShouldReuseExistingWorkloadSkipsTerminatingPodAPIKind(t *testing.T) {
+	for _, kind := range []string{"Pod", "pod", "POD"} {
+		t.Run(kind, func(t *testing.T) {
+			k := &fakeWorkloadExistenceChecker{
+				exists: true,
+				podsSeq: [][]kube.PodSummary{{
+					{Name: "okdev-sess", Phase: string(corev1.PodRunning), Deleting: true},
+				}},
+			}
+			reuse, err := shouldReuseExistingWorkload(context.Background(), k, "default",
+				&fakeRefRuntime{kind: kind, apiVersion: "v1", name: "okdev-sess"})
+			if err != nil {
+				t.Fatalf("shouldReuseExistingWorkload(%q): %v", kind, err)
+			}
+			if reuse {
+				t.Fatalf("expected terminating pod (kind=%q) to skip reuse", kind)
+			}
+		})
+	}
+}
+
+func TestShouldReuseExistingWorkloadSkipsTerminalPodAPIKind(t *testing.T) {
+	for _, kind := range []string{"Pod", "pod"} {
+		for _, phase := range []corev1.PodPhase{corev1.PodSucceeded, corev1.PodFailed} {
+			t.Run(kind+"/"+string(phase), func(t *testing.T) {
+				k := &fakeWorkloadExistenceChecker{
+					exists: true,
+					podsSeq: [][]kube.PodSummary{{
+						{Name: "okdev-sess", Phase: string(phase)},
+					}},
+				}
+				reuse, err := shouldReuseExistingWorkload(context.Background(), k, "default",
+					&fakeRefRuntime{kind: kind, apiVersion: "v1", name: "okdev-sess"})
+				if err != nil {
+					t.Fatalf("shouldReuseExistingWorkload(%q, %s): %v", kind, phase, err)
+				}
+				if reuse {
+					t.Fatalf("expected terminal pod (kind=%q, phase=%s) to skip reuse", kind, phase)
+				}
+			})
+		}
 	}
 }
 
