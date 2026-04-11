@@ -122,11 +122,15 @@ def request(method, path, body=None):
     return data
 
 
+status = json.loads(request("GET", "/rest/system/status"))
+local_id = status.get("myID", "")
 config = json.loads(request("GET", "/rest/config"))
 devices = config.get("devices", [])
-if len(devices) != 1:
-    raise SystemExit(f"expected one remote device, got {len(devices)}")
-devices[0]["addresses"] = ["tcp://127.0.0.1:1"]
+remote_devices = [d for d in devices if d.get("deviceID") and d.get("deviceID") != local_id]
+if len(remote_devices) != 1:
+    ids = ", ".join(d.get("deviceID", "<missing>") for d in devices)
+    raise SystemExit(f"expected one remote device excluding local {local_id}, got {len(remote_devices)} from [{ids}]")
+remote_devices[0]["addresses"] = ["tcp://127.0.0.1:1"]
 request("PUT", "/rest/config", config)
 request("POST", "/rest/system/restart")
 
