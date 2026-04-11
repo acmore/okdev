@@ -182,11 +182,185 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
-	<-sigCh
+
+	checker := &liveSyncHealthChecker{
+		opts:      opts,
+		namespace: namespace,
+		pod:       pod,
+		localBase: localBase,
+		localKey:  localKey,
+		remoteID:  remoteID,
+		cancelPF:  cancelPF,
+	}
+	runSyncHealthLoop(sigCh, cmd.ErrOrStderr(), checker)
+
 	if err := stopOwnedLocalSyncthing(localHome, localPID); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to stop local syncthing: %v\n", err)
 	}
 	return nil
+}
+
+// syncHealthChecker abstracts the peer connectivity check and port-forward
+// restoration so the health loop can be tested without real network calls.
+type syncHealthChecker interface {
+	peerConnected() (bool, error)
+	restorePortForward() error
+}
+
+// liveSyncHealthChecker is the production implementation that checks the real
+// Syncthing API and restores port-forwards via Kubernetes.
+type liveSyncHealthChecker struct {
+	opts      *Options
+	namespace string
+	pod       string
+	localBase string
+	localKey  string
+	remoteID  string
+	cancelPF  context.CancelFunc
+}
+
+func (c *liveSyncHealthChecker) peerConnected() (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return syncthingPeerConnected(ctx, c.localBase, c.localKey, c.remoteID)
+}
+
+func (c *liveSyncHealthChecker) restorePortForward() error {
+	newCancelPF, err := restoreSyncPortForward(c.opts, c.namespace, c.pod, c.localBase, c.localKey, c.remoteID, c.cancelPF)
+	if err != nil {
+		return err
+	}
+	c.cancelPF = newCancelPF
+	return nil
+}
+
+// syncHealthLoopConfig holds tunable parameters for the health loop.
+type syncHealthLoopConfig struct {
+	interval      time.Duration
+	quickRetries  int
+	backoffFactor int
+	maxInterval   time.Duration
+	maxRetries    int
+}
+
+var defaultSyncHealthLoopConfig = syncHealthLoopConfig{
+	interval:      syncHealthCheckInterval,
+	quickRetries:  syncHealthCheckQuickRetries,
+	backoffFactor: syncHealthCheckBackoffFactor,
+	maxInterval:   syncHealthCheckMaxInterval,
+	maxRetries:    syncHealthCheckMaxRetries,
+}
+
+// runSyncHealthLoop monitors Syncthing peer connectivity and restores the
+// port-forward when the peer is disconnected. It returns when a signal is
+// received on sigCh.
+func runSyncHealthLoop(sigCh <-chan os.Signal, errOut io.Writer, checker syncHealthChecker) {
+	runSyncHealthLoopWithConfig(sigCh, errOut, checker, defaultSyncHealthLoopConfig)
+}
+
+func runSyncHealthLoopWithConfig(sigCh <-chan os.Signal, errOut io.Writer, checker syncHealthChecker, cfg syncHealthLoopConfig) {
+	ticker := time.NewTicker(cfg.interval)
+	defer ticker.Stop()
+
+	retries := 0
+	currentInterval := cfg.interval
+
+	for {
+		select {
+		case <-sigCh:
+			return
+		case <-ticker.C:
+			connected, err := checker.peerConnected()
+
+			if err != nil {
+				// API unreachable — Syncthing may be restarting; skip this tick.
+				slog.Debug("sync health check: API unreachable", "error", err)
+				continue
+			}
+			if connected {
+				if retries > 0 {
+					slog.Info("sync: peer reconnected after restoration")
+				}
+				retries = 0
+				currentInterval = cfg.interval
+				ticker.Reset(currentInterval)
+				continue
+			}
+
+			// Peer disconnected — attempt restoration.
+			retries++
+			if retries > cfg.maxRetries {
+				slog.Error("sync: failed to restore peer connection", "attempts", cfg.maxRetries)
+				fmt.Fprintf(errOut, "sync: giving up after %d restoration attempts — run \"okdev sync --reset\" to re-establish sync\n", cfg.maxRetries)
+				// Wait for signal to shut down.
+				<-sigCh
+				return
+			}
+
+			slog.Info("sync: peer disconnected, restoring port-forward", "attempt", retries)
+			if err := checker.restorePortForward(); err != nil {
+				if isFatalSyncRestoreError(err) {
+					slog.Error("sync: port-forward restoration hit fatal error, stopping", "error", err)
+					fmt.Fprintf(errOut, "sync: cannot restore — %v\n", err)
+					<-sigCh
+					return
+				}
+				slog.Warn("sync: port-forward restoration failed", "attempt", retries, "error", err)
+			} else {
+				slog.Info("sync: port-forward restored, waiting for peer reconnection")
+				fmt.Fprintf(errOut, "sync: reconnected to peer\n")
+			}
+
+			// Apply backoff after quick retries are exhausted.
+			if retries > cfg.quickRetries {
+				currentInterval = time.Duration(float64(currentInterval) * float64(cfg.backoffFactor))
+				if currentInterval > cfg.maxInterval {
+					currentInterval = cfg.maxInterval
+				}
+			}
+			ticker.Reset(currentInterval)
+		}
+	}
+}
+
+// isFatalSyncRestoreError returns true for errors that indicate the target
+// workload is permanently gone and retrying would be pointless.
+func isFatalSyncRestoreError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	fatal := []string{
+		"not found",
+		"forbidden",
+		"unauthorized",
+	}
+	for _, s := range fatal {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// restoreSyncPortForward cancels the old port-forward, creates a new one,
+// and updates the local Syncthing device address to point at the new endpoint.
+func restoreSyncPortForward(opts *Options, namespace, pod, localBase, localKey, remoteID string, oldCancelPF context.CancelFunc) (context.CancelFunc, error) {
+	oldCancelPF()
+
+	newCancelPF, _, newPeerAddr, err := startSyncthingPortForward(opts, namespace, pod)
+	if err != nil {
+		return oldCancelPF, fmt.Errorf("start new port-forward: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), syncthingHTTPClientTimeout)
+	defer cancel()
+	if err := updateSyncthingDeviceAddress(ctx, localBase, localKey, remoteID, newPeerAddr); err != nil {
+		newCancelPF()
+		return oldCancelPF, fmt.Errorf("update device address: %w", err)
+	}
+
+	return newCancelPF, nil
 }
 
 func startAndWaitForLocalSyncthing(ctx context.Context, binary, home string) (string, string, int, error) {
@@ -1339,6 +1513,39 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 		return err
 	}
 	return nil
+}
+
+// updateSyncthingDeviceAddress updates only the peer address for an existing
+// device in the local Syncthing config. This is used during self-healing to
+// point Syncthing at a new port-forward endpoint without touching folder or
+// other device settings.
+func updateSyncthingDeviceAddress(ctx context.Context, base, key, deviceID, newAddr string) error {
+	cfg, err := syncthingGetConfig(ctx, base, key)
+	if err != nil {
+		return fmt.Errorf("get syncthing config: %w", err)
+	}
+	devices, err := syncthingObjectArray(cfg, "devices")
+	if err != nil {
+		return err
+	}
+	found := false
+	for i, d := range devices {
+		m, err := syncthingObjectMap(d, "devices")
+		if err != nil {
+			return err
+		}
+		if asString(m["deviceID"]) == deviceID {
+			m["addresses"] = syncthingDeviceAddresses(newAddr)
+			devices[i] = m
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("device %s not found in syncthing config", deviceID)
+	}
+	cfg["devices"] = devices
+	return syncthingSetConfig(ctx, base, key, cfg)
 }
 
 func syncthingDeviceAddresses(peerAddr string) []any {

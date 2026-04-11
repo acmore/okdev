@@ -172,4 +172,19 @@ const (
 
 	// Poll interval while waiting for Syncthing child shutdown.
 	syncthingShutdownPollInterval = 100 * time.Millisecond
+
+	// Sync health check interval for peer connectivity monitoring.
+	syncHealthCheckInterval = 1 * time.Minute
+
+	// Number of quick retries at the base interval before backing off.
+	syncHealthCheckQuickRetries = 5
+
+	// Backoff multiplier applied after quick retries are exhausted.
+	syncHealthCheckBackoffFactor = 2
+
+	// Maximum interval between health check retries.
+	syncHealthCheckMaxInterval = 10 * time.Minute
+
+	// Maximum total restoration attempts before giving up.
+	syncHealthCheckMaxRetries = 15
 )
