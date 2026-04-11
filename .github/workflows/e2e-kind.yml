@@ -42,6 +42,9 @@ jobs:
       - name: Run multi-session test
         run: bash scripts/e2e_kind_multi_session.sh
 
+      - name: Run sync health test
+        run: bash scripts/e2e_kind_sync_health.sh
+
       - name: Install Kubeflow Training Operator
         run: |
           kubectl apply --server-side -k "https://github.com/kubeflow/training-operator.git/manifests/overlays/standalone?ref=v1.8.1"

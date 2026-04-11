@@ -241,3 +241,23 @@ func TestSyncHealthLoopRestoreFailureStillRetries(t *testing.T) {
 		t.Fatalf("expected exactly 1 reconnection message, got %q", buf.String())
 	}
 }
+
+func TestSyncHealthLoopConfigFromEnv(t *testing.T) {
+	t.Setenv("OKDEV_SYNC_HEALTH_CHECK_INTERVAL", "2s")
+	t.Setenv("OKDEV_SYNC_HEALTH_CHECK_MAX_INTERVAL", "7s")
+
+	cfg := syncHealthLoopConfigFromEnv(syncHealthLoopConfig{
+		interval:      time.Minute,
+		quickRetries:  5,
+		backoffFactor: 2,
+		maxInterval:   10 * time.Minute,
+		maxRetries:    15,
+	})
+
+	if cfg.interval != 2*time.Second {
+		t.Fatalf("interval = %s, want 2s", cfg.interval)
+	}
+	if cfg.maxInterval != 7*time.Second {
+		t.Fatalf("maxInterval = %s, want 7s", cfg.maxInterval)
+	}
+}
