@@ -118,7 +118,7 @@ import re
 import sys
 
 status = sys.stdin.read()
-match = re.search(r"background: running \(pid ([0-9]+)\)", status)
+match = re.search(r"background: running \(pid ([0-9]+)\)", status, re.MULTILINE)
 if match:
     print(match.group(1))
 PY

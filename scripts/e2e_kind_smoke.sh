@@ -195,6 +195,7 @@ if [[ "$SYNC_OK" != "true" ]]; then
 fi
 
 echo "Verifying repeated okdev up reuses active sync"
+STATUS_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
 SYNC_PID_BEFORE=$(printf '%s' "$STATUS_OUTPUT" | sync_pid_from_status)
 if [[ -z "$SYNC_PID_BEFORE" ]]; then
   echo "ERROR: expected status to include running sync pid before repeated up" >&2
