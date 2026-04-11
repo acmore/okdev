@@ -3,9 +3,11 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/acmore/okdev/internal/version"
+	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -18,6 +20,52 @@ func validConfig() *DevEnvironment {
 			Sync:    SyncSpec{Engine: "syncthing"},
 			Session: SessionSpec{},
 		},
+	}
+}
+
+func TestTemplateRefRoundTrip(t *testing.T) {
+	cfg := DevEnvironment{
+		APIVersion: "okdev.io/v1alpha1",
+		Kind:       "DevEnvironment",
+		Spec: DevEnvSpec{
+			Template: &TemplateRef{
+				Name: "pytorch-ddp",
+				Vars: map[string]any{
+					"numWorkers": 4,
+					"baseImage":  "pytorch:latest",
+				},
+			},
+		},
+	}
+
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "template:") || !strings.Contains(string(data), "name: pytorch-ddp") {
+		t.Fatalf("expected template block in YAML, got:\n%s", string(data))
+	}
+
+	var parsed DevEnvironment
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Spec.Template == nil || parsed.Spec.Template.Name != "pytorch-ddp" {
+		t.Fatalf("unexpected template ref after round-trip: %+v", parsed.Spec.Template)
+	}
+}
+
+func TestTemplateRefOmittedWhenNil(t *testing.T) {
+	data, err := yaml.Marshal(DevEnvironment{
+		APIVersion: "okdev.io/v1alpha1",
+		Kind:       "DevEnvironment",
+		Spec:       DevEnvSpec{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "template:") {
+		t.Fatalf("expected no template block when nil, got:\n%s", string(data))
 	}
 }
 

@@ -145,6 +145,48 @@ func TestResolveTemplateUserRegistry(t *testing.T) {
 	}
 }
 
+func TestResolveTemplateProjectLocal(t *testing.T) {
+	projDir := t.TempDir()
+	tmplDir := filepath.Join(projDir, ".okdev", "templates")
+	if err := os.MkdirAll(tmplDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(tmplDir, "team.yaml.tmpl"), "name: {{ .Name }}\nproject-local: true")
+
+	content, err := ResolveTemplateFromDir(context.Background(), "team", projDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content, "project-local: true") {
+		t.Fatalf("expected project-local template, got %q", content)
+	}
+}
+
+func TestResolveTemplateProjectLocalShadowsUser(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	userDir := filepath.Join(home, ".okdev", "templates")
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(userDir, "team.yaml.tmpl"), "source: user")
+
+	projDir := t.TempDir()
+	tmplDir := filepath.Join(projDir, ".okdev", "templates")
+	if err := os.MkdirAll(tmplDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(tmplDir, "team.yaml.tmpl"), "source: project")
+
+	content, err := ResolveTemplateFromDir(context.Background(), "team", projDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content != "source: project" {
+		t.Fatalf("expected project-local to shadow user, got %q", content)
+	}
+}
+
 func TestResolveTemplateFilePath(t *testing.T) {
 	tmp := t.TempDir()
 	tmplPath := tmp + "/custom.yaml.tmpl"
@@ -269,6 +311,35 @@ func TestUserTemplateNamesFiltersNonTemplates(t *testing.T) {
 	}
 }
 
+func TestProjectTemplateNames(t *testing.T) {
+	projDir := t.TempDir()
+	tmplDir := filepath.Join(projDir, ".okdev", "templates")
+	if err := os.MkdirAll(tmplDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(tmplDir, "team-a.yaml.tmpl"), "ok")
+	writeFile(t, filepath.Join(tmplDir, "team-b.yaml.tmpl"), "ok")
+	writeFile(t, filepath.Join(tmplDir, "readme.md"), "skip")
+
+	names, err := ProjectTemplateNames(projDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(names, []string{"team-a", "team-b"}) {
+		t.Fatalf("expected [team-a team-b], got %v", names)
+	}
+}
+
+func TestProjectTemplateNamesNoDir(t *testing.T) {
+	names, err := ProjectTemplateNames(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 0 {
+		t.Fatalf("expected empty, got %v", names)
+	}
+}
+
 func TestResolveUserTemplateRejectsTraversal(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -278,6 +349,42 @@ func TestResolveUserTemplateRejectsTraversal(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "resolves outside registry") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRenderTemplateWithSprigFunctions(t *testing.T) {
+	tmp := t.TempDir()
+	tmplPath := filepath.Join(tmp, "sprig.yaml.tmpl")
+	writeFile(t, tmplPath, "name: {{ .Name | upper }}\nimage: {{ .DevImage | default \"fallback\" }}")
+
+	vars := NewTemplateVars()
+	vars.Name = "demo"
+	vars.DevImage = ""
+	out, err := RenderTemplate(tmplPath, vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "name: DEMO") {
+		t.Fatalf("expected upper-cased name, got %q", out)
+	}
+	if !strings.Contains(out, "image: fallback") {
+		t.Fatalf("expected default fallback, got %q", out)
+	}
+}
+
+func TestRenderTemplateWithCustomVars(t *testing.T) {
+	tmp := t.TempDir()
+	tmplPath := filepath.Join(tmp, "custom.yaml.tmpl")
+	writeFile(t, tmplPath, "---\nvariables:\n  - name: numWorkers\n    type: int\n    default: 2\n---\nname: {{ .Name }}\nworkers: {{ .Vars.numWorkers }}")
+
+	vars := NewTemplateVars()
+	vars.Name = "demo"
+	out, err := RenderTemplateWithVars(context.Background(), tmplPath, vars, map[string]any{"numWorkers": 4}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "workers: 4") || !strings.Contains(out, "name: demo") {
+		t.Fatalf("unexpected rendered output: %q", out)
 	}
 }
 

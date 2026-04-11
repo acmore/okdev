@@ -14,7 +14,9 @@
 ## Commands
 
 - `okdev version`
-- `okdev init [--workload pod|job|pytorchjob|generic] [--dev-image <image>] [--template basic|<registry>|<path>|<url>] [--stignore-preset default|python|node|go|rust] [--force]`
+- `okdev init [--workload pod|job|pytorchjob|generic] [--dev-image <image>] [--template <name>|<path>|<url>] [--set key=value] [--stignore-preset default|python|node|go|rust] [--force]`
+- `okdev template list [--all]`
+- `okdev template show <name>`
 - `okdev validate`
 - `okdev up [--wait-timeout 10m] [--dry-run]`
 - `okdev down [session] [--delete-pvc] [--dry-run] [--output json]`
@@ -30,6 +32,7 @@
 - `okdev ports`
 - `okdev sync [--mode up|down|bi] [--foreground] [--reset] [--dry-run]`
 - `okdev prune [--ttl-hours 72] [--all-namespaces] [--all-users] [--include-pvc] [--dry-run]`
+- `okdev migrate [--template <name>] [--set key=value] [--dry-run] [--yes]`
 - `okdev upgrade`
 
 ### `okdev status [session] [--all] [--all-users] [--details]`
@@ -60,18 +63,38 @@
 - `okdev down` removes staged agent auth symlinks/runtime files when it can still reach the target container.
 - `okdev` does not own agent process launch; users run `codex`, `claude`, `gemini`, `opencode`, or similar CLIs manually after connecting.
 
-### `okdev init [--workload pod|job|pytorchjob|generic] [--template basic|<registry>|<path>|<url>] [--stignore-preset default|python|node|go|rust] [--force]`
+### `okdev init [--workload pod|job|pytorchjob|generic] [--template <name>|<path>|<url>] [--set key=value] [--stignore-preset default|python|node|go|rust] [--force]`
 
 - Writes a starter config manifest.
 - Pod-only setups default to `.okdev.yaml`.
 - When built-in workload scaffolding also writes files under `.okdev/`, the config is written as `.okdev/okdev.yaml`.
 - `--workload`: chooses the scaffold mode. `pod` keeps the current simple config shape; `job` and `pytorchjob` add a `spec.workload` block plus a starter manifest; `generic` requires explicit inject information and can optionally use a preset such as `--generic-preset deployment`.
 - `--dev-image`: sets the dev container image for pod workloads. Pod configs generated from the built-in template include a `podTemplate` with the dev container image plus equal CPU/memory requests and limits for the dev container and sidecar, so the starter pod is eligible for Kubernetes `Guaranteed` QoS.
-- `--template`: accepts built-in `basic`, a user template name from `~/.okdev/templates/`, a file path, or a URL.
+- `--template`: accepts a project template from `.okdev/templates/<name>.yaml.tmpl`, a user template from `~/.okdev/templates/<name>.yaml.tmpl`, built-in `basic`, a file path, or a URL. Run `okdev template list` to see available names.
+- `--set`: sets a frontmatter-declared template variable. Repeat it for multiple variables, for example `--set numWorkers=4 --set baseImage=pytorch:latest`.
+- Templates can declare `string`, `int`, and `bool` variables in YAML frontmatter. Resolved values are available as `.Vars.<name>` during rendering and are persisted under `spec.template.vars`.
 - For built-in templates, it also writes a starter local `.stignore` file for the initialized sync root.
 - For built-in `basic`, `job` and `pytorchjob` scaffold `.okdev/job.yaml` or `.okdev/pytorchjob.yaml`. When the config itself is `.okdev/okdev.yaml`, the generated `manifestPath` stays relative to that directory, for example `job.yaml` or `pytorchjob.yaml`. okdev resolves those paths from `.okdev/` first and falls back to the project root for compatibility with older layouts. `generic --generic-preset deployment` scaffolds `.okdev/deployment.yaml` while still using `spec.workload.type=generic`.
 - `--stignore-preset`: override the starter `.stignore` patterns with a project-oriented preset.
 - When `--stignore-preset` is omitted, `okdev init` tries to detect a preset from common repo markers like `go.mod`, `package.json`, `Cargo.toml`, and `pyproject.toml`.
+
+### `okdev template list [--all]`
+
+- Lists templates from project, user, and built-in sources in resolution order.
+- Project templates in `.okdev/templates/` shadow user templates, and user templates shadow built-ins.
+- `--all` includes shadowed lower-priority entries.
+
+### `okdev template show <name>`
+
+- Prints a template's resolved source, description, and declared variables.
+- Description and variables come from optional YAML frontmatter at the top of the template.
+
+### `okdev migrate [--template <name>] [--set key=value] [--dry-run] [--yes]`
+
+- Without `--template`, migrates older config schema fields to the current schema.
+- With `--template`, re-renders the selected template, overlays existing config values so local edits win, and writes the merged config.
+- Existing `spec.template.vars` seed template variables during migration; `--set` overrides stored values.
+- `--dry-run` prints the merged config without writing. `--yes` skips confirmation when writing.
 
 ### `okdev up [--wait-timeout 10m] [--dry-run]`
 
