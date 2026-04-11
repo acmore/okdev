@@ -59,6 +59,7 @@ echo "Loading sidecar image into kind"
 kind load docker-image "$SIDECAR_IMAGE" --name "$CLUSTER_NAME"
 
 echo "Running local Kind e2e suite"
+bash scripts/e2e_template_system.sh
 bash scripts/e2e_kind_smoke.sh
 bash scripts/e2e_kind_deployment.sh
 bash scripts/e2e_kind_job.sh
