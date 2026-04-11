@@ -67,6 +67,11 @@ func newServer(addr, shell string, keys []ssh.PublicKey) *ssh.Server {
 			}
 			return false
 		}
+	} else {
+		log.Printf("warning: no authorized keys found; all public key auth will be rejected")
+		srv.PublicKeyHandler = func(ctx ssh.Context, key ssh.PublicKey) bool {
+			return false
+		}
 	}
 
 	return srv
