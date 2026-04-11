@@ -1390,6 +1390,49 @@ func TestSyncthingServeHomePatternEscapesRegexMeta(t *testing.T) {
 	}
 }
 
+func TestStopLocalSyncthingForHomeRunsPatternFallbackAfterRecordedPID(t *testing.T) {
+	dir := t.TempDir()
+	pkillLog := filepath.Join(dir, "pkill.log")
+	pkillPath := filepath.Join(dir, "pkill")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + pkillLog + "\nexit 0\n"
+	if err := os.WriteFile(pkillPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write pkill stub: %v", err)
+	}
+	oldPath := os.Getenv("PATH")
+	if err := os.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath); err != nil {
+		t.Fatalf("set PATH: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Setenv("PATH", oldPath) })
+
+	home := filepath.Join(dir, "sync-home")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatalf("mkdir home: %v", err)
+	}
+	pidPath, err := localSyncthingPIDPath(home)
+	if err != nil {
+		t.Fatalf("localSyncthingPIDPath: %v", err)
+	}
+	if err := os.WriteFile(pidPath, []byte("999999\n"), 0o644); err != nil {
+		t.Fatalf("write pid: %v", err)
+	}
+
+	if err := stopLocalSyncthingForHome(home); err != nil {
+		t.Fatalf("stopLocalSyncthingForHome: %v", err)
+	}
+
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Fatalf("expected local pid file to be removed, got err=%v", err)
+	}
+	got, err := os.ReadFile(pkillLog)
+	if err != nil {
+		t.Fatalf("read pkill log: %v", err)
+	}
+	want := "-f " + syncthingServeHomePattern(home)
+	if strings.TrimSpace(string(got)) != want {
+		t.Fatalf("pkill args = %q, want %q", strings.TrimSpace(string(got)), want)
+	}
+}
+
 func TestReadLocalSyncthingEndpoint(t *testing.T) {
 	home := t.TempDir()
 	configXML := `<configuration>

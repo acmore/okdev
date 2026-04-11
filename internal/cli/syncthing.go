@@ -588,10 +588,7 @@ func stopLocalSyncthingForHome(home string) error {
 			if rmErr := os.Remove(pidPath); rmErr != nil && !os.IsNotExist(rmErr) {
 				return rmErr
 			}
-			time.Sleep(syncthingShutdownPollInterval)
-			return nil
-		}
-		if rmErr := os.Remove(pidPath); rmErr != nil && !os.IsNotExist(rmErr) {
+		} else if rmErr := os.Remove(pidPath); rmErr != nil && !os.IsNotExist(rmErr) {
 			return rmErr
 		}
 	}

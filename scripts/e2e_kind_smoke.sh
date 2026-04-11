@@ -254,6 +254,7 @@ echo "Pod reconcile verified"
 
 echo "Testing explicit okdev down"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes
+assert_no_local_sync_processes "$SESSION_NAME" "$SYNC_HOME"
 
 echo "Verifying pod is deleted"
 for i in $(seq 1 30); do
