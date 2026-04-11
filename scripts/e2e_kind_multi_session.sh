@@ -150,6 +150,8 @@ wait_remote_file "$CFG_B" "$SESSION_B" "session b updated"
 echo "Tearing down both sessions"
 "$OKDEV_BIN" --config "$CFG_A" --session "$SESSION_A" down --yes
 "$OKDEV_BIN" --config "$CFG_B" --session "$SESSION_B" down --yes
+assert_no_local_sync_processes "$SESSION_A" "$HOME_DIR/.okdev/sessions/${SESSION_A}/syncthing"
+assert_no_local_sync_processes "$SESSION_B" "$HOME_DIR/.okdev/sessions/${SESSION_B}/syncthing"
 
 for i in $(seq 1 20); do
   A_EXISTS=0

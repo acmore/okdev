@@ -55,3 +55,59 @@ if needle not in text:
 path.write_text(text.replace(needle, needle + line + "\n", 1))
 PY
 }
+
+process_commands_containing() {
+	local needle="$1"
+	local snapshot
+	snapshot="$(mktemp)"
+	ps ax -o pid= -o command= >"$snapshot"
+	python3 -c '
+import sys
+
+needle = sys.argv[1]
+path = sys.argv[2]
+with open(path) as f:
+    lines = f.readlines()
+for line in lines:
+    if needle in line:
+        print(line, end="")
+' "$needle" "$snapshot"
+	rm -f "$snapshot"
+}
+
+process_commands_for_session_sync() {
+	local session_name="$1"
+	local snapshot
+	snapshot="$(mktemp)"
+	ps ax -o pid= -o command= >"$snapshot"
+	python3 -c '
+import sys
+
+session_name = sys.argv[1]
+path = sys.argv[2]
+with open(path) as f:
+    lines = f.readlines()
+for line in lines:
+    if session_name in line and " sync" in line:
+        print(line, end="")
+' "$session_name" "$snapshot"
+	rm -f "$snapshot"
+}
+
+assert_no_local_sync_processes() {
+  local session_name="$1"
+  local sync_home="$2"
+  local matches=""
+
+  for _ in $(seq 1 20); do
+    matches="$(process_commands_containing "$sync_home"; process_commands_for_session_sync "$session_name")"
+    if [[ -z "$matches" ]]; then
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  echo "ERROR: expected no local sync processes for session $session_name" >&2
+  echo "$matches" >&2
+  return 1
+}

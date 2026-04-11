@@ -138,6 +138,7 @@ fi
 
 echo "Tearing down job session"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes
+assert_no_local_sync_processes "$SESSION_NAME" "$HOME_DIR/.okdev/sessions/${SESSION_NAME}/syncthing"
 
 for i in $(seq 1 20); do
   if ! kubectl -n "$NAMESPACE" get job "$SESSION_NAME" >/dev/null 2>&1; then

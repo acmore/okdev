@@ -393,6 +393,7 @@ fi
 
 echo "Testing explicit okdev down"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes
+assert_no_local_sync_processes "$SESSION_NAME" "$HOME_DIR/.okdev/sessions/${SESSION_NAME}/syncthing"
 
 echo "Verifying PyTorchJob is deleted"
 for i in $(seq 1 15); do
