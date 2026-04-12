@@ -340,12 +340,25 @@ func readFileTail(path string, maxBytes int) string {
 	if strings.TrimSpace(path) == "" || maxBytes <= 0 {
 		return ""
 	}
-	data, err := os.ReadFile(path)
-	if err != nil || len(data) == 0 {
+	f, err := os.Open(path)
+	if err != nil {
 		return ""
 	}
-	if len(data) > maxBytes {
-		data = data[len(data)-maxBytes:]
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.Size() == 0 {
+		return ""
+	}
+	offset := info.Size() - int64(maxBytes)
+	if offset < 0 {
+		offset = 0
+	}
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return ""
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return ""
 	}
 	return strings.TrimSpace(string(data))
 }

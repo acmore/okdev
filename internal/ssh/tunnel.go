@@ -270,7 +270,19 @@ func (tm *TunnelManager) WaitConnected(ctx context.Context) bool {
 	case <-ch:
 		return tm.IsConnected()
 	case <-ctx.Done():
+		tm.mu.Lock()
+		tm.removeConnectedWaiterLocked(ch)
+		tm.mu.Unlock()
 		return false
+	}
+}
+
+func (tm *TunnelManager) removeConnectedWaiterLocked(ch chan struct{}) {
+	for i, waiter := range tm.connectedWaiters {
+		if waiter == ch {
+			tm.connectedWaiters = append(tm.connectedWaiters[:i], tm.connectedWaiters[i+1:]...)
+			return
+		}
 	}
 }
 
