@@ -260,6 +260,57 @@ if [[ "$EXEC_OUTPUT" != *"exec-ok"* ]]; then
 fi
 echo "exec --cmd verified"
 
+# ---------------------------------------------------------------------------
+# File copy (okdev cp) single-pod verification
+# ---------------------------------------------------------------------------
+
+echo "Testing cp upload single file"
+echo "cp-smoke-content" >"$SYNC_DIR/cp-smoke.txt"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp "$SYNC_DIR/cp-smoke.txt" :/tmp/cp-smoke.txt
+CP_VERIFY=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'cat /tmp/cp-smoke.txt')
+if [[ "$CP_VERIFY" != "cp-smoke-content" ]]; then
+  echo "ERROR: cp upload single file failed, got '$CP_VERIFY'" >&2
+  exit 1
+fi
+echo "cp upload single file verified"
+
+echo "Testing cp upload directory"
+CP_DIR="$WORKDIR/cp-smoke-dir"
+mkdir -p "$CP_DIR/nested"
+echo "dir-a" >"$CP_DIR/a.txt"
+echo "dir-b" >"$CP_DIR/nested/b.txt"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp "$CP_DIR" :/tmp/cp-smoke-dir
+CP_DIR_A=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'cat /tmp/cp-smoke-dir/a.txt')
+CP_DIR_B=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'cat /tmp/cp-smoke-dir/nested/b.txt')
+if [[ "$CP_DIR_A" != "dir-a" || "$CP_DIR_B" != "dir-b" ]]; then
+  echo "ERROR: cp upload directory failed, got a='$CP_DIR_A' b='$CP_DIR_B'" >&2
+  exit 1
+fi
+echo "cp upload directory verified"
+
+echo "Testing cp download single file"
+CP_DL_FILE="$WORKDIR/cp-downloaded.txt"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp :/tmp/cp-smoke.txt "$CP_DL_FILE"
+CP_DL_CONTENT=$(cat "$CP_DL_FILE")
+if [[ "$CP_DL_CONTENT" != "cp-smoke-content" ]]; then
+  echo "ERROR: cp download single file failed, got '$CP_DL_CONTENT'" >&2
+  exit 1
+fi
+echo "cp download single file verified"
+
+echo "Testing cp download directory"
+CP_DL_DIR="$WORKDIR/cp-downloaded-dir"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp :/tmp/cp-smoke-dir "$CP_DL_DIR"
+CP_DL_A=$(cat "$CP_DL_DIR/cp-smoke-dir/a.txt")
+CP_DL_B=$(cat "$CP_DL_DIR/cp-smoke-dir/nested/b.txt")
+if [[ "$CP_DL_A" != "dir-a" || "$CP_DL_B" != "dir-b" ]]; then
+  echo "ERROR: cp download directory failed, got a='$CP_DL_A' b='$CP_DL_B'" >&2
+  exit 1
+fi
+echo "cp download directory verified"
+
+echo "File copy (okdev cp) tests completed"
+
 echo "Capturing current pod identity before spec drift"
 ORIGINAL_POD_UID=$(kubectl -n "$NAMESPACE" get pod "okdev-${SESSION_NAME}" -o jsonpath='{.metadata.uid}')
 echo "Original pod UID: $ORIGINAL_POD_UID"

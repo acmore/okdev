@@ -27,6 +27,7 @@
 - `okdev target set [--pod <name> | --role <role>]`
 - `okdev agent list`
 - `okdev exec [--shell /bin/bash] [--cmd "..."] [--no-tty] [--all | --pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--detach] [--timeout <duration>] [--log-dir <path>] [--no-prefix] [--fanout N]`
+- `okdev cp [session] <src> <dst> [--all | --pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--fanout N]`
 - `okdev logs [session] [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
 - `okdev ssh [session] [--setup-key] [--user root] [--cmd "..."] [--no-tmux] [--forward-agent|--no-forward-agent]`
 - `okdev ports`
@@ -79,6 +80,23 @@
 - `--log-dir`: write per-pod output to `<dir>/<short-name>.log`. Streaming to stdout still happens.
 - `--no-prefix`: suppress the pod name prefix in output. Useful when targeting a single pod or piping.
 - `--fanout N`: maximum concurrent pod executions (default 16).
+- `--all`, `--pod`, `--role`, and `--label` are mutually exclusive.
+
+### `okdev cp [session] <src> <dst>`
+
+- Copies files or directories between the local machine and session pods.
+- Prefix the remote path with `:` (e.g., `:/workspace/data`). The other argument is a local path.
+- **Single-pod mode** (default): copies to/from the pinned target pod.
+- **Multi-pod upload** (`--all`, `--pod`, `--role`, `--label`): fans out the same local source to all matched pods in parallel.
+- **Multi-pod download**: downloads from each matched pod into `<dest>/<short-pod-name>/` subdirectories.
+- Files are streamed via `cat` pipes. Directories are tar-streamed automatically.
+- `--all`: target all running pods in the session.
+- `--pod`: target specific pods by name (repeatable or comma-separated).
+- `--role`: target pods by `okdev.io/workload-role` label (case-insensitive).
+- `--label`: target pods by arbitrary label `key=value` (repeatable, AND logic).
+- `--exclude`: exclude specific pods from the selected set (repeatable or comma-separated). Cannot be used with `--pod`.
+- `--container`: override which container to copy to/from (default: session target container).
+- `--fanout N`: maximum concurrent pod transfers (default 16).
 - `--all`, `--pod`, `--role`, and `--label` are mutually exclusive.
 
 ### `okdev init [--workload pod|job|pytorchjob|generic] [--template <name>|<path>|<url>] [--set key=value] [--stignore-preset default|python|node|go|rust] [--force]`
