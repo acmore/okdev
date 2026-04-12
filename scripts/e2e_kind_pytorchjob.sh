@@ -85,6 +85,9 @@ path.write_text(text.replace(old, new, 1))
 PY
 
 # Set 2 worker replicas for multi-pod testing (1 master + 2 workers = 3 pods).
+# Also set a short terminationGracePeriodSeconds so pod cleanup after
+# okdev down completes quickly (the container traps SIGTERM as a no-op,
+# so the default 30 s grace period causes the teardown check to time out).
 python3 - <<'PY' "$MANIFEST_PATH"
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
@@ -93,6 +96,7 @@ old = "Worker:\n      replicas: 1"
 new = "Worker:\n      replicas: 2"
 if old in text:
     text = text.replace(old, new, 1)
+text = text.replace("        spec:\n          containers:", "        spec:\n          terminationGracePeriodSeconds: 5\n          containers:")
 path.write_text(text)
 PY
 
