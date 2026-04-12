@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+# E2E scripts often capture stdout from okdev subcommands and compare exact
+# command output. Suppress non-interactive "Using config: ..." announcements
+# so those captures only contain the command result.
+export OKDEV_QUIET_CONFIG_ANNOUNCE=1
+
 make_workdir() {
   local root="${OKDEV_TMPDIR:-${TMPDIR:-/tmp}}"
   mkdir -p "$root"
