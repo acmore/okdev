@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/acmore/okdev/internal/config"
+	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
 	syncengine "github.com/acmore/okdev/internal/sync"
 )
@@ -83,6 +84,7 @@ type detailedStatusSync struct {
 	LocalDaemonLogPath string   `json:"localDaemonLogPath,omitempty"`
 	ConflictCount      int      `json:"conflictCount,omitempty"`
 	ConflictPaths      []string `json:"conflictPaths,omitempty"`
+	MeshLines          []string `json:"meshLines,omitempty"`
 }
 
 type detailedStatusLogs struct {
@@ -108,6 +110,7 @@ func gatherDetailedStatus(ctx context.Context, cfg *config.DevEnvironment, cfgPa
 	detail.Pods = pods
 	detail.SSH = buildDetailedSSH(view.Session, cfg.Spec.Ports)
 	detail.Sync = buildDetailedSync(view.Session, cfg, cfgPath)
+	detail.Sync.MeshLines = buildMeshLinesFromPods(view.Pods)
 	if agentClient, ok := client.(agentExecClient); ok && len(cfg.Spec.Agents) > 0 && strings.TrimSpace(view.TargetPod) != "" && strings.TrimSpace(target.SelectedContainer) != "" {
 		if rows, err := configuredAgentStatusRows(ctx, agentClient, namespace, view.TargetPod, target.SelectedContainer, cfg.Spec.Agents); err == nil {
 			detail.Agents = rows
@@ -236,6 +239,32 @@ func buildDetailedSync(sessionName string, cfg *config.DevEnvironment, cfgPath s
 	return detail
 }
 
+func buildMeshLinesFromPods(pods []kube.PodSummary) []string {
+	var hub string
+	var receivers []string
+	for _, p := range pods {
+		role := strings.TrimSpace(p.Labels["okdev.io/mesh-role"])
+		switch role {
+		case "hub":
+			hub = p.Name
+		case "receiver":
+			receivers = append(receivers, p.Name)
+		}
+	}
+	if hub == "" || len(receivers) == 0 {
+		return nil
+	}
+	lines := []string{
+		"topology: hub-and-spoke",
+		fmt.Sprintf("hub: %s", hub),
+		fmt.Sprintf("receivers: %d", len(receivers)),
+	}
+	for _, r := range receivers {
+		lines = append(lines, fmt.Sprintf("  %s", r))
+	}
+	return lines
+}
+
 func buildDetailedLogs() detailedStatusLogs {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -336,6 +365,13 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 		fmt.Fprintf(w, "- conflicts: %d\n", detail.Sync.ConflictCount)
 		for _, path := range detail.Sync.ConflictPaths {
 			fmt.Fprintf(w, "  - %s\n", path)
+		}
+	}
+
+	if len(detail.Sync.MeshLines) > 0 {
+		fmt.Fprintln(w, "\nMesh:")
+		for _, line := range detail.Sync.MeshLines {
+			fmt.Fprintf(w, "- %s\n", line)
 		}
 	}
 
