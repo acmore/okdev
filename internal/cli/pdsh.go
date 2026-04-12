@@ -18,9 +18,7 @@ import (
 
 func newExecCmd(opts *Options) *cobra.Command {
 	var shell string
-	var cmdStr string
 	var noTTY bool
-	var allPods bool
 	var podNames []string
 	var role string
 	var labels []string
@@ -39,22 +37,20 @@ func newExecCmd(opts *Options) *cobra.Command {
 		Example: `  # Open an interactive shell
   okdev exec
 
-  # Run a one-off command
-  okdev exec --cmd "cat /etc/os-release"
+  # Run a command on all session pods
+  okdev exec -- nvidia-smi
 
-  # Run on all pods (pdsh mode)
-  okdev exec --all --cmd "nvidia-smi"
+  # Run on a specific role
+  okdev exec --role worker -- df -h /workspace
 
-  # Run on specific role
-  okdev exec --role worker --cmd "df -h /workspace"
-
-  # Detach a background command
-  okdev exec --role worker --detach --cmd "python train.py"`,
+  # Detach a background command on worker pods
+  okdev exec --role worker --detach -- python train.py`,
 		Aliases:           []string{"connect"},
-		Args:              cobra.MaximumNArgs(1),
+		Args:              validateExecArgs,
 		ValidArgsFunction: sessionCompletionFunc(opts),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			applySessionArg(opts, args)
+			sessionArgs, commandArgs := splitExecArgs(cmd, args)
+			applySessionArg(opts, sessionArgs)
 			cc, err := resolveCommandContext(opts, resolveSessionName)
 			if err != nil {
 				return err
@@ -63,13 +59,13 @@ func newExecCmd(opts *Options) *cobra.Command {
 				return err
 			}
 
-			multiPod := allPods || len(podNames) > 0 || role != "" || len(labels) > 0
-			if err := validateMultiPodFlags(allPods, podNames, role, labels, exclude, cmdStr, detach); err != nil {
+			multiPod := len(commandArgs) > 0 || len(podNames) > 0 || role != "" || len(labels) > 0 || detach
+			if err := validateMultiPodFlags(podNames, role, labels, exclude, len(commandArgs) > 0, detach); err != nil {
 				return err
 			}
 
 			if multiPod || detach {
-				return runMultiPodExec(cmd, cc, cmdStr, allPods, podNames, role, labels, exclude, container, detach, timeout, logDir, noPrefix, fanout)
+				return runMultiPodExec(cmd, cc, commandArgs, podNames, role, labels, exclude, container, detach, timeout, logDir, noPrefix, fanout)
 			}
 
 			// Single-pod mode (existing behavior)
@@ -87,12 +83,6 @@ func newExecCmd(opts *Options) *cobra.Command {
 			if shell != "" {
 				execCmd = []string{shell}
 			}
-			if cmdStr != "" {
-				execCmd = []string{"sh", "-lc", cmdStr}
-			}
-			if len(args) > 0 {
-				execCmd = args
-			}
 			if len(execCmd) == 1 && strings.TrimSpace(execCmd[0]) == "" {
 				execCmd = []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}
 			}
@@ -100,9 +90,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&shell, "shell", "", "Shell to start (default auto-detects bash/sh)")
-	cmd.Flags().StringVar(&cmdStr, "cmd", "", "Command string to execute")
 	cmd.Flags().BoolVar(&noTTY, "no-tty", false, "Disable TTY allocation")
-	cmd.Flags().BoolVar(&allPods, "all", false, "Target all session pods")
 	cmd.Flags().StringSliceVar(&podNames, "pod", nil, "Target specific pods by name (repeatable/comma-separated)")
 	cmd.Flags().StringVar(&role, "role", "", "Target pods by workload role")
 	cmd.Flags().StringSliceVar(&labels, "label", nil, "Target pods by label key=value (repeatable)")
@@ -116,24 +104,34 @@ func newExecCmd(opts *Options) *cobra.Command {
 	return cmd
 }
 
-func validateMultiPodFlags(allPods bool, podNames []string, role string, labels []string, exclude []string, cmdStr string, detach bool) error {
-	multiPod := allPods || len(podNames) > 0 || role != "" || len(labels) > 0
-	if (multiPod || detach) && cmdStr == "" {
-		return fmt.Errorf("--cmd is required when using --all, --pod, --role, --label, or --detach")
+func splitExecArgs(cmd *cobra.Command, args []string) ([]string, []string) {
+	dash := cmd.ArgsLenAtDash()
+	if dash < 0 {
+		return args, nil
+	}
+	return args[:dash], args[dash:]
+}
+
+func validateExecArgs(cmd *cobra.Command, args []string) error {
+	sessionArgs, _ := splitExecArgs(cmd, args)
+	if len(sessionArgs) > 1 {
+		return fmt.Errorf("accepts at most 1 session argument before --")
+	}
+	return nil
+}
+
+func validateMultiPodFlags(podNames []string, role string, labels []string, exclude []string, hasCommand bool, detach bool) error {
+	usesSelector := len(podNames) > 0 || role != "" || len(labels) > 0 || len(exclude) > 0
+	if (usesSelector || detach) && !hasCommand {
+		return fmt.Errorf("command after -- is required when using --pod, --role, --label, --exclude, or --detach")
 	}
 	if len(exclude) > 0 && len(podNames) > 0 {
 		return fmt.Errorf("--exclude cannot be used with --pod")
 	}
-	if len(exclude) > 0 && !allPods && role == "" && len(labels) == 0 {
-		return fmt.Errorf("--exclude requires --all, --role, or --label")
-	}
-	if !multiPod && !detach {
+	if !hasCommand && !detach {
 		return nil
 	}
 	exclusiveCount := 0
-	if allPods {
-		exclusiveCount++
-	}
 	if len(podNames) > 0 {
 		exclusiveCount++
 	}
@@ -144,12 +142,12 @@ func validateMultiPodFlags(allPods bool, podNames []string, role string, labels 
 		exclusiveCount++
 	}
 	if exclusiveCount > 1 {
-		return fmt.Errorf("--all, --pod, --role, and --label are mutually exclusive")
+		return fmt.Errorf("--pod, --role, and --label are mutually exclusive")
 	}
 	return nil
 }
 
-func runMultiPodExec(cmd *cobra.Command, cc *commandContext, cmdStr string, allPods bool, podNames []string, role string, labels []string, exclude []string, container string, detach bool, timeout time.Duration, logDir string, noPrefix bool, fanout int) error {
+func runMultiPodExec(cmd *cobra.Command, cc *commandContext, commandArgs []string, podNames []string, role string, labels []string, exclude []string, container string, detach bool, timeout time.Duration, logDir string, noPrefix bool, fanout int) error {
 	ctx := cmd.Context()
 	labelSel := selectorForSessionRun(cc.sessionName)
 	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
@@ -159,8 +157,6 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, cmdStr string, allP
 	pods := filterRunningPods(sessionPods)
 
 	switch {
-	case allPods:
-		// keep all running pods
 	case len(podNames) > 0:
 		pods = filterPodsByName(pods, podNames)
 	case role != "":
@@ -194,11 +190,18 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, cmdStr string, allP
 	}
 
 	if detach {
-		return runDetachExec(ctx, cc.kube, cc.namespace, pods, targetContainer, cmdStr, effectiveFanout, cmd.OutOrStdout())
+		return runDetachExec(ctx, cc.kube, cc.namespace, pods, targetContainer, commandArgsShellString(commandArgs), effectiveFanout, cmd.OutOrStdout())
 	}
 
-	execCmd := []string{"sh", "-lc", cmdStr}
-	return runMultiExec(ctx, cc.kube, cc.namespace, pods, targetContainer, execCmd, logDir, timeout, noPrefix, effectiveFanout, cmd.OutOrStdout(), cmd.ErrOrStderr())
+	return runMultiExec(ctx, cc.kube, cc.namespace, pods, targetContainer, commandArgs, logDir, timeout, noPrefix, effectiveFanout, cmd.OutOrStdout(), cmd.ErrOrStderr())
+}
+
+func commandArgsShellString(args []string) string {
+	parts := make([]string, 0, len(args))
+	for _, arg := range args {
+		parts = append(parts, shellutil.Quote(arg))
+	}
+	return strings.Join(parts, " ")
 }
 
 type podExecResult struct {
