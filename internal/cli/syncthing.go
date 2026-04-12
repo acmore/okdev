@@ -99,6 +99,9 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	if _, err := execInSyncthingContainer(ctx, k, namespace, pod, fmt.Sprintf("mkdir -p %s", syncengine.ShellEscape(pair.Remote))); err != nil {
 		return err
 	}
+	if err := writeRemoteSTIgnoreInPod(ctx, k, namespace, pod, pair.Remote, cfg.Spec.Sync.RemoteIgnore); err != nil {
+		return err
+	}
 	localHome, err := localSyncthingHome(sessionName)
 	if err != nil {
 		return err
@@ -484,6 +487,26 @@ func writeLocalSTIgnore(localPath string) error {
 		return err
 	}
 	return writeSTIgnore(localPath, defaultSyncExcludes)
+}
+
+func writeRemoteSTIgnoreInPod(ctx context.Context, k interface {
+	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+}, namespace, pod, remotePath string, excludes []string) error {
+	content, ok := buildSTIgnoreContent(excludes)
+	if !ok {
+		return nil
+	}
+	remotePath = strings.TrimRight(strings.TrimSpace(remotePath), "/")
+	if remotePath == "" || remotePath == "." || remotePath == "/" {
+		return fmt.Errorf("refusing to write remote .stignore at unsafe sync root %q", remotePath)
+	}
+	stignorePath := path.Join(remotePath, ".stignore")
+	esc := syncengine.ShellEscape
+	script := fmt.Sprintf("mkdir -p %s && printf %%s %s > %s", esc(remotePath), esc(content), esc(stignorePath))
+	if _, err := execInSyncthingContainer(ctx, k, namespace, pod, script); err != nil {
+		return fmt.Errorf("write remote .stignore: %w", err)
+	}
+	return nil
 }
 
 func buildSTIgnoreContent(excludes []string) (string, bool) {

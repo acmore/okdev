@@ -281,6 +281,35 @@ spec:
 	}
 }
 
+func TestLoadAcceptsSyncRemoteIgnore(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, DefaultFile)
+	raw := []byte(`
+apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: test
+spec:
+  sync:
+    engine: syncthing
+    paths: [".:/workspace"]
+    remoteIgnore:
+      - profiles/
+      - "*.prof"
+`)
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Spec.Sync.RemoteIgnore; len(got) != 2 || got[0] != "profiles/" || got[1] != "*.prof" {
+		t.Fatalf("unexpected remoteIgnore %+v", got)
+	}
+}
+
 func TestLoadRejectsRemovedSyncRemoteExclude(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, DefaultFile)
