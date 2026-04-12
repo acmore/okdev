@@ -138,9 +138,15 @@ func newInitCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			scaffolded, err := scaffoldInitWorkload(abs, templateRef, vars, force, projectDir)
+			scaffolded, err := scaffoldInitTemplateFiles(abs, templateRef, meta, vars, customVars, force, projectDir)
 			if err != nil {
 				return err
+			}
+			if len(scaffolded) == 0 {
+				scaffolded, err = scaffoldInitWorkload(abs, templateRef, vars, force, projectDir)
+				if err != nil {
+					return err
+				}
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", abs)
@@ -482,6 +488,55 @@ func scaffoldInitWorkload(configPath, templateRef string, vars *config.TemplateV
 		return nil, fmt.Errorf("write scaffolded manifest %q: %w", target, err)
 	}
 	return []string{target}, nil
+}
+
+func scaffoldInitTemplateFiles(configPath, templateRef string, meta *config.TemplateMeta, vars *config.TemplateVars, customVars map[string]any, force bool, projectDir string) ([]string, error) {
+	if meta == nil || len(meta.Files) == 0 {
+		return nil, nil
+	}
+	var wrote []string
+	for _, file := range meta.Files {
+		pathTemplate := strings.TrimSpace(file.Path)
+		assetRef := strings.TrimSpace(file.Template)
+		if pathTemplate == "" {
+			return nil, fmt.Errorf("template file path is required")
+		}
+		if assetRef == "" {
+			return nil, fmt.Errorf("template file %q requires template", pathTemplate)
+		}
+		renderedPath, err := config.RenderTemplateContent("template-file-path", pathTemplate, vars, customVars)
+		if err != nil {
+			return nil, fmt.Errorf("render template file path %q: %w", pathTemplate, err)
+		}
+		target := strings.TrimSpace(renderedPath)
+		if target == "" {
+			return nil, fmt.Errorf("template file path %q rendered empty", pathTemplate)
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(config.ManifestDir(configPath), target)
+		}
+		target = filepath.Clean(target)
+		if _, err := os.Stat(target); err == nil && !force {
+			continue
+		}
+
+		raw, err := config.ResolveTemplateAssetFromDir(context.Background(), templateRef, assetRef, projectDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve template file %q: %w", assetRef, err)
+		}
+		rendered, err := config.RenderTemplateContent(filepath.Base(assetRef), raw, vars, customVars)
+		if err != nil {
+			return nil, fmt.Errorf("render template file %q: %w", assetRef, err)
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return nil, fmt.Errorf("create template file directory: %w", err)
+		}
+		if err := os.WriteFile(target, []byte(rendered), 0o644); err != nil {
+			return nil, fmt.Errorf("write template file %q: %w", target, err)
+		}
+		wrote = append(wrote, target)
+	}
+	return wrote, nil
 }
 
 func usesBuiltinBasicTemplate(ref string) bool {

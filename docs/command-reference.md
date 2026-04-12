@@ -109,6 +109,7 @@
 - `--template`: accepts a project template from `.okdev/templates/<name>.yaml.tmpl`, a user template from `~/.okdev/templates/<name>.yaml.tmpl`, built-in `basic`, a file path, or a URL. Run `okdev template list` to see available names.
 - `--set`: sets a frontmatter-declared template variable. Repeat it for multiple variables, for example `--set numWorkers=4 --set baseImage=pytorch:latest`.
 - Templates can declare `string`, `int`, and `bool` variables in YAML frontmatter. Resolved values are available as `.Vars.<name>` during rendering and are persisted under `spec.template.vars`.
+- Templates can also declare companion `files` in frontmatter. Each file has a rendered `path` and a `template` path resolved relative to the selected template, which lets a PyTorch template render both `okdev.yaml` and a matching `pytorchjob.yaml`.
 - For built-in templates, it also writes a starter local `.stignore` file for the initialized sync root.
 - For built-in `basic`, `job` and `pytorchjob` scaffold `.okdev/job.yaml` or `.okdev/pytorchjob.yaml`. When the config itself is `.okdev/okdev.yaml`, the generated `manifestPath` stays relative to that directory, for example `job.yaml` or `pytorchjob.yaml`. okdev resolves those paths from `.okdev/` first and falls back to the project root for compatibility with older layouts. `generic --generic-preset deployment` scaffolds `.okdev/deployment.yaml` while still using `spec.workload.type=generic`.
 - `--stignore-preset`: override the starter `.stignore` patterns with a project-oriented preset.
@@ -122,7 +123,7 @@
 
 ### `okdev template show <name>`
 
-- Prints a template's resolved source, description, and declared variables.
+- Prints a template's resolved source, description, declared companion files, and declared variables.
 - Description and variables come from optional YAML frontmatter at the top of the template.
 
 ### `okdev migrate [--template <name>] [--set key=value] [--dry-run] [--yes]`

@@ -56,3 +56,4 @@ This file is the canonical repository guidance for coding agents working in `okd
 - Keep sidecar (syncthing), SSH (`okdev-sshd`), tmux, and Syncthing behavior aligned; changes in one often require checking the others.
 - Be careful with config-loading output paths because many commands share the same helper logic.
 - When changing pod or sidecar behavior, consider both local installs and sidecar image rebuild/publish steps.
+- Template changes should preserve multi-file rendering: project/user templates may declare frontmatter `files` entries that render companion workload manifests such as `pytorchjob.yaml`, not just the main `okdev.yaml` config.

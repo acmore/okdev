@@ -13,6 +13,7 @@ type TemplateMeta struct {
 	Name        string             `yaml:"name"`
 	Description string             `yaml:"description"`
 	Variables   []TemplateVariable `yaml:"variables"`
+	Files       []TemplateFile     `yaml:"files"`
 }
 
 // TemplateVariable declares a custom variable that a template accepts.
@@ -21,6 +22,12 @@ type TemplateVariable struct {
 	Description string `yaml:"description"`
 	Type        string `yaml:"type"`
 	Default     any    `yaml:"default,omitempty"`
+}
+
+// TemplateFile declares an additional file rendered by okdev init.
+type TemplateFile struct {
+	Path     string `yaml:"path"`
+	Template string `yaml:"template"`
 }
 
 // HasDefault returns true when a default value was declared.
