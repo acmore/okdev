@@ -26,7 +26,7 @@
 - `okdev target show`
 - `okdev target set [--pod <name> | --role <role>]`
 - `okdev agent list`
-- `okdev exec [--shell /bin/bash] [--cmd "..."] [--no-tty]`
+- `okdev exec [--shell /bin/bash] [--cmd "..."] [--no-tty] [--all | --pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--detach] [--timeout <duration>] [--log-dir <path>] [--no-prefix]`
 - `okdev logs [session] [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
 - `okdev ssh [session] [--setup-key] [--user root] [--cmd "..."] [--no-tmux] [--forward-agent|--no-forward-agent]`
 - `okdev ports`
@@ -62,6 +62,23 @@
 - Codex uses `~/.codex/auth.json` by default, but `spec.agents[].auth.localPath` can point at a different local auth file.
 - `okdev down` removes staged agent auth symlinks/runtime files when it can still reach the target container.
 - `okdev` does not own agent process launch; users run `codex`, `claude`, `gemini`, `opencode`, or similar CLIs manually after connecting.
+
+### `okdev exec [session]`
+
+- Opens a shell or runs a command in one or more session pods.
+- **Single-pod mode** (default): opens an interactive shell or runs `--cmd` on the pinned target pod.
+- **Multi-pod mode** (pdsh-style): activated by `--all`, `--pod`, `--role`, or `--label`. Runs `--cmd` (required) across matched pods in parallel with output prefixed by short pod name.
+- `--all`: target all running pods in the session.
+- `--pod`: target specific pods by name (repeatable or comma-separated).
+- `--role`: target pods by `okdev.io/workload-role` label (case-insensitive).
+- `--label`: target pods by arbitrary label `key=value` (repeatable, AND logic).
+- `--exclude`: exclude specific pods from the selected set (repeatable or comma-separated). Cannot be used with `--pod`.
+- `--container`: override which container to exec into (default: session target container). Works in both modes.
+- `--detach`: wrap the command in `nohup` and return immediately. Prints per-pod confirmation.
+- `--timeout`: per-pod command timeout (e.g., `30s`, `5m`). Pods exceeding the timeout are cancelled and reported as failed.
+- `--log-dir`: write per-pod output to `<dir>/<short-name>.log`. Streaming to stdout still happens.
+- `--no-prefix`: suppress the pod name prefix in output. Useful when targeting a single pod or piping.
+- `--all`, `--pod`, `--role`, and `--label` are mutually exclusive.
 
 ### `okdev init [--workload pod|job|pytorchjob|generic] [--template <name>|<path>|<url>] [--set key=value] [--stignore-preset default|python|node|go|rust] [--force]`
 

@@ -119,6 +119,12 @@ func validateMultiPodFlags(allPods bool, podNames []string, role string, labels 
 	if (multiPod || detach) && cmdStr == "" {
 		return fmt.Errorf("--cmd is required when using --all, --pod, --role, --label, or --detach")
 	}
+	if len(exclude) > 0 && len(podNames) > 0 {
+		return fmt.Errorf("--exclude cannot be used with --pod")
+	}
+	if len(exclude) > 0 && !allPods && role == "" && len(labels) == 0 {
+		return fmt.Errorf("--exclude requires --all, --role, or --label")
+	}
 	if !multiPod && !detach {
 		return nil
 	}
@@ -137,12 +143,6 @@ func validateMultiPodFlags(allPods bool, podNames []string, role string, labels 
 	}
 	if exclusiveCount > 1 {
 		return fmt.Errorf("--all, --pod, --role, and --label are mutually exclusive")
-	}
-	if len(exclude) > 0 && len(podNames) > 0 {
-		return fmt.Errorf("--exclude cannot be used with --pod")
-	}
-	if len(exclude) > 0 && !allPods && role == "" && len(labels) == 0 {
-		return fmt.Errorf("--exclude requires --all, --role, or --label")
 	}
 	return nil
 }

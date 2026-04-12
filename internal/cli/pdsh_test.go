@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -273,5 +275,108 @@ func TestRunMultiExecNoPrefix(t *testing.T) {
 	}
 	if got := stdout.String(); got != "hello\n" {
 		t.Fatalf("expected raw output, got %q", got)
+	}
+}
+
+func TestRunMultiExecWithLogDir(t *testing.T) {
+	client := &fakePdshExecClient{
+		outputs: map[string]string{
+			"okdev-sess-worker-0": "gpu0\n",
+			"okdev-sess-worker-1": "gpu1\n",
+		},
+		errs: map[string]error{},
+	}
+	pods := []kube.PodSummary{
+		{Name: "okdev-sess-worker-0", Phase: "Running"},
+		{Name: "okdev-sess-worker-1", Phase: "Running"},
+	}
+	logDir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-c", "echo gpu"}, logDir, 0, false, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, name := range []string{"worker-0.log", "worker-1.log"} {
+		data, err := os.ReadFile(filepath.Join(logDir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if len(data) == 0 {
+			t.Fatalf("%s is empty", name)
+		}
+	}
+}
+
+func TestValidateMultiPodFlags(t *testing.T) {
+	tests := []struct {
+		name     string
+		allPods  bool
+		podNames []string
+		role     string
+		labels   []string
+		exclude  []string
+		cmdStr   string
+		detach   bool
+		wantErr  string
+	}{
+		{
+			name:    "all and role mutually exclusive",
+			allPods: true, role: "worker", cmdStr: "echo hi",
+			wantErr: "mutually exclusive",
+		},
+		{
+			name:    "all and pod mutually exclusive",
+			allPods: true, podNames: []string{"p1"}, cmdStr: "echo hi",
+			wantErr: "mutually exclusive",
+		},
+		{
+			name:    "multi-pod requires cmd",
+			allPods: true,
+			wantErr: "--cmd is required",
+		},
+		{
+			name:    "detach requires cmd",
+			detach:  true,
+			wantErr: "--cmd is required",
+		},
+		{
+			name:    "exclude without selector",
+			exclude: []string{"p1"}, cmdStr: "echo hi",
+			wantErr: "--exclude requires",
+		},
+		{
+			name:     "exclude with pod",
+			podNames: []string{"p1"}, exclude: []string{"p1"}, cmdStr: "echo hi",
+			wantErr: "--exclude cannot be used with --pod",
+		},
+		{
+			name:    "valid all with cmd",
+			allPods: true, cmdStr: "echo hi",
+		},
+		{
+			name: "valid role with cmd",
+			role: "worker", cmdStr: "echo hi",
+		},
+		{
+			name:   "valid detach with cmd",
+			detach: true, cmdStr: "echo hi",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateMultiPodFlags(tt.allPods, tt.podNames, tt.role, tt.labels, tt.exclude, tt.cmdStr, tt.detach)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+			}
+		})
 	}
 }
