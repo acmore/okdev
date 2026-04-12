@@ -463,6 +463,25 @@ func TestInitScaffoldsPyTorchJobManifest(t *testing.T) {
 	}
 }
 
+func TestInitScaffoldsPyTorchJobManifestWithFolderConfigAndDotOkdevPath(t *testing.T) {
+	tmp := t.TempDir()
+	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev", "okdev.yaml")}
+	cmd := newInitCmd(opts)
+	cmd.SetArgs([]string{"--yes", "--workload", "pytorchjob", "--manifest-path", ".okdev/pytorchjob.yaml"})
+	cmd.SetIn(strings.NewReader(""))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init execute: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev", "pytorchjob.yaml")); err != nil {
+		t.Fatalf("expected manifest beside folder config, got err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev", ".okdev", "pytorchjob.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("expected duplicate .okdev manifest path to be absent, err=%v", err)
+	}
+}
+
 func TestInitManifestPreservedWithoutForce(t *testing.T) {
 	tmp := t.TempDir()
 	okdevDir := filepath.Join(tmp, ".okdev")
@@ -756,6 +775,78 @@ spec:
 		if !strings.Contains(string(manifestRaw), want) {
 			t.Fatalf("expected manifest to contain %q, got:\n%s", want, string(manifestRaw))
 		}
+	}
+}
+
+func TestInitCustomTemplateRendersDeclaredFileWithFolderConfigAndDotOkdevPath(t *testing.T) {
+	tmp := t.TempDir()
+	tmplDir := filepath.Join(tmp, ".okdev", "templates")
+	if err := os.MkdirAll(filepath.Join(tmplDir, "manifests"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmplDir, "pytorch.yaml.tmpl"), []byte(`---
+name: pytorch
+files:
+  - path: "{{ .ManifestPath }}"
+    template: manifests/pytorchjob.yaml.tmpl
+---
+apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: {{ .Name }}
+spec:
+  namespace: {{ .Namespace }}
+  sync:
+    paths:
+      - "{{ .SyncLocal }}:{{ .SyncRemote }}"
+  ssh:
+    user: root
+  sidecar:
+    image: ghcr.io/acmore/okdev:edge
+  workload:
+    type: {{ .WorkloadType }}
+    manifestPath: {{ .ManifestPath }}
+    inject:
+      - path: "spec.pytorchReplicaSpecs.Master.template"
+      - path: "spec.pytorchReplicaSpecs.Worker.template"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmplDir, "manifests", "pytorchjob.yaml.tmpl"), []byte(`apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: {{ .Name }}
+spec:
+  pytorchReplicaSpecs:
+    Master:
+      template:
+        spec:
+          containers:
+            - name: dev
+              image: ubuntu:22.04
+    Worker:
+      template:
+        spec:
+          containers:
+            - name: dev
+              image: ubuntu:22.04
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev", "okdev.yaml")}
+	cmd := newInitCmd(opts)
+	cmd.SetArgs([]string{"--yes", "--template", "pytorch", "--workload", "pytorchjob", "--manifest-path", ".okdev/pytorchjob.yaml"})
+	cmd.SetIn(strings.NewReader(""))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init execute: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev", "pytorchjob.yaml")); err != nil {
+		t.Fatalf("expected companion manifest beside folder config, got err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev", ".okdev", "pytorchjob.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("expected duplicate .okdev companion path to be absent, err=%v", err)
 	}
 }
 
