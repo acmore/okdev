@@ -165,7 +165,7 @@ func newTargetSetCmd(opts *Options) *cobra.Command {
 }
 
 func loadCurrentSessionView(cmd *cobra.Command, k *kube.Client, namespace, sessionName string) (sessionView, error) {
-	label := "okdev.io/managed=true,okdev.io/session=" + sessionName
+	label := selectorForSessionRun(sessionName)
 	pods, err := k.ListPods(cmd.Context(), namespace, false, label)
 	if err != nil {
 		return sessionView{}, err

@@ -1,16 +1,16 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Name }}
+  name: {{`{{ .WorkloadName }}`}}
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: {{ .Name }}
+      app.kubernetes.io/name: {{`{{ .WorkloadName }}`}}
   template:
     metadata:
       labels:
-        app: {{ .Name }}
+        app.kubernetes.io/name: {{`{{ .WorkloadName }}`}}
     spec:
       containers:
         - name: dev

@@ -136,7 +136,7 @@
 
 - Reconciles Pod/PVC resources, updates SSH config, initializes managed forwarding/sync, then exits.
 - If the session workload already exists, `okdev up` reuses it and only reruns setup.
-- To force a fresh workload, run `okdev down` and then `okdev up`.
+- Workload resources are named per run, for example `okdev-<session>-<run-id>`; `okdev down && okdev up` creates a fresh workload name for the same session.
 - tmux-backed persistent interactive shells are enabled by default.
 - `--tmux`: explicitly enable tmux mode in the dev container.
 - `--no-tmux`: disable tmux mode for this pod.

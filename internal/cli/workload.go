@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/acmore/okdev/internal/config"
@@ -12,7 +14,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName string, labels, annotations map[string]string, podSpec corev1.PodSpec, volumes []corev1.Volume, tmux bool, preStop string) (workload.Runtime, error) {
+type sessionPodLister interface {
+	ListPods(context.Context, string, bool, string) ([]kube.PodSummary, error)
+}
+
+func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName, workloadName string, labels, annotations map[string]string, podSpec corev1.PodSpec, volumes []corev1.Volume, tmux bool, preStop string) (workload.Runtime, error) {
 	targetContainer := resolveTargetContainer(cfg)
 	workspaceMountPath := cfg.EffectiveWorkspaceMountPath(cfgPath)
 	manifestPath := ""
@@ -33,33 +39,52 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName string, lab
 			volumes, workspaceMountPath, cfg.Spec.Sidecar.Image, cfg.Spec.Sidecar.Resources,
 			tmux, preStop, targetContainer,
 		)
+		rt.WorkloadNameOverride = workloadName
 		rt.LastAppliedSpecJSON = snapJSON
 		rt.LastAppliedSpecHash = snapHash
 		return rt, nil
 	case workload.TypeJob, workload.TypeGeneric, workload.TypePyTorchJob:
 		return &workload.GenericRuntime{
-			WorkloadKind:        strings.TrimSpace(cfg.Spec.Workload.Type),
-			ManifestPath:        manifestResolvedPath,
-			WorkspaceMountPath:  workspaceMountPath,
-			SidecarImage:        cfg.Spec.Sidecar.Image,
-			SidecarResources:    cfg.Spec.Sidecar.Resources,
-			Tmux:                tmux,
-			PreStop:             preStop,
-			TargetContainer:     targetContainer,
-			Volumes:             volumes,
-			Labels:              labels,
-			Annotations:         annotations,
-			Inject:              cfg.Spec.Workload.Inject,
-			LastAppliedSpecJSON: snapJSON,
-			LastAppliedSpecHash: snapHash,
+			SessionName:          sessionName,
+			WorkloadNameOverride: workloadName,
+			WorkloadKind:         strings.TrimSpace(cfg.Spec.Workload.Type),
+			ManifestPath:         manifestResolvedPath,
+			WorkspaceMountPath:   workspaceMountPath,
+			SidecarImage:         cfg.Spec.Sidecar.Image,
+			SidecarResources:     cfg.Spec.Sidecar.Resources,
+			Tmux:                 tmux,
+			PreStop:              preStop,
+			TargetContainer:      targetContainer,
+			Volumes:              volumes,
+			Labels:               labels,
+			Annotations:          annotations,
+			Inject:               cfg.Spec.Workload.Inject,
+			LastAppliedSpecJSON:  snapJSON,
+			LastAppliedSpecHash:  snapHash,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported workload type %q", cfg.Spec.Workload.Type)
 	}
 }
 
-func sessionRuntimeForExisting(cfg *config.DevEnvironment, cfgPath, sessionName string) (workload.Runtime, error) {
-	return sessionRuntime(cfg, cfgPath, sessionName, discoveryLabelsForSession(cfg, sessionName), nil, corev1.PodSpec{}, cfg.EffectiveVolumes(), cfg.Spec.SSH.PersistentSessionEnabled(), resolvePreStopCommand(cfg, cfgPath))
+func sessionRuntimeForExisting(ctx context.Context, cfg *config.DevEnvironment, cfgPath, namespace, sessionName string, pods sessionPodLister) (workload.Runtime, error) {
+	info, _ := session.LoadInfo(sessionName)
+	runID := strings.TrimSpace(info.RunID)
+	workloadName := strings.TrimSpace(info.WorkloadName)
+	if pods != nil {
+		discoveredRunID, discoveredWorkloadName, err := discoverRunIdentityFromPods(ctx, pods, namespace, sessionName)
+		if err != nil {
+			slog.Debug("failed to discover run identity from live pods", "session", sessionName, "error", err)
+		} else {
+			if discoveredRunID != "" {
+				runID = discoveredRunID
+			}
+			if discoveredWorkloadName != "" {
+				workloadName = discoveredWorkloadName
+			}
+		}
+	}
+	return sessionRuntime(cfg, cfgPath, sessionName, workloadName, discoveryLabelsForSession(cfg, sessionName, runID), nil, corev1.PodSpec{}, cfg.EffectiveVolumes(), cfg.Spec.SSH.PersistentSessionEnabled(), resolvePreStopCommand(cfg, cfgPath))
 }
 
 func defaultTargetRef(sessionName string) workload.TargetRef {
@@ -101,7 +126,7 @@ func resolveTargetRef(ctx context.Context, opts *Options, cfg *config.DevEnviron
 	if err != nil {
 		return workload.TargetRef{}, err
 	}
-	runtime, err := sessionRuntimeForExisting(cfg, cfgPath, sessionName)
+	runtime, err := sessionRuntimeForExisting(ctx, cfg, cfgPath, namespace, sessionName, k)
 	if err != nil {
 		return workload.TargetRef{}, err
 	}
@@ -129,7 +154,7 @@ func resolveFreshTargetRef(ctx context.Context, opts *Options, cfg *config.DevEn
 	if err != nil {
 		return workload.TargetRef{}, err
 	}
-	runtime, err := sessionRuntimeForExisting(cfg, cfgPath, sessionName)
+	runtime, err := sessionRuntimeForExisting(ctx, cfg, cfgPath, namespace, sessionName, k)
 	if err != nil {
 		return workload.TargetRef{}, err
 	}
@@ -177,14 +202,52 @@ func resolveTargetContainer(cfg *config.DevEnvironment) string {
 	return workload.DefaultTargetContainer
 }
 
-func discoveryLabelsForSession(cfg *config.DevEnvironment, sessionName string) map[string]string {
+func discoveryLabelsForSession(cfg *config.DevEnvironment, sessionName, runID string) map[string]string {
 	labels := map[string]string{
 		"okdev.io/managed": "true",
 		"okdev.io/session": sessionName,
 		"okdev.io/name":    cfg.Metadata.Name,
 	}
+	if runID = strings.TrimSpace(runID); runID != "" {
+		labels["okdev.io/run-id"] = runID
+	}
 	if workloadType := strings.TrimSpace(cfg.Spec.Workload.Type); workloadType != "" {
 		labels["okdev.io/workload-type"] = workloadType
 	}
 	return labels
+}
+
+func discoverRunIdentityFromPods(ctx context.Context, pods sessionPodLister, namespace, sessionName string) (string, string, error) {
+	selector := "okdev.io/managed=true,okdev.io/session=" + sessionName
+	summaries, err := pods.ListPods(ctx, namespace, false, selector)
+	if err != nil {
+		return "", "", fmt.Errorf("discover live session pods: %w", err)
+	}
+	candidates := make([]kube.PodSummary, 0, len(summaries))
+	for _, pod := range summaries {
+		if pod.Deleting {
+			continue
+		}
+		if strings.TrimSpace(pod.Labels["okdev.io/run-id"]) == "" {
+			continue
+		}
+		if workloadNameFromPodSummary(pod) == "" {
+			continue
+		}
+		candidates = append(candidates, pod)
+	}
+	if len(candidates) == 0 {
+		return "", "", nil
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return workload.ComparePodPriority(candidates[i], candidates[j])
+	})
+	return strings.TrimSpace(candidates[0].Labels["okdev.io/run-id"]), workloadNameFromPodSummary(candidates[0]), nil
+}
+
+func workloadNameFromPodSummary(pod kube.PodSummary) string {
+	if name := strings.TrimSpace(pod.Labels["okdev.io/workload-name"]); name != "" {
+		return name
+	}
+	return strings.TrimSpace(pod.Annotations["okdev.io/workload-name"])
 }

@@ -60,6 +60,9 @@ func DiscoveryLabelSelector(labels map[string]string) string {
 	if v, ok := labels["okdev.io/session"]; ok {
 		discovery["okdev.io/session"] = v
 	}
+	if v, ok := labels["okdev.io/run-id"]; ok {
+		discovery["okdev.io/run-id"] = v
+	}
 	if v, ok := labels["okdev.io/name"]; ok {
 		discovery["okdev.io/name"] = v
 	}

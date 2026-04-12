@@ -190,7 +190,7 @@ type cpResult struct {
 
 func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath string, upload bool, allPods bool, podNames []string, role string, labels []string, exclude []string, container string, fanout int) error {
 	ctx := cmd.Context()
-	labelSel := "okdev.io/managed=true,okdev.io/session=" + cc.sessionName
+	labelSel := selectorForSessionRun(cc.sessionName)
 	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
 	if err != nil {
 		return fmt.Errorf("list session pods: %w", err)

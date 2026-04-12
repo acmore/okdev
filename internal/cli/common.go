@@ -444,6 +444,19 @@ func labelsForSession(opts *Options, cfg *config.DevEnvironment, sessionName str
 	}
 }
 
+func selectorForSessionRun(sessionName string) string {
+	labels := map[string]string{
+		"okdev.io/managed": "true",
+		"okdev.io/session": sessionName,
+	}
+	if info, err := session.LoadInfo(sessionName); err == nil {
+		if runID := strings.TrimSpace(info.RunID); runID != "" {
+			labels["okdev.io/run-id"] = runID
+		}
+	}
+	return workload.DiscoveryLabelSelector(labels)
+}
+
 func annotationsForSession(cfg *config.DevEnvironment) map[string]string {
 	out := map[string]string{}
 	if cfg.Spec.Session.TTLHours > 0 {

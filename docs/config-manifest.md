@@ -1,6 +1,6 @@
 # Config Manifest
 
-okdev is configured by a single YAML manifest (default: `.okdev.yaml`).
+okdev is configured by a single YAML manifest. Simple pod setups default to `.okdev.yaml`; manifest-backed workload setups initialized by `okdev init` default to `.okdev/okdev.yaml` with generated workload manifests beside it.
 
 ## Skeleton
 
@@ -418,6 +418,8 @@ spec:
 - For manifest-backed workloads, if no configured attach container is found in an injected pod template, okdev falls back to the first container in that pod template.
 
 This means env vars like `LANG` should usually be added to the container that okdev will attach to.
+
+Manifest-backed workload files are rendered as okdev runtime templates before apply. Use `{{ .WorkloadName }}` anywhere the manifest should follow the generated per-run Kubernetes workload name, and use `{{ .SessionName }}` or `{{ .RunID }}` for session/run labels. `{{ .ConfigName }}` is the stable `metadata.name` from the okdev config, and `{{ .WorkloadType }}` is `job`, `generic`, or `pytorchjob`. Static fields remain static, so the manifest author controls which labels, selectors, and names change per run.
 
 Default pod example:
 
