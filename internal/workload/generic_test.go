@@ -86,6 +86,112 @@ spec:
 	}
 }
 
+func TestGenericRuntimeUsesSessionNameForWorkload(t *testing.T) {
+	tmp := t.TempDir()
+	manifestPath := filepath.Join(tmp, "deployment.yaml")
+	if err := os.WriteFile(manifestPath, []byte(`
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: original-name
+  labels:
+    team: ml
+spec:
+  selector:
+    matchLabels:
+      app: trainer
+  template:
+    metadata:
+      labels:
+        app: trainer
+    spec:
+      containers:
+        - name: trainer
+          image: python:3.12
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rt := &GenericRuntime{
+		SessionName:        "my-session",
+		ManifestPath:       manifestPath,
+		WorkspaceMountPath: "/workspace",
+		SidecarImage:       "ghcr.io/acmore/okdev:edge",
+		SidecarResources:   corev1.ResourceRequirements{},
+		TargetContainer:    "trainer",
+		Volumes: []corev1.Volume{{
+			Name:         "workspace",
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		}},
+		Labels: map[string]string{
+			"okdev.io/managed": "true",
+			"okdev.io/session": "my-session",
+		},
+		Inject: []config.WorkloadInjectSpec{{Path: "spec.template"}},
+	}
+
+	if got := rt.WorkloadName(); got != "okdev-my-session" {
+		t.Fatalf("expected workload name to be session-derived, got %q", got)
+	}
+
+	_, kind, name, err := rt.WorkloadRef()
+	if err != nil {
+		t.Fatalf("WorkloadRef: %v", err)
+	}
+	if kind != "Deployment" || name != "okdev-my-session" {
+		t.Fatalf("unexpected workload ref: kind=%q name=%q", kind, name)
+	}
+
+	client := &fakeGenericClient{}
+	if err := rt.Apply(context.Background(), client, "default"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	var obj map[string]any
+	if err := yaml.Unmarshal(client.manifest, &obj); err != nil {
+		t.Fatal(err)
+	}
+	meta, _ := obj["metadata"].(map[string]any)
+	if meta["name"] != "okdev-my-session" {
+		t.Fatalf("expected applied manifest name to be session-derived, got %v", meta["name"])
+	}
+	labels, _ := meta["labels"].(map[string]any)
+	if labels["team"] != "ml" {
+		t.Fatalf("expected user labels to be preserved, got %v", labels)
+	}
+
+	if err := rt.Delete(context.Background(), client, "default", true); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if client.fakeDeleteClient.name != "okdev-my-session" {
+		t.Fatalf("expected delete to use session name, got %q", client.fakeDeleteClient.name)
+	}
+}
+
+func TestGenericRuntimeFallsBackToManifestName(t *testing.T) {
+	tmp := t.TempDir()
+	manifestPath := filepath.Join(tmp, "deployment.yaml")
+	if err := os.WriteFile(manifestPath, []byte(`
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fallback-name
+spec:
+  template:
+    spec:
+      containers:
+        - name: trainer
+          image: python:3.12
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rt := &GenericRuntime{ManifestPath: manifestPath}
+	if got := rt.WorkloadName(); got != "fallback-name" {
+		t.Fatalf("expected fallback to manifest name, got %q", got)
+	}
+}
+
 func TestGenericRuntimeSelectTargetPrefersAttachablePods(t *testing.T) {
 	rt := &GenericRuntime{
 		WorkloadKind:    TypeGeneric,

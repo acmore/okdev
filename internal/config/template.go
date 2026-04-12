@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -80,6 +81,8 @@ type TemplateVars struct {
 	Name             string
 	Namespace        string
 	KubeContext      string
+	User             string
+	Repo             string
 	DevImage         string
 	DevCPURequest    string
 	DevMemoryRequest string
@@ -112,6 +115,8 @@ func NewTemplateVars() *TemplateVars {
 	return &TemplateVars{
 		Name:             "",
 		Namespace:        "default",
+		User:             detectUser(),
+		Repo:             detectRepo(),
 		DevImage:         "ubuntu:22.04",
 		DevCPURequest:    "500m",
 		DevMemoryRequest: "512Mi",
@@ -497,6 +502,26 @@ func resolveProjectTemplate(name, projDir string) (string, error) {
 		return "", err
 	}
 	return string(content), nil
+}
+
+func detectUser() string {
+	if u := os.Getenv("USER"); u != "" {
+		return u
+	}
+	return "dev"
+}
+
+func detectRepo() string {
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	out, err := cmd.Output()
+	if err != nil {
+		wd, err := os.Getwd()
+		if err != nil {
+			return ""
+		}
+		return filepath.Base(wd)
+	}
+	return filepath.Base(strings.TrimSpace(string(out)))
 }
 
 func RenderEmbeddedTemplate(path string, vars *TemplateVars) (string, error) {

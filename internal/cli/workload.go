@@ -38,6 +38,7 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName string, lab
 		return rt, nil
 	case workload.TypeJob, workload.TypeGeneric, workload.TypePyTorchJob:
 		return &workload.GenericRuntime{
+			SessionName:         sessionName,
 			WorkloadKind:        strings.TrimSpace(cfg.Spec.Workload.Type),
 			ManifestPath:        manifestResolvedPath,
 			WorkspaceMountPath:  workspaceMountPath,

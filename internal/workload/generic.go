@@ -19,6 +19,7 @@ import (
 )
 
 type GenericRuntime struct {
+	SessionName         string
 	WorkloadKind        string
 	ManifestPath        string
 	WorkspaceMountPath  string
@@ -52,13 +53,23 @@ func (r *GenericRuntime) Kind() string {
 	return TypeGeneric
 }
 
-func (r *GenericRuntime) WorkloadName() string {
+func (r *GenericRuntime) resolvedName() string {
+	if r.SessionName != "" {
+		return "okdev-" + r.SessionName
+	}
 	obj, err := r.load()
 	if err != nil {
-		slog.Warn("failed to resolve workload name from manifest", "path", r.ManifestPath, "error", err)
 		return ""
 	}
 	return obj.GetName()
+}
+
+func (r *GenericRuntime) WorkloadName() string {
+	name := r.resolvedName()
+	if name == "" {
+		slog.Warn("failed to resolve workload name from manifest", "path", r.ManifestPath)
+	}
+	return name
 }
 
 func (r *GenericRuntime) WorkloadRef() (string, string, string, error) {
@@ -66,7 +77,7 @@ func (r *GenericRuntime) WorkloadRef() (string, string, string, error) {
 	if err != nil {
 		return "", "", "", err
 	}
-	return obj.GetAPIVersion(), obj.GetKind(), obj.GetName(), nil
+	return obj.GetAPIVersion(), obj.GetKind(), r.resolvedName(), nil
 }
 
 func (r *GenericRuntime) Apply(ctx context.Context, k ApplyClient, namespace string) error {
@@ -74,8 +85,10 @@ func (r *GenericRuntime) Apply(ctx context.Context, k ApplyClient, namespace str
 	if err != nil {
 		return err
 	}
-	workloadLabels := LabelsWithWorkload(r.Labels, obj.GetName(), obj.GetKind())
-	workloadAnnotations := AnnotationsWithWorkload(r.Annotations, obj.GetName(), obj.GetAPIVersion(), obj.GetKind())
+	name := r.resolvedName()
+	obj.SetName(name)
+	workloadLabels := LabelsWithWorkload(r.Labels, name, obj.GetKind())
+	workloadAnnotations := AnnotationsWithWorkload(r.Annotations, name, obj.GetAPIVersion(), obj.GetKind())
 	obj.SetLabels(mergeStringMaps(obj.GetLabels(), workloadLabels))
 	obj.SetAnnotations(mergeStringMaps(obj.GetAnnotations(), workloadAnnotations))
 	if r.LastAppliedSpecJSON != "" {
@@ -129,7 +142,7 @@ func (r *GenericRuntime) Delete(ctx context.Context, k DeleteClient, namespace s
 	if err != nil {
 		return err
 	}
-	return k.DeleteByRef(ctx, namespace, obj.GetAPIVersion(), obj.GetKind(), obj.GetName(), ignoreNotFound)
+	return k.DeleteByRef(ctx, namespace, obj.GetAPIVersion(), obj.GetKind(), r.resolvedName(), ignoreNotFound)
 }
 
 func (r *GenericRuntime) WaitReady(ctx context.Context, k WaitClient, namespace string, timeout time.Duration, onProgress func(kube.PodReadinessProgress)) error {
