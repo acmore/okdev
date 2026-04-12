@@ -12,7 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName string, labels, annotations map[string]string, podSpec corev1.PodSpec, volumes []corev1.Volume, tmux bool, preStop string) (workload.Runtime, error) {
+func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName, workloadName string, labels, annotations map[string]string, podSpec corev1.PodSpec, volumes []corev1.Volume, tmux bool, preStop string) (workload.Runtime, error) {
 	targetContainer := resolveTargetContainer(cfg)
 	workspaceMountPath := cfg.EffectiveWorkspaceMountPath(cfgPath)
 	manifestPath := ""
@@ -33,26 +33,28 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName string, lab
 			volumes, workspaceMountPath, cfg.Spec.Sidecar.Image, cfg.Spec.Sidecar.Resources,
 			tmux, preStop, targetContainer,
 		)
+		rt.WorkloadNameOverride = workloadName
 		rt.LastAppliedSpecJSON = snapJSON
 		rt.LastAppliedSpecHash = snapHash
 		return rt, nil
 	case workload.TypeJob, workload.TypeGeneric, workload.TypePyTorchJob:
 		return &workload.GenericRuntime{
-			SessionName:         sessionName,
-			WorkloadKind:        strings.TrimSpace(cfg.Spec.Workload.Type),
-			ManifestPath:        manifestResolvedPath,
-			WorkspaceMountPath:  workspaceMountPath,
-			SidecarImage:        cfg.Spec.Sidecar.Image,
-			SidecarResources:    cfg.Spec.Sidecar.Resources,
-			Tmux:                tmux,
-			PreStop:             preStop,
-			TargetContainer:     targetContainer,
-			Volumes:             volumes,
-			Labels:              labels,
-			Annotations:         annotations,
-			Inject:              cfg.Spec.Workload.Inject,
-			LastAppliedSpecJSON: snapJSON,
-			LastAppliedSpecHash: snapHash,
+			SessionName:          sessionName,
+			WorkloadNameOverride: workloadName,
+			WorkloadKind:         strings.TrimSpace(cfg.Spec.Workload.Type),
+			ManifestPath:         manifestResolvedPath,
+			WorkspaceMountPath:   workspaceMountPath,
+			SidecarImage:         cfg.Spec.Sidecar.Image,
+			SidecarResources:     cfg.Spec.Sidecar.Resources,
+			Tmux:                 tmux,
+			PreStop:              preStop,
+			TargetContainer:      targetContainer,
+			Volumes:              volumes,
+			Labels:               labels,
+			Annotations:          annotations,
+			Inject:               cfg.Spec.Workload.Inject,
+			LastAppliedSpecJSON:  snapJSON,
+			LastAppliedSpecHash:  snapHash,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported workload type %q", cfg.Spec.Workload.Type)
@@ -60,7 +62,8 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName string, lab
 }
 
 func sessionRuntimeForExisting(cfg *config.DevEnvironment, cfgPath, sessionName string) (workload.Runtime, error) {
-	return sessionRuntime(cfg, cfgPath, sessionName, discoveryLabelsForSession(cfg, sessionName), nil, corev1.PodSpec{}, cfg.EffectiveVolumes(), cfg.Spec.SSH.PersistentSessionEnabled(), resolvePreStopCommand(cfg, cfgPath))
+	info, _ := session.LoadInfo(sessionName)
+	return sessionRuntime(cfg, cfgPath, sessionName, strings.TrimSpace(info.WorkloadName), discoveryLabelsForSession(cfg, sessionName), nil, corev1.PodSpec{}, cfg.EffectiveVolumes(), cfg.Spec.SSH.PersistentSessionEnabled(), resolvePreStopCommand(cfg, cfgPath))
 }
 
 func defaultTargetRef(sessionName string) workload.TargetRef {
@@ -179,10 +182,14 @@ func resolveTargetContainer(cfg *config.DevEnvironment) string {
 }
 
 func discoveryLabelsForSession(cfg *config.DevEnvironment, sessionName string) map[string]string {
+	info, _ := session.LoadInfo(sessionName)
 	labels := map[string]string{
 		"okdev.io/managed": "true",
 		"okdev.io/session": sessionName,
 		"okdev.io/name":    cfg.Metadata.Name,
+	}
+	if runID := strings.TrimSpace(info.RunID); runID != "" {
+		labels["okdev.io/run-id"] = runID
 	}
 	if workloadType := strings.TrimSpace(cfg.Spec.Workload.Type); workloadType != "" {
 		labels["okdev.io/workload-type"] = workloadType

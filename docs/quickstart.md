@@ -185,7 +185,7 @@ okdev sync --dry-run
 okdev down --dry-run
 ```
 
-`okdev up` reuses an existing session workload by default. Use `okdev up --reconcile` when you want to apply workload changes explicitly: controller-backed workloads are reapplied in place, while pod workloads are deleted and recreated.
+`okdev up` reuses an existing session workload by default. Workload resources are named per run, so `okdev down && okdev up` creates a fresh workload name for the same session. Use `okdev up --reconcile` when you want to apply workload changes explicitly: controller-backed workloads are reapplied in place, while pod workloads are deleted and recreated.
 
 ## Teardown
 

@@ -113,12 +113,13 @@ spec:
 	}
 
 	rt := &GenericRuntime{
-		SessionName:        "my-session",
-		ManifestPath:       manifestPath,
-		WorkspaceMountPath: "/workspace",
-		SidecarImage:       "ghcr.io/acmore/okdev:edge",
-		SidecarResources:   corev1.ResourceRequirements{},
-		TargetContainer:    "trainer",
+		SessionName:          "my-session",
+		WorkloadNameOverride: "okdev-my-session-abcd1234",
+		ManifestPath:         manifestPath,
+		WorkspaceMountPath:   "/workspace",
+		SidecarImage:         "ghcr.io/acmore/okdev:edge",
+		SidecarResources:     corev1.ResourceRequirements{},
+		TargetContainer:      "trainer",
 		Volumes: []corev1.Volume{{
 			Name:         "workspace",
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
@@ -130,7 +131,7 @@ spec:
 		Inject: []config.WorkloadInjectSpec{{Path: "spec.template"}},
 	}
 
-	if got := rt.WorkloadName(); got != "okdev-my-session" {
+	if got := rt.WorkloadName(); got != "okdev-my-session-abcd1234" {
 		t.Fatalf("expected workload name to be session-derived, got %q", got)
 	}
 
@@ -138,7 +139,7 @@ spec:
 	if err != nil {
 		t.Fatalf("WorkloadRef: %v", err)
 	}
-	if kind != "Deployment" || name != "okdev-my-session" {
+	if kind != "Deployment" || name != "okdev-my-session-abcd1234" {
 		t.Fatalf("unexpected workload ref: kind=%q name=%q", kind, name)
 	}
 
@@ -152,7 +153,7 @@ spec:
 		t.Fatal(err)
 	}
 	meta, _ := obj["metadata"].(map[string]any)
-	if meta["name"] != "okdev-my-session" {
+	if meta["name"] != "okdev-my-session-abcd1234" {
 		t.Fatalf("expected applied manifest name to be session-derived, got %v", meta["name"])
 	}
 	labels, _ := meta["labels"].(map[string]any)
@@ -163,7 +164,7 @@ spec:
 	if err := rt.Delete(context.Background(), client, "default", true); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if client.fakeDeleteClient.name != "okdev-my-session" {
+	if client.fakeDeleteClient.name != "okdev-my-session-abcd1234" {
 		t.Fatalf("expected delete to use session name, got %q", client.fakeDeleteClient.name)
 	}
 }

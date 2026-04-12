@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -52,6 +54,7 @@ type upState struct {
 	enableTmux     bool
 	runtime        workload.Runtime
 	workloadName   string
+	runID          string
 	target         workload.TargetRef
 	previousTarget workload.TargetRef
 	reconcileKube  reconcileWaitClient
@@ -158,14 +161,19 @@ func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, e
 	if flags.noTmux {
 		enableTmux = false
 	}
+	runID, workloadName, err := resolveRunWorkloadIdentity(cmd.Context(), cc.kube, cc.namespace, cc.sessionName)
+	if err != nil {
+		return nil, err
+	}
 	labels := labelsForSession(opts, cc.cfg, cc.sessionName)
+	labels["okdev.io/run-id"] = runID
 	annotations := annotationsForSession(cc.cfg)
 	volumes := cc.cfg.EffectiveVolumes()
 	syncPairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
 	if err != nil {
 		return nil, err
 	}
-	runtime, err := sessionRuntime(cc.cfg, cc.cfgPath, cc.sessionName, labels, annotations, cc.cfg.Spec.PodTemplate.Spec, volumes, enableTmux, resolvePreStopCommand(cc.cfg, cc.cfgPath))
+	runtime, err := sessionRuntime(cc.cfg, cc.cfgPath, cc.sessionName, workloadName, labels, annotations, cc.cfg.Spec.PodTemplate.Spec, volumes, enableTmux, resolvePreStopCommand(cc.cfg, cc.cfgPath))
 	if err != nil {
 		return nil, err
 	}
@@ -186,8 +194,65 @@ func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, e
 		enableTmux:     enableTmux,
 		runtime:        runtime,
 		workloadName:   runtime.WorkloadName(),
+		runID:          runID,
 		previousTarget: previousTarget,
 	}, nil
+}
+
+func resolveRunWorkloadIdentity(ctx context.Context, k workloadExistenceChecker, namespace, sessionName string) (string, string, error) {
+	info, err := session.LoadInfo(sessionName)
+	if err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(info.RunID) != "" &&
+		strings.TrimSpace(info.WorkloadAPIVersion) != "" &&
+		strings.TrimSpace(info.WorkloadKind) != "" &&
+		strings.TrimSpace(info.WorkloadName) != "" {
+		exists, err := k.ResourceExists(ctx, namespace, info.WorkloadAPIVersion, info.WorkloadKind, info.WorkloadName)
+		if err != nil {
+			return "", "", fmt.Errorf("check saved workload %s/%s existence: %w", info.WorkloadKind, info.WorkloadName, err)
+		}
+		if exists {
+			return strings.TrimSpace(info.RunID), strings.TrimSpace(info.WorkloadName), nil
+		}
+	}
+	runID, err := newRunID()
+	if err != nil {
+		return "", "", err
+	}
+	return runID, workloadNameForRun(sessionName, runID), nil
+}
+
+func newRunID() (string, error) {
+	var buf [4]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", fmt.Errorf("generate run id: %w", err)
+	}
+	return hex.EncodeToString(buf[:]), nil
+}
+
+func workloadNameForRun(sessionName, runID string) string {
+	sessionPart := strings.Trim(strings.ToLower(strings.TrimSpace(sessionName)), "-")
+	if sessionPart == "" {
+		sessionPart = "session"
+	}
+	runPart := strings.Trim(strings.ToLower(strings.TrimSpace(runID)), "-")
+	if runPart == "" {
+		runPart = "run"
+	}
+	const maxDNSLabel = 63
+	prefix := "okdev-"
+	availableSession := maxDNSLabel - len(prefix) - len(runPart) - 1
+	if availableSession < 1 {
+		availableSession = 1
+	}
+	if len(sessionPart) > availableSession {
+		sessionPart = strings.Trim(sessionPart[:availableSession], "-")
+	}
+	if sessionPart == "" {
+		sessionPart = "session"
+	}
+	return prefix + sessionPart + "-" + runPart
 }
 
 func upReconcile(state *upState, applyWorkload bool) error {
@@ -323,7 +388,7 @@ func reconcileDeletionComplete(ctx context.Context, k reconcileWaitClient, names
 	}
 
 	selector := strings.TrimSpace(workload.DiscoveryLabelSelector(labels))
-	if strings.TrimSpace(sessionName) != "" {
+	if selector == "" && strings.TrimSpace(sessionName) != "" {
 		selector = "okdev.io/managed=true,okdev.io/session=" + sessionName
 	}
 	pods, err := k.ListPods(ctx, namespace, false, selector)
@@ -435,7 +500,7 @@ func upWait(state *upState) error {
 	// like Jobs/PyTorchJobs surface image pulls and scheduling too.
 	eventCtx, eventCancel := context.WithCancel(state.ctx)
 	defer eventCancel()
-	go watchSessionPodEvents(eventCtx, state.command.kube, state.command.namespace, state.command.sessionName, 500*time.Millisecond, func(pod, reason, message string) {
+	go watchSessionPodEvents(eventCtx, state.command.kube, state.command.namespace, state.labels, 500*time.Millisecond, func(pod, reason, message string) {
 		detail := fmt.Sprintf("[%s] %s", reason, message)
 		if strings.TrimSpace(pod) != "" {
 			detail = fmt.Sprintf("%s %s", pod, detail)
@@ -525,11 +590,11 @@ type sessionPodEventWatcher interface {
 	WatchPodEvents(context.Context, string, string, func(string, string))
 }
 
-func watchSessionPodEvents(ctx context.Context, k sessionPodEventWatcher, namespace, sessionName string, interval time.Duration, onEvent func(pod, reason, message string)) {
+func watchSessionPodEvents(ctx context.Context, k sessionPodEventWatcher, namespace string, labels map[string]string, interval time.Duration, onEvent func(pod, reason, message string)) {
 	if onEvent == nil {
 		return
 	}
-	selector := "okdev.io/managed=true,okdev.io/session=" + sessionName
+	selector := workload.DiscoveryLabelSelector(labels)
 	watched := map[string]struct{}{}
 
 	for {
@@ -713,17 +778,29 @@ func upSetup(state *upState) error {
 	if err := session.SaveActiveSession(state.command.sessionName); err != nil {
 		return err
 	}
+	apiVersion, kind, workloadName := "", "", state.workloadName
+	if provider, ok := state.runtime.(workload.RefProvider); ok {
+		if refAPIVersion, refKind, refName, refErr := provider.WorkloadRef(); refErr == nil {
+			apiVersion, kind, workloadName = refAPIVersion, refKind, refName
+		} else {
+			state.ui.warnf("failed to resolve workload ref for session metadata: %v", refErr)
+		}
+	}
 	repoRoot, repoErr := session.RepoRoot()
 	if repoErr != nil {
 		state.ui.warnf("failed to resolve repo root for session metadata: %v", repoErr)
 	} else if infoErr := session.SaveInfo(session.Info{
-		Name:         state.command.sessionName,
-		RepoRoot:     repoRoot,
-		ConfigPath:   state.command.cfgPath,
-		Namespace:    state.command.namespace,
-		KubeContext:  state.opts.Context,
-		Owner:        state.command.opts.Owner,
-		WorkloadType: state.command.cfg.Spec.Workload.Type,
+		Name:               state.command.sessionName,
+		RepoRoot:           repoRoot,
+		ConfigPath:         state.command.cfgPath,
+		Namespace:          state.command.namespace,
+		KubeContext:        state.opts.Context,
+		Owner:              state.command.opts.Owner,
+		WorkloadType:       state.command.cfg.Spec.Workload.Type,
+		RunID:              state.runID,
+		WorkloadAPIVersion: apiVersion,
+		WorkloadKind:       kind,
+		WorkloadName:       workloadName,
 	}); infoErr != nil {
 		state.ui.warnf("failed to persist session metadata: %v", infoErr)
 	}

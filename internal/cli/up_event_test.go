@@ -52,7 +52,11 @@ func TestWatchSessionPodEventsTracksNewPods(t *testing.T) {
 	var got []string
 	done := make(chan struct{})
 	go func() {
-		watchSessionPodEvents(ctx, fake, "default", "sess", 5*time.Millisecond, func(pod, reason, message string) {
+		watchSessionPodEvents(ctx, fake, "default", map[string]string{
+			"okdev.io/managed": "true",
+			"okdev.io/session": "sess",
+			"okdev.io/run-id":  "abcd1234",
+		}, 5*time.Millisecond, func(pod, reason, message string) {
 			mu.Lock()
 			got = append(got, pod+":"+reason+":"+message)
 			count := len(got)

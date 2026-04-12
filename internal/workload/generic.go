@@ -19,21 +19,22 @@ import (
 )
 
 type GenericRuntime struct {
-	SessionName         string
-	WorkloadKind        string
-	ManifestPath        string
-	WorkspaceMountPath  string
-	SidecarImage        string
-	SidecarResources    corev1.ResourceRequirements
-	Tmux                bool
-	PreStop             string
-	TargetContainer     string
-	Volumes             []corev1.Volume
-	Labels              map[string]string
-	Annotations         map[string]string
-	Inject              []config.WorkloadInjectSpec
-	LastAppliedSpecJSON string
-	LastAppliedSpecHash string
+	SessionName          string
+	WorkloadNameOverride string
+	WorkloadKind         string
+	ManifestPath         string
+	WorkspaceMountPath   string
+	SidecarImage         string
+	SidecarResources     corev1.ResourceRequirements
+	Tmux                 bool
+	PreStop              string
+	TargetContainer      string
+	Volumes              []corev1.Volume
+	Labels               map[string]string
+	Annotations          map[string]string
+	Inject               []config.WorkloadInjectSpec
+	LastAppliedSpecJSON  string
+	LastAppliedSpecHash  string
 
 	loadMu     sync.Mutex
 	loadedBase *unstructured.Unstructured
@@ -54,8 +55,8 @@ func (r *GenericRuntime) Kind() string {
 }
 
 func (r *GenericRuntime) resolvedName() string {
-	if r.SessionName != "" {
-		return "okdev-" + r.SessionName
+	if strings.TrimSpace(r.WorkloadNameOverride) != "" {
+		return strings.TrimSpace(r.WorkloadNameOverride)
 	}
 	obj, err := r.load()
 	if err != nil {

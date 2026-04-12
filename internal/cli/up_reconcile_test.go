@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/acmore/okdev/internal/kube"
+	"github.com/acmore/okdev/internal/session"
 	"github.com/acmore/okdev/internal/workload"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -20,6 +21,66 @@ type fakeWorkloadExistenceChecker struct {
 	name       string
 	podsSeq    [][]kube.PodSummary
 	listCalls  int
+}
+
+func TestResolveRunWorkloadIdentityReusesExistingSavedWorkload(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := session.SaveInfo(session.Info{
+		Name:               "sess",
+		RunID:              "abcd1234",
+		WorkloadAPIVersion: "v1",
+		WorkloadKind:       "Pod",
+		WorkloadName:       "okdev-sess-abcd1234",
+	}); err != nil {
+		t.Fatalf("SaveInfo: %v", err)
+	}
+	k := &fakeWorkloadExistenceChecker{exists: true}
+
+	runID, workloadName, err := resolveRunWorkloadIdentity(context.Background(), k, "default", "sess")
+	if err != nil {
+		t.Fatalf("resolveRunWorkloadIdentity: %v", err)
+	}
+	if runID != "abcd1234" || workloadName != "okdev-sess-abcd1234" {
+		t.Fatalf("expected saved identity, got runID=%q workload=%q", runID, workloadName)
+	}
+	if k.apiVersion != "v1" || k.kind != "Pod" || k.name != "okdev-sess-abcd1234" {
+		t.Fatalf("unexpected saved ref lookup: %#v", k)
+	}
+}
+
+func TestResolveRunWorkloadIdentityCreatesNewNameWhenSavedWorkloadIsAbsent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := session.SaveInfo(session.Info{
+		Name:               "sess",
+		RunID:              "abcd1234",
+		WorkloadAPIVersion: "v1",
+		WorkloadKind:       "Pod",
+		WorkloadName:       "okdev-sess-abcd1234",
+	}); err != nil {
+		t.Fatalf("SaveInfo: %v", err)
+	}
+	k := &fakeWorkloadExistenceChecker{exists: false}
+
+	runID, workloadName, err := resolveRunWorkloadIdentity(context.Background(), k, "default", "sess")
+	if err != nil {
+		t.Fatalf("resolveRunWorkloadIdentity: %v", err)
+	}
+	if runID == "abcd1234" || workloadName == "okdev-sess-abcd1234" {
+		t.Fatalf("expected new identity, got runID=%q workload=%q", runID, workloadName)
+	}
+	if !strings.HasPrefix(workloadName, "okdev-sess-") {
+		t.Fatalf("expected generated workload name to include session, got %q", workloadName)
+	}
+}
+
+func TestWorkloadNameForRunFitsDNSLabelLimit(t *testing.T) {
+	name := workloadNameForRun(strings.Repeat("a", 80), "abcd1234")
+	if len(name) > 63 {
+		t.Fatalf("expected name <= 63 chars, got %d: %q", len(name), name)
+	}
+	if !strings.HasPrefix(name, "okdev-") || !strings.HasSuffix(name, "-abcd1234") {
+		t.Fatalf("unexpected workload name %q", name)
+	}
 }
 
 func (f *fakeWorkloadExistenceChecker) ResourceExists(_ context.Context, _ string, apiVersion, kind, name string) (bool, error) {

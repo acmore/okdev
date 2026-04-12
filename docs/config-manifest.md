@@ -419,6 +419,8 @@ spec:
 
 This means env vars like `LANG` should usually be added to the container that okdev will attach to.
 
+For manifest-backed workloads, the manifest still needs a valid top-level `metadata.name`, but okdev replaces it at apply time with a generated per-run name such as `okdev-<session>-<run-id>`. The generated labels and annotations preserve the session and workload reference for later commands.
+
 Default pod example:
 
 ```yaml
