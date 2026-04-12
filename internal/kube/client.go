@@ -1,6 +1,7 @@
 package kube
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"errors"
@@ -1028,6 +1029,10 @@ func (c *Client) ExtractTarToPod(ctx context.Context, namespace, podName, remote
 }
 
 func (c *Client) CopyFromPod(ctx context.Context, namespace, podName, remotePath, localPath string) error {
+	return c.CopyFromPodInContainer(ctx, namespace, podName, "", remotePath, localPath)
+}
+
+func (c *Client) CopyFromPodInContainer(ctx context.Context, namespace, podName, container, remotePath, localPath string) error {
 	cs, cfg, err := c.clientset()
 	if err != nil {
 		return err
@@ -1049,7 +1054,7 @@ func (c *Client) CopyFromPod(ctx context.Context, namespace, podName, remotePath
 	}()
 	var errBuf bytes.Buffer
 	cmd := []string{"sh", "-lc", fmt.Sprintf("cat %s", shellQuote(remotePath))}
-	if err := c.execStream(ctx, cs, cfg, namespace, podName, "", cmd, nil, tempFile, &errBuf, false); err != nil {
+	if err := c.execStream(ctx, cs, cfg, namespace, podName, container, cmd, nil, tempFile, &errBuf, false); err != nil {
 		return err
 	}
 	if err := tempFile.Close(); err != nil {
@@ -1075,6 +1080,153 @@ func (c *Client) StreamFromPod(ctx context.Context, namespace, podName, script s
 	}
 	cmd := []string{"sh", "-lc", script}
 	return c.execStream(ctx, cs, cfg, namespace, podName, "", cmd, nil, stdout, io.Discard, false)
+}
+
+// createTarFromDir writes a tar archive of dir's contents to w.
+// Paths inside the archive are relative to dir.
+func createTarFromDir(dir string, w io.Writer) error {
+	tw := tar.NewWriter(w)
+	defer tw.Close()
+	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		hdr, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		hdr.Name = rel
+		if info.IsDir() {
+			hdr.Name += "/"
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(tw, f); err != nil {
+			_ = f.Close()
+			return err
+		}
+		return f.Close()
+	})
+}
+
+// extractTarToDir extracts a tar archive from r into dir.
+func extractTarToDir(r io.Reader, dir string) error {
+	tr := tar.NewReader(r)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dir, hdr.Name)
+		// Guard against zip-slip.
+		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(dir)+string(os.PathSeparator)) && filepath.Clean(target) != filepath.Clean(dir) {
+			return fmt.Errorf("tar entry %q escapes destination", hdr.Name)
+		}
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, os.FileMode(hdr.Mode)|0o755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(f, tr); err != nil {
+				f.Close()
+				return err
+			}
+			f.Close()
+		}
+	}
+}
+
+// CopyDirToPod archives a local directory and extracts it into remoteDir on the pod.
+func (c *Client) CopyDirToPod(ctx context.Context, namespace, pod, container, localDir, remoteDir string) error {
+	pr, pw := io.Pipe()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- createTarFromDir(localDir, pw)
+		pw.Close()
+	}()
+	cs, cfg, err := c.clientset()
+	if err != nil {
+		pr.Close()
+		return err
+	}
+	cmd := []string{"sh", "-lc", fmt.Sprintf("mkdir -p %s && tar xf - -C %s", shellQuote(remoteDir), shellQuote(remoteDir))}
+	if execErr := c.execStream(ctx, cs, cfg, namespace, pod, container, cmd, pr, io.Discard, io.Discard, false); execErr != nil {
+		return execErr
+	}
+	return <-errCh
+}
+
+// CopyDirFromPod streams a remote directory as a tar archive and extracts it locally.
+func (c *Client) CopyDirFromPod(ctx context.Context, namespace, pod, container, remoteDir, localDir string) error {
+	cs, cfg, err := c.clientset()
+	if err != nil {
+		return err
+	}
+	parent := filepath.Dir(remoteDir)
+	base := filepath.Base(remoteDir)
+	cmd := []string{"sh", "-lc", fmt.Sprintf("tar cf - -C %s %s", shellQuote(parent), shellQuote(base))}
+	tarFile, err := os.CreateTemp("", "okdev-copy-*.tar")
+	if err != nil {
+		return err
+	}
+	tarPath := tarFile.Name()
+	defer os.Remove(tarPath)
+
+	var errBuf bytes.Buffer
+	if err := c.execStream(ctx, cs, cfg, namespace, pod, container, cmd, nil, tarFile, &errBuf, false); err != nil {
+		_ = tarFile.Close()
+		return err
+	}
+	if _, err := tarFile.Seek(0, io.SeekStart); err != nil {
+		_ = tarFile.Close()
+		return err
+	}
+	if err := extractTarToDir(tarFile, localDir); err != nil {
+		_ = tarFile.Close()
+		return err
+	}
+	return tarFile.Close()
+}
+
+// IsRemoteDir probes whether remotePath is a directory on the pod.
+func (c *Client) IsRemoteDir(ctx context.Context, namespace, pod, container, remotePath string) (bool, error) {
+	cs, cfg, err := c.clientset()
+	if err != nil {
+		return false, err
+	}
+	cmd := []string{"sh", "-lc", fmt.Sprintf("test -d %s", shellQuote(remotePath))}
+	err = c.execStream(ctx, cs, cfg, namespace, pod, container, cmd, nil, io.Discard, io.Discard, false)
+	if err == nil {
+		return true, nil
+	}
+	// Non-zero exit from `test -d` means not a directory — not an error.
+	return false, nil
 }
 
 func (c *Client) DescribePod(ctx context.Context, namespace, pod string) (string, error) {

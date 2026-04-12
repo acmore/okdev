@@ -281,6 +281,85 @@ echo "exec --detach verified"
 echo "Multi-pod exec (pdsh) tests completed"
 
 # ---------------------------------------------------------------------------
+# File copy (okdev cp) verification
+# ---------------------------------------------------------------------------
+
+echo "Testing cp upload single file to target pod"
+echo "cp-test-content" >"$SYNC_DIR/cp-test.txt"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp "$SYNC_DIR/cp-test.txt" :/tmp/cp-test.txt
+CP_VERIFY=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'cat /tmp/cp-test.txt')
+if [[ "$CP_VERIFY" != "cp-test-content" ]]; then
+  echo "ERROR: cp upload single file failed, got '$CP_VERIFY'" >&2
+  exit 1
+fi
+echo "cp upload single file verified"
+
+echo "Testing cp download single file from explicit container"
+CP_CONTAINER_DL="$WORKDIR/cp-container-download.txt"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp --container pytorch :/tmp/cp-test.txt "$CP_CONTAINER_DL"
+CP_CONTAINER_CONTENT=$(cat "$CP_CONTAINER_DL")
+if [[ "$CP_CONTAINER_CONTENT" != "cp-test-content" ]]; then
+  echo "ERROR: cp --container download single file failed, got '$CP_CONTAINER_CONTENT'" >&2
+  exit 1
+fi
+echo "cp download single file from explicit container verified"
+
+echo "Testing cp upload directory to all pods"
+CP_DIR="$WORKDIR/cp-upload-dir"
+mkdir -p "$CP_DIR/sub"
+echo "file-a" >"$CP_DIR/a.txt"
+echo "file-b" >"$CP_DIR/sub/b.txt"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp --all "$CP_DIR" :/tmp/cp-upload-dir
+CP_ALL_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --cmd 'cat /tmp/cp-upload-dir/a.txt && cat /tmp/cp-upload-dir/sub/b.txt' --no-tty)
+echo "$CP_ALL_OUTPUT"
+CP_ALL_LINES=$(echo "$CP_ALL_OUTPUT" | grep -c 'file-a')
+if [[ "$CP_ALL_LINES" -lt 3 ]]; then
+  echo "ERROR: expected cp --all to reach 3 pods, got $CP_ALL_LINES" >&2
+  exit 1
+fi
+echo "cp upload directory to all pods verified"
+
+echo "Testing cp download from all pods"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --cmd 'echo download-$(hostname) > /tmp/cp-download.txt' --no-tty
+CP_DL_DIR="$WORKDIR/cp-download"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp --all :/tmp/cp-download.txt "$CP_DL_DIR"
+CP_DL_COUNT=$(find "$CP_DL_DIR" -name 'cp-download.txt' | wc -l | tr -d ' ')
+if [[ "$CP_DL_COUNT" -lt 3 ]]; then
+  echo "ERROR: expected 3 per-pod download files, found $CP_DL_COUNT" >&2
+  find "$CP_DL_DIR" -type f >&2
+  exit 1
+fi
+echo "cp download from all pods verified"
+
+echo "Testing cp download directory from all pods"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --cmd 'mkdir -p /tmp/cp-download-dir/nested && echo dir-$(hostname) > /tmp/cp-download-dir/root.txt && echo nested-$(hostname) > /tmp/cp-download-dir/nested/value.txt' --no-tty
+CP_DIR_DL="$WORKDIR/cp-dir-download"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp --all :/tmp/cp-download-dir "$CP_DIR_DL"
+CP_DIR_ROOT_COUNT=$(find "$CP_DIR_DL" -path '*/cp-download-dir/root.txt' | wc -l | tr -d ' ')
+CP_DIR_NESTED_COUNT=$(find "$CP_DIR_DL" -path '*/cp-download-dir/nested/value.txt' | wc -l | tr -d ' ')
+CP_DIR_DUP_COUNT=$(find "$CP_DIR_DL" -path '*/cp-download-dir/cp-download-dir/root.txt' | wc -l | tr -d ' ')
+if [[ "$CP_DIR_ROOT_COUNT" -lt 3 || "$CP_DIR_NESTED_COUNT" -lt 3 || "$CP_DIR_DUP_COUNT" -ne 0 ]]; then
+  echo "ERROR: expected per-pod directory downloads without duplicated basename" >&2
+  echo "root files: $CP_DIR_ROOT_COUNT, nested files: $CP_DIR_NESTED_COUNT, duplicated basename files: $CP_DIR_DUP_COUNT" >&2
+  find "$CP_DIR_DL" -type f >&2
+  exit 1
+fi
+echo "cp download directory from all pods verified"
+
+echo "Testing cp download --role worker"
+CP_ROLE_DIR="$WORKDIR/cp-role-download"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp --role worker :/tmp/cp-download.txt "$CP_ROLE_DIR"
+CP_ROLE_COUNT=$(find "$CP_ROLE_DIR" -name 'cp-download.txt' | wc -l | tr -d ' ')
+if [[ "$CP_ROLE_COUNT" -ne 2 ]]; then
+  echo "ERROR: expected 2 per-pod download files for --role worker, found $CP_ROLE_COUNT" >&2
+  find "$CP_ROLE_DIR" -type f >&2
+  exit 1
+fi
+echo "cp download --role worker verified"
+
+echo "File copy (okdev cp) tests completed"
+
+# ---------------------------------------------------------------------------
 # Lifecycle hook verification
 # ---------------------------------------------------------------------------
 MASTER_POD=$(kubectl -n "$NAMESPACE" get pods \

@@ -54,6 +54,7 @@ func newRootCmdWithOptions() (*cobra.Command, *Options) {
 	cmd.AddCommand(newTargetCmd(opts))
 	cmd.AddCommand(newAgentCmd(opts))
 	cmd.AddCommand(newExecCmd(opts))
+	cmd.AddCommand(newCpCmd(opts))
 	cmd.AddCommand(newLogsCmd(opts))
 	cmd.AddCommand(newSSHCmd(opts))
 	cmd.AddCommand(newSSHProxyCmd(opts))

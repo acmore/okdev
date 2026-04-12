@@ -90,6 +90,45 @@ if [[ "$SYNC_OK" != "true" ]]; then
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# File copy (okdev cp) verification — job workload
+# ---------------------------------------------------------------------------
+
+echo "Testing cp upload single file"
+echo "cp-job-content" >"$SYNC_DIR/cp-job.txt"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp "$SYNC_DIR/cp-job.txt" :/tmp/cp-job.txt
+CP_VERIFY=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'cat /tmp/cp-job.txt')
+if [[ "$CP_VERIFY" != "cp-job-content" ]]; then
+  echo "ERROR: cp upload single file failed, got '$CP_VERIFY'" >&2
+  exit 1
+fi
+echo "cp upload single file verified"
+
+echo "Testing cp upload directory"
+CP_DIR="$WORKDIR/cp-job-dir"
+mkdir -p "$CP_DIR/sub"
+echo "ja" >"$CP_DIR/a.txt"
+echo "jb" >"$CP_DIR/sub/b.txt"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp "$CP_DIR" :/tmp/cp-job-dir
+CP_A=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'cat /tmp/cp-job-dir/a.txt')
+CP_B=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'cat /tmp/cp-job-dir/sub/b.txt')
+if [[ "$CP_A" != "ja" || "$CP_B" != "jb" ]]; then
+  echo "ERROR: cp upload directory failed, got a='$CP_A' b='$CP_B'" >&2
+  exit 1
+fi
+echo "cp upload directory verified"
+
+echo "Testing cp download single file"
+CP_DL="$WORKDIR/cp-job-downloaded.txt"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp :/tmp/cp-job.txt "$CP_DL"
+if [[ "$(cat "$CP_DL")" != "cp-job-content" ]]; then
+  echo "ERROR: cp download single file failed" >&2
+  exit 1
+fi
+echo "cp download single file verified"
+
+echo "File copy (okdev cp) tests completed"
+
 ORIGINAL_JOB_UID=$(kubectl -n "$NAMESPACE" get job "$SESSION_NAME" -o jsonpath='{.metadata.uid}')
 ORIGINAL_POD_UID=$(kubectl -n "$NAMESPACE" get pods -l "job-name=$SESSION_NAME" -o jsonpath='{.items[0].metadata.uid}')
 
