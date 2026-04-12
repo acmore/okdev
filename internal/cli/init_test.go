@@ -337,6 +337,30 @@ func TestInitUsesRootConfigForPod(t *testing.T) {
 	}
 }
 
+func TestInitPersistsKubeContext(t *testing.T) {
+	tmp := t.TempDir()
+	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev.yaml")}
+	cmd := newInitCmd(opts)
+	cmd.SetArgs([]string{"--yes", "--context", "my-cluster", "--namespace", "staging"})
+	cmd.SetIn(strings.NewReader(""))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init execute: %v", err)
+	}
+
+	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev.yaml"))
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	cfg := string(cfgRaw)
+	if !strings.Contains(cfg, "kubeContext: my-cluster") {
+		t.Fatalf("expected kubeContext in generated config, got:\n%s", cfg)
+	}
+	if !strings.Contains(cfg, "namespace: staging") {
+		t.Fatalf("expected namespace staging in generated config, got:\n%s", cfg)
+	}
+}
+
 func TestInitScaffoldsJobManifest(t *testing.T) {
 	tmp := t.TempDir()
 	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev.yaml")}

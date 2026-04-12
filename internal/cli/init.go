@@ -22,6 +22,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 	var yes bool
 	var nameOverride string
 	var nsOverride string
+	var contextOverride string
 	var workloadType string
 	var manifestPath string
 	var injectPaths []string
@@ -50,12 +51,16 @@ func newInitCmd(opts *Options) *cobra.Command {
   okdev init --template basic --stignore-preset go
 
   # Non-interactive with explicit values
-  okdev init --yes --name my-project --namespace dev`,
+  okdev init --yes --name my-project --namespace dev
+
+  # Use a specific kube context
+  okdev init --context my-cluster --namespace staging`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			vars := config.NewTemplateVars()
 			overrides := InitOverrides{
 				Name:          nameOverride,
 				Namespace:     nsOverride,
+				KubeContext:   contextOverride,
 				WorkloadType:  workloadType,
 				ManifestPath:  manifestPath,
 				InjectPaths:   injectPaths,
@@ -168,6 +173,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&yes, "yes", false, "Non-interactive mode, accept all defaults")
 	cmd.Flags().StringVar(&nameOverride, "name", "", "Environment name")
 	cmd.Flags().StringVar(&nsOverride, "namespace", "", "Namespace")
+	cmd.Flags().StringVar(&contextOverride, "context", "", "Kubeconfig context (defaults to active context)")
 	cmd.Flags().StringVar(&workloadType, "workload", "pod", "Workload type: pod, job, pytorchjob, generic")
 	cmd.Flags().StringVar(&manifestPath, "manifest-path", "", "Path to workload manifest")
 	cmd.Flags().StringArrayVar(&injectPaths, "inject-path", nil, "Workload inject path (repeatable)")

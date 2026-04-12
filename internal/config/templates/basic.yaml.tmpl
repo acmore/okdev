@@ -4,6 +4,9 @@ metadata:
   name: {{ .Name }}
 spec:
   namespace: {{ .Namespace }}
+{{- if .KubeContext }}
+  kubeContext: {{ .KubeContext }}
+{{- end }}
   session:
     defaultNameTemplate: '{{`{{ .Repo }}-{{ .User }}`}}'
     ttlHours: {{ .TTLHours }}
