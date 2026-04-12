@@ -3,6 +3,7 @@ package cli
 import (
 	"strings"
 
+	"github.com/acmore/okdev/internal/kube"
 	"github.com/spf13/cobra"
 )
 
@@ -62,4 +63,77 @@ func newExecCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&cmdStr, "cmd", "", "Command string to execute")
 	cmd.Flags().BoolVar(&noTTY, "no-tty", false, "Disable TTY allocation")
 	return cmd
+}
+
+func filterRunningPods(pods []kube.PodSummary) []kube.PodSummary {
+	out := make([]kube.PodSummary, 0, len(pods))
+	for _, p := range pods {
+		if p.Phase == "Running" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func filterPodsByRole(pods []kube.PodSummary, role string) []kube.PodSummary {
+	out := make([]kube.PodSummary, 0)
+	for _, p := range pods {
+		if strings.EqualFold(strings.TrimSpace(p.Labels["okdev.io/workload-role"]), role) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func filterPodsByLabels(pods []kube.PodSummary, labels []string) []kube.PodSummary {
+	selectors := make([][2]string, 0, len(labels))
+	for _, l := range labels {
+		parts := strings.SplitN(l, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		selectors = append(selectors, [2]string{parts[0], parts[1]})
+	}
+	out := make([]kube.PodSummary, 0)
+	for _, p := range pods {
+		match := true
+		for _, sel := range selectors {
+			if p.Labels[sel[0]] != sel[1] {
+				match = false
+				break
+			}
+		}
+		if match {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func filterPodsByName(pods []kube.PodSummary, names []string) []kube.PodSummary {
+	nameSet := make(map[string]bool, len(names))
+	for _, n := range names {
+		nameSet[n] = true
+	}
+	out := make([]kube.PodSummary, 0)
+	for _, p := range pods {
+		if nameSet[p.Name] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func excludePods(pods []kube.PodSummary, exclude []string) []kube.PodSummary {
+	excludeSet := make(map[string]bool, len(exclude))
+	for _, n := range exclude {
+		excludeSet[n] = true
+	}
+	out := make([]kube.PodSummary, 0, len(pods))
+	for _, p := range pods {
+		if !excludeSet[p.Name] {
+			out = append(out, p)
+		}
+	}
+	return out
 }
