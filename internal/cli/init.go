@@ -342,10 +342,22 @@ func initProjectDir(configPath string) (string, error) {
 }
 
 func defaultInitTargetPath(templateRef string, vars *config.TemplateVars, projectDir string) string {
-	if scaffoldsInitWorkload(templateRef, vars, projectDir) {
+	if initUsesWorkloadManifest(vars) {
 		return config.FolderFile
 	}
 	return config.DefaultFile
+}
+
+func initUsesWorkloadManifest(vars *config.TemplateVars) bool {
+	if vars == nil {
+		return false
+	}
+	switch strings.TrimSpace(vars.WorkloadType) {
+	case "job", "pytorchjob", "generic":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeInitManifestPathForTarget(configPath string, vars *config.TemplateVars, explicit bool) {

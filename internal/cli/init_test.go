@@ -780,14 +780,17 @@ spec:
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init execute: %v", err)
 	}
-	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev.yaml"))
+	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev", "okdev.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(cfgRaw), "manifestPath: pytorchjob.yaml") {
 		t.Fatalf("expected rendered config to reference manifest, got:\n%s", string(cfgRaw))
 	}
-	manifestRaw, err := os.ReadFile(filepath.Join(tmp, "pytorchjob.yaml"))
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("expected root config to be absent, err=%v", err)
+	}
+	manifestRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev", "pytorchjob.yaml"))
 	if err != nil {
 		t.Fatalf("read rendered pytorchjob manifest: %v", err)
 	}
