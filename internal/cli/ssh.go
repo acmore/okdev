@@ -107,7 +107,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					stopKeySetup()
 				}
 				stopSSHDReady := startTransientStatus(errOut, "Waiting for SSH service")
-				if err := waitForSSHReady(cc.opts, cc.namespace, target.PodName, target.Container, sshServiceWaitTimeout); err != nil {
+				if err := waitForSSHReady(cmd.Context(), cc.opts, cc.namespace, target.PodName, target.Container, sshServiceWaitTimeout); err != nil {
 					stopSSHDReady()
 					fmt.Fprintf(errOut, "warning: ssh service not ready yet (%v); continuing with SSH tunnel setup anyway\n", err)
 				} else {
@@ -115,7 +115,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 				}
 
 				stopPortForward := startTransientStatus(errOut, "Starting SSH tunnel")
-				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(cc.kube, cc.namespace, target.PodName, localPort, remotePort)
+				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(cmd.Context(), cc.kube, cc.namespace, target.PodName, localPort, remotePort)
 				if err != nil {
 					stopPortForward()
 					return err
@@ -185,7 +185,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					if p, perr := reserveEphemeralPort(); perr == nil {
 						reconnectLocalPort = p
 					}
-					cancel, lp, err := startSSHPortForwardWithFallback(cc.kube, cc.namespace, target.PodName, reconnectLocalPort, remotePort)
+					cancel, lp, err := startSSHPortForwardWithFallback(cmd.Context(), cc.kube, cc.namespace, target.PodName, reconnectLocalPort, remotePort)
 					if err != nil {
 						return "", 0, err
 					}
@@ -445,23 +445,30 @@ func ensureSSHKeyOnPod(opts *Options, namespace, pod, container, keyPath string)
 	return nil
 }
 
-func waitForSSHReady(opts *Options, namespace, pod, container string, timeout time.Duration) error {
-	k := newKubeClient(opts)
-	if err := ensureDevSSHDRunning(context.Background(), k, namespace, pod, container); err != nil {
+func waitForSSHReady(ctx context.Context, opts *Options, namespace, pod, container string, timeout time.Duration) error {
+	return waitForSSHReadyWithClient(ctx, newKubeClient(opts), namespace, pod, container, timeout)
+}
+
+func waitForSSHReadyWithClient(ctx context.Context, k devSSHStarter, namespace, pod, container string, timeout time.Duration) error {
+	if err := ensureDevSSHDRunning(ctx, k, namespace, pod, container); err != nil {
 		return fmt.Errorf("start dev-container sshd: %w", err)
 	}
 	probeCmd := "ps | grep '[o]kdev-sshd' >/dev/null 2>&1"
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		ctx, cancel := context.WithTimeout(context.Background(), execProbeTimeout)
-		_, err := k.ExecShInContainer(ctx, namespace, pod, container, probeCmd)
+		probeCtx, cancel := context.WithTimeout(ctx, execProbeTimeout)
+		_, err := k.ExecShInContainer(probeCtx, namespace, pod, container, probeCmd)
 		cancel()
 		if err == nil {
 			return nil
 		}
 		lastErr = err
-		time.Sleep(sshdReadinessPollInterval)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(sshdReadinessPollInterval):
+		}
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("timeout waiting for sshd")
@@ -659,7 +666,7 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 				stopMaintenance := startSessionMaintenanceWithClient(cc.kube, cc.namespace, cc.sessionName, cmd.ErrOrStderr(), true)
 				defer stopMaintenance()
 
-				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(cc.kube, cc.namespace, target.PodName, 2222, remotePort)
+				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(cmd.Context(), cc.kube, cc.namespace, target.PodName, 2222, remotePort)
 				if err != nil {
 					return err
 				}
@@ -969,7 +976,7 @@ func stopManagedSSHForward(hostAlias string) error {
 	return nil
 }
 
-func startSSHPortForwardWithFallback(k interface {
+func startSSHPortForwardWithFallback(ctx context.Context, k interface {
 	PortForward(context.Context, string, string, []string, io.Writer, io.Writer) error
 }, namespace, pod string, preferredLocalPort, remotePort int) (context.CancelFunc, int, error) {
 	tryPorts := []int{preferredLocalPort}
@@ -980,7 +987,7 @@ func startSSHPortForwardWithFallback(k interface {
 	}
 	var lastErr error
 	for _, lp := range tryPorts {
-		cancel, err := startManagedPortForwardWithClient(k, namespace, pod, []string{fmt.Sprintf("%d:%d", lp, remotePort)})
+		cancel, err := startManagedPortForwardWithClient(ctx, k, namespace, pod, []string{fmt.Sprintf("%d:%d", lp, remotePort)})
 		if err == nil {
 			return cancel, lp, nil
 		}

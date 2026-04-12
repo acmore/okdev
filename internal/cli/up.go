@@ -761,7 +761,7 @@ func upSetupSSH(state *upState, target workload.TargetRef, keyPath string) (stri
 	}
 	state.ui.stepRun("ssh", "waiting for sshd")
 	target, err = retrySetupTargetStep(state, target, func(current workload.TargetRef) error {
-		return waitForSSHReady(state.opts, state.command.namespace, current.PodName, current.Container, state.flags.waitTimeout)
+		return waitForSSHReady(state.ctx, state.opts, state.command.namespace, current.PodName, current.Container, state.flags.waitTimeout)
 	})
 	if err != nil {
 		return "", fmt.Errorf("wait for SSH service: %w", err)

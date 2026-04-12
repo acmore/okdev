@@ -58,7 +58,7 @@ func newPortsCmd(opts *Options) *cobra.Command {
 			if err := ensureSSHKeyOnPod(cc.opts, cc.namespace, target.PodName, target.Container, keyPath); err != nil {
 				return fmt.Errorf("setup SSH key in pod: %w", err)
 			}
-			if err := waitForSSHReady(cc.opts, cc.namespace, target.PodName, target.Container, sshServiceWaitTimeout); err != nil {
+			if err := waitForSSHReady(cmd.Context(), cc.opts, cc.namespace, target.PodName, target.Container, sshServiceWaitTimeout); err != nil {
 				return fmt.Errorf("wait for ssh service ready: %w", err)
 			}
 			alias := sshHostAlias(cc.sessionName)
