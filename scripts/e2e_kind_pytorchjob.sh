@@ -42,6 +42,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
+refresh_pytorchjob_pods() {
+  MASTER_POD=$(kubectl -n "$NAMESPACE" get pods \
+    -l "training.kubeflow.org/job-name=$SESSION_NAME,training.kubeflow.org/replica-type=master" \
+    -o jsonpath='{.items[0].metadata.name}')
+  WORKER_PODS=$(kubectl -n "$NAMESPACE" get pods \
+    -l "training.kubeflow.org/job-name=$SESSION_NAME,training.kubeflow.org/replica-type=worker" \
+    -o jsonpath='{.items[*].metadata.name}')
+}
+
 echo "Scaffolding PyTorchJob config via okdev init"
 cd "$WORKDIR"
 "$OKDEV_BIN" init \
@@ -362,14 +371,9 @@ echo "File copy (okdev cp) tests completed"
 # ---------------------------------------------------------------------------
 # Lifecycle hook verification
 # ---------------------------------------------------------------------------
-MASTER_POD=$(kubectl -n "$NAMESPACE" get pods \
-  -l "training.kubeflow.org/job-name=$SESSION_NAME,training.kubeflow.org/replica-type=master" \
-  -o jsonpath='{.items[0].metadata.name}')
+refresh_pytorchjob_pods
 echo "Master pod: $MASTER_POD"
 
-WORKER_PODS=$(kubectl -n "$NAMESPACE" get pods \
-  -l "training.kubeflow.org/job-name=$SESSION_NAME,training.kubeflow.org/replica-type=worker" \
-  -o jsonpath='{.items[*].metadata.name}')
 echo "Worker pods: $WORKER_PODS"
 
 WORKER_COUNT=$(echo "$WORKER_PODS" | wc -w | tr -d ' ')
@@ -554,6 +558,7 @@ echo "Recreating PyTorchJob via --reconcile"
 echo "Verifying PyTorchJob spec and live pods were recreated with the new image"
 RECONCILE_OK=false
 for i in $(seq 1 30); do
+  refresh_pytorchjob_pods
   MASTER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$SESSION_NAME" \
     -o jsonpath='{.spec.pytorchReplicaSpecs.Master.template.spec.containers[0].image}')
   WORKER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$SESSION_NAME" \

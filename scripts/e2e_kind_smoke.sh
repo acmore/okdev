@@ -356,7 +356,8 @@ echo "cp download directory verified"
 echo "File copy (okdev cp) tests completed"
 
 echo "Capturing current pod identity before spec drift"
-ORIGINAL_POD_UID=$(kubectl -n "$NAMESPACE" get pod "okdev-${SESSION_NAME}" -o jsonpath='{.metadata.uid}')
+ATTACHABLE_POD_NAME=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
+ORIGINAL_POD_UID=$(kubectl -n "$NAMESPACE" get pod "$ATTACHABLE_POD_NAME" -o jsonpath='{.metadata.uid}')
 echo "Original pod UID: $ORIGINAL_POD_UID"
 
 echo "Changing pod workload spec to trigger drift detection"
@@ -382,12 +383,13 @@ echo "Recreating pod workload via --reconcile"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --reconcile --wait-timeout 5m
 
 echo "Verifying pod was recreated with updated image"
-RECONCILED_POD_UID=$(kubectl -n "$NAMESPACE" get pod "okdev-${SESSION_NAME}" -o jsonpath='{.metadata.uid}')
+ATTACHABLE_POD_NAME=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
+RECONCILED_POD_UID=$(kubectl -n "$NAMESPACE" get pod "$ATTACHABLE_POD_NAME" -o jsonpath='{.metadata.uid}')
 if [[ "$RECONCILED_POD_UID" == "$ORIGINAL_POD_UID" ]]; then
   echo "ERROR: expected pod UID to change after --reconcile recreate" >&2
   exit 1
 fi
-RECONCILED_IMAGE=$(kubectl -n "$NAMESPACE" get pod "okdev-${SESSION_NAME}" -o jsonpath='{.spec.containers[?(@.name=="dev")].image}')
+RECONCILED_IMAGE=$(kubectl -n "$NAMESPACE" get pod "$ATTACHABLE_POD_NAME" -o jsonpath='{.spec.containers[?(@.name=="dev")].image}')
 if [[ "$RECONCILED_IMAGE" != "ubuntu:24.04" ]]; then
   echo "ERROR: expected reconciled pod image ubuntu:24.04, got '$RECONCILED_IMAGE'" >&2
   exit 1
@@ -400,12 +402,12 @@ assert_no_local_sync_processes "$SESSION_NAME" "$SYNC_HOME"
 
 echo "Verifying pod is deleted"
 for i in $(seq 1 30); do
-  if ! kubectl -n "$NAMESPACE" get pod "okdev-${SESSION_NAME}" >/dev/null 2>&1; then
+  if [[ -z "$(session_attachable_pod_names "$NAMESPACE" "$SESSION_NAME")" ]]; then
     echo "Pod deleted on attempt $i"
     break
   fi
   if [[ "$i" -eq 30 ]]; then
-    echo "ERROR: pod okdev-${SESSION_NAME} still exists after down" >&2
+    echo "ERROR: session $SESSION_NAME still has attachable pod(s) after down" >&2
     exit 1
   fi
   sleep 2

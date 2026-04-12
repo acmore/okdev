@@ -120,3 +120,20 @@ assert_no_local_sync_processes() {
 sync_pid_from_status() {
   grep -oE 'background: running \(pid [0-9]+\)' | grep -oE '[0-9]+' | head -1
 }
+
+session_attachable_pod_selector() {
+  local session_name="$1"
+  printf 'okdev.io/session=%s,okdev.io/attachable=true' "$session_name"
+}
+
+session_attachable_pod_name() {
+  local namespace="$1"
+  local session_name="$2"
+  kubectl -n "$namespace" get pods -l "$(session_attachable_pod_selector "$session_name")" -o jsonpath='{.items[0].metadata.name}'
+}
+
+session_attachable_pod_names() {
+  local namespace="$1"
+  local session_name="$2"
+  kubectl -n "$namespace" get pods -l "$(session_attachable_pod_selector "$session_name")" -o jsonpath='{.items[*].metadata.name}'
+}
