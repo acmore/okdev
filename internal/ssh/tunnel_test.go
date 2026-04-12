@@ -347,6 +347,34 @@ func TestTunnelManagerWaitConnectedReturnsImmediatelyWhenConnected(t *testing.T)
 	}
 }
 
+func TestTunnelManagerWaitConnectedRemovesCanceledWaiter(t *testing.T) {
+	tm := &TunnelManager{}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan bool, 1)
+	go func() {
+		done <- tm.WaitConnected(ctx)
+	}()
+
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); {
+		tm.mu.Lock()
+		waiters := len(tm.connectedWaiters)
+		tm.mu.Unlock()
+		if waiters == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if got := <-done; got {
+		t.Fatal("expected canceled wait to return false")
+	}
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	if len(tm.connectedWaiters) != 0 {
+		t.Fatalf("expected canceled waiter to be removed, got %d", len(tm.connectedWaiters))
+	}
+}
+
 func TestCloseWriteUsesOptionalInterface(t *testing.T) {
 	left, right := net.Pipe()
 	defer left.Close()
