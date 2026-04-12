@@ -76,6 +76,25 @@ func RunWithRetry(ctx context.Context, client ExecClient, namespace, pod string,
 	return nil
 }
 
+// ExecContainerClient extends ExecClient with container-targeted exec.
+type ExecContainerClient interface {
+	ExecClient
+	ExecInteractiveInContainer(ctx context.Context, namespace, pod, container string, tty bool, command []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) error
+}
+
+// RunOnContainer executes a command in a specific container within a pod.
+// If container is empty, it falls back to the default ExecInteractive behavior.
+func RunOnContainer(ctx context.Context, client ExecClient, namespace, pod, container string, command []string, tty bool, stdin io.Reader, stdout io.Writer, stderr io.Writer) error {
+	if container == "" {
+		return Run(ctx, client, namespace, pod, command, tty, stdin, stdout, stderr)
+	}
+	ec, ok := client.(ExecContainerClient)
+	if !ok {
+		return Run(ctx, client, namespace, pod, command, tty, stdin, stdout, stderr)
+	}
+	return ec.ExecInteractiveInContainer(ctx, namespace, pod, container, tty, command, stdin, stdout, stderr)
+}
+
 func isRetryableError(err error) bool {
 	if err == nil {
 		return false
