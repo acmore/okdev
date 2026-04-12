@@ -79,6 +79,7 @@ var templateHTTPClient templateHTTPDoer = &http.Client{Timeout: 30 * time.Second
 type TemplateVars struct {
 	Name             string
 	Namespace        string
+	KubeContext      string
 	DevImage         string
 	DevCPURequest    string
 	DevMemoryRequest string

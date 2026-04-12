@@ -9,12 +9,14 @@ import (
 	"strings"
 
 	"github.com/acmore/okdev/internal/config"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 // InitOverrides holds flag-provided values that skip prompting.
 type InitOverrides struct {
 	Name          string
 	Namespace     string
+	KubeContext   string
 	WorkloadType  string
 	ManifestPath  string
 	InjectPaths   []string
@@ -33,6 +35,9 @@ func applyOverrides(vars *config.TemplateVars, o InitOverrides) {
 	}
 	if o.Namespace != "" {
 		vars.Namespace = o.Namespace
+	}
+	if o.KubeContext != "" {
+		vars.KubeContext = o.KubeContext
 	}
 	if o.WorkloadType != "" {
 		vars.WorkloadType = o.WorkloadType
@@ -75,6 +80,7 @@ func detectDefaultName() string {
 
 func (o InitOverrides) hasName() bool          { return o.Name != "" }
 func (o InitOverrides) hasNamespace() bool     { return o.Namespace != "" }
+func (o InitOverrides) hasKubeContext() bool   { return o.KubeContext != "" }
 func (o InitOverrides) hasWorkloadType() bool  { return o.WorkloadType != "" }
 func (o InitOverrides) hasManifestPath() bool  { return o.ManifestPath != "" }
 func (o InitOverrides) hasInjectPaths() bool   { return len(o.InjectPaths) > 0 }
@@ -90,6 +96,7 @@ func promptInteractive(vars *config.TemplateVars, overrides InitOverrides, in io
 	if vars.Name == "" {
 		vars.Name = detectDefaultName()
 	}
+	applyKubeDefaults(vars, overrides)
 	if nonInteractive {
 		return nil
 	}
@@ -116,6 +123,16 @@ func promptInteractive(vars *config.TemplateVars, overrides InitOverrides, in io
 		}
 		if input != "" {
 			vars.Namespace = input
+		}
+	}
+
+	if !overrides.hasKubeContext() {
+		input, err := promptString(reader, out, "Kube context (kubeconfig context to use)", vars.KubeContext)
+		if err != nil {
+			return err
+		}
+		if input != "" {
+			vars.KubeContext = input
 		}
 	}
 
@@ -261,6 +278,36 @@ func promptWorkloadType(reader *bufio.Reader, out io.Writer, defaultVal string) 
 			}
 		}
 	}
+}
+
+// applyKubeDefaults detects the active kubeconfig context and namespace and
+// uses them as defaults when no flag override was provided.
+func applyKubeDefaults(vars *config.TemplateVars, overrides InitOverrides) {
+	kubeCtx, ns := detectKubeDefaults()
+	if !overrides.hasKubeContext() && kubeCtx != "" {
+		vars.KubeContext = kubeCtx
+	}
+	if !overrides.hasNamespace() && ns != "" {
+		vars.Namespace = ns
+	}
+}
+
+// detectKubeDefaults reads the active kubeconfig and returns the current
+// context name and its configured namespace. Returns empty strings on failure.
+func detectKubeDefaults() (kubeContext string, namespace string) {
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	overrides := &clientcmd.ConfigOverrides{}
+	cfg := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, overrides)
+
+	rawCfg, err := cfg.RawConfig()
+	if err != nil {
+		return "", ""
+	}
+	kubeContext = rawCfg.CurrentContext
+	if ctx, ok := rawCfg.Contexts[kubeContext]; ok && ctx.Namespace != "" {
+		namespace = ctx.Namespace
+	}
+	return kubeContext, namespace
 }
 
 func splitCommaList(input string) []string {

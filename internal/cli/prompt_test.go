@@ -72,7 +72,7 @@ func TestPromptInteractiveSkipsOverriddenFields(t *testing.T) {
 	}
 	applyOverrides(vars, overrides)
 
-	input := strings.NewReader("./src\n/app\nalice\n")
+	input := strings.NewReader("\n./src\n/app\nalice\n")
 	var out bytes.Buffer
 	if err := promptInteractive(vars, overrides, input, &out, false, true); err != nil {
 		t.Fatalf("promptInteractive returned error: %v", err)
@@ -100,7 +100,7 @@ func TestPromptInteractiveSkipsOverriddenFields(t *testing.T) {
 
 func TestPromptInteractiveUsesExplanatoryLabels(t *testing.T) {
 	vars := config.NewTemplateVars()
-	input := strings.NewReader("\n\n\n\n\n\n")
+	input := strings.NewReader("\n\n\n\n\n\n\n")
 	var out bytes.Buffer
 
 	if err := promptInteractive(vars, InitOverrides{}, input, &out, false, true); err != nil {
@@ -111,6 +111,7 @@ func TestPromptInteractiveUsesExplanatoryLabels(t *testing.T) {
 	for _, want := range []string{
 		"Environment name (used for session labels and default naming)",
 		"Namespace (where the dev workload will run)",
+		"Kube context (kubeconfig context to use)",
 		"Workload type (pod=simple dev pod, job=batch workload, pytorchjob=distributed training, generic=custom manifest)",
 		"Sync local path (project directory on this machine)",
 		"Sync remote path (workspace path in the container)",
@@ -119,6 +120,62 @@ func TestPromptInteractiveUsesExplanatoryLabels(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected prompt output to contain %q, got %q", want, got)
 		}
+	}
+}
+
+func TestApplyKubeDefaultsSetsContextAndNamespace(t *testing.T) {
+	vars := config.NewTemplateVars()
+	// Simulate what detectKubeDefaults would return by setting vars directly
+	// and verifying applyKubeDefaults does not overwrite flag-provided values.
+	vars.KubeContext = ""
+	vars.Namespace = "default"
+
+	// When overrides are provided, applyKubeDefaults should not touch them.
+	overrides := InitOverrides{KubeContext: "flag-ctx", Namespace: "flag-ns"}
+	applyOverrides(vars, overrides)
+	applyKubeDefaults(vars, overrides)
+
+	if vars.KubeContext != "flag-ctx" {
+		t.Fatalf("expected flag context to win, got %q", vars.KubeContext)
+	}
+	if vars.Namespace != "flag-ns" {
+		t.Fatalf("expected flag namespace to win, got %q", vars.Namespace)
+	}
+}
+
+func TestApplyKubeDefaultsNoOverrides(t *testing.T) {
+	vars := config.NewTemplateVars()
+	overrides := InitOverrides{}
+	applyKubeDefaults(vars, overrides)
+
+	// We can't assert specific values because it depends on the local
+	// kubeconfig, but we can verify it doesn't panic and vars are still valid.
+	if vars.Namespace == "" {
+		t.Fatal("expected namespace to have a value after applyKubeDefaults")
+	}
+}
+
+func TestPromptInteractiveSkipsKubeContextWhenOverridden(t *testing.T) {
+	vars := config.NewTemplateVars()
+	overrides := InitOverrides{
+		Name:         "flag-name",
+		Namespace:    "flag-ns",
+		KubeContext:  "flag-ctx",
+		WorkloadType: "pod",
+	}
+	applyOverrides(vars, overrides)
+
+	input := strings.NewReader("./src\n/app\nalice\n")
+	var out bytes.Buffer
+	if err := promptInteractive(vars, overrides, input, &out, false, true); err != nil {
+		t.Fatalf("promptInteractive returned error: %v", err)
+	}
+
+	if vars.KubeContext != "flag-ctx" {
+		t.Fatalf("expected overridden kube context to remain unchanged, got %q", vars.KubeContext)
+	}
+	if strings.Contains(out.String(), "Kube context") {
+		t.Fatalf("expected kube context prompt to be skipped, got prompts:\n%s", out.String())
 	}
 }
 
