@@ -16,7 +16,7 @@ type blockingPFClient struct {
 func (b *blockingPFClient) PortForward(ctx context.Context, namespace, pod string, forwards []string, stdout io.Writer, stderr io.Writer) error {
 	<-ctx.Done()
 	close(b.done)
-	return nil
+	return ctx.Err()
 }
 
 func TestStartManagedPortForwardCancelWaitsForWorker(t *testing.T) {
@@ -28,7 +28,7 @@ func TestStartManagedPortForwardCancelWaitsForWorker(t *testing.T) {
 	port := ln.Addr().(*net.TCPAddr).Port
 
 	client := &blockingPFClient{done: make(chan struct{})}
-	cancel, err := startManagedPortForwardWithClient(client, "ns", "pod", []string{strconv.Itoa(port) + ":9999"})
+	cancel, err := startManagedPortForwardWithClient(context.Background(), client, "ns", "pod", []string{strconv.Itoa(port) + ":9999"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,6 +38,50 @@ func TestStartManagedPortForwardCancelWaitsForWorker(t *testing.T) {
 	case <-client.done:
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("expected port-forward worker to stop after cancel")
+	}
+}
+
+func TestStartManagedPortForwardUsesParentContext(t *testing.T) {
+	client := &blockingPFClient{done: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cancelPF, err := startManagedPortForwardWithClient(ctx, client, "ns", "pod", []string{"12345:9999"})
+	if err == nil {
+		if cancelPF != nil {
+			cancelPF()
+		}
+		t.Fatal("expected canceled context error")
+	}
+	if err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	select {
+	case <-client.done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected parent context cancellation to stop worker")
+	}
+}
+
+func TestStartManagedPortForwardNoProbeUsesParentContext(t *testing.T) {
+	client := &blockingPFClient{done: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cancelPF, err := startManagedPortForwardNoProbeWithClient(ctx, client, "ns", "pod", []string{"12345:9999"})
+	if err == nil {
+		if cancelPF != nil {
+			cancelPF()
+		}
+		t.Fatal("expected canceled context error")
+	}
+	if err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	select {
+	case <-client.done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected parent context cancellation to stop worker")
 	}
 }
 

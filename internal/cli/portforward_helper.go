@@ -11,24 +11,24 @@ import (
 	"time"
 )
 
-func startManagedPortForward(opts *Options, namespace, pod string, forwards []string) (context.CancelFunc, error) {
-	return startManagedPortForwardWithClient(newKubeClient(opts), namespace, pod, forwards)
+func startManagedPortForward(ctx context.Context, opts *Options, namespace, pod string, forwards []string) (context.CancelFunc, error) {
+	return startManagedPortForwardWithClient(ctx, newKubeClient(opts), namespace, pod, forwards)
 }
 
-func startManagedPortForwardNoProbe(opts *Options, namespace, pod string, forwards []string) (context.CancelFunc, error) {
-	return startManagedPortForwardNoProbeWithClient(newKubeClient(opts), namespace, pod, forwards)
+func startManagedPortForwardNoProbe(ctx context.Context, opts *Options, namespace, pod string, forwards []string) (context.CancelFunc, error) {
+	return startManagedPortForwardNoProbeWithClient(ctx, newKubeClient(opts), namespace, pod, forwards)
 }
 
-func startManagedPortForwardWithClient(k interface {
+func startManagedPortForwardWithClient(ctx context.Context, k interface {
 	PortForward(context.Context, string, string, []string, io.Writer, io.Writer) error
 }, namespace, pod string, forwards []string) (context.CancelFunc, error) {
-	ctx, cancel := context.WithCancel(context.Background())
+	pfCtx, cancel := context.WithCancel(ctx)
 	errCh := make(chan error, 1)
 	doneCh := make(chan struct{})
 	go func() {
 		defer close(doneCh)
 		slog.Debug("starting port-forward worker", "pod", pod, "forwards", forwards)
-		err := k.PortForward(ctx, namespace, pod, forwards, io.Discard, io.Discard)
+		err := k.PortForward(pfCtx, namespace, pod, forwards, io.Discard, io.Discard)
 		if err != nil {
 			slog.Debug("port-forward worker exited with error", "pod", pod, "error", err)
 		} else {
@@ -64,20 +64,23 @@ func startManagedPortForwardWithClient(k interface {
 		case <-timeout.C:
 			cancelAndWait()
 			return nil, fmt.Errorf("timeout waiting for port-forward readiness")
+		case <-pfCtx.Done():
+			cancelAndWait()
+			return nil, pfCtx.Err()
 		}
 	}
 }
 
-func startManagedPortForwardNoProbeWithClient(k interface {
+func startManagedPortForwardNoProbeWithClient(ctx context.Context, k interface {
 	PortForward(context.Context, string, string, []string, io.Writer, io.Writer) error
 }, namespace, pod string, forwards []string) (context.CancelFunc, error) {
-	ctx, cancel := context.WithCancel(context.Background())
+	pfCtx, cancel := context.WithCancel(ctx)
 	errCh := make(chan error, 1)
 	doneCh := make(chan struct{})
 	go func() {
 		defer close(doneCh)
 		slog.Debug("starting port-forward worker (no-probe)", "pod", pod, "forwards", forwards)
-		err := k.PortForward(ctx, namespace, pod, forwards, io.Discard, io.Discard)
+		err := k.PortForward(pfCtx, namespace, pod, forwards, io.Discard, io.Discard)
 		if err != nil {
 			slog.Debug("port-forward worker (no-probe) exited with error", "pod", pod, "error", err)
 		} else {
@@ -103,6 +106,9 @@ func startManagedPortForwardNoProbeWithClient(k interface {
 		return nil, fmt.Errorf("port-forward exited before ready")
 	case <-timer.C:
 		return cancelAndWait, nil
+	case <-pfCtx.Done():
+		cancelAndWait()
+		return nil, pfCtx.Err()
 	}
 }
 

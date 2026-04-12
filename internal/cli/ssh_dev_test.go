@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/acmore/okdev/internal/kube"
 )
@@ -39,6 +40,25 @@ func TestEnsureDevSSHDRunningError(t *testing.T) {
 	err := ensureDevSSHDRunning(context.Background(), fake, "default", "okdev-test", "trainer")
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("expected error containing boom, got %v", err)
+	}
+}
+
+type contextAwareSSHStarter struct{}
+
+func (contextAwareSSHStarter) ExecShInContainer(ctx context.Context, _, _, _, _ string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return nil, errors.New("not ready")
+}
+
+func TestWaitForSSHReadyUsesParentContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := waitForSSHReadyWithClient(ctx, contextAwareSSHStarter{}, "default", "okdev-test", "trainer", time.Second)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 }
 
