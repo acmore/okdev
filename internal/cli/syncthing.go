@@ -536,13 +536,13 @@ func startLocalSyncthing(binary, home, localGUIAddr string) (localSyncthingProce
 	if err != nil {
 		return localSyncthingProcess{}, err
 	}
-	logOffset := int64(0)
-	if info, statErr := os.Stat(logPath); statErr == nil {
-		logOffset = info.Size()
-	}
 	logFile, err := openLocalSyncthingLog(logPath)
 	if err != nil {
 		return localSyncthingProcess{}, fmt.Errorf("open local syncthing log: %w", err)
+	}
+	logOffset := int64(0)
+	if info, statErr := os.Stat(logPath); statErr == nil {
+		logOffset = info.Size()
 	}
 	cmd := newLocalSyncthingServeCommand(binary, home, localGUIAddr)
 	cmd.Stdout = logFile
