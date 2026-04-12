@@ -310,6 +310,44 @@ func TestWriteLocalSTIgnorePreservesExistingFileWhenDefaultsImplicit(t *testing.
 	}
 }
 
+func TestWriteRemoteSTIgnoreInPodWritesConfiguredPatterns(t *testing.T) {
+	rec := &syncthingExecRecorder{}
+	err := writeRemoteSTIgnoreInPod(context.Background(), rec, "default", "pod-a", "/workspace", []string{"profiles/", "*.prof"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.namespace != "default" || rec.pod != "pod-a" || rec.container != syncthingContainerName {
+		t.Fatalf("unexpected exec target namespace=%q pod=%q container=%q", rec.namespace, rec.pod, rec.container)
+	}
+	for _, want := range []string{
+		"mkdir -p '/workspace'",
+		"printf %s 'profiles/\n*.prof\n'",
+		"> '/workspace/.stignore'",
+	} {
+		if !strings.Contains(rec.script, want) {
+			t.Fatalf("expected remote .stignore script to contain %q, got %q", want, rec.script)
+		}
+	}
+}
+
+func TestWriteRemoteSTIgnoreInPodSkipsEmptyPatterns(t *testing.T) {
+	rec := &syncthingExecRecorder{}
+	if err := writeRemoteSTIgnoreInPod(context.Background(), rec, "default", "pod-a", "/workspace", nil); err != nil {
+		t.Fatal(err)
+	}
+	if rec.script != "" {
+		t.Fatalf("expected no remote .stignore write, got %q", rec.script)
+	}
+}
+
+func TestWriteRemoteSTIgnoreInPodRejectsUnsafeRoot(t *testing.T) {
+	rec := &syncthingExecRecorder{}
+	err := writeRemoteSTIgnoreInPod(context.Background(), rec, "default", "pod-a", "/", []string{"profiles/"})
+	if err == nil || !strings.Contains(err.Error(), "unsafe sync root") {
+		t.Fatalf("expected unsafe root error, got %v", err)
+	}
+}
+
 func TestStopLocalSyncthingForHomeStopsRecordedPID(t *testing.T) {
 	home := t.TempDir()
 	cmd := exec.Command("sleep", "30")

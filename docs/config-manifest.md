@@ -234,6 +234,7 @@ spec:
 |-------|------|---------|-------------|
 | `engine` | `string` | — | Sync engine (currently only `syncthing`) |
 | `paths` | `[]string` | — | Mappings in `local:remote` format (max 1 entry) |
+| `remoteIgnore` | `[]string` | — | Syncthing ignore patterns written to the remote `.stignore` before sync starts |
 | `syncthing.version` | `string` | `v1.29.7` | Local Syncthing binary version |
 | `syncthing.autoInstall` | `bool` | `true` | Auto-install local Syncthing |
 | `syncthing.image` | `string` | `ghcr.io/acmore/okdev:<version>` | Sidecar image (fallback: `edge`) |
@@ -244,6 +245,8 @@ spec:
 **Validation:** `engine` must be `syncthing`; each `paths[]` entry must be `local:remote`.
 
 Local ignore rules come from the synced workspace's `.stignore`. `okdev init` writes a starter `.stignore` for built-in templates, and `okdev up` creates one with default patterns if the local sync root does not already have one. Editing `.stignore` takes effect automatically as Syncthing notices the change, but it does not remove files that were already synced to the remote workspace. For faster initial syncs, consider ignoring large generated build outputs or local test artifacts such as `debug/`, `release/`, caches, and dataset directories when they do not need to exist remotely.
+
+Use `remoteIgnore` for paths that should remain local-only after you copy or sync them down from a session. okdev writes these patterns to `.stignore` in the remote sync root before configuring Syncthing, so the remote side will not index or pull matching files from your local workspace on the next start. The patterns use Syncthing `.stignore` syntax.
 
 The `syncthing.version` field controls the local binary on your machine. The Syncthing binary inside the sidecar comes from `spec.sidecar.image`.
 
@@ -259,6 +262,9 @@ spec:
       compression: false
     paths:
       - .:/workspace
+    remoteIgnore:
+      - profiles/
+      - "*.prof"
 ```
 
 ---

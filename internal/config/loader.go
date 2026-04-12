@@ -27,7 +27,11 @@ func Load(configPath string) (*DevEnvironment, string, error) {
 		return nil, "", fmt.Errorf("read config %q: %w", path, err)
 	}
 	if removed := removedSyncIgnoreField(raw); removed != "" {
-		return nil, "", fmt.Errorf("validate config %q: %w", path, &MigrationEligibleError{Err: fmt.Errorf("%s is removed; manage local ignores with .stignore in the synced local workspace instead", removed)})
+		msg := fmt.Sprintf("%s is removed; manage local ignores with .stignore in the synced local workspace instead", removed)
+		if removed == "spec.sync.remoteExclude" {
+			msg = "spec.sync.remoteExclude is removed; use spec.sync.remoteIgnore for managed remote .stignore patterns"
+		}
+		return nil, "", fmt.Errorf("validate config %q: %w", path, &MigrationEligibleError{Err: errors.New(msg)})
 	}
 
 	var cfg DevEnvironment
