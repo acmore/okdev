@@ -214,6 +214,8 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 	shortNames := shortPodNames(podNames)
 
 	var writeMu sync.Mutex
+	noPrefixOut := &lockedWriter{w: stdout}
+	noPrefixErr := &lockedWriter{w: stderr}
 	results := make(chan podExecResult, len(pods))
 	sem := make(chan struct{}, fanout)
 
@@ -234,8 +236,8 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 
 			var podStdout, podStderr io.Writer
 			if noPrefix {
-				podStdout = stdout
-				podStderr = stderr
+				podStdout = noPrefixOut
+				podStderr = noPrefixErr
 			} else {
 				pw := newPrefixedWriter(shortName, stdout, &writeMu)
 				pe := newPrefixedWriter(shortName, stderr, &writeMu)
