@@ -57,7 +57,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		return fmt.Errorf("syncthing engine currently supports exactly one sync path mapping")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), syncthingBootstrapTimeout)
+	ctx, cancel := context.WithTimeout(cmd.Context(), syncthingBootstrapTimeout)
 	defer cancel()
 	localBinary, err := syncthing.EnsureBinary(ctx, cfg.Spec.Sync.Syncthing.Version, cfg.Spec.Sync.Syncthing.AutoInstallEnabled())
 	if err != nil {
@@ -103,7 +103,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	if err != nil {
 		return err
 	}
-	cancelPF, localRemoteAPIBase, localRemotePeerAddr, err := startSyncthingPortForward(opts, namespace, pod)
+	cancelPF, localRemoteAPIBase, localRemotePeerAddr, err := startSyncthingPortForward(ctx, opts, namespace, pod)
 	if err != nil {
 		return err
 	}
@@ -185,6 +185,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	defer signal.Stop(sigCh)
 
 	checker := &liveSyncHealthChecker{
+		ctx:       ctx,
 		opts:      opts,
 		namespace: namespace,
 		pod:       pod,
@@ -211,6 +212,7 @@ type syncHealthChecker interface {
 // liveSyncHealthChecker is the production implementation that checks the real
 // Syncthing API and restores port-forwards via Kubernetes.
 type liveSyncHealthChecker struct {
+	ctx       context.Context
 	opts      *Options
 	namespace string
 	pod       string
@@ -221,13 +223,13 @@ type liveSyncHealthChecker struct {
 }
 
 func (c *liveSyncHealthChecker) peerConnected() (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
 	defer cancel()
 	return syncthingPeerConnected(ctx, c.localBase, c.localKey, c.remoteID)
 }
 
 func (c *liveSyncHealthChecker) restorePortForward() error {
-	newCancelPF, err := restoreSyncPortForward(c.opts, c.namespace, c.pod, c.localBase, c.localKey, c.remoteID, c.cancelPF)
+	newCancelPF, err := restoreSyncPortForward(c.ctx, c.opts, c.namespace, c.pod, c.localBase, c.localKey, c.remoteID, c.cancelPF)
 	if err != nil {
 		return err
 	}
@@ -369,10 +371,10 @@ func isFatalSyncRestoreError(err error) bool {
 
 // restoreSyncPortForward cancels the old port-forward, creates a new one,
 // and updates the local Syncthing device address to point at the new endpoint.
-func restoreSyncPortForward(opts *Options, namespace, pod, localBase, localKey, remoteID string, oldCancelPF context.CancelFunc) (context.CancelFunc, error) {
+func restoreSyncPortForward(ctx context.Context, opts *Options, namespace, pod, localBase, localKey, remoteID string, oldCancelPF context.CancelFunc) (context.CancelFunc, error) {
 	oldCancelPF()
 
-	newCancelPF, _, newPeerAddr, err := startSyncthingPortForward(opts, namespace, pod)
+	newCancelPF, _, newPeerAddr, err := startSyncthingPortForward(ctx, opts, namespace, pod)
 	if err != nil {
 		return oldCancelPF, fmt.Errorf("start new port-forward: %w", err)
 	}
@@ -770,7 +772,7 @@ func refreshSyncthingSessionProcesses(sessionName string) error {
 	return nil
 }
 
-func startSyncthingPortForward(opts *Options, namespace, pod string) (context.CancelFunc, string, string, error) {
+func startSyncthingPortForward(ctx context.Context, opts *Options, namespace, pod string) (context.CancelFunc, string, string, error) {
 	lastErr := error(nil)
 	for i := 0; i < 5; i++ {
 		localAPI, err := reserveEphemeralPort()
@@ -781,7 +783,7 @@ func startSyncthingPortForward(opts *Options, namespace, pod string) (context.Ca
 		if err != nil {
 			return nil, "", "", err
 		}
-		cancelPF, err := startManagedPortForward(opts, namespace, pod, []string{
+		cancelPF, err := startManagedPortForward(ctx, opts, namespace, pod, []string{
 			fmt.Sprintf("%d:8384", localAPI),
 			fmt.Sprintf("%d:22000", localSync),
 		})
@@ -1201,7 +1203,7 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 	if onStatus != nil {
 		onStatus("connecting to syncthing sidecar")
 	}
-	cancelPF, remoteBase, _, err := startSyncthingPortForward(opts, namespace, pod)
+	cancelPF, remoteBase, _, err := startSyncthingPortForward(ctx, opts, namespace, pod)
 	if err != nil {
 		return fmt.Errorf("port-forward to syncthing sidecar: %w", err)
 	}
@@ -1810,7 +1812,7 @@ func remoteSyncthingBootstrapIncomplete(ctx context.Context, opts *Options, k in
 	if err != nil {
 		return false, fmt.Errorf("read remote syncthing API key: %w", err)
 	}
-	cancelPF, remoteBase, _, err := startSyncthingPortForward(opts, namespace, pod)
+	cancelPF, remoteBase, _, err := startSyncthingPortForward(ctx, opts, namespace, pod)
 	if err != nil {
 		return false, fmt.Errorf("port-forward to syncthing sidecar: %w", err)
 	}
