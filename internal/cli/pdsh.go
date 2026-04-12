@@ -20,19 +20,35 @@ func newExecCmd(opts *Options) *cobra.Command {
 	var shell string
 	var cmdStr string
 	var noTTY bool
+	var allPods bool
+	var podNames []string
+	var role string
+	var labels []string
+	var exclude []string
+	var container string
+	var detach bool
+	var timeout time.Duration
+	var logDir string
+	var noPrefix bool
 
 	cmd := &cobra.Command{
 		Use:   "exec [session]",
-		Short: "Open shell or run command in session pod",
-		Long:  "Open a shell via kubectl exec. For persistent tmux sessions and port forwarding, use okdev ssh instead.",
+		Short: "Open shell or run command in session pod(s)",
+		Long:  "Open a shell via kubectl exec, or run a command across multiple pods in parallel (pdsh-style).\nFor persistent tmux sessions and port forwarding, use okdev ssh instead.",
 		Example: `  # Open an interactive shell
   okdev exec
 
   # Run a one-off command
   okdev exec --cmd "cat /etc/os-release"
 
-  # Use a specific shell
-  okdev exec --shell /bin/zsh`,
+  # Run on all pods (pdsh mode)
+  okdev exec --all --cmd "nvidia-smi"
+
+  # Run on specific role
+  okdev exec --role worker --cmd "df -h /workspace"
+
+  # Detach a background command
+  okdev exec --role worker --detach --cmd "python train.py"`,
 		Aliases:           []string{"connect"},
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: sessionCompletionFunc(opts),
@@ -45,9 +61,23 @@ func newExecCmd(opts *Options) *cobra.Command {
 			if err := ensureExistingSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 				return err
 			}
+
+			multiPod := allPods || len(podNames) > 0 || role != "" || len(labels) > 0
+			if err := validateMultiPodFlags(allPods, podNames, role, labels, exclude, cmdStr, detach); err != nil {
+				return err
+			}
+
+			if multiPod || detach {
+				return runMultiPodExec(cmd, cc, cmdStr, allPods, podNames, role, labels, exclude, container, detach, timeout, logDir, noPrefix)
+			}
+
+			// Single-pod mode (existing behavior)
 			target, err := resolveTargetRef(cmd.Context(), cc.opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
 			if err != nil {
 				return err
+			}
+			if container != "" {
+				target.Container = container
 			}
 			stopMaintenance := startSessionMaintenanceWithClient(cc.kube, cc.namespace, cc.sessionName, cmd.OutOrStdout(), true)
 			defer stopMaintenance()
@@ -71,7 +101,97 @@ func newExecCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&shell, "shell", "", "Shell to start (default auto-detects bash/sh)")
 	cmd.Flags().StringVar(&cmdStr, "cmd", "", "Command string to execute")
 	cmd.Flags().BoolVar(&noTTY, "no-tty", false, "Disable TTY allocation")
+	cmd.Flags().BoolVar(&allPods, "all", false, "Target all session pods")
+	cmd.Flags().StringSliceVar(&podNames, "pod", nil, "Target specific pods by name (repeatable/comma-separated)")
+	cmd.Flags().StringVar(&role, "role", "", "Target pods by workload role")
+	cmd.Flags().StringSliceVar(&labels, "label", nil, "Target pods by label key=value (repeatable)")
+	cmd.Flags().StringSliceVar(&exclude, "exclude", nil, "Exclude specific pods (repeatable/comma-separated)")
+	cmd.Flags().StringVar(&container, "container", "", "Override target container")
+	cmd.Flags().BoolVar(&detach, "detach", false, "Launch command in background and return")
+	cmd.Flags().DurationVar(&timeout, "timeout", 0, "Per-pod command timeout (e.g., 30s, 5m)")
+	cmd.Flags().StringVar(&logDir, "log-dir", "", "Write per-pod logs to directory")
+	cmd.Flags().BoolVar(&noPrefix, "no-prefix", false, "Suppress pod name prefix in output")
 	return cmd
+}
+
+func validateMultiPodFlags(allPods bool, podNames []string, role string, labels []string, exclude []string, cmdStr string, detach bool) error {
+	multiPod := allPods || len(podNames) > 0 || role != "" || len(labels) > 0
+	if (multiPod || detach) && cmdStr == "" {
+		return fmt.Errorf("--cmd is required when using --all, --pod, --role, --label, or --detach")
+	}
+	if !multiPod && !detach {
+		return nil
+	}
+	exclusiveCount := 0
+	if allPods {
+		exclusiveCount++
+	}
+	if len(podNames) > 0 {
+		exclusiveCount++
+	}
+	if role != "" {
+		exclusiveCount++
+	}
+	if len(labels) > 0 {
+		exclusiveCount++
+	}
+	if exclusiveCount > 1 {
+		return fmt.Errorf("--all, --pod, --role, and --label are mutually exclusive")
+	}
+	if len(exclude) > 0 && len(podNames) > 0 {
+		return fmt.Errorf("--exclude cannot be used with --pod")
+	}
+	if len(exclude) > 0 && !allPods && role == "" && len(labels) == 0 {
+		return fmt.Errorf("--exclude requires --all, --role, or --label")
+	}
+	return nil
+}
+
+func runMultiPodExec(cmd *cobra.Command, cc *commandContext, cmdStr string, allPods bool, podNames []string, role string, labels []string, exclude []string, container string, detach bool, timeout time.Duration, logDir string, noPrefix bool) error {
+	ctx := cmd.Context()
+	labelSel := "okdev.io/managed=true,okdev.io/session=" + cc.sessionName
+	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
+	if err != nil {
+		return fmt.Errorf("list session pods: %w", err)
+	}
+	pods := filterRunningPods(sessionPods)
+
+	switch {
+	case allPods:
+		// keep all running pods
+	case len(podNames) > 0:
+		pods = filterPodsByName(pods, podNames)
+	case role != "":
+		pods = filterPodsByRole(pods, role)
+	case len(labels) > 0:
+		pods = filterPodsByLabels(pods, labels)
+	}
+
+	if len(exclude) > 0 {
+		pods = excludePods(pods, exclude)
+	}
+
+	if len(pods) == 0 {
+		return fmt.Errorf("no running pods match the specified filters in session %q", cc.sessionName)
+	}
+
+	targetContainer := container
+	if targetContainer == "" {
+		targetContainer = resolveTargetContainer(cc.cfg)
+	}
+
+	if logDir != "" {
+		if err := os.MkdirAll(logDir, 0o755); err != nil {
+			return fmt.Errorf("create log directory: %w", err)
+		}
+	}
+
+	if detach {
+		return runDetachExec(ctx, cc.kube, cc.namespace, pods, targetContainer, cmdStr, cmd.OutOrStdout())
+	}
+
+	execCmd := []string{"sh", "-lc", cmdStr}
+	return runMultiExec(ctx, cc.kube, cc.namespace, pods, targetContainer, execCmd, logDir, timeout, noPrefix, cmd.OutOrStdout(), cmd.ErrOrStderr())
 }
 
 type podExecResult struct {
