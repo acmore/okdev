@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -27,6 +28,15 @@ var (
 	execCommand                     = exec.Command
 	waitForDetachedSyncthingStartFn = waitForDetachedSyncthingStart
 )
+
+const zombieCheckCacheTTL = 250 * time.Millisecond
+
+type zombieCacheEntry struct {
+	zombie bool
+	seenAt time.Time
+}
+
+var zombieCheckCache sync.Map
 
 type syncthingSessionTargetState struct {
 	PodName    string `json:"podName"`
@@ -561,17 +571,48 @@ func processAlive(pid int) bool {
 }
 
 func isZombie(pid int) bool {
+	if cached, ok := cachedZombieCheck(pid); ok {
+		return cached
+	}
 	// Try /proc/<pid>/stat first (Linux, no subprocess needed).
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err == nil {
-		return procStatIsZombie(data)
+		zombie := procStatIsZombie(data)
+		storeZombieCheck(pid, zombie)
+		return zombie
 	}
 	// /proc unavailable (macOS); fall back to ps.
 	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "stat=").CombinedOutput()
 	if err != nil {
+		storeZombieCheck(pid, false)
 		return false
 	}
-	return psStatIsZombie(string(out))
+	zombie := psStatIsZombie(string(out))
+	storeZombieCheck(pid, zombie)
+	return zombie
+}
+
+func cachedZombieCheck(pid int) (bool, bool) {
+	if pid <= 0 {
+		return false, false
+	}
+	v, ok := zombieCheckCache.Load(pid)
+	if !ok {
+		return false, false
+	}
+	entry, ok := v.(zombieCacheEntry)
+	if !ok || time.Since(entry.seenAt) > zombieCheckCacheTTL {
+		zombieCheckCache.Delete(pid)
+		return false, false
+	}
+	return entry.zombie, true
+}
+
+func storeZombieCheck(pid int, zombie bool) {
+	if pid <= 0 {
+		return
+	}
+	zombieCheckCache.Store(pid, zombieCacheEntry{zombie: zombie, seenAt: time.Now()})
 }
 
 func procStatIsZombie(data []byte) bool {
