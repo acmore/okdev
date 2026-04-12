@@ -2,6 +2,7 @@ package kube
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -190,6 +192,25 @@ func TestWaitForDeletionAndIsPodReady(t *testing.T) {
 	}
 	if isPodReady(&corev1.Pod{}) {
 		t.Fatal("did not expect empty pod to be ready")
+	}
+}
+
+func TestDeletionWaitContextUsesDefaultTimeout(t *testing.T) {
+	previous := deletionWaitTimeout
+	deletionWaitTimeout = 20 * time.Millisecond
+	t.Cleanup(func() {
+		deletionWaitTimeout = previous
+	})
+
+	ctx, cancel := deletionWaitContext(context.Background())
+	defer cancel()
+
+	if _, ok := ctx.Deadline(); !ok {
+		t.Fatal("expected default deletion wait deadline")
+	}
+	<-ctx.Done()
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("expected deadline exceeded, got %v", ctx.Err())
 	}
 }
 
