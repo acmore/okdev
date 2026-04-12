@@ -73,6 +73,43 @@ func TestResolveRunWorkloadIdentityCreatesNewNameWhenSavedWorkloadIsAbsent(t *te
 	}
 }
 
+func TestResolveRunWorkloadIdentityDiscoversLiveRunWhenLocalStateIsMissing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := session.SaveInfo(session.Info{
+		Name:               "sess",
+		RunID:              "deadbeef",
+		WorkloadAPIVersion: "batch/v1",
+		WorkloadKind:       "Job",
+		WorkloadName:       "okdev-sess-deadbeef",
+	}); err != nil {
+		t.Fatalf("SaveInfo: %v", err)
+	}
+	k := &fakeWorkloadExistenceChecker{
+		exists: false,
+		podsSeq: [][]kube.PodSummary{{
+			{
+				Name:      "trainer-master-0",
+				Phase:     string(corev1.PodRunning),
+				CreatedAt: time.Now(),
+				Labels: map[string]string{
+					"okdev.io/managed":       "true",
+					"okdev.io/session":       "sess",
+					"okdev.io/run-id":        "beefcafe",
+					"okdev.io/workload-name": "okdev-sess-beefcafe",
+				},
+			},
+		}},
+	}
+
+	runID, workloadName, err := resolveRunWorkloadIdentity(context.Background(), k, "default", "sess")
+	if err != nil {
+		t.Fatalf("resolveRunWorkloadIdentity: %v", err)
+	}
+	if runID != "beefcafe" || workloadName != "okdev-sess-beefcafe" {
+		t.Fatalf("expected discovered live identity, got runID=%q workload=%q", runID, workloadName)
+	}
+}
+
 func TestWorkloadNameForRunFitsDNSLabelLimit(t *testing.T) {
 	name := workloadNameForRun(strings.Repeat("a", 80), "abcd1234")
 	if len(name) > 63 {

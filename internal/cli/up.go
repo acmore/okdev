@@ -216,7 +216,11 @@ func resolveRunWorkloadIdentity(ctx context.Context, k workloadExistenceChecker,
 			return strings.TrimSpace(info.RunID), strings.TrimSpace(info.WorkloadName), nil
 		}
 	}
-	runID, err := newRunID()
+	runID, workloadName, err := discoverRunIdentityFromPods(ctx, k, namespace, sessionName)
+	if err == nil && runID != "" && workloadName != "" {
+		return runID, workloadName, nil
+	}
+	runID, err = newRunID()
 	if err != nil {
 		return "", "", err
 	}
@@ -1022,6 +1026,7 @@ func syncthingSessionActive(sessionName string) bool {
 type workloadExistenceChecker interface {
 	ResourceExists(context.Context, string, string, string, string) (bool, error)
 	GetPodSummary(context.Context, string, string) (*kube.PodSummary, error)
+	ListPods(context.Context, string, bool, string) ([]kube.PodSummary, error)
 }
 
 func shouldReuseExistingWorkload(ctx context.Context, k workloadExistenceChecker, namespace string, runtime workload.Runtime) (bool, error) {

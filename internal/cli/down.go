@@ -65,7 +65,7 @@ func newDownCmd(opts *Options) *cobra.Command {
 			ui.stepDone("config", cc.cfgPath)
 			ui.stepDone("session", cc.sessionName)
 			ui.stepDone("namespace", cc.namespace)
-			runtime, err := sessionRuntimeForExisting(cc.cfg, cc.cfgPath, cc.sessionName)
+			runtime, err := sessionRuntimeForExisting(cmd.Context(), cc.cfg, cc.cfgPath, cc.namespace, cc.sessionName, cc.kube)
 			if err != nil {
 				return err
 			}
