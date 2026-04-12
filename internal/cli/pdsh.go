@@ -167,6 +167,55 @@ func detachCommand(cmd string) []string {
 	return []string{"sh", "-c", "nohup sh -c " + quoted + " >/dev/null 2>&1 &"}
 }
 
+func runDetachExec(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, cmdStr string, out io.Writer) error {
+	podNames := make([]string, len(pods))
+	for i, p := range pods {
+		podNames[i] = p.Name
+	}
+	shortNames := shortPodNames(podNames)
+	command := detachCommand(cmdStr)
+
+	results := make(chan podExecResult, len(pods))
+	sem := make(chan struct{}, pdshDefaultFanout)
+
+	var wg sync.WaitGroup
+	for i, pod := range pods {
+		wg.Add(1)
+		go func(pod kube.PodSummary, shortName string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			err := connect.RunOnContainer(ctx, client, namespace, pod.Name, container, command, false, nil, io.Discard, io.Discard)
+			results <- podExecResult{pod: pod.Name, err: err}
+		}(pod, shortNames[i])
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	nameMap := make(map[string]string, len(podNames))
+	for i, n := range podNames {
+		nameMap[n] = shortNames[i]
+	}
+
+	var failCount int
+	for r := range results {
+		short := nameMap[r.pod]
+		if r.err != nil {
+			fmt.Fprintf(out, "%s: error: %v\n", short, r.err)
+			failCount++
+		} else {
+			fmt.Fprintf(out, "%s: detached\n", short)
+		}
+	}
+	if failCount > 0 {
+		return fmt.Errorf("%d of %d pods failed to detach", failCount, len(pods))
+	}
+	return nil
+}
+
 func filterRunningPods(pods []kube.PodSummary) []kube.PodSummary {
 	out := make([]kube.PodSummary, 0, len(pods))
 	for _, p := range pods {

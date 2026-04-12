@@ -156,6 +156,49 @@ func (s *slowExecClient) ExecInteractiveInContainer(ctx context.Context, namespa
 	return s.ExecInteractive(ctx, namespace, pod, tty, command, stdin, stdout, stderr)
 }
 
+func TestRunDetachExec(t *testing.T) {
+	client := &fakePdshExecClient{
+		outputs: map[string]string{},
+		errs:    map[string]error{},
+	}
+	pods := []kube.PodSummary{
+		{Name: "okdev-sess-worker-0", Phase: "Running"},
+		{Name: "okdev-sess-worker-1", Phase: "Running"},
+	}
+	var stdout bytes.Buffer
+	err := runDetachExec(context.Background(), client, "default", pods, "dev", "python train.py", &stdout)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "worker-0: detached") || !strings.Contains(stdout.String(), "worker-1: detached") {
+		t.Fatalf("expected detach confirmation, got %q", stdout.String())
+	}
+}
+
+func TestRunDetachExecWithError(t *testing.T) {
+	client := &fakePdshExecClient{
+		outputs: map[string]string{},
+		errs: map[string]error{
+			"okdev-sess-worker-1": errors.New("pod not ready"),
+		},
+	}
+	pods := []kube.PodSummary{
+		{Name: "okdev-sess-worker-0", Phase: "Running"},
+		{Name: "okdev-sess-worker-1", Phase: "Running"},
+	}
+	var stdout bytes.Buffer
+	err := runDetachExec(context.Background(), client, "default", pods, "dev", "python train.py", &stdout)
+	if err == nil {
+		t.Fatal("expected error for partial failure")
+	}
+	if !strings.Contains(stdout.String(), "worker-0: detached") {
+		t.Fatalf("expected detach for worker-0, got %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "worker-1: error:") {
+		t.Fatalf("expected error for worker-1, got %q", stdout.String())
+	}
+}
+
 func TestRunMultiExecSuccess(t *testing.T) {
 	client := &fakePdshExecClient{
 		outputs: map[string]string{
