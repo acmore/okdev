@@ -86,24 +86,27 @@ spec:
 	}
 }
 
-func TestGenericRuntimeUsesSessionNameForWorkload(t *testing.T) {
+func TestGenericRuntimeRendersWorkloadManifestTemplate(t *testing.T) {
 	tmp := t.TempDir()
 	manifestPath := filepath.Join(tmp, "deployment.yaml")
 	if err := os.WriteFile(manifestPath, []byte(`
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: original-name
+  name: "{{ .WorkloadName }}"
   labels:
     team: ml
+    session: "{{ .SessionName }}"
+    run: "{{ .RunID }}"
+    config: "{{ .ConfigName }}"
 spec:
   selector:
     matchLabels:
-      app: trainer
+      app: "{{ .WorkloadName }}"
   template:
     metadata:
       labels:
-        app: trainer
+        app: "{{ .WorkloadName }}"
     spec:
       containers:
         - name: trainer
@@ -127,6 +130,8 @@ spec:
 		Labels: map[string]string{
 			"okdev.io/managed": "true",
 			"okdev.io/session": "my-session",
+			"okdev.io/run-id":  "abcd1234",
+			"okdev.io/name":    "trainer-config",
 		},
 		Inject: []config.WorkloadInjectSpec{{Path: "spec.template"}},
 	}
@@ -159,6 +164,15 @@ spec:
 	labels, _ := meta["labels"].(map[string]any)
 	if labels["team"] != "ml" {
 		t.Fatalf("expected user labels to be preserved, got %v", labels)
+	}
+	if labels["session"] != "my-session" || labels["run"] != "abcd1234" || labels["config"] != "trainer-config" {
+		t.Fatalf("expected runtime template labels, got %v", labels)
+	}
+	spec, _ := obj["spec"].(map[string]any)
+	selector, _ := spec["selector"].(map[string]any)
+	matchLabels, _ := selector["matchLabels"].(map[string]any)
+	if matchLabels["app"] != "okdev-my-session-abcd1234" {
+		t.Fatalf("expected selector to use rendered workload name, got %v", matchLabels)
 	}
 
 	if err := rt.Delete(context.Background(), client, "default", true); err != nil {

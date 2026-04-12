@@ -398,8 +398,8 @@ func TestRenderEmbeddedTemplate(t *testing.T) {
 	if !strings.Contains(out, "kind: Job") {
 		t.Fatalf("expected job manifest, got %q", out)
 	}
-	if !strings.Contains(out, "name: demo") {
-		t.Fatalf("expected rendered name, got %q", out)
+	if !strings.Contains(out, "name: {{ .WorkloadName }}") {
+		t.Fatalf("expected runtime workload name placeholder, got %q", out)
 	}
 }
 

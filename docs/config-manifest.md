@@ -419,7 +419,7 @@ spec:
 
 This means env vars like `LANG` should usually be added to the container that okdev will attach to.
 
-For manifest-backed workloads, the manifest still needs a valid top-level `metadata.name`, but okdev replaces it at apply time with a generated per-run name such as `okdev-<session>-<run-id>`. The generated labels and annotations preserve the session and workload reference for later commands.
+Manifest-backed workload files are rendered as okdev runtime templates before apply. Use `{{ .WorkloadName }}` anywhere the manifest should follow the generated per-run Kubernetes workload name, and use `{{ .SessionName }}` or `{{ .RunID }}` for session/run labels. `{{ .ConfigName }}` is the stable `metadata.name` from the okdev config, and `{{ .WorkloadType }}` is `job`, `generic`, or `pytorchjob`. Static fields remain static, so the manifest author controls which labels, selectors, and names change per run.
 
 Default pod example:
 

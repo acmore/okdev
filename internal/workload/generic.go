@@ -1,6 +1,7 @@
 package workload
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -8,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
@@ -55,9 +57,6 @@ func (r *GenericRuntime) Kind() string {
 }
 
 func (r *GenericRuntime) resolvedName() string {
-	if strings.TrimSpace(r.WorkloadNameOverride) != "" {
-		return strings.TrimSpace(r.WorkloadNameOverride)
-	}
 	obj, err := r.load()
 	if err != nil {
 		return ""
@@ -78,7 +77,7 @@ func (r *GenericRuntime) WorkloadRef() (string, string, string, error) {
 	if err != nil {
 		return "", "", "", err
 	}
-	return obj.GetAPIVersion(), obj.GetKind(), r.resolvedName(), nil
+	return obj.GetAPIVersion(), obj.GetKind(), obj.GetName(), nil
 }
 
 func (r *GenericRuntime) Apply(ctx context.Context, k ApplyClient, namespace string) error {
@@ -86,8 +85,7 @@ func (r *GenericRuntime) Apply(ctx context.Context, k ApplyClient, namespace str
 	if err != nil {
 		return err
 	}
-	name := r.resolvedName()
-	obj.SetName(name)
+	name := obj.GetName()
 	workloadLabels := LabelsWithWorkload(r.Labels, name, obj.GetKind())
 	workloadAnnotations := AnnotationsWithWorkload(r.Annotations, name, obj.GetAPIVersion(), obj.GetKind())
 	obj.SetLabels(mergeStringMaps(obj.GetLabels(), workloadLabels))
@@ -209,6 +207,10 @@ func (r *GenericRuntime) load() (*unstructured.Unstructured, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read generic manifest %q: %w", r.ManifestPath, err)
 	}
+	raw, err = r.renderManifestTemplate(raw)
+	if err != nil {
+		return nil, err
+	}
 	var obj map[string]any
 	if err := yaml.Unmarshal(raw, &obj); err != nil {
 		return nil, fmt.Errorf("parse generic manifest %q: %w", r.ManifestPath, err)
@@ -223,6 +225,33 @@ func (r *GenericRuntime) load() (*unstructured.Unstructured, error) {
 	r.loadedBase = u.DeepCopy()
 	r.loadedFrom = stamp
 	return u.DeepCopy(), nil
+}
+
+type WorkloadManifestTemplateVars struct {
+	WorkloadName string
+	SessionName  string
+	RunID        string
+	ConfigName   string
+	WorkloadType string
+}
+
+func (r *GenericRuntime) renderManifestTemplate(raw []byte) ([]byte, error) {
+	tmpl, err := template.New("workload-manifest").Option("missingkey=error").Parse(string(raw))
+	if err != nil {
+		return nil, fmt.Errorf("parse workload manifest template %q: %w", r.ManifestPath, err)
+	}
+	var out bytes.Buffer
+	vars := WorkloadManifestTemplateVars{
+		WorkloadName: strings.TrimSpace(r.WorkloadNameOverride),
+		SessionName:  strings.TrimSpace(r.SessionName),
+		RunID:        strings.TrimSpace(r.Labels["okdev.io/run-id"]),
+		ConfigName:   strings.TrimSpace(r.Labels["okdev.io/name"]),
+		WorkloadType: r.Kind(),
+	}
+	if err := tmpl.Execute(&out, vars); err != nil {
+		return nil, fmt.Errorf("render workload manifest template %q: %w", r.ManifestPath, err)
+	}
+	return out.Bytes(), nil
 }
 
 func manifestStamp(path string) (manifestCacheStamp, error) {

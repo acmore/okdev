@@ -293,6 +293,13 @@ func TestInitUsesFolderConfigWhenScaffoldingWorkload(t *testing.T) {
 	if !strings.Contains(string(cfgRaw), "manifestPath: job.yaml") {
 		t.Fatalf("expected folder config manifest path to stay relative to .okdev, got %q", string(cfgRaw))
 	}
+	manifestRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev", "job.yaml"))
+	if err != nil {
+		t.Fatalf("read job manifest: %v", err)
+	}
+	if !strings.Contains(string(manifestRaw), "name: {{ .WorkloadName }}") {
+		t.Fatalf("expected runtime workload name placeholder, got %q", string(manifestRaw))
+	}
 }
 
 func TestInitUsesRootConfigForPod(t *testing.T) {
@@ -387,6 +394,9 @@ func TestInitScaffoldsJobManifest(t *testing.T) {
 	if !strings.Contains(string(raw), "mountPath: /train") {
 		t.Fatalf("expected job scaffold to use sync remote mount path, got %q", string(raw))
 	}
+	if !strings.Contains(string(raw), "name: {{ .WorkloadName }}") {
+		t.Fatalf("expected job scaffold to preserve workload runtime placeholder, got %q", string(raw))
+	}
 	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev.yaml"))
 	if err != nil {
 		t.Fatalf("read config: %v", err)
@@ -420,6 +430,9 @@ func TestInitScaffoldsGenericDeploymentPreset(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "mountPath: /train") {
 		t.Fatalf("expected deployment scaffold to use sync remote mount path, got %q", string(raw))
+	}
+	if !strings.Contains(string(raw), "app.kubernetes.io/name: {{ .WorkloadName }}") {
+		t.Fatalf("expected deployment scaffold to preserve workload runtime labels, got %q", string(raw))
 	}
 	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev.yaml"))
 	if err != nil {
@@ -477,6 +490,9 @@ func TestInitScaffoldsPyTorchJobManifest(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "mountPath: /train") {
 		t.Fatalf("expected pytorchjob scaffold to use sync remote mount path, got %q", string(raw))
+	}
+	if !strings.Contains(string(raw), "name: {{ .WorkloadName }}") {
+		t.Fatalf("expected pytorchjob scaffold to preserve workload runtime placeholder, got %q", string(raw))
 	}
 	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev.yaml"))
 	if err != nil {
