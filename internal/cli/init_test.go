@@ -893,6 +893,90 @@ spec:
 	}
 }
 
+func TestInitCustomTemplateWithCompanionFilesDefaultsToFolderConfigWithoutExplicitWorkloadFlag(t *testing.T) {
+	tmp := t.TempDir()
+	tmplDir := filepath.Join(tmp, ".okdev", "templates")
+	if err := os.MkdirAll(filepath.Join(tmplDir, "manifests"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmplDir, "pytorch.yaml.tmpl"), []byte(`---
+name: pytorch
+variables:
+  - name: manifestPath
+    type: string
+    default: pytorchjob.yaml
+files:
+  - path: "{{ .Vars.manifestPath }}"
+    template: manifests/pytorchjob.yaml.tmpl
+---
+apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: {{ .Name }}
+spec:
+  namespace: {{ .Namespace }}
+  sync:
+    paths:
+      - "{{ .SyncLocal }}:{{ .SyncRemote }}"
+  ssh:
+    user: root
+  sidecar:
+    image: ghcr.io/acmore/okdev:edge
+  workload:
+    type: pytorchjob
+    manifestPath: {{ .Vars.manifestPath }}
+    inject:
+      - path: "spec.pytorchReplicaSpecs.Master.template"
+      - path: "spec.pytorchReplicaSpecs.Worker.template"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmplDir, "manifests", "pytorchjob.yaml.tmpl"), []byte(`apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: {{`+"`{{ .WorkloadName }}`"+`}}
+spec:
+  pytorchReplicaSpecs:
+    Master:
+      template:
+        spec:
+          containers:
+            - name: dev
+              image: ubuntu:22.04
+    Worker:
+      template:
+        spec:
+          containers:
+            - name: dev
+              image: ubuntu:22.04
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newInitCmd(&Options{})
+	cmd.SetArgs([]string{"--yes", "--template", "pytorch"})
+	cmd.SetIn(strings.NewReader(""))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init execute: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev", "okdev.yaml")); err != nil {
+		t.Fatalf("expected folder config output, got err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev", "pytorchjob.yaml")); err != nil {
+		t.Fatalf("expected companion manifest beside folder config, got err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("expected root config to be absent, err=%v", err)
+	}
+}
+
 func TestInitProjectTemplateShadowingBasicIsNotTreatedAsBuiltin(t *testing.T) {
 	tmp := t.TempDir()
 	tmplDir := filepath.Join(tmp, ".okdev", "templates")
