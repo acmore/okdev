@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -73,13 +74,14 @@ func sessionRuntimeForExisting(ctx context.Context, cfg *config.DevEnvironment, 
 	if pods != nil {
 		discoveredRunID, discoveredWorkloadName, err := discoverRunIdentityFromPods(ctx, pods, namespace, sessionName)
 		if err != nil {
-			return nil, err
-		}
-		if discoveredRunID != "" {
-			runID = discoveredRunID
-		}
-		if discoveredWorkloadName != "" {
-			workloadName = discoveredWorkloadName
+			slog.Debug("failed to discover run identity from live pods", "session", sessionName, "error", err)
+		} else {
+			if discoveredRunID != "" {
+				runID = discoveredRunID
+			}
+			if discoveredWorkloadName != "" {
+				workloadName = discoveredWorkloadName
+			}
 		}
 	}
 	return sessionRuntime(cfg, cfgPath, sessionName, workloadName, discoveryLabelsForSession(cfg, sessionName, runID), nil, corev1.PodSpec{}, cfg.EffectiveVolumes(), cfg.Spec.SSH.PersistentSessionEnabled(), resolvePreStopCommand(cfg, cfgPath))

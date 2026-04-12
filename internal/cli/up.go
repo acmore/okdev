@@ -217,7 +217,9 @@ func resolveRunWorkloadIdentity(ctx context.Context, k workloadExistenceChecker,
 		}
 	}
 	runID, workloadName, err := discoverRunIdentityFromPods(ctx, k, namespace, sessionName)
-	if err == nil && runID != "" && workloadName != "" {
+	if err != nil {
+		slog.Debug("failed to discover run identity from live pods", "session", sessionName, "error", err)
+	} else if runID != "" && workloadName != "" {
 		return runID, workloadName, nil
 	}
 	runID, err = newRunID()
