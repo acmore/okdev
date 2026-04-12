@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -360,16 +361,96 @@ func (r *syncthingExecRecorder) ExecShInContainer(_ context.Context, namespace, 
 	return r.out, r.err
 }
 
-func TestAllocateLocalSyncthingAPIEndpoint(t *testing.T) {
-	guiAddr, apiBase, err := allocateLocalSyncthingAPIEndpoint()
+func TestParseLocalSyncthingAPIBaseUsesLatestLoopbackAddress(t *testing.T) {
+	logText := strings.Join([]string{
+		"INFO: GUI and API listening on 127.0.0.1:49100",
+		"INFO: GUI and API listening on 127.0.0.1:49101",
+	}, "\n")
+
+	base, ok := parseLocalSyncthingAPIBase(logText)
+	if !ok {
+		t.Fatal("expected API base")
+	}
+	if base != "http://127.0.0.1:49101" {
+		t.Fatalf("unexpected API base %q", base)
+	}
+}
+
+func TestParseLocalSyncthingAPIBaseRejectsNonLoopbackAddress(t *testing.T) {
+	_, ok := parseLocalSyncthingAPIBase("INFO: GUI and API listening on 10.0.0.12:49100")
+	if ok {
+		t.Fatal("did not expect non-loopback API base")
+	}
+}
+
+func TestReadFileFromOffsetIgnoresStaleSyncthingLog(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "local.log")
+	stale := "INFO: GUI and API listening on 127.0.0.1:49100\n"
+	fresh := "INFO: GUI and API listening on 127.0.0.1:49101\n"
+	if err := os.WriteFile(logPath, []byte(stale+fresh), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logText := readFileFromOffset(logPath, int64(len(stale)), 8192)
+	base, ok := parseLocalSyncthingAPIBase(logText)
+	if !ok {
+		t.Fatal("expected API base")
+	}
+	if base != "http://127.0.0.1:49101" {
+		t.Fatalf("unexpected API base %q", base)
+	}
+}
+
+func TestWaitLocalSyncthingAPIEndpointUsesCurrentLogAndAPIKey(t *testing.T) {
+	const apiKey = "session-key"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rest/system/status" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("X-API-Key"); got != apiKey {
+			http.Error(w, "bad key", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"myID":"LOCAL"}`)
+	}))
+	defer srv.Close()
+
+	logPath := filepath.Join(t.TempDir(), "local.log")
+	stale := "INFO: GUI and API listening on 127.0.0.1:49100\n"
+	fresh := "INFO: GUI and API listening on " + strings.TrimPrefix(srv.URL, "http://") + "\n"
+	if err := os.WriteFile(logPath, []byte(stale+fresh), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	proc := localSyncthingProcess{PID: 1234, LogPath: logPath, LogOffset: int64(len(stale))}
+	base, err := waitLocalSyncthingAPIEndpoint(context.Background(), proc, apiKey, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(guiAddr, "127.0.0.1:") {
-		t.Fatalf("unexpected guiAddr %q", guiAddr)
+	if base != srv.URL {
+		t.Fatalf("expected %q, got %q", srv.URL, base)
 	}
-	if apiBase != "http://"+guiAddr {
-		t.Fatalf("unexpected apiBase %q", apiBase)
+}
+
+func TestLockLocalSyncthingHomeHonorsContext(t *testing.T) {
+	home := t.TempDir()
+	first, err := lockLocalSyncthingHome(context.Background(), home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	second, err := lockLocalSyncthingHome(ctx, home)
+	if err == nil {
+		second.Close()
+		t.Fatal("expected second lock attempt to time out")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected deadline exceeded, got %v", err)
 	}
 }
 
@@ -917,6 +998,14 @@ func TestNewLocalSyncthingServeCommandDisablesAutoUpgrade(t *testing.T) {
 	}
 }
 
+func TestNewLocalSyncthingServeCommandSupportsEphemeralGUIAddress(t *testing.T) {
+	cmd := newLocalSyncthingServeCommand("/tmp/syncthing", "/tmp/home", localSyncthingGUIAddr)
+	args := strings.Join(cmd.Args, " ")
+	if !strings.Contains(args, "--gui-address=http://127.0.0.1:0") {
+		t.Fatalf("expected ephemeral loopback GUI address in args, got %q", args)
+	}
+}
+
 func TestFolderTypesForMode(t *testing.T) {
 	tests := []struct {
 		mode       string
@@ -1269,26 +1358,6 @@ func TestWarnLargeSyncEntriesIncludesFilesAndDirs(t *testing.T) {
 	}
 	if !strings.Contains(got, "dir  120.0MiB  cache/") {
 		t.Fatalf("expected large dir in warning, got %q", got)
-	}
-}
-
-func TestLocalSyncthingLogShowsAPIPortConflict(t *testing.T) {
-	home := t.TempDir()
-	logPath, err := localSyncthingLogPath(home)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(logPath, []byte("WARNING: Failed starting API: listen tcp 127.0.0.1:34337: bind: address already in use\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if !localSyncthingLogShowsAPIPortConflict(home) {
-		t.Fatal("expected bind conflict to be detected")
-	}
-	if err := os.WriteFile(logPath, []byte("INFO: syncthing ready\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if localSyncthingLogShowsAPIPortConflict(home) {
-		t.Fatal("did not expect bind conflict to be detected")
 	}
 }
 
