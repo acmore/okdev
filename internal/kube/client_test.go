@@ -278,13 +278,21 @@ func TestBuildPodLogOptionsOmitsUnsetFields(t *testing.T) {
 	}
 }
 
-func TestTempDownloadPath(t *testing.T) {
+func TestCreateTempDownloadFile(t *testing.T) {
 	dir := t.TempDir()
 	localPath := filepath.Join(dir, "artifact.txt")
 
-	tempPath, err := tempDownloadPath(localPath)
+	tempFile, err := createTempDownloadFile(localPath)
 	if err != nil {
-		t.Fatalf("tempDownloadPath: %v", err)
+		t.Fatalf("createTempDownloadFile: %v", err)
+	}
+	tempPath := tempFile.Name()
+	defer os.Remove(tempPath)
+	if _, err := tempFile.WriteString("payload"); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		t.Fatalf("close temp file: %v", err)
 	}
 	if tempPath == localPath {
 		t.Fatal("expected temp path to differ from final path")
@@ -292,8 +300,8 @@ func TestTempDownloadPath(t *testing.T) {
 	if filepath.Dir(tempPath) != dir {
 		t.Fatalf("expected temp file in %q, got %q", dir, filepath.Dir(tempPath))
 	}
-	if _, err := os.Stat(tempPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected temp file to be removed after reservation, got err=%v", err)
+	if b, err := os.ReadFile(tempPath); err != nil || string(b) != "payload" {
+		t.Fatalf("expected writable temp file to remain reserved, content=%q err=%v", string(b), err)
 	}
 }
 
