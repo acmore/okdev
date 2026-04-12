@@ -129,8 +129,10 @@ echo "cp download single file verified"
 
 echo "File copy (okdev cp) tests completed"
 
-ORIGINAL_JOB_UID=$(kubectl -n "$NAMESPACE" get job "$SESSION_NAME" -o jsonpath='{.metadata.uid}')
-ORIGINAL_POD_UID=$(kubectl -n "$NAMESPACE" get pods -l "job-name=$SESSION_NAME" -o jsonpath='{.items[0].metadata.uid}')
+WORKLOAD_NAME=$(session_workload_name "$NAMESPACE" "$SESSION_NAME")
+ORIGINAL_JOB_UID=$(kubectl -n "$NAMESPACE" get job "$WORKLOAD_NAME" -o jsonpath='{.metadata.uid}')
+JOB_POD_NAME=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
+ORIGINAL_POD_UID=$(kubectl -n "$NAMESPACE" get pod "$JOB_POD_NAME" -o jsonpath='{.metadata.uid}')
 
 echo "Changing job workload spec to trigger drift detection"
 replace_first_in_file "$MANIFEST_PATH" 'image: ubuntu:22.04' 'image: ubuntu:24.04'
@@ -154,9 +156,11 @@ echo "Reconciling job via --reconcile"
 
 RECONCILE_OK=false
 for i in $(seq 1 30); do
-  JOB_UID=$(kubectl -n "$NAMESPACE" get job "$SESSION_NAME" -o jsonpath='{.metadata.uid}')
-  POD_UID=$(kubectl -n "$NAMESPACE" get pods -l "job-name=$SESSION_NAME" -o jsonpath='{.items[0].metadata.uid}')
-  POD_IMAGE=$(kubectl -n "$NAMESPACE" get pods -l "job-name=$SESSION_NAME" -o jsonpath='{.items[0].spec.containers[?(@.name=="dev")].image}')
+  WORKLOAD_NAME=$(session_workload_name "$NAMESPACE" "$SESSION_NAME")
+  JOB_UID=$(kubectl -n "$NAMESPACE" get job "$WORKLOAD_NAME" -o jsonpath='{.metadata.uid}')
+  JOB_POD_NAME=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
+  POD_UID=$(kubectl -n "$NAMESPACE" get pod "$JOB_POD_NAME" -o jsonpath='{.metadata.uid}')
+  POD_IMAGE=$(kubectl -n "$NAMESPACE" get pod "$JOB_POD_NAME" -o jsonpath='{.spec.containers[?(@.name=="dev")].image}')
   if [[ "$JOB_UID" != "$ORIGINAL_JOB_UID" && "$POD_UID" != "$ORIGINAL_POD_UID" && "$POD_IMAGE" == "ubuntu:24.04" ]]; then
     RECONCILE_OK=true
     break
@@ -180,11 +184,11 @@ echo "Tearing down job session"
 assert_no_local_sync_processes "$SESSION_NAME" "$HOME_DIR/.okdev/sessions/${SESSION_NAME}/syncthing"
 
 for i in $(seq 1 20); do
-  if ! kubectl -n "$NAMESPACE" get job "$SESSION_NAME" >/dev/null 2>&1; then
+  if [[ -z "$(session_attachable_pod_names "$NAMESPACE" "$SESSION_NAME")" ]]; then
     break
   fi
   if [[ "$i" -eq 20 ]]; then
-    echo "ERROR: job ${SESSION_NAME} still exists after down" >&2
+    echo "ERROR: job session ${SESSION_NAME} still has managed pod(s) after down" >&2
     exit 1
   fi
   sleep 2

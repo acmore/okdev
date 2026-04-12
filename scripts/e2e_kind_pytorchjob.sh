@@ -559,9 +559,10 @@ echo "Verifying PyTorchJob spec and live pods were recreated with the new image"
 RECONCILE_OK=false
 for i in $(seq 1 30); do
   refresh_pytorchjob_pods
-  MASTER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$SESSION_NAME" \
+  WORKLOAD_NAME=$(session_workload_name "$NAMESPACE" "$SESSION_NAME")
+  MASTER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$WORKLOAD_NAME" \
     -o jsonpath='{.spec.pytorchReplicaSpecs.Master.template.spec.containers[0].image}')
-  WORKER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$SESSION_NAME" \
+  WORKER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$WORKLOAD_NAME" \
     -o jsonpath='{.spec.pytorchReplicaSpecs.Worker.template.spec.containers[0].image}')
   MASTER_POD_IMAGE=$(kubectl -n "$NAMESPACE" get pod "$MASTER_POD" \
     -o jsonpath='{.spec.containers[?(@.name=="pytorch")].image}')
@@ -601,12 +602,12 @@ assert_no_local_sync_processes "$SESSION_NAME" "$HOME_DIR/.okdev/sessions/${SESS
 
 echo "Verifying PyTorchJob is deleted"
 for i in $(seq 1 15); do
-  if ! kubectl -n "$NAMESPACE" get pytorchjob "$SESSION_NAME" >/dev/null 2>&1; then
+  if [[ -z "$(session_attachable_pod_names "$NAMESPACE" "$SESSION_NAME")" ]]; then
     echo "PyTorchJob deleted on attempt $i"
     break
   fi
   if [[ "$i" -eq 15 ]]; then
-    echo "ERROR: pytorchjob ${SESSION_NAME} still exists after down" >&2
+    echo "ERROR: pytorchjob session ${SESSION_NAME} still has managed pod(s) after down" >&2
     exit 1
   fi
   sleep 2

@@ -150,3 +150,22 @@ attachable = [item for item in items if item.get("metadata", {}).get("labels", {
 selected = attachable or items
 print(" ".join(item.get("metadata", {}).get("name", "") for item in selected if item.get("metadata", {}).get("name")))' 
 }
+
+session_workload_name() {
+  local namespace="$1"
+  local session_name="$2"
+  kubectl -n "$namespace" get pods -l "$(session_managed_pod_selector "$session_name")" -o json |
+    python3 -c 'import json, sys
+data = json.load(sys.stdin)
+items = data.get("items", [])
+attachable = [item for item in items if item.get("metadata", {}).get("labels", {}).get("okdev.io/attachable", "").strip().lower() == "true"]
+selected = attachable or items
+for item in selected:
+    metadata = item.get("metadata", {})
+    labels = metadata.get("labels", {})
+    annotations = metadata.get("annotations", {})
+    name = labels.get("okdev.io/workload-name") or annotations.get("okdev.io/workload-name") or ""
+    if name:
+        print(name)
+        break'
+}

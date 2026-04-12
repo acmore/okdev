@@ -91,7 +91,8 @@ if [[ "$SYNC_OK" != "true" ]]; then
   exit 1
 fi
 
-ORIGINAL_DEPLOY_UID=$(kubectl -n "$NAMESPACE" get deployment "$SESSION_NAME" -o jsonpath='{.metadata.uid}')
+WORKLOAD_NAME=$(session_workload_name "$NAMESPACE" "$SESSION_NAME")
+ORIGINAL_DEPLOY_UID=$(kubectl -n "$NAMESPACE" get deployment "$WORKLOAD_NAME" -o jsonpath='{.metadata.uid}')
 DEPLOYMENT_POD_NAME=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
 ORIGINAL_POD_UID=$(kubectl -n "$NAMESPACE" get pod "$DEPLOYMENT_POD_NAME" -o jsonpath='{.metadata.uid}')
 
@@ -117,7 +118,8 @@ echo "Reconciling deployment via --reconcile"
 
 RECONCILE_OK=false
 for i in $(seq 1 30); do
-  DEPLOY_IMAGE=$(kubectl -n "$NAMESPACE" get deployment "$SESSION_NAME" -o jsonpath='{.spec.template.spec.containers[?(@.name=="dev")].image}')
+  WORKLOAD_NAME=$(session_workload_name "$NAMESPACE" "$SESSION_NAME")
+  DEPLOY_IMAGE=$(kubectl -n "$NAMESPACE" get deployment "$WORKLOAD_NAME" -o jsonpath='{.spec.template.spec.containers[?(@.name=="dev")].image}')
   DEPLOYMENT_POD_NAME=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
   POD_UID=$(kubectl -n "$NAMESPACE" get pod "$DEPLOYMENT_POD_NAME" -o jsonpath='{.metadata.uid}')
   POD_IMAGE=$(kubectl -n "$NAMESPACE" get pod "$DEPLOYMENT_POD_NAME" -o jsonpath='{.spec.containers[?(@.name=="dev")].image}')
@@ -132,7 +134,8 @@ if [[ "$RECONCILE_OK" != "true" ]]; then
   exit 1
 fi
 
-RECONCILED_DEPLOY_UID=$(kubectl -n "$NAMESPACE" get deployment "$SESSION_NAME" -o jsonpath='{.metadata.uid}')
+WORKLOAD_NAME=$(session_workload_name "$NAMESPACE" "$SESSION_NAME")
+RECONCILED_DEPLOY_UID=$(kubectl -n "$NAMESPACE" get deployment "$WORKLOAD_NAME" -o jsonpath='{.metadata.uid}')
 if [[ "$RECONCILED_DEPLOY_UID" != "$ORIGINAL_DEPLOY_UID" ]]; then
   echo "ERROR: expected deployment object to be updated in place" >&2
   exit 1
@@ -150,11 +153,11 @@ echo "Tearing down deployment session"
 assert_no_local_sync_processes "$SESSION_NAME" "$HOME_DIR/.okdev/sessions/${SESSION_NAME}/syncthing"
 
 for i in $(seq 1 20); do
-  if ! kubectl -n "$NAMESPACE" get deployment "$SESSION_NAME" >/dev/null 2>&1; then
+  if [[ -z "$(session_attachable_pod_names "$NAMESPACE" "$SESSION_NAME")" ]]; then
     break
   fi
   if [[ "$i" -eq 20 ]]; then
-    echo "ERROR: deployment ${SESSION_NAME} still exists after down" >&2
+    echo "ERROR: deployment session ${SESSION_NAME} still has managed pod(s) after down" >&2
     exit 1
   fi
   sleep 2
