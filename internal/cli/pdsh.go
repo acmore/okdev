@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/acmore/okdev/internal/kube"
+	"github.com/acmore/okdev/internal/shellutil"
 	"github.com/spf13/cobra"
 )
 
@@ -63,6 +64,11 @@ func newExecCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&cmdStr, "cmd", "", "Command string to execute")
 	cmd.Flags().BoolVar(&noTTY, "no-tty", false, "Disable TTY allocation")
 	return cmd
+}
+
+func detachCommand(cmd string) []string {
+	quoted := shellutil.Quote(cmd)
+	return []string{"sh", "-c", "nohup sh -c " + quoted + " >/dev/null 2>&1 &"}
 }
 
 func filterRunningPods(pods []kube.PodSummary) []kube.PodSummary {

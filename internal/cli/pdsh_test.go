@@ -70,6 +70,32 @@ func TestExcludePods(t *testing.T) {
 	}
 }
 
+func TestDetachCommand(t *testing.T) {
+	got := detachCommand("python train.py --epochs 100")
+	expected := []string{"sh", "-c", "nohup sh -c 'python train.py --epochs 100' >/dev/null 2>&1 &"}
+	if len(got) != len(expected) {
+		t.Fatalf("expected %d args, got %d: %v", len(expected), len(got), got)
+	}
+	for i := range got {
+		if got[i] != expected[i] {
+			t.Fatalf("arg %d: expected %q, got %q", i, expected[i], got[i])
+		}
+	}
+}
+
+func TestDetachCommandWithQuotes(t *testing.T) {
+	got := detachCommand("echo 'hello world'")
+	expected := []string{"sh", "-c", "nohup sh -c 'echo '\\''hello world'\\''' >/dev/null 2>&1 &"}
+	if len(got) != len(expected) {
+		t.Fatalf("expected %d args, got %d: %v", len(expected), len(got), got)
+	}
+	for i := range got {
+		if got[i] != expected[i] {
+			t.Fatalf("arg %d: expected %q, got %q", i, expected[i], got[i])
+		}
+	}
+}
+
 func TestFilterRunningPods(t *testing.T) {
 	pods := []kube.PodSummary{
 		{Name: "a", Phase: "Running"},
