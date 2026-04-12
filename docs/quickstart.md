@@ -42,6 +42,16 @@ For built-in templates, `okdev init` also writes a starter local `.stignore` fil
 When `--stignore-preset` is omitted, `okdev init` will try to detect a preset from common repo markers like `go.mod`, `package.json`, `Cargo.toml`, or `pyproject.toml`.
 `okdev init --template` resolves names from project templates in `.okdev/templates/`, user templates in `~/.okdev/templates/`, and then built-in templates. Template files can include YAML frontmatter with custom `string`, `int`, or `bool` variables; pass values with repeated `--set key=value` flags. Custom template usage is recorded in `spec.template` so `okdev migrate --template <name>` can re-render the template later while preserving local config edits.
 
+Templates can also declare companion files in frontmatter, for example a PyTorch template can render both the config and `pytorchjob.yaml`:
+
+```yaml
+---
+files:
+  - path: "{{ .ManifestPath }}"
+    template: manifests/pytorchjob.yaml.tmpl
+---
+```
+
 okdev discovers configuration in this order:
 
 1. `-c, --config <path>` flag

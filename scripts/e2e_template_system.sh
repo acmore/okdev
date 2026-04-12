@@ -84,6 +84,80 @@ spec:
           image: ubuntu:22.04
 EOF
 
+mkdir -p "$PROJECT_DIR/.okdev/templates/manifests"
+cat >"$PROJECT_DIR/.okdev/templates/pytorch.yaml.tmpl" <<'EOF'
+---
+name: pytorch
+description: PyTorchJob template
+variables:
+  - name: trainImage
+    description: Training image
+    type: string
+    default: pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime
+  - name: workerReplicas
+    description: Worker replica count
+    type: int
+    default: 2
+files:
+  - path: "{{ .ManifestPath }}"
+    template: manifests/pytorchjob.yaml.tmpl
+---
+apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: {{ .Name }}
+spec:
+  namespace: {{ .Namespace }}
+  sync:
+    paths:
+      - "{{ .SyncLocal }}:{{ .SyncRemote }}"
+  ssh:
+    user: root
+  sidecar:
+    image: ghcr.io/acmore/okdev:edge
+  workload:
+    type: {{ .WorkloadType }}
+    manifestPath: {{ .ManifestPath }}
+    inject:
+      - path: "spec.pytorchReplicaSpecs.Master.template"
+      - path: "spec.pytorchReplicaSpecs.Worker.template"
+    attach:
+      container: dev
+EOF
+
+cat >"$PROJECT_DIR/.okdev/templates/manifests/pytorchjob.yaml.tmpl" <<'EOF'
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: {{ .Name }}
+spec:
+  pytorchReplicaSpecs:
+    Master:
+      replicas: 1
+      restartPolicy: Never
+      template:
+        spec:
+          containers:
+            - name: dev
+              image: {{ .Vars.trainImage }}
+              command: ["sleep", "infinity"]
+              volumeMounts:
+                - name: workspace
+                  mountPath: {{ .SyncRemote }}
+    Worker:
+      replicas: {{ .Vars.workerReplicas }}
+      restartPolicy: Never
+      template:
+        spec:
+          containers:
+            - name: dev
+              image: {{ .Vars.trainImage }}
+              command: ["sleep", "infinity"]
+              volumeMounts:
+                - name: workspace
+                  mountPath: {{ .SyncRemote }}
+EOF
+
 echo "Listing project templates from a nested directory"
 LIST_OUTPUT=$(cd "$PROJECT_DIR/src/pkg" && "$OKDEV_BIN" template list)
 echo "$LIST_OUTPUT"
@@ -97,6 +171,14 @@ SHOW_OUTPUT=$(cd "$PROJECT_DIR/src/pkg" && "$OKDEV_BIN" template show team)
 echo "$SHOW_OUTPUT"
 if [[ "$SHOW_OUTPUT" != *"Team template"* || "$SHOW_OUTPUT" != *"baseImage"* || "$SHOW_OUTPUT" != *"bool"* ]]; then
   echo "ERROR: expected frontmatter metadata in template show output" >&2
+  exit 1
+fi
+
+echo "Showing template companion files"
+PYTORCH_SHOW_OUTPUT=$(cd "$PROJECT_DIR/src/pkg" && "$OKDEV_BIN" template show pytorch)
+echo "$PYTORCH_SHOW_OUTPUT"
+if [[ "$PYTORCH_SHOW_OUTPUT" != *"PyTorchJob template"* || "$PYTORCH_SHOW_OUTPUT" != *"Files:"* || "$PYTORCH_SHOW_OUTPUT" != *"manifests/pytorchjob.yaml.tmpl"* ]]; then
+  echo "ERROR: expected companion file metadata in template show output" >&2
   exit 1
 fi
 rm -f "$CFG_PATH"
@@ -126,6 +208,57 @@ for needle in \
   "name: debug"; do
   if ! grep -Fq "$needle" "$CFG_PATH"; then
     echo "ERROR: expected generated config to contain: $needle" >&2
+    exit 1
+  fi
+done
+
+echo "Initializing PyTorchJob template with companion manifest"
+PYTORCH_DIR="$WORKDIR/pytorch"
+mkdir -p "$PYTORCH_DIR/.okdev"
+cp -R "$PROJECT_DIR/.okdev/templates" "$PYTORCH_DIR/.okdev/templates"
+(
+  cd "$PYTORCH_DIR"
+  "$OKDEV_BIN" init \
+    --yes \
+    --template pytorch \
+    --name torchdemo \
+    --workload pytorchjob \
+    --manifest-path pytorchjob.yaml \
+    --sync-remote /train \
+    --set trainImage=example.com/train:latest \
+    --set workerReplicas=3
+)
+
+if [[ ! -f "$PYTORCH_DIR/.okdev.yaml" ]]; then
+  echo "ERROR: expected PyTorch template to write config" >&2
+  exit 1
+fi
+if [[ ! -f "$PYTORCH_DIR/pytorchjob.yaml" ]]; then
+  echo "ERROR: expected PyTorch template to write companion manifest" >&2
+  exit 1
+fi
+cat "$PYTORCH_DIR/.okdev.yaml"
+cat "$PYTORCH_DIR/pytorchjob.yaml"
+for needle in \
+  "template:" \
+  "name: pytorch" \
+  "trainImage: example.com/train:latest" \
+  "workerReplicas: 3" \
+  "type: pytorchjob" \
+  "manifestPath: pytorchjob.yaml"; do
+  if ! grep -Fq "$needle" "$PYTORCH_DIR/.okdev.yaml"; then
+    echo "ERROR: expected PyTorch config to contain: $needle" >&2
+    exit 1
+  fi
+done
+for needle in \
+  "kind: PyTorchJob" \
+  "name: torchdemo" \
+  "replicas: 3" \
+  "image: example.com/train:latest" \
+  "mountPath: /train"; do
+  if ! grep -Fq "$needle" "$PYTORCH_DIR/pytorchjob.yaml"; then
+    echo "ERROR: expected PyTorch manifest to contain: $needle" >&2
     exit 1
   fi
 done
