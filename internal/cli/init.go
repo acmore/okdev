@@ -469,11 +469,7 @@ func scaffoldInitWorkload(configPath, templateRef string, vars *config.TemplateV
 	if templatePath == "" || strings.TrimSpace(vars.ManifestPath) == "" {
 		return nil, nil
 	}
-	target := vars.ManifestPath
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(config.ManifestDir(configPath), target)
-	}
-	target = filepath.Clean(target)
+	target := resolveInitScaffoldFilePath(configPath, vars.ManifestPath)
 	if _, err := os.Stat(target); err == nil && !force {
 		return nil, nil
 	}
@@ -512,10 +508,7 @@ func scaffoldInitTemplateFiles(configPath, templateRef string, meta *config.Temp
 		if target == "" {
 			return nil, fmt.Errorf("template file path %q rendered empty", pathTemplate)
 		}
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(config.ManifestDir(configPath), target)
-		}
-		target = filepath.Clean(target)
+		target = resolveInitScaffoldFilePath(configPath, target)
 		if _, err := os.Stat(target); err == nil && !force {
 			continue
 		}
@@ -537,6 +530,22 @@ func scaffoldInitTemplateFiles(configPath, templateRef string, meta *config.Temp
 		wrote = append(wrote, target)
 	}
 	return wrote, nil
+}
+
+func resolveInitScaffoldFilePath(configPath, path string) string {
+	target := strings.TrimSpace(path)
+	if filepath.IsAbs(target) {
+		return filepath.Clean(target)
+	}
+	if isFolderConfigPath(configPath) && pathStartsWithDotOkdev(target) {
+		return filepath.Clean(filepath.Join(config.RootDir(configPath), target))
+	}
+	return filepath.Clean(filepath.Join(config.ManifestDir(configPath), target))
+}
+
+func pathStartsWithDotOkdev(path string) bool {
+	cleaned := filepath.Clean(strings.TrimSpace(path))
+	return cleaned == ".okdev" || strings.HasPrefix(cleaned, ".okdev"+string(filepath.Separator))
 }
 
 func usesBuiltinBasicTemplate(ref string) bool {
