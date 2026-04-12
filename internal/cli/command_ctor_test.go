@@ -43,4 +43,7 @@ func TestCommandConstructorsExposeExpectedMetadata(t *testing.T) {
 	if cmd := newAgentListCmd(&Options{}); cmd.Use != "list [session]" || cmd.Short == "" {
 		t.Fatalf("unexpected agent list command shape")
 	}
+	if cmd := newCpCmd(&Options{}); cmd.Use != "cp [session] <src> <dst>" || cmd.Flags().Lookup("all") == nil || cmd.Flags().Lookup("pod") == nil || cmd.Flags().Lookup("role") == nil || cmd.Flags().Lookup("label") == nil || cmd.Flags().Lookup("exclude") == nil || cmd.Flags().Lookup("container") == nil || cmd.Flags().Lookup("fanout") == nil {
+		t.Fatalf("unexpected cp command shape")
+	}
 }
