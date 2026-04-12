@@ -402,3 +402,28 @@ func TestRenderEmbeddedTemplate(t *testing.T) {
 		t.Fatalf("expected rendered name, got %q", out)
 	}
 }
+
+func TestBasicTemplateRendersKubeContext(t *testing.T) {
+	vars := NewTemplateVars()
+	vars.Name = "demo"
+	vars.KubeContext = "my-cluster"
+	out, err := RenderTemplate("basic", vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "kubeContext: my-cluster") {
+		t.Fatalf("expected kubeContext in rendered output, got %q", out)
+	}
+}
+
+func TestBasicTemplateOmitsKubeContextWhenEmpty(t *testing.T) {
+	vars := NewTemplateVars()
+	vars.Name = "demo"
+	out, err := RenderTemplate("basic", vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "kubeContext") {
+		t.Fatalf("expected no kubeContext when empty, got %q", out)
+	}
+}
