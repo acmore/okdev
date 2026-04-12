@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/acmore/okdev/internal/workload"
@@ -249,6 +250,12 @@ func SaveInfo(info Info) error {
 	if err != nil {
 		return err
 	}
+	lock, err := lockSessionInfo(name)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+
 	existing, err := LoadInfo(name)
 	if err != nil {
 		return err
@@ -291,6 +298,34 @@ func SaveInfo(info Info) error {
 		return fmt.Errorf("write session info: %w", err)
 	}
 	return nil
+}
+
+type sessionInfoLock struct {
+	file *os.File
+}
+
+func lockSessionInfo(name string) (*sessionInfoLock, error) {
+	dir, err := SessionDir(name)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "session.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("open session info lock: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("lock session info: %w", err)
+	}
+	return &sessionInfoLock{file: f}, nil
+}
+
+func (l *sessionInfoLock) Close() {
+	if l == nil || l.file == nil {
+		return
+	}
+	_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
+	_ = l.file.Close()
 }
 
 func LoadInfo(name string) (Info, error) {

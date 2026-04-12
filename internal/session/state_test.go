@@ -5,7 +5,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func resetRepoRootCache() {
@@ -163,5 +166,75 @@ func TestSaveLoadSessionInfo(t *testing.T) {
 	}
 	if info.CreatedAt.IsZero() || info.LastUsedAt.IsZero() {
 		t.Fatalf("expected timestamps to be set: %+v", info)
+	}
+}
+
+func TestSessionInfoLockIsExclusive(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	first, err := lockSessionInfo("sess-lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+
+	dir, err := SessionDir("sess-lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.OpenFile(filepath.Join(dir, "session.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if err := syscall.Flock(int(second.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+		_ = syscall.Flock(int(second.Fd()), syscall.LOCK_UN)
+		t.Fatal("expected session info lock to be held")
+	}
+}
+
+func TestSaveInfoConcurrentUpdatesPreserveFields(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	const workers = 20
+	var ready atomic.Int32
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errCh := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ready.Add(1)
+			<-start
+			info := Info{Name: "sess-concurrent"}
+			if i%2 == 0 {
+				info.Namespace = "default"
+			} else {
+				info.KubeContext = "dev"
+			}
+			errCh <- SaveInfo(info)
+		}(i)
+	}
+	for deadline := time.Now().Add(time.Second); ready.Load() < workers && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+	close(start)
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("SaveInfo error: %v", err)
+		}
+	}
+
+	info, err := LoadInfo("sess-concurrent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Namespace != "default" || info.KubeContext != "dev" {
+		t.Fatalf("expected merged concurrent fields, got %+v", info)
 	}
 }
