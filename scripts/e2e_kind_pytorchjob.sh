@@ -43,11 +43,13 @@ cleanup() {
 trap cleanup EXIT
 
 refresh_pytorchjob_pods() {
+  local workload_name
+  workload_name=$(session_workload_name "$NAMESPACE" "$SESSION_NAME")
   MASTER_POD=$(kubectl -n "$NAMESPACE" get pods \
-    -l "training.kubeflow.org/job-name=$SESSION_NAME,training.kubeflow.org/replica-type=master" \
+    -l "training.kubeflow.org/job-name=$workload_name,training.kubeflow.org/replica-type=master" \
     -o jsonpath='{.items[0].metadata.name}')
   WORKER_PODS=$(kubectl -n "$NAMESPACE" get pods \
-    -l "training.kubeflow.org/job-name=$SESSION_NAME,training.kubeflow.org/replica-type=worker" \
+    -l "training.kubeflow.org/job-name=$workload_name,training.kubeflow.org/replica-type=worker" \
     -o jsonpath='{.items[*].metadata.name}')
 }
 
@@ -210,7 +212,7 @@ echo "exec --role worker verified"
 echo "Testing exec --all --exclude targets subset"
 # Get master pod name to exclude it.
 EXCLUDE_MASTER_POD=$(kubectl -n "$NAMESPACE" get pods \
-  -l "training.kubeflow.org/job-name=$SESSION_NAME,training.kubeflow.org/replica-type=master" \
+  -l "training.kubeflow.org/job-name=$(session_workload_name "$NAMESPACE" "$SESSION_NAME"),training.kubeflow.org/replica-type=master" \
   -o jsonpath='{.items[0].metadata.name}')
 EXEC_EXCLUDE_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --exclude "$EXCLUDE_MASTER_POD" --no-tty -- sh -lc 'echo after-exclude')
 echo "$EXEC_EXCLUDE_OUTPUT"
@@ -279,7 +281,7 @@ fi
 sleep 2
 # Verify the marker file was created on at least the master.
 DETACH_MARKER_MASTER=$(kubectl -n "$NAMESPACE" get pods \
-  -l "training.kubeflow.org/job-name=$SESSION_NAME,training.kubeflow.org/replica-type=master" \
+  -l "training.kubeflow.org/job-name=$(session_workload_name "$NAMESPACE" "$SESSION_NAME"),training.kubeflow.org/replica-type=master" \
   -o jsonpath='{.items[0].metadata.name}')
 if ! kubectl -n "$NAMESPACE" exec "$DETACH_MARKER_MASTER" -c pytorch -- test -f /tmp/detach-marker; then
   echo "ERROR: detached command did not create marker on master pod" >&2
