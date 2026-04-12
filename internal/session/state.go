@@ -29,15 +29,19 @@ const (
 )
 
 type Info struct {
-	Name         string    `json:"name"`
-	RepoRoot     string    `json:"repoRoot,omitempty"`
-	ConfigPath   string    `json:"configPath,omitempty"`
-	Namespace    string    `json:"namespace,omitempty"`
-	KubeContext  string    `json:"kubeContext,omitempty"`
-	Owner        string    `json:"owner,omitempty"`
-	WorkloadType string    `json:"workloadType,omitempty"`
-	CreatedAt    time.Time `json:"createdAt,omitempty"`
-	LastUsedAt   time.Time `json:"lastUsedAt,omitempty"`
+	Name               string    `json:"name"`
+	RepoRoot           string    `json:"repoRoot,omitempty"`
+	ConfigPath         string    `json:"configPath,omitempty"`
+	Namespace          string    `json:"namespace,omitempty"`
+	KubeContext        string    `json:"kubeContext,omitempty"`
+	Owner              string    `json:"owner,omitempty"`
+	WorkloadType       string    `json:"workloadType,omitempty"`
+	RunID              string    `json:"runID,omitempty"`
+	WorkloadAPIVersion string    `json:"workloadAPIVersion,omitempty"`
+	WorkloadKind       string    `json:"workloadKind,omitempty"`
+	WorkloadName       string    `json:"workloadName,omitempty"`
+	CreatedAt          time.Time `json:"createdAt,omitempty"`
+	LastUsedAt         time.Time `json:"lastUsedAt,omitempty"`
 }
 
 var (
@@ -287,6 +291,18 @@ func SaveInfo(info Info) error {
 	}
 	if strings.TrimSpace(info.WorkloadType) != "" {
 		existing.WorkloadType = info.WorkloadType
+	}
+	if strings.TrimSpace(info.RunID) != "" {
+		existing.RunID = info.RunID
+	}
+	if strings.TrimSpace(info.WorkloadAPIVersion) != "" {
+		existing.WorkloadAPIVersion = info.WorkloadAPIVersion
+	}
+	if strings.TrimSpace(info.WorkloadKind) != "" {
+		existing.WorkloadKind = info.WorkloadKind
+	}
+	if strings.TrimSpace(info.WorkloadName) != "" {
+		existing.WorkloadName = info.WorkloadName
 	}
 	existing.LastUsedAt = now
 

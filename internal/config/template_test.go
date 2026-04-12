@@ -398,8 +398,8 @@ func TestRenderEmbeddedTemplate(t *testing.T) {
 	if !strings.Contains(out, "kind: Job") {
 		t.Fatalf("expected job manifest, got %q", out)
 	}
-	if !strings.Contains(out, "name: demo") {
-		t.Fatalf("expected rendered name, got %q", out)
+	if !strings.Contains(out, "name: {{ .WorkloadName }}") {
+		t.Fatalf("expected runtime workload name placeholder, got %q", out)
 	}
 }
 
@@ -425,5 +425,35 @@ func TestBasicTemplateOmitsKubeContextWhenEmpty(t *testing.T) {
 	}
 	if strings.Contains(out, "kubeContext") {
 		t.Fatalf("expected no kubeContext when empty, got %q", out)
+	}
+}
+
+func TestNewTemplateVarsPopulatesUserAndRepo(t *testing.T) {
+	vars := NewTemplateVars()
+	if vars.User == "" {
+		t.Fatal("expected User to be populated")
+	}
+	if vars.Repo == "" {
+		t.Fatal("expected Repo to be populated")
+	}
+}
+
+func TestTemplateCanUseUserAndRepoVars(t *testing.T) {
+	tmp := t.TempDir()
+	tmplPath := filepath.Join(tmp, "custom.yaml.tmpl")
+	writeFile(t, tmplPath, "user: {{ .User }}\nrepo: {{ .Repo }}")
+
+	vars := NewTemplateVars()
+	vars.User = "alice"
+	vars.Repo = "my-project"
+	out, err := RenderTemplate(tmplPath, vars)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "user: alice") {
+		t.Fatalf("expected user in output, got %q", out)
+	}
+	if !strings.Contains(out, "repo: my-project") {
+		t.Fatalf("expected repo in output, got %q", out)
 	}
 }

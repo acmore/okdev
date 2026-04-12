@@ -193,7 +193,7 @@ echo "Config-free positional session commands verified"
 echo "Waiting for synced file to appear remotely with correct content"
 SYNC_OK=false
 for i in $(seq 1 30); do
-  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'if [ -f /workspace/hello.txt ]; then cat /workspace/hello.txt; fi' || true)
+  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'if [ -f /workspace/hello.txt ]; then cat /workspace/hello.txt; fi' || true)
   if [[ "$REMOTE_CONTENT" == "hello from okdev e2e" ]]; then
     SYNC_OK=true
     echo "Sync verified on attempt $i"
@@ -209,7 +209,7 @@ if [[ "$SYNC_OK" != "true" ]]; then
 fi
 
 echo "Verifying remoteIgnore writes remote .stignore and keeps profiling data local-only"
-REMOTE_STIGNORE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'cat /workspace/.stignore 2>/dev/null || true')
+REMOTE_STIGNORE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'cat /workspace/.stignore 2>/dev/null || true')
 if [[ "$REMOTE_STIGNORE" != *"profiles/"* || "$REMOTE_STIGNORE" != *"*.prof"* ]]; then
   echo "ERROR: expected remote .stignore to contain remoteIgnore patterns" >&2
   echo "$REMOTE_STIGNORE" >&2
@@ -220,7 +220,7 @@ echo "local profile payload" >"$SYNC_DIR/profiles/run.prof"
 echo "remote ignore control" >"$SYNC_DIR/remote-ignore-control.txt"
 CONTROL_SYNCED=false
 for i in $(seq 1 30); do
-  REMOTE_CONTROL=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'if [ -f /workspace/remote-ignore-control.txt ]; then cat /workspace/remote-ignore-control.txt; fi' || true)
+  REMOTE_CONTROL=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'if [ -f /workspace/remote-ignore-control.txt ]; then cat /workspace/remote-ignore-control.txt; fi' || true)
   if [[ "$REMOTE_CONTROL" == "remote ignore control" ]]; then
     CONTROL_SYNCED=true
     break
@@ -231,7 +231,7 @@ if [[ "$CONTROL_SYNCED" != "true" ]]; then
   echo "ERROR: expected non-ignored control file to sync while testing remoteIgnore" >&2
   exit 1
 fi
-REMOTE_PROFILE_STATE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'if [ -e /workspace/profiles/run.prof ]; then echo present; else echo absent; fi' || true)
+REMOTE_PROFILE_STATE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'if [ -e /workspace/profiles/run.prof ]; then echo present; else echo absent; fi' || true)
 if [[ "$REMOTE_PROFILE_STATE" != "absent" ]]; then
   echo "ERROR: expected remoteIgnore to keep profiling data out of remote workspace, got $REMOTE_PROFILE_STATE" >&2
   exit 1
@@ -295,14 +295,14 @@ if [[ "$LOG_OUTPUT" != *"[okdev-sidecar]"* ]]; then
 fi
 echo "logs output verified"
 
-echo "Testing exec --cmd"
-EXEC_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'echo exec-ok')
+echo "Testing exec --"
+EXEC_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'echo exec-ok')
 if [[ "$EXEC_OUTPUT" != *"exec-ok"* ]]; then
-  echo "ERROR: exec --cmd did not return expected output" >&2
+  echo "ERROR: exec -- did not return expected output" >&2
   echo "Got: $EXEC_OUTPUT" >&2
   exit 1
 fi
-echo "exec --cmd verified"
+echo "exec -- verified"
 
 # ---------------------------------------------------------------------------
 # File copy (okdev cp) single-pod verification
@@ -311,7 +311,7 @@ echo "exec --cmd verified"
 echo "Testing cp upload single file"
 echo "cp-smoke-content" >"$SYNC_DIR/cp-smoke.txt"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp "$SYNC_DIR/cp-smoke.txt" :/tmp/cp-smoke.txt
-CP_VERIFY=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'cat /tmp/cp-smoke.txt')
+CP_VERIFY=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'cat /tmp/cp-smoke.txt')
 if [[ "$CP_VERIFY" != "cp-smoke-content" ]]; then
   echo "ERROR: cp upload single file failed, got '$CP_VERIFY'" >&2
   exit 1
@@ -324,8 +324,8 @@ mkdir -p "$CP_DIR/nested"
 echo "dir-a" >"$CP_DIR/a.txt"
 echo "dir-b" >"$CP_DIR/nested/b.txt"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp "$CP_DIR" :/tmp/cp-smoke-dir
-CP_DIR_A=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'cat /tmp/cp-smoke-dir/a.txt')
-CP_DIR_B=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'cat /tmp/cp-smoke-dir/nested/b.txt')
+CP_DIR_A=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'cat /tmp/cp-smoke-dir/a.txt')
+CP_DIR_B=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'cat /tmp/cp-smoke-dir/nested/b.txt')
 if [[ "$CP_DIR_A" != "dir-a" || "$CP_DIR_B" != "dir-b" ]]; then
   echo "ERROR: cp upload directory failed, got a='$CP_DIR_A' b='$CP_DIR_B'" >&2
   exit 1
@@ -356,7 +356,8 @@ echo "cp download directory verified"
 echo "File copy (okdev cp) tests completed"
 
 echo "Capturing current pod identity before spec drift"
-ORIGINAL_POD_UID=$(kubectl -n "$NAMESPACE" get pod "okdev-${SESSION_NAME}" -o jsonpath='{.metadata.uid}')
+ATTACHABLE_POD_NAME=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
+ORIGINAL_POD_UID=$(kubectl -n "$NAMESPACE" get pod "$ATTACHABLE_POD_NAME" -o jsonpath='{.metadata.uid}')
 echo "Original pod UID: $ORIGINAL_POD_UID"
 
 echo "Changing pod workload spec to trigger drift detection"
@@ -382,12 +383,13 @@ echo "Recreating pod workload via --reconcile"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --reconcile --wait-timeout 5m
 
 echo "Verifying pod was recreated with updated image"
-RECONCILED_POD_UID=$(kubectl -n "$NAMESPACE" get pod "okdev-${SESSION_NAME}" -o jsonpath='{.metadata.uid}')
+ATTACHABLE_POD_NAME=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
+RECONCILED_POD_UID=$(kubectl -n "$NAMESPACE" get pod "$ATTACHABLE_POD_NAME" -o jsonpath='{.metadata.uid}')
 if [[ "$RECONCILED_POD_UID" == "$ORIGINAL_POD_UID" ]]; then
   echo "ERROR: expected pod UID to change after --reconcile recreate" >&2
   exit 1
 fi
-RECONCILED_IMAGE=$(kubectl -n "$NAMESPACE" get pod "okdev-${SESSION_NAME}" -o jsonpath='{.spec.containers[?(@.name=="dev")].image}')
+RECONCILED_IMAGE=$(kubectl -n "$NAMESPACE" get pod "$ATTACHABLE_POD_NAME" -o jsonpath='{.spec.containers[?(@.name=="dev")].image}')
 if [[ "$RECONCILED_IMAGE" != "ubuntu:24.04" ]]; then
   echo "ERROR: expected reconciled pod image ubuntu:24.04, got '$RECONCILED_IMAGE'" >&2
   exit 1
@@ -400,12 +402,12 @@ assert_no_local_sync_processes "$SESSION_NAME" "$SYNC_HOME"
 
 echo "Verifying pod is deleted"
 for i in $(seq 1 30); do
-  if ! kubectl -n "$NAMESPACE" get pod "okdev-${SESSION_NAME}" >/dev/null 2>&1; then
+  if [[ -z "$(session_attachable_pod_names "$NAMESPACE" "$SESSION_NAME")" ]]; then
     echo "Pod deleted on attempt $i"
     break
   fi
   if [[ "$i" -eq 30 ]]; then
-    echo "ERROR: pod okdev-${SESSION_NAME} still exists after down" >&2
+    echo "ERROR: session $SESSION_NAME still has attachable pod(s) after down" >&2
     exit 1
   fi
   sleep 2

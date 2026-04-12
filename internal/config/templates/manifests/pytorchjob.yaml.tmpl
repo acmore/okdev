@@ -1,7 +1,9 @@
 apiVersion: kubeflow.org/v1
 kind: PyTorchJob
 metadata:
-  name: {{ .Name }}
+  name: {{`{{ .WorkloadName }}`}}
+  labels:
+    app.kubernetes.io/name: {{`{{ .WorkloadName }}`}}
 spec:
   pytorchReplicaSpecs:
     Master:

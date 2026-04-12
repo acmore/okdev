@@ -129,7 +129,7 @@ cat >"$PROJECT_DIR/.okdev/templates/manifests/pytorchjob.yaml.tmpl" <<'EOF'
 apiVersion: kubeflow.org/v1
 kind: PyTorchJob
 metadata:
-  name: {{ .Name }}
+  name: {{`{{ .WorkloadName }}`}}
 spec:
   pytorchReplicaSpecs:
     Master:
@@ -229,16 +229,19 @@ cp -R "$PROJECT_DIR/.okdev/templates" "$PYTORCH_DIR/.okdev/templates"
     --set workerReplicas=3
 )
 
-if [[ ! -f "$PYTORCH_DIR/.okdev.yaml" ]]; then
-  echo "ERROR: expected PyTorch template to write config" >&2
+PYTORCH_CFG_PATH="$PYTORCH_DIR/.okdev/okdev.yaml"
+PYTORCH_MANIFEST_PATH="$PYTORCH_DIR/.okdev/pytorchjob.yaml"
+
+if [[ ! -f "$PYTORCH_CFG_PATH" ]]; then
+  echo "ERROR: expected PyTorch template to write config to $PYTORCH_CFG_PATH" >&2
   exit 1
 fi
-if [[ ! -f "$PYTORCH_DIR/pytorchjob.yaml" ]]; then
-  echo "ERROR: expected PyTorch template to write companion manifest" >&2
+if [[ ! -f "$PYTORCH_MANIFEST_PATH" ]]; then
+  echo "ERROR: expected PyTorch template to write companion manifest to $PYTORCH_MANIFEST_PATH" >&2
   exit 1
 fi
-cat "$PYTORCH_DIR/.okdev.yaml"
-cat "$PYTORCH_DIR/pytorchjob.yaml"
+cat "$PYTORCH_CFG_PATH"
+cat "$PYTORCH_MANIFEST_PATH"
 for needle in \
   "template:" \
   "name: pytorch" \
@@ -246,18 +249,18 @@ for needle in \
   "workerReplicas: 3" \
   "type: pytorchjob" \
   "manifestPath: pytorchjob.yaml"; do
-  if ! grep -Fq "$needle" "$PYTORCH_DIR/.okdev.yaml"; then
+  if ! grep -Fq "$needle" "$PYTORCH_CFG_PATH"; then
     echo "ERROR: expected PyTorch config to contain: $needle" >&2
     exit 1
   fi
 done
 for needle in \
   "kind: PyTorchJob" \
-  "name: torchdemo" \
+  "name: {{ .WorkloadName }}" \
   "replicas: 3" \
   "image: example.com/train:latest" \
   "mountPath: /train"; do
-  if ! grep -Fq "$needle" "$PYTORCH_DIR/pytorchjob.yaml"; then
+  if ! grep -Fq "$needle" "$PYTORCH_MANIFEST_PATH"; then
     echo "ERROR: expected PyTorch manifest to contain: $needle" >&2
     exit 1
   fi

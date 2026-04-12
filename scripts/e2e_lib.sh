@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+# E2E scripts often capture stdout from okdev subcommands and compare exact
+# command output. Suppress non-interactive "Using config: ..." announcements
+# so those captures only contain the command result.
+export OKDEV_QUIET_CONFIG_ANNOUNCE=1
+
 make_workdir() {
   local root="${OKDEV_TMPDIR:-${TMPDIR:-/tmp}}"
   mkdir -p "$root"
@@ -114,4 +119,53 @@ assert_no_local_sync_processes() {
 
 sync_pid_from_status() {
   grep -oE 'background: running \(pid [0-9]+\)' | grep -oE '[0-9]+' | head -1
+}
+
+session_managed_pod_selector() {
+  local session_name="$1"
+  printf 'okdev.io/managed=true,okdev.io/session=%s' "$session_name"
+}
+
+session_attachable_pod_name() {
+  local namespace="$1"
+  local session_name="$2"
+  kubectl -n "$namespace" get pods -l "$(session_managed_pod_selector "$session_name")" -o json |
+    python3 -c 'import json, sys
+data = json.load(sys.stdin)
+items = data.get("items", [])
+attachable = [item for item in items if item.get("metadata", {}).get("labels", {}).get("okdev.io/attachable", "").strip().lower() == "true"]
+selected = attachable or items
+if selected:
+    print(selected[0].get("metadata", {}).get("name", ""))'
+}
+
+session_attachable_pod_names() {
+  local namespace="$1"
+  local session_name="$2"
+  kubectl -n "$namespace" get pods -l "$(session_managed_pod_selector "$session_name")" -o json |
+    python3 -c 'import json, sys
+data = json.load(sys.stdin)
+items = data.get("items", [])
+attachable = [item for item in items if item.get("metadata", {}).get("labels", {}).get("okdev.io/attachable", "").strip().lower() == "true"]
+selected = attachable or items
+print(" ".join(item.get("metadata", {}).get("name", "") for item in selected if item.get("metadata", {}).get("name")))' 
+}
+
+session_workload_name() {
+  local namespace="$1"
+  local session_name="$2"
+  kubectl -n "$namespace" get pods -l "$(session_managed_pod_selector "$session_name")" -o json |
+    python3 -c 'import json, sys
+data = json.load(sys.stdin)
+items = data.get("items", [])
+attachable = [item for item in items if item.get("metadata", {}).get("labels", {}).get("okdev.io/attachable", "").strip().lower() == "true"]
+selected = attachable or items
+for item in selected:
+    metadata = item.get("metadata", {})
+    labels = metadata.get("labels", {})
+    annotations = metadata.get("annotations", {})
+    name = labels.get("okdev.io/workload-name") or annotations.get("okdev.io/workload-name") or ""
+    if name:
+        print(name)
+        break'
 }

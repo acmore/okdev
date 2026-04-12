@@ -36,7 +36,7 @@ okdev template list
 ```
 
 This generates `.okdev.yaml` in the current directory for simple pod setups.
-When `okdev init` also scaffolds workload files under `.okdev/` such as `job.yaml`, it writes the config as `.okdev/okdev.yaml` instead. In that folder-config layout, `spec.workload.manifestPath` can be the bare filename like `job.yaml` or `pytorchjob.yaml`. okdev resolves that relative to `.okdev/` first, then falls back to the project root for compatibility with older layouts. See [Config Manifest](config-manifest.md) for the full field reference and examples.
+For manifest-backed workloads such as `job`, `pytorchjob`, or `generic`, `okdev init` writes the config as `.okdev/okdev.yaml` and keeps generated workload files beside it under `.okdev/`. In that folder-config layout, `spec.workload.manifestPath` can be the bare filename like `job.yaml` or `pytorchjob.yaml`. okdev resolves that relative to `.okdev/` first, then falls back to the project root for compatibility with older layouts. See [Config Manifest](config-manifest.md) for the full field reference and examples.
 
 For built-in templates, `okdev init` also writes a starter local `.stignore` file for the initialized sync root. Use `--stignore-preset` to override that starter with a project-oriented preset like `python`, `node`, `go`, or `rust`.
 When `--stignore-preset` is omitted, `okdev init` will try to detect a preset from common repo markers like `go.mod`, `package.json`, `Cargo.toml`, or `pyproject.toml`.
@@ -185,7 +185,7 @@ okdev sync --dry-run
 okdev down --dry-run
 ```
 
-`okdev up` reuses an existing session workload by default. Use `okdev up --reconcile` when you want to apply workload changes explicitly: controller-backed workloads are reapplied in place, while pod workloads are deleted and recreated.
+`okdev up` reuses an existing session workload by default. Workload resources are named per run, so `okdev down && okdev up` creates a fresh workload name for the same session. Use `okdev up --reconcile` when you want to apply workload changes explicitly: controller-backed workloads are reapplied in place, while pod workloads are deleted and recreated.
 
 ## Teardown
 

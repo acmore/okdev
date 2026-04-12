@@ -1,9 +1,14 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ .Name }}
+  name: {{`{{ .WorkloadName }}`}}
+  labels:
+    app.kubernetes.io/name: {{`{{ .WorkloadName }}`}}
 spec:
   template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{`{{ .WorkloadName }}`}}
     spec:
       restartPolicy: Never
       containers:

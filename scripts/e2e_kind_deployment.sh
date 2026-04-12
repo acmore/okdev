@@ -79,7 +79,7 @@ done
 
 SYNC_OK=false
 for i in $(seq 1 30); do
-  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'if [ -f /workspace/hello.txt ]; then cat /workspace/hello.txt; fi' || true)
+  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'if [ -f /workspace/hello.txt ]; then cat /workspace/hello.txt; fi' || true)
   if [[ "$REMOTE_CONTENT" == "hello from deployment e2e" ]]; then
     SYNC_OK=true
     break
@@ -91,8 +91,10 @@ if [[ "$SYNC_OK" != "true" ]]; then
   exit 1
 fi
 
-ORIGINAL_DEPLOY_UID=$(kubectl -n "$NAMESPACE" get deployment "$SESSION_NAME" -o jsonpath='{.metadata.uid}')
-ORIGINAL_POD_UID=$(kubectl -n "$NAMESPACE" get pods -l "okdev.io/session=$SESSION_NAME,okdev.io/attachable=true" -o jsonpath='{.items[0].metadata.uid}')
+WORKLOAD_NAME=$(session_workload_name "$NAMESPACE" "$SESSION_NAME")
+ORIGINAL_DEPLOY_UID=$(kubectl -n "$NAMESPACE" get deployment "$WORKLOAD_NAME" -o jsonpath='{.metadata.uid}')
+DEPLOYMENT_POD_NAME=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
+ORIGINAL_POD_UID=$(kubectl -n "$NAMESPACE" get pod "$DEPLOYMENT_POD_NAME" -o jsonpath='{.metadata.uid}')
 
 echo "Changing deployment workload spec to trigger drift detection"
 replace_first_in_file "$MANIFEST_PATH" 'image: ubuntu:22.04' 'image: ubuntu:24.04'
@@ -116,9 +118,11 @@ echo "Reconciling deployment via --reconcile"
 
 RECONCILE_OK=false
 for i in $(seq 1 30); do
-  DEPLOY_IMAGE=$(kubectl -n "$NAMESPACE" get deployment "$SESSION_NAME" -o jsonpath='{.spec.template.spec.containers[?(@.name=="dev")].image}')
-  POD_UID=$(kubectl -n "$NAMESPACE" get pods -l "okdev.io/session=$SESSION_NAME,okdev.io/attachable=true" -o jsonpath='{.items[0].metadata.uid}')
-  POD_IMAGE=$(kubectl -n "$NAMESPACE" get pods -l "okdev.io/session=$SESSION_NAME,okdev.io/attachable=true" -o jsonpath='{.items[0].spec.containers[?(@.name=="dev")].image}')
+  WORKLOAD_NAME=$(session_workload_name "$NAMESPACE" "$SESSION_NAME")
+  DEPLOY_IMAGE=$(kubectl -n "$NAMESPACE" get deployment "$WORKLOAD_NAME" -o jsonpath='{.spec.template.spec.containers[?(@.name=="dev")].image}')
+  DEPLOYMENT_POD_NAME=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
+  POD_UID=$(kubectl -n "$NAMESPACE" get pod "$DEPLOYMENT_POD_NAME" -o jsonpath='{.metadata.uid}')
+  POD_IMAGE=$(kubectl -n "$NAMESPACE" get pod "$DEPLOYMENT_POD_NAME" -o jsonpath='{.spec.containers[?(@.name=="dev")].image}')
   if [[ "$DEPLOY_IMAGE" == "ubuntu:24.04" && "$POD_IMAGE" == "ubuntu:24.04" && "$POD_UID" != "$ORIGINAL_POD_UID" ]]; then
     RECONCILE_OK=true
     break
@@ -130,7 +134,8 @@ if [[ "$RECONCILE_OK" != "true" ]]; then
   exit 1
 fi
 
-RECONCILED_DEPLOY_UID=$(kubectl -n "$NAMESPACE" get deployment "$SESSION_NAME" -o jsonpath='{.metadata.uid}')
+WORKLOAD_NAME=$(session_workload_name "$NAMESPACE" "$SESSION_NAME")
+RECONCILED_DEPLOY_UID=$(kubectl -n "$NAMESPACE" get deployment "$WORKLOAD_NAME" -o jsonpath='{.metadata.uid}')
 if [[ "$RECONCILED_DEPLOY_UID" != "$ORIGINAL_DEPLOY_UID" ]]; then
   echo "ERROR: expected deployment object to be updated in place" >&2
   exit 1
@@ -148,11 +153,11 @@ echo "Tearing down deployment session"
 assert_no_local_sync_processes "$SESSION_NAME" "$HOME_DIR/.okdev/sessions/${SESSION_NAME}/syncthing"
 
 for i in $(seq 1 20); do
-  if ! kubectl -n "$NAMESPACE" get deployment "$SESSION_NAME" >/dev/null 2>&1; then
+  if [[ -z "$(session_attachable_pod_names "$NAMESPACE" "$SESSION_NAME")" ]]; then
     break
   fi
   if [[ "$i" -eq 20 ]]; then
-    echo "ERROR: deployment ${SESSION_NAME} still exists after down" >&2
+    echo "ERROR: deployment session ${SESSION_NAME} still has managed pod(s) after down" >&2
     exit 1
   fi
   sleep 2

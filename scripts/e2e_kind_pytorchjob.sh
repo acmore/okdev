@@ -42,6 +42,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
+refresh_pytorchjob_pods() {
+  local workload_name
+  workload_name=$(session_workload_name "$NAMESPACE" "$SESSION_NAME")
+  MASTER_POD=$(kubectl -n "$NAMESPACE" get pods \
+    -l "training.kubeflow.org/job-name=$workload_name,training.kubeflow.org/replica-type=master" \
+    -o jsonpath='{.items[0].metadata.name}')
+  WORKER_PODS=$(kubectl -n "$NAMESPACE" get pods \
+    -l "training.kubeflow.org/job-name=$workload_name,training.kubeflow.org/replica-type=worker" \
+    -o jsonpath='{.items[*].metadata.name}')
+}
+
 echo "Scaffolding PyTorchJob config via okdev init"
 cd "$WORKDIR"
 "$OKDEV_BIN" init \
@@ -74,6 +85,9 @@ path.write_text(text.replace(old, new, 1))
 PY
 
 # Set 2 worker replicas for multi-pod testing (1 master + 2 workers = 3 pods).
+# Also set a short terminationGracePeriodSeconds so pod cleanup after
+# okdev down completes quickly (the container traps SIGTERM as a no-op,
+# so the default 30 s grace period causes the teardown check to time out).
 python3 - <<'PY' "$MANIFEST_PATH"
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
@@ -82,6 +96,7 @@ old = "Worker:\n      replicas: 1"
 new = "Worker:\n      replicas: 2"
 if old in text:
     text = text.replace(old, new, 1)
+text = text.replace("        spec:\n          containers:", "        spec:\n          terminationGracePeriodSeconds: 5\n          containers:")
 path.write_text(text)
 PY
 
@@ -142,7 +157,7 @@ echo "Sync health status verified"
 echo "Waiting for synced file to appear remotely with correct content"
 SYNC_OK=false
 for i in $(seq 1 30); do
-  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'if [ -f /workspace/hello.txt ]; then cat /workspace/hello.txt; fi' || true)
+  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role master --no-tty --no-prefix -- sh -lc 'if [ -f /workspace/hello.txt ]; then cat /workspace/hello.txt; fi' || true)
   if [[ "$REMOTE_CONTENT" == "hello from pytorchjob e2e" ]]; then
     SYNC_OK=true
     echo "Sync verified on attempt $i"
@@ -164,20 +179,20 @@ echo "Verifying SSH into master pod"
 # Multi-pod exec (pdsh) verification
 # ---------------------------------------------------------------------------
 
-echo "Testing exec --all --cmd across all session pods"
-EXEC_ALL_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --cmd 'echo hello-from-$(hostname)' --no-tty)
+echo "Testing exec -- across all session pods"
+EXEC_ALL_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'echo hello-from-$(hostname)')
 echo "$EXEC_ALL_OUTPUT"
 # Expect prefixed output from 3 pods (1 master + 2 workers).
 EXEC_ALL_LINES=$(echo "$EXEC_ALL_OUTPUT" | grep -c 'hello-from-')
 if [[ "$EXEC_ALL_LINES" -lt 3 ]]; then
-  echo "ERROR: expected exec --all output from 3 pods, got $EXEC_ALL_LINES lines" >&2
+  echo "ERROR: expected exec output from 3 pods, got $EXEC_ALL_LINES lines" >&2
   echo "$EXEC_ALL_OUTPUT" >&2
   exit 1
 fi
-echo "exec --all verified ($EXEC_ALL_LINES pods responded)"
+echo "exec verified ($EXEC_ALL_LINES pods responded)"
 
-echo "Testing exec --role master --cmd targets only master"
-EXEC_MASTER_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role master --cmd 'echo master-only' --no-tty)
+echo "Testing exec --role master -- targets only master"
+EXEC_MASTER_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role master --no-tty -- sh -lc 'echo master-only')
 echo "$EXEC_MASTER_OUTPUT"
 EXEC_MASTER_LINES=$(echo "$EXEC_MASTER_OUTPUT" | grep -c 'master-only')
 if [[ "$EXEC_MASTER_LINES" -ne 1 ]]; then
@@ -187,8 +202,8 @@ if [[ "$EXEC_MASTER_LINES" -ne 1 ]]; then
 fi
 echo "exec --role master verified"
 
-echo "Testing exec --role worker --cmd targets only workers"
-EXEC_WORKER_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role worker --cmd 'echo worker-only' --no-tty)
+echo "Testing exec --role worker -- targets only workers"
+EXEC_WORKER_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role worker --no-tty -- sh -lc 'echo worker-only')
 echo "$EXEC_WORKER_OUTPUT"
 EXEC_WORKER_LINES=$(echo "$EXEC_WORKER_OUTPUT" | grep -c 'worker-only')
 if [[ "$EXEC_WORKER_LINES" -ne 2 ]]; then
@@ -198,23 +213,23 @@ if [[ "$EXEC_WORKER_LINES" -ne 2 ]]; then
 fi
 echo "exec --role worker verified"
 
-echo "Testing exec --all --exclude targets subset"
+echo "Testing exec --exclude targets subset"
 # Get master pod name to exclude it.
 EXCLUDE_MASTER_POD=$(kubectl -n "$NAMESPACE" get pods \
-  -l "training.kubeflow.org/job-name=$SESSION_NAME,training.kubeflow.org/replica-type=master" \
+  -l "training.kubeflow.org/job-name=$(session_workload_name "$NAMESPACE" "$SESSION_NAME"),training.kubeflow.org/replica-type=master" \
   -o jsonpath='{.items[0].metadata.name}')
-EXEC_EXCLUDE_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --exclude "$EXCLUDE_MASTER_POD" --cmd 'echo after-exclude' --no-tty)
+EXEC_EXCLUDE_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --exclude "$EXCLUDE_MASTER_POD" --no-tty -- sh -lc 'echo after-exclude')
 echo "$EXEC_EXCLUDE_OUTPUT"
 EXEC_EXCLUDE_LINES=$(echo "$EXEC_EXCLUDE_OUTPUT" | grep -c 'after-exclude')
 if [[ "$EXEC_EXCLUDE_LINES" -ne 2 ]]; then
-  echo "ERROR: expected exec --all --exclude to target 2 pods, got $EXEC_EXCLUDE_LINES" >&2
+  echo "ERROR: expected exec --exclude to target 2 pods, got $EXEC_EXCLUDE_LINES" >&2
   echo "$EXEC_EXCLUDE_OUTPUT" >&2
   exit 1
 fi
-echo "exec --all --exclude verified"
+echo "exec --exclude verified"
 
-echo "Testing exec --all --no-prefix suppresses pod name prefix"
-EXEC_NOPREFIX_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-prefix --cmd 'echo raw-output' --no-tty)
+echo "Testing exec --no-prefix suppresses pod name prefix"
+EXEC_NOPREFIX_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-prefix --no-tty -- sh -lc 'echo raw-output')
 echo "$EXEC_NOPREFIX_OUTPUT"
 # In no-prefix mode, lines should be raw (no "podname: " prefix).
 if echo "$EXEC_NOPREFIX_OUTPUT" | grep -qE '^[a-z0-9-]+: raw-output$'; then
@@ -227,11 +242,11 @@ if [[ "$EXEC_NOPREFIX_LINES" -lt 3 ]]; then
   echo "ERROR: expected 3 raw-output lines in no-prefix mode, got $EXEC_NOPREFIX_LINES" >&2
   exit 1
 fi
-echo "exec --all --no-prefix verified"
+echo "exec --no-prefix verified"
 
-echo "Testing exec --all --log-dir writes per-pod log files"
+echo "Testing exec --log-dir writes per-pod log files"
 EXEC_LOG_DIR=$(mktemp -d)
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --cmd 'echo log-test' --no-tty --log-dir "$EXEC_LOG_DIR"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --log-dir "$EXEC_LOG_DIR" -- sh -lc 'echo log-test'
 EXEC_LOG_COUNT=$(find "$EXEC_LOG_DIR" -name '*.log' | wc -l | tr -d ' ')
 if [[ "$EXEC_LOG_COUNT" -lt 3 ]]; then
   echo "ERROR: expected at least 3 log files in $EXEC_LOG_DIR, found $EXEC_LOG_COUNT" >&2
@@ -245,20 +260,20 @@ for logfile in "$EXEC_LOG_DIR"/*.log; do
   fi
 done
 rm -rf "$EXEC_LOG_DIR"
-echo "exec --all --log-dir verified"
+echo "exec --log-dir verified"
 
-echo "Testing exec --all --fanout 1 (serial execution)"
-EXEC_FANOUT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --fanout 1 --cmd 'echo fanout-test' --no-tty)
+echo "Testing exec --fanout 1 (serial execution)"
+EXEC_FANOUT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --fanout 1 --no-tty -- sh -lc 'echo fanout-test')
 echo "$EXEC_FANOUT_OUTPUT"
 EXEC_FANOUT_LINES=$(echo "$EXEC_FANOUT_OUTPUT" | grep -c 'fanout-test')
 if [[ "$EXEC_FANOUT_LINES" -lt 3 ]]; then
   echo "ERROR: expected 3 pods with fanout=1, got $EXEC_FANOUT_LINES" >&2
   exit 1
 fi
-echo "exec --all --fanout 1 verified"
+echo "exec --fanout 1 verified"
 
 echo "Testing exec --detach launches background command"
-DETACH_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --detach --cmd 'touch /tmp/detach-marker' --no-tty)
+DETACH_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --detach --no-tty -- sh -lc 'touch /tmp/detach-marker')
 echo "$DETACH_OUTPUT"
 DETACH_LINES=$(echo "$DETACH_OUTPUT" | grep -c 'detached')
 if [[ "$DETACH_LINES" -lt 3 ]]; then
@@ -270,7 +285,7 @@ fi
 sleep 2
 # Verify the marker file was created on at least the master.
 DETACH_MARKER_MASTER=$(kubectl -n "$NAMESPACE" get pods \
-  -l "training.kubeflow.org/job-name=$SESSION_NAME,training.kubeflow.org/replica-type=master" \
+  -l "training.kubeflow.org/job-name=$(session_workload_name "$NAMESPACE" "$SESSION_NAME"),training.kubeflow.org/replica-type=master" \
   -o jsonpath='{.items[0].metadata.name}')
 if ! kubectl -n "$NAMESPACE" exec "$DETACH_MARKER_MASTER" -c pytorch -- test -f /tmp/detach-marker; then
   echo "ERROR: detached command did not create marker on master pod" >&2
@@ -287,7 +302,7 @@ echo "Multi-pod exec (pdsh) tests completed"
 echo "Testing cp upload single file to target pod"
 echo "cp-test-content" >"$SYNC_DIR/cp-test.txt"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp "$SYNC_DIR/cp-test.txt" :/tmp/cp-test.txt
-CP_VERIFY=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'cat /tmp/cp-test.txt')
+CP_VERIFY=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role master --no-tty --no-prefix -- sh -lc 'cat /tmp/cp-test.txt')
 if [[ "$CP_VERIFY" != "cp-test-content" ]]; then
   echo "ERROR: cp upload single file failed, got '$CP_VERIFY'" >&2
   exit 1
@@ -310,7 +325,7 @@ mkdir -p "$CP_DIR/sub"
 echo "file-a" >"$CP_DIR/a.txt"
 echo "file-b" >"$CP_DIR/sub/b.txt"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp --all "$CP_DIR" :/tmp/cp-upload-dir
-CP_ALL_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --cmd 'cat /tmp/cp-upload-dir/a.txt && cat /tmp/cp-upload-dir/sub/b.txt' --no-tty)
+CP_ALL_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'cat /tmp/cp-upload-dir/a.txt && cat /tmp/cp-upload-dir/sub/b.txt')
 echo "$CP_ALL_OUTPUT"
 CP_ALL_LINES=$(echo "$CP_ALL_OUTPUT" | grep -c 'file-a')
 if [[ "$CP_ALL_LINES" -lt 3 ]]; then
@@ -320,7 +335,7 @@ fi
 echo "cp upload directory to all pods verified"
 
 echo "Testing cp download from all pods"
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --cmd 'echo download-$(hostname) > /tmp/cp-download.txt' --no-tty
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'echo download-$(hostname) > /tmp/cp-download.txt'
 CP_DL_DIR="$WORKDIR/cp-download"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp --all :/tmp/cp-download.txt "$CP_DL_DIR"
 CP_DL_COUNT=$(find "$CP_DL_DIR" -name 'cp-download.txt' | wc -l | tr -d ' ')
@@ -332,7 +347,7 @@ fi
 echo "cp download from all pods verified"
 
 echo "Testing cp download directory from all pods"
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --cmd 'mkdir -p /tmp/cp-download-dir/nested && echo dir-$(hostname) > /tmp/cp-download-dir/root.txt && echo nested-$(hostname) > /tmp/cp-download-dir/nested/value.txt' --no-tty
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'mkdir -p /tmp/cp-download-dir/nested && echo dir-$(hostname) > /tmp/cp-download-dir/root.txt && echo nested-$(hostname) > /tmp/cp-download-dir/nested/value.txt'
 CP_DIR_DL="$WORKDIR/cp-dir-download"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp --all :/tmp/cp-download-dir "$CP_DIR_DL"
 CP_DIR_ROOT_COUNT=$(find "$CP_DIR_DL" -path '*/cp-download-dir/root.txt' | wc -l | tr -d ' ')
@@ -362,14 +377,9 @@ echo "File copy (okdev cp) tests completed"
 # ---------------------------------------------------------------------------
 # Lifecycle hook verification
 # ---------------------------------------------------------------------------
-MASTER_POD=$(kubectl -n "$NAMESPACE" get pods \
-  -l "training.kubeflow.org/job-name=$SESSION_NAME,training.kubeflow.org/replica-type=master" \
-  -o jsonpath='{.items[0].metadata.name}')
+refresh_pytorchjob_pods
 echo "Master pod: $MASTER_POD"
 
-WORKER_PODS=$(kubectl -n "$NAMESPACE" get pods \
-  -l "training.kubeflow.org/job-name=$SESSION_NAME,training.kubeflow.org/replica-type=worker" \
-  -o jsonpath='{.items[*].metadata.name}')
 echo "Worker pods: $WORKER_PODS"
 
 WORKER_COUNT=$(echo "$WORKER_PODS" | wc -w | tr -d ' ')
@@ -554,9 +564,11 @@ echo "Recreating PyTorchJob via --reconcile"
 echo "Verifying PyTorchJob spec and live pods were recreated with the new image"
 RECONCILE_OK=false
 for i in $(seq 1 30); do
-  MASTER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$SESSION_NAME" \
+  refresh_pytorchjob_pods
+  WORKLOAD_NAME=$(session_workload_name "$NAMESPACE" "$SESSION_NAME")
+  MASTER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$WORKLOAD_NAME" \
     -o jsonpath='{.spec.pytorchReplicaSpecs.Master.template.spec.containers[0].image}')
-  WORKER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$SESSION_NAME" \
+  WORKER_IMAGE=$(kubectl -n "$NAMESPACE" get pytorchjob "$WORKLOAD_NAME" \
     -o jsonpath='{.spec.pytorchReplicaSpecs.Worker.template.spec.containers[0].image}')
   MASTER_POD_IMAGE=$(kubectl -n "$NAMESPACE" get pod "$MASTER_POD" \
     -o jsonpath='{.spec.containers[?(@.name=="pytorch")].image}')
@@ -596,12 +608,12 @@ assert_no_local_sync_processes "$SESSION_NAME" "$HOME_DIR/.okdev/sessions/${SESS
 
 echo "Verifying PyTorchJob is deleted"
 for i in $(seq 1 15); do
-  if ! kubectl -n "$NAMESPACE" get pytorchjob "$SESSION_NAME" >/dev/null 2>&1; then
+  if [[ -z "$(session_attachable_pod_names "$NAMESPACE" "$SESSION_NAME")" ]]; then
     echo "PyTorchJob deleted on attempt $i"
     break
   fi
   if [[ "$i" -eq 15 ]]; then
-    echo "ERROR: pytorchjob ${SESSION_NAME} still exists after down" >&2
+    echo "ERROR: pytorchjob session ${SESSION_NAME} still has managed pod(s) after down" >&2
     exit 1
   fi
   sleep 2

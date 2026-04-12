@@ -11,19 +11,20 @@ import (
 const DefaultTargetContainer = "dev"
 
 type PodRuntime struct {
-	SessionName         string
-	Labels              map[string]string
-	Annotations         map[string]string
-	PodSpec             corev1.PodSpec
-	Volumes             []corev1.Volume
-	WorkspaceMountPath  string
-	SidecarImage        string
-	SidecarResources    corev1.ResourceRequirements
-	Tmux                bool
-	PreStop             string
-	TargetContainer     string
-	LastAppliedSpecJSON string
-	LastAppliedSpecHash string
+	SessionName          string
+	WorkloadNameOverride string
+	Labels               map[string]string
+	Annotations          map[string]string
+	PodSpec              corev1.PodSpec
+	Volumes              []corev1.Volume
+	WorkspaceMountPath   string
+	SidecarImage         string
+	SidecarResources     corev1.ResourceRequirements
+	Tmux                 bool
+	PreStop              string
+	TargetContainer      string
+	LastAppliedSpecJSON  string
+	LastAppliedSpecHash  string
 }
 
 func NewPodRuntime(sessionName string, labels, annotations map[string]string, podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, sidecarResources corev1.ResourceRequirements, tmux bool, preStop, targetContainer string) *PodRuntime {
@@ -47,6 +48,9 @@ func (r *PodRuntime) Kind() string {
 }
 
 func (r *PodRuntime) WorkloadName() string {
+	if r.WorkloadNameOverride != "" {
+		return r.WorkloadNameOverride
+	}
 	return "okdev-" + r.SessionName
 }
 

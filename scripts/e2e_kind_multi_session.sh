@@ -97,7 +97,7 @@ wait_remote_file() {
   local expected="$3"
   for i in $(seq 1 30); do
     local content
-    content=$("$OKDEV_BIN" --config "$cfg" --session "$session" exec --no-tty --cmd 'if [ -f /workspace/session.txt ]; then cat /workspace/session.txt; fi' || true)
+    content=$("$OKDEV_BIN" --config "$cfg" --session "$session" exec --no-tty --no-prefix -- sh -lc 'if [ -f /workspace/session.txt ]; then cat /workspace/session.txt; fi' || true)
     if [[ "$content" == "$expected" ]]; then
       return 0
     fi
@@ -133,8 +133,8 @@ if [[ "$LIST_OUTPUT" != *"$SESSION_A"* || "$LIST_OUTPUT" != *"$SESSION_B"* ]]; t
   exit 1
 fi
 
-POD_A=$(kubectl -n "$NAMESPACE" get pod "okdev-$SESSION_A" -o jsonpath='{.metadata.name}')
-POD_B=$(kubectl -n "$NAMESPACE" get pod "okdev-$SESSION_B" -o jsonpath='{.metadata.name}')
+POD_A=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_A")
+POD_B=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_B")
 if [[ "$POD_A" == "$POD_B" ]]; then
   echo "ERROR: expected distinct pods for concurrent sessions" >&2
   exit 1
@@ -156,8 +156,8 @@ assert_no_local_sync_processes "$SESSION_B" "$HOME_DIR/.okdev/sessions/${SESSION
 for i in $(seq 1 20); do
   A_EXISTS=0
   B_EXISTS=0
-  kubectl -n "$NAMESPACE" get pod "okdev-$SESSION_A" >/dev/null 2>&1 && A_EXISTS=1 || true
-  kubectl -n "$NAMESPACE" get pod "okdev-$SESSION_B" >/dev/null 2>&1 && B_EXISTS=1 || true
+  [[ -n "$(session_attachable_pod_names "$NAMESPACE" "$SESSION_A")" ]] && A_EXISTS=1 || true
+  [[ -n "$(session_attachable_pod_names "$NAMESPACE" "$SESSION_B")" ]] && B_EXISTS=1 || true
   if [[ "$A_EXISTS" -eq 0 && "$B_EXISTS" -eq 0 ]]; then
     break
   fi

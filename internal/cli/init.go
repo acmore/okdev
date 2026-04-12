@@ -87,9 +87,29 @@ func newInitCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			rawTemplate, err := config.ResolveTemplateFromDir(context.Background(), templateRef, projectDir)
+			if err != nil {
+				return err
+			}
+			meta, body, err := config.ParseFrontmatter(rawTemplate)
+			if err != nil {
+				return err
+			}
+			sets := parseSetFlags(setFlags)
+			warnUnknownTemplateSets(cmd.ErrOrStderr(), meta, sets)
+			customVars, err := resolveInitTemplateVars(meta, sets, nil, yes, isTerminalReader(cmd.InOrStdin()), cmd.InOrStdin(), cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+
+			rendered, err := config.RenderTemplateContent("okdev", body, vars, customVars)
+			if err != nil {
+				return err
+			}
+
 			target := opts.ConfigPath
 			if target == "" {
-				target = defaultInitTargetPath(templateRef, vars, projectDir)
+				target = defaultInitTargetPath(vars, meta, rendered)
 			}
 			abs, err := filepath.Abs(target)
 			if err != nil {
@@ -101,22 +121,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 			}
 			normalizeInitManifestPathForTarget(abs, vars, overrides.hasManifestPath())
 
-			rawTemplate, err := config.ResolveTemplateFromDir(context.Background(), templateRef, projectDir)
-			if err != nil {
-				return err
-			}
-			meta, _, err := config.ParseFrontmatter(rawTemplate)
-			if err != nil {
-				return err
-			}
-			sets := parseSetFlags(setFlags)
-			warnUnknownTemplateSets(cmd.ErrOrStderr(), meta, sets)
-			customVars, err := resolveInitTemplateVars(meta, sets, nil, yes, isTerminalReader(cmd.InOrStdin()), cmd.InOrStdin(), cmd.OutOrStdout())
-			if err != nil {
-				return err
-			}
-
-			rendered, err := config.RenderTemplateWithVars(context.Background(), templateRef, vars, customVars, projectDir)
+			rendered, err = config.RenderTemplateContent("okdev", body, vars, customVars)
 			if err != nil {
 				return err
 			}
@@ -341,11 +346,38 @@ func initProjectDir(configPath string) (string, error) {
 	return wd, nil
 }
 
-func defaultInitTargetPath(templateRef string, vars *config.TemplateVars, projectDir string) string {
-	if scaffoldsInitWorkload(templateRef, vars, projectDir) {
+func defaultInitTargetPath(vars *config.TemplateVars, meta *config.TemplateMeta, rendered string) string {
+	if initUsesWorkloadManifest(vars) || templateDeclaresCompanionFiles(meta) || renderedInitUsesWorkloadManifest(rendered) {
 		return config.FolderFile
 	}
 	return config.DefaultFile
+}
+
+func templateDeclaresCompanionFiles(meta *config.TemplateMeta) bool {
+	return meta != nil && len(meta.Files) > 0
+}
+
+func initUsesWorkloadManifest(vars *config.TemplateVars) bool {
+	if vars == nil {
+		return false
+	}
+	switch strings.TrimSpace(vars.WorkloadType) {
+	case "job", "pytorchjob", "generic":
+		return true
+	default:
+		return false
+	}
+}
+
+func renderedInitUsesWorkloadManifest(rendered string) bool {
+	if strings.TrimSpace(rendered) == "" {
+		return false
+	}
+	var cfg config.DevEnvironment
+	if err := yaml.Unmarshal([]byte(rendered), &cfg); err != nil {
+		return false
+	}
+	return strings.TrimSpace(cfg.Spec.Workload.ManifestPath) != ""
 }
 
 func normalizeInitManifestPathForTarget(configPath string, vars *config.TemplateVars, explicit bool) {

@@ -149,7 +149,7 @@ func validateMultiPodFlags(podNames []string, role string, labels []string, excl
 
 func runMultiPodExec(cmd *cobra.Command, cc *commandContext, commandArgs []string, podNames []string, role string, labels []string, exclude []string, container string, detach bool, timeout time.Duration, logDir string, noPrefix bool, fanout int) error {
 	ctx := cmd.Context()
-	labelSel := "okdev.io/managed=true,okdev.io/session=" + cc.sessionName
+	labelSel := selectorForSessionRun(cc.sessionName)
 	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
 	if err != nil {
 		return fmt.Errorf("list session pods: %w", err)
