@@ -36,6 +36,7 @@ import (
 
 const (
 	syncthingContainerName = "okdev-sidecar"
+	localSyncthingGUIAddr  = "127.0.0.1:0"
 )
 
 // defaultSyncExcludes are written to a starter .stignore when one does not
@@ -387,42 +388,74 @@ func restoreSyncPortForward(opts *Options, namespace, pod, localBase, localKey, 
 }
 
 func startAndWaitForLocalSyncthing(ctx context.Context, binary, home string) (string, string, int, error) {
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		localGUIAddr, localAPIBase, err := allocateLocalSyncthingAPIEndpoint()
-		if err != nil {
-			return "", "", 0, err
-		}
-		localPID, err := startLocalSyncthing(binary, home, localGUIAddr)
-		if err != nil {
-			return "", "", 0, err
-		}
-		localKey, err := readLocalSyncthingAPIKey(home)
-		if err != nil {
-			_ = stopOwnedLocalSyncthing(home, localPID)
-			return "", "", 0, err
-		}
-		if err := waitSyncthingAPI(ctx, localAPIBase, localKey, syncthingAPIReadyTimeout); err == nil {
-			return localAPIBase, localKey, localPID, nil
-		} else {
-			lastErr = err
-			if !localSyncthingLogShowsAPIPortConflict(home) || attempt == 2 {
-				_ = stopOwnedLocalSyncthing(home, localPID)
-				return "", "", 0, fmt.Errorf("local syncthing not ready: %w", err)
-			}
-			_ = stopOwnedLocalSyncthing(home, localPID)
-		}
+	lock, err := lockLocalSyncthingHome(ctx, home)
+	if err != nil {
+		return "", "", 0, err
 	}
-	return "", "", 0, fmt.Errorf("local syncthing not ready: %w", lastErr)
+	defer lock.Close()
+
+	localProc, err := startLocalSyncthing(binary, home, localSyncthingGUIAddr)
+	if err != nil {
+		return "", "", 0, err
+	}
+	localKey, err := readLocalSyncthingAPIKey(home)
+	if err != nil {
+		_ = stopOwnedLocalSyncthing(home, localProc.PID)
+		return "", "", 0, err
+	}
+	localAPIBase, err := waitLocalSyncthingAPIEndpoint(ctx, localProc, localKey, syncthingAPIReadyTimeout)
+	if err != nil {
+		_ = stopOwnedLocalSyncthing(home, localProc.PID)
+		return "", "", 0, fmt.Errorf("local syncthing not ready: %w", err)
+	}
+	if err := writeLocalSyncthingEndpoint(home, localAPIBase); err != nil {
+		_ = stopOwnedLocalSyncthing(home, localProc.PID)
+		return "", "", 0, fmt.Errorf("write local syncthing endpoint: %w", err)
+	}
+	return localAPIBase, localKey, localProc.PID, nil
 }
 
-func localSyncthingLogShowsAPIPortConflict(home string) bool {
-	logPath, err := localSyncthingLogPath(home)
-	if err != nil {
-		return false
+type localSyncthingHomeLock struct {
+	file *os.File
+}
+
+func lockLocalSyncthingHome(ctx context.Context, home string) (*localSyncthingHomeLock, error) {
+	if strings.TrimSpace(home) == "" {
+		return nil, errors.New("syncthing home is empty")
 	}
-	tail := readFileTail(logPath, 8192)
-	return strings.Contains(tail, "bind: address already in use")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		return nil, fmt.Errorf("create syncthing home: %w", err)
+	}
+	f, err := os.OpenFile(filepath.Join(home, "local.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("open local syncthing lock: %w", err)
+	}
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return &localSyncthingHomeLock{file: f}, nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			_ = f.Close()
+			return nil, fmt.Errorf("lock local syncthing home: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			_ = f.Close()
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (l *localSyncthingHomeLock) Close() {
+	if l == nil || l.file == nil {
+		return
+	}
+	_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
+	_ = l.file.Close()
 }
 
 func markSyncthingReady(sessionName string) error {
@@ -476,28 +509,40 @@ func localSyncthingHome(sessionName string) (string, error) {
 	return session.SyncthingDir(sessionName)
 }
 
-func startLocalSyncthing(binary, home, localGUIAddr string) (int, error) {
+type localSyncthingProcess struct {
+	PID       int
+	LogPath   string
+	LogOffset int64
+}
+
+func startLocalSyncthing(binary, home, localGUIAddr string) (localSyncthingProcess, error) {
 	genOut, genErr := exec.Command(binary, "generate", "--home", home).CombinedOutput()
 	if genErr != nil {
 		legacyOut, legacyErr := exec.Command(binary, "-home", home, "generate").CombinedOutput()
 		if legacyErr != nil && !strings.Contains(string(genOut), "already exists") && !strings.Contains(string(legacyOut), "already exists") {
-			return 0, fmt.Errorf("generate local syncthing config: %w (%s)", genErr, strings.TrimSpace(string(genOut)))
+			return localSyncthingProcess{}, fmt.Errorf("generate local syncthing config: %w (%s)", genErr, strings.TrimSpace(string(genOut)))
 		}
 	}
 
 	if err := stopLocalSyncthingForHome(home); err != nil {
-		return 0, err
+		return localSyncthingProcess{}, err
 	}
-	if err := writeLocalSyncthingEndpoint(home, "http://"+localGUIAddr); err != nil {
-		return 0, fmt.Errorf("write local syncthing endpoint: %w", err)
+	if endpointPath, pathErr := localSyncthingEndpointPath(home); pathErr == nil {
+		if rmErr := os.Remove(endpointPath); rmErr != nil && !os.IsNotExist(rmErr) {
+			return localSyncthingProcess{}, fmt.Errorf("remove stale local syncthing endpoint: %w", rmErr)
+		}
 	}
 	logPath, err := localSyncthingLogPath(home)
 	if err != nil {
-		return 0, err
+		return localSyncthingProcess{}, err
 	}
 	logFile, err := openLocalSyncthingLog(logPath)
 	if err != nil {
-		return 0, fmt.Errorf("open local syncthing log: %w", err)
+		return localSyncthingProcess{}, fmt.Errorf("open local syncthing log: %w", err)
+	}
+	logOffset := int64(0)
+	if info, statErr := os.Stat(logPath); statErr == nil {
+		logOffset = info.Size()
 	}
 	cmd := newLocalSyncthingServeCommand(binary, home, localGUIAddr)
 	cmd.Stdout = logFile
@@ -508,7 +553,7 @@ func startLocalSyncthing(binary, home, localGUIAddr string) (int, error) {
 		if closeErr := logFile.Close(); closeErr != nil {
 			slog.Debug("failed to close syncthing log file after start failure", "error", closeErr)
 		}
-		return 0, fmt.Errorf("start local syncthing: %w", err)
+		return localSyncthingProcess{}, fmt.Errorf("start local syncthing: %w", err)
 	}
 	if err := writeLocalSyncthingPID(home, cmd.Process.Pid); err != nil {
 		if killErr := cmd.Process.Kill(); killErr != nil {
@@ -517,7 +562,7 @@ func startLocalSyncthing(binary, home, localGUIAddr string) (int, error) {
 		if closeErr := logFile.Close(); closeErr != nil {
 			slog.Debug("failed to close syncthing log file after PID write failure", "error", closeErr)
 		}
-		return 0, fmt.Errorf("write local syncthing pid: %w", err)
+		return localSyncthingProcess{}, fmt.Errorf("write local syncthing pid: %w", err)
 	}
 	if releaseErr := cmd.Process.Release(); releaseErr != nil {
 		slog.Debug("failed to release syncthing process", "error", releaseErr)
@@ -525,7 +570,7 @@ func startLocalSyncthing(binary, home, localGUIAddr string) (int, error) {
 	if closeErr := logFile.Close(); closeErr != nil {
 		slog.Debug("failed to close syncthing log file", "error", closeErr)
 	}
-	return cmd.Process.Pid, nil
+	return localSyncthingProcess{PID: cmd.Process.Pid, LogPath: logPath, LogOffset: logOffset}, nil
 }
 
 func newLocalSyncthingServeCommand(binary, home, localGUIAddr string) *exec.Cmd {
@@ -541,21 +586,6 @@ func newLocalSyncthingServeCommand(binary, home, localGUIAddr string) *exec.Cmd 
 	)
 	cmd.Env = append(os.Environ(), "STNOUPGRADE=1")
 	return cmd
-}
-
-func allocateLocalSyncthingAPIEndpoint() (guiAddr, apiBase string, err error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return "", "", fmt.Errorf("allocate local syncthing API port: %w", err)
-	}
-	defer ln.Close()
-	tcpAddr, ok := ln.Addr().(*net.TCPAddr)
-	if !ok {
-		return "", "", fmt.Errorf("unexpected local listener addr type %T", ln.Addr())
-	}
-	guiAddr = fmt.Sprintf("127.0.0.1:%d", tcpAddr.Port)
-	apiBase = "http://" + guiAddr
-	return guiAddr, apiBase, nil
 }
 
 func stopLocalSyncthing(binary, home string) error {
@@ -833,6 +863,96 @@ func waitSyncthingAPI(ctx context.Context, base, key string, timeout time.Durati
 		}
 	}
 	return errors.New("API did not become ready")
+}
+
+func waitLocalSyncthingAPIEndpoint(ctx context.Context, proc localSyncthingProcess, key string, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(syncthingAPIReadyPollInterval)
+	defer ticker.Stop()
+
+	var lastErr error
+	for {
+		logText := readFileFromOffset(proc.LogPath, proc.LogOffset, 8192)
+		if base, ok := parseLocalSyncthingAPIBase(logText); ok {
+			if _, err := syncthingDeviceID(ctx, base, key); err == nil {
+				return base, nil
+			} else {
+				lastErr = err
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				return "", lastErr
+			}
+			return "", ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+var syncthingGUIListenPattern = regexp.MustCompile(`GUI and API listening on (\[[^\]]+\]:\d+|[^\s/]+:\d+)`)
+
+func parseLocalSyncthingAPIBase(logText string) (string, bool) {
+	matches := syncthingGUIListenPattern.FindAllStringSubmatch(logText, -1)
+	for i := len(matches) - 1; i >= 0; i-- {
+		if base, ok := normalizeLocalSyncthingAPIBase(matches[i][1]); ok {
+			return base, true
+		}
+	}
+	return "", false
+}
+
+func normalizeLocalSyncthingAPIBase(addr string) (string, bool) {
+	addr = strings.TrimSpace(strings.TrimRight(addr, "/"))
+	if addr == "" {
+		return "", false
+	}
+	if !strings.Contains(addr, "://") {
+		addr = "http://" + addr
+	}
+	u, err := url.Parse(addr)
+	if err != nil || u.Host == "" {
+		return "", false
+	}
+	host := u.Hostname()
+	port := u.Port()
+	if port == "" || !isLoopbackHost(host) {
+		return "", false
+	}
+	return "http://" + net.JoinHostPort(host, port), true
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func readFileFromOffset(path string, offset int64, maxBytes int64) string {
+	if strings.TrimSpace(path) == "" || maxBytes <= 0 {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > int64(len(data)) {
+		offset = int64(len(data))
+	}
+	data = data[offset:]
+	if int64(len(data)) > maxBytes {
+		data = data[len(data)-int(maxBytes):]
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func syncthingDeviceID(ctx context.Context, base, key string) (string, error) {
