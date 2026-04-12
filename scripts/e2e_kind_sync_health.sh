@@ -175,7 +175,7 @@ echo "Verifying post-restoration file sync"
 echo "after health restore" >"$SYNC_DIR/health-after.txt"
 SYNC_OK=false
 for i in $(seq 1 30); do
-  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'if [ -f /workspace/health-after.txt ]; then cat /workspace/health-after.txt; fi' || true)
+  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'if [ -f /workspace/health-after.txt ]; then cat /workspace/health-after.txt; fi' || true)
   if [[ "$REMOTE_CONTENT" == "after health restore" ]]; then
     SYNC_OK=true
     break

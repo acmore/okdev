@@ -143,7 +143,7 @@ LOCAL_CONTENT="$(cat "$SYNC_REPO/$CHANGED_FILE")"
 REMOTE_CONTENT=""
 echo "Waiting for initial tracked file sync: $CHANGED_FILE"
 for i in $(seq 1 40); do
-  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd "if [ -f '/workspace/$CHANGED_FILE' ]; then cat '/workspace/$CHANGED_FILE'; fi" || true)
+  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc "if [ -f '/workspace/$CHANGED_FILE' ]; then cat '/workspace/$CHANGED_FILE'; fi" || true)
   if [[ "$REMOTE_CONTENT" == "$LOCAL_CONTENT" ]]; then
     break
   fi
@@ -160,7 +160,7 @@ LOCAL_CONTENT="$(cat "$SYNC_REPO/$CHANGED_FILE")"
 
 echo "Waiting for branch-switch sync convergence"
 for i in $(seq 1 60); do
-  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd "if [ -f '/workspace/$CHANGED_FILE' ]; then cat '/workspace/$CHANGED_FILE'; fi" || true)
+  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc "if [ -f '/workspace/$CHANGED_FILE' ]; then cat '/workspace/$CHANGED_FILE'; fi" || true)
   if [[ "$REMOTE_CONTENT" == "$LOCAL_CONTENT" ]]; then
     echo "Large-repo sync converged on attempt $i"
     break
@@ -173,7 +173,7 @@ for i in $(seq 1 60); do
 done
 
 echo "Verifying local reset wins without Syncthing conflict files"
-REMOTE_CONFLICTS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd "find /workspace -name '*.sync-conflict-*' -print | head -n 20" || true)
+REMOTE_CONFLICTS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc "find /workspace -name '*.sync-conflict-*' -print | head -n 20" || true)
 if [[ -n "$REMOTE_CONFLICTS" ]]; then
   echo "ERROR: found unexpected Syncthing conflict files after large-repo reset" >&2
   echo "$REMOTE_CONFLICTS" >&2

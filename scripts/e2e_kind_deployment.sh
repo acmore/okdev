@@ -79,7 +79,7 @@ done
 
 SYNC_OK=false
 for i in $(seq 1 30); do
-  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'if [ -f /workspace/hello.txt ]; then cat /workspace/hello.txt; fi' || true)
+  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'if [ -f /workspace/hello.txt ]; then cat /workspace/hello.txt; fi' || true)
   if [[ "$REMOTE_CONTENT" == "hello from deployment e2e" ]]; then
     SYNC_OK=true
     break

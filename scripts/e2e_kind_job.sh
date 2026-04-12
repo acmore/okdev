@@ -78,7 +78,7 @@ done
 
 SYNC_OK=false
 for i in $(seq 1 30); do
-  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'if [ -f /workspace/hello.txt ]; then cat /workspace/hello.txt; fi' || true)
+  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'if [ -f /workspace/hello.txt ]; then cat /workspace/hello.txt; fi' || true)
   if [[ "$REMOTE_CONTENT" == "hello from job e2e" ]]; then
     SYNC_OK=true
     break
@@ -97,7 +97,7 @@ fi
 echo "Testing cp upload single file"
 echo "cp-job-content" >"$SYNC_DIR/cp-job.txt"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp "$SYNC_DIR/cp-job.txt" :/tmp/cp-job.txt
-CP_VERIFY=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'cat /tmp/cp-job.txt')
+CP_VERIFY=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'cat /tmp/cp-job.txt')
 if [[ "$CP_VERIFY" != "cp-job-content" ]]; then
   echo "ERROR: cp upload single file failed, got '$CP_VERIFY'" >&2
   exit 1
@@ -110,8 +110,8 @@ mkdir -p "$CP_DIR/sub"
 echo "ja" >"$CP_DIR/a.txt"
 echo "jb" >"$CP_DIR/sub/b.txt"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp "$CP_DIR" :/tmp/cp-job-dir
-CP_A=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'cat /tmp/cp-job-dir/a.txt')
-CP_B=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --cmd 'cat /tmp/cp-job-dir/sub/b.txt')
+CP_A=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'cat /tmp/cp-job-dir/a.txt')
+CP_B=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'cat /tmp/cp-job-dir/sub/b.txt')
 if [[ "$CP_A" != "ja" || "$CP_B" != "jb" ]]; then
   echo "ERROR: cp upload directory failed, got a='$CP_A' b='$CP_B'" >&2
   exit 1
