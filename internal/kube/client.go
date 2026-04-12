@@ -48,6 +48,8 @@ import (
 
 var chooseContainerErrPattern = regexp.MustCompile(`choose one of: \[([^\]]+)\]`)
 
+var deletionWaitTimeout = 5 * time.Minute
+
 type Client struct {
 	Context string
 
@@ -322,6 +324,9 @@ func (c *Client) applyUnstructured(ctx context.Context, dc dynamic.Interface, ma
 }
 
 func waitForPodDeletion(ctx context.Context, cs *kubernetes.Clientset, namespace, name string) error {
+	ctx, cancel := deletionWaitContext(ctx)
+	defer cancel()
+
 	ticker := time.NewTicker(300 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -341,6 +346,9 @@ func waitForPodDeletion(ctx context.Context, cs *kubernetes.Clientset, namespace
 }
 
 func waitForJobDeletion(ctx context.Context, cs *kubernetes.Clientset, namespace, name string) error {
+	ctx, cancel := deletionWaitContext(ctx)
+	defer cancel()
+
 	ticker := time.NewTicker(300 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -357,6 +365,13 @@ func waitForJobDeletion(ctx context.Context, cs *kubernetes.Clientset, namespace
 		case <-ticker.C:
 		}
 	}
+}
+
+func deletionWaitContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, deletionWaitTimeout)
 }
 
 func normalizeJobForApplyComparison(job *batchv1.Job) {
