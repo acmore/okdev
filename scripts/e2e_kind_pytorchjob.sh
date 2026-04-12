@@ -175,17 +175,17 @@ echo "Verifying SSH into master pod"
 # Multi-pod exec (pdsh) verification
 # ---------------------------------------------------------------------------
 
-echo "Testing exec --all -- across all session pods"
-EXEC_ALL_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-tty -- sh -lc 'echo hello-from-$(hostname)')
+echo "Testing exec -- across all session pods"
+EXEC_ALL_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'echo hello-from-$(hostname)')
 echo "$EXEC_ALL_OUTPUT"
 # Expect prefixed output from 3 pods (1 master + 2 workers).
 EXEC_ALL_LINES=$(echo "$EXEC_ALL_OUTPUT" | grep -c 'hello-from-')
 if [[ "$EXEC_ALL_LINES" -lt 3 ]]; then
-  echo "ERROR: expected exec --all output from 3 pods, got $EXEC_ALL_LINES lines" >&2
+  echo "ERROR: expected exec output from 3 pods, got $EXEC_ALL_LINES lines" >&2
   echo "$EXEC_ALL_OUTPUT" >&2
   exit 1
 fi
-echo "exec --all verified ($EXEC_ALL_LINES pods responded)"
+echo "exec verified ($EXEC_ALL_LINES pods responded)"
 
 echo "Testing exec --role master -- targets only master"
 EXEC_MASTER_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role master --no-tty -- sh -lc 'echo master-only')
@@ -209,23 +209,23 @@ if [[ "$EXEC_WORKER_LINES" -ne 2 ]]; then
 fi
 echo "exec --role worker verified"
 
-echo "Testing exec --all --exclude targets subset"
+echo "Testing exec --exclude targets subset"
 # Get master pod name to exclude it.
 EXCLUDE_MASTER_POD=$(kubectl -n "$NAMESPACE" get pods \
   -l "training.kubeflow.org/job-name=$(session_workload_name "$NAMESPACE" "$SESSION_NAME"),training.kubeflow.org/replica-type=master" \
   -o jsonpath='{.items[0].metadata.name}')
-EXEC_EXCLUDE_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --exclude "$EXCLUDE_MASTER_POD" --no-tty -- sh -lc 'echo after-exclude')
+EXEC_EXCLUDE_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --exclude "$EXCLUDE_MASTER_POD" --no-tty -- sh -lc 'echo after-exclude')
 echo "$EXEC_EXCLUDE_OUTPUT"
 EXEC_EXCLUDE_LINES=$(echo "$EXEC_EXCLUDE_OUTPUT" | grep -c 'after-exclude')
 if [[ "$EXEC_EXCLUDE_LINES" -ne 2 ]]; then
-  echo "ERROR: expected exec --all --exclude to target 2 pods, got $EXEC_EXCLUDE_LINES" >&2
+  echo "ERROR: expected exec --exclude to target 2 pods, got $EXEC_EXCLUDE_LINES" >&2
   echo "$EXEC_EXCLUDE_OUTPUT" >&2
   exit 1
 fi
-echo "exec --all --exclude verified"
+echo "exec --exclude verified"
 
-echo "Testing exec --all --no-prefix suppresses pod name prefix"
-EXEC_NOPREFIX_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-prefix --no-tty -- sh -lc 'echo raw-output')
+echo "Testing exec --no-prefix suppresses pod name prefix"
+EXEC_NOPREFIX_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-prefix --no-tty -- sh -lc 'echo raw-output')
 echo "$EXEC_NOPREFIX_OUTPUT"
 # In no-prefix mode, lines should be raw (no "podname: " prefix).
 if echo "$EXEC_NOPREFIX_OUTPUT" | grep -qE '^[a-z0-9-]+: raw-output$'; then
@@ -238,11 +238,11 @@ if [[ "$EXEC_NOPREFIX_LINES" -lt 3 ]]; then
   echo "ERROR: expected 3 raw-output lines in no-prefix mode, got $EXEC_NOPREFIX_LINES" >&2
   exit 1
 fi
-echo "exec --all --no-prefix verified"
+echo "exec --no-prefix verified"
 
-echo "Testing exec --all --log-dir writes per-pod log files"
+echo "Testing exec --log-dir writes per-pod log files"
 EXEC_LOG_DIR=$(mktemp -d)
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-tty --log-dir "$EXEC_LOG_DIR" -- sh -lc 'echo log-test'
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --log-dir "$EXEC_LOG_DIR" -- sh -lc 'echo log-test'
 EXEC_LOG_COUNT=$(find "$EXEC_LOG_DIR" -name '*.log' | wc -l | tr -d ' ')
 if [[ "$EXEC_LOG_COUNT" -lt 3 ]]; then
   echo "ERROR: expected at least 3 log files in $EXEC_LOG_DIR, found $EXEC_LOG_COUNT" >&2
@@ -256,20 +256,20 @@ for logfile in "$EXEC_LOG_DIR"/*.log; do
   fi
 done
 rm -rf "$EXEC_LOG_DIR"
-echo "exec --all --log-dir verified"
+echo "exec --log-dir verified"
 
-echo "Testing exec --all --fanout 1 (serial execution)"
-EXEC_FANOUT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --fanout 1 --no-tty -- sh -lc 'echo fanout-test')
+echo "Testing exec --fanout 1 (serial execution)"
+EXEC_FANOUT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --fanout 1 --no-tty -- sh -lc 'echo fanout-test')
 echo "$EXEC_FANOUT_OUTPUT"
 EXEC_FANOUT_LINES=$(echo "$EXEC_FANOUT_OUTPUT" | grep -c 'fanout-test')
 if [[ "$EXEC_FANOUT_LINES" -lt 3 ]]; then
   echo "ERROR: expected 3 pods with fanout=1, got $EXEC_FANOUT_LINES" >&2
   exit 1
 fi
-echo "exec --all --fanout 1 verified"
+echo "exec --fanout 1 verified"
 
 echo "Testing exec --detach launches background command"
-DETACH_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --detach --no-tty -- sh -lc 'touch /tmp/detach-marker')
+DETACH_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --detach --no-tty -- sh -lc 'touch /tmp/detach-marker')
 echo "$DETACH_OUTPUT"
 DETACH_LINES=$(echo "$DETACH_OUTPUT" | grep -c 'detached')
 if [[ "$DETACH_LINES" -lt 3 ]]; then
@@ -321,7 +321,7 @@ mkdir -p "$CP_DIR/sub"
 echo "file-a" >"$CP_DIR/a.txt"
 echo "file-b" >"$CP_DIR/sub/b.txt"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp --all "$CP_DIR" :/tmp/cp-upload-dir
-CP_ALL_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-tty -- sh -lc 'cat /tmp/cp-upload-dir/a.txt && cat /tmp/cp-upload-dir/sub/b.txt')
+CP_ALL_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'cat /tmp/cp-upload-dir/a.txt && cat /tmp/cp-upload-dir/sub/b.txt')
 echo "$CP_ALL_OUTPUT"
 CP_ALL_LINES=$(echo "$CP_ALL_OUTPUT" | grep -c 'file-a')
 if [[ "$CP_ALL_LINES" -lt 3 ]]; then
@@ -331,7 +331,7 @@ fi
 echo "cp upload directory to all pods verified"
 
 echo "Testing cp download from all pods"
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-tty -- sh -lc 'echo download-$(hostname) > /tmp/cp-download.txt'
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'echo download-$(hostname) > /tmp/cp-download.txt'
 CP_DL_DIR="$WORKDIR/cp-download"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp --all :/tmp/cp-download.txt "$CP_DL_DIR"
 CP_DL_COUNT=$(find "$CP_DL_DIR" -name 'cp-download.txt' | wc -l | tr -d ' ')
@@ -343,7 +343,7 @@ fi
 echo "cp download from all pods verified"
 
 echo "Testing cp download directory from all pods"
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-tty -- sh -lc 'mkdir -p /tmp/cp-download-dir/nested && echo dir-$(hostname) > /tmp/cp-download-dir/root.txt && echo nested-$(hostname) > /tmp/cp-download-dir/nested/value.txt'
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'mkdir -p /tmp/cp-download-dir/nested && echo dir-$(hostname) > /tmp/cp-download-dir/root.txt && echo nested-$(hostname) > /tmp/cp-download-dir/nested/value.txt'
 CP_DIR_DL="$WORKDIR/cp-dir-download"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp --all :/tmp/cp-download-dir "$CP_DIR_DL"
 CP_DIR_ROOT_COUNT=$(find "$CP_DIR_DL" -path '*/cp-download-dir/root.txt' | wc -l | tr -d ' ')
