@@ -647,6 +647,118 @@ spec:
 	}
 }
 
+func TestInitCustomTemplateRendersDeclaredFiles(t *testing.T) {
+	tmp := t.TempDir()
+	tmplDir := filepath.Join(tmp, ".okdev", "templates")
+	if err := os.MkdirAll(filepath.Join(tmplDir, "manifests"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmplDir, "pytorch.yaml.tmpl"), []byte(`---
+name: pytorch
+description: PyTorch training
+variables:
+  - name: image
+    type: string
+files:
+  - path: "{{ .ManifestPath }}"
+    template: manifests/pytorchjob.yaml.tmpl
+---
+apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: {{ .Name }}
+spec:
+  namespace: {{ .Namespace }}
+  sync:
+    paths:
+      - "{{ .SyncLocal }}:{{ .SyncRemote }}"
+  ssh:
+    user: root
+  sidecar:
+    image: ghcr.io/acmore/okdev:edge
+  workload:
+    type: {{ .WorkloadType }}
+    manifestPath: {{ .ManifestPath }}
+    inject:
+      - path: "spec.pytorchReplicaSpecs.Master.template"
+      - path: "spec.pytorchReplicaSpecs.Worker.template"
+    attach:
+      container: dev
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmplDir, "manifests", "pytorchjob.yaml.tmpl"), []byte(`apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: {{ .Name }}
+spec:
+  pytorchReplicaSpecs:
+    Master:
+      replicas: 1
+      template:
+        spec:
+          containers:
+            - name: dev
+              image: {{ .Vars.image }}
+              volumeMounts:
+                - name: workspace
+                  mountPath: {{ .SyncRemote }}
+    Worker:
+      replicas: 2
+      template:
+        spec:
+          containers:
+            - name: dev
+              image: {{ .Vars.image }}
+              volumeMounts:
+                - name: workspace
+                  mountPath: {{ .SyncRemote }}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newInitCmd(&Options{})
+	cmd.SetArgs([]string{
+		"--yes",
+		"--template", "pytorch",
+		"--workload", "pytorchjob",
+		"--manifest-path", "pytorchjob.yaml",
+		"--sync-remote", "/train",
+		"--set", "image=pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime",
+	})
+	cmd.SetIn(strings.NewReader(""))
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init execute: %v", err)
+	}
+	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cfgRaw), "manifestPath: pytorchjob.yaml") {
+		t.Fatalf("expected rendered config to reference manifest, got:\n%s", string(cfgRaw))
+	}
+	manifestRaw, err := os.ReadFile(filepath.Join(tmp, "pytorchjob.yaml"))
+	if err != nil {
+		t.Fatalf("read rendered pytorchjob manifest: %v", err)
+	}
+	for _, want := range []string{
+		"kind: PyTorchJob",
+		"mountPath: /train",
+		"image: pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime",
+	} {
+		if !strings.Contains(string(manifestRaw), want) {
+			t.Fatalf("expected manifest to contain %q, got:\n%s", want, string(manifestRaw))
+		}
+	}
+}
+
 func TestInitProjectTemplateShadowingBasicIsNotTreatedAsBuiltin(t *testing.T) {
 	tmp := t.TempDir()
 	tmplDir := filepath.Join(tmp, ".okdev", "templates")

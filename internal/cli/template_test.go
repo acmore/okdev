@@ -125,3 +125,26 @@ func TestTemplateShowWithVars(t *testing.T) {
 		t.Fatalf("expected variable details in output, got:\n%s", out.String())
 	}
 }
+
+func TestTemplateShowWithFiles(t *testing.T) {
+	projectDir := t.TempDir()
+	tmplDir := filepath.Join(projectDir, ".okdev", "templates")
+	if err := os.MkdirAll(tmplDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: pytorch\ndescription: Distributed training\nfiles:\n  - path: \"{{ .ManifestPath }}\"\n    template: manifests/pytorchjob.yaml.tmpl\n---\nok"
+	if err := os.WriteFile(filepath.Join(tmplDir, "pytorch.yaml.tmpl"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newTemplateCmd(&Options{})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"show", "pytorch", "--project-dir", projectDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Files:") || !strings.Contains(out.String(), "manifests/pytorchjob.yaml.tmpl") {
+		t.Fatalf("expected file details in output, got:\n%s", out.String())
+	}
+}

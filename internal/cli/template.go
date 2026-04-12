@@ -85,6 +85,16 @@ func newTemplateShowCmd(opts *Options) *cobra.Command {
 			fmt.Fprintf(w, "Name:        %s\n", displayName)
 			fmt.Fprintf(w, "Source:      %s\n", resolveTemplateSource(name, projectDir))
 			fmt.Fprintf(w, "Description: %s\n", desc)
+			if len(meta.Files) > 0 {
+				fmt.Fprintln(w, "\nFiles:")
+				tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+				for _, file := range meta.Files {
+					fmt.Fprintf(tw, "  %s\t%s\n", file.Path, file.Template)
+				}
+				if err := tw.Flush(); err != nil {
+					return err
+				}
+			}
 			if len(meta.Variables) == 0 {
 				return nil
 			}
