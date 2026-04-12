@@ -121,19 +121,32 @@ sync_pid_from_status() {
   grep -oE 'background: running \(pid [0-9]+\)' | grep -oE '[0-9]+' | head -1
 }
 
-session_attachable_pod_selector() {
+session_managed_pod_selector() {
   local session_name="$1"
-  printf 'okdev.io/session=%s,okdev.io/attachable=true' "$session_name"
+  printf 'okdev.io/managed=true,okdev.io/session=%s' "$session_name"
 }
 
 session_attachable_pod_name() {
   local namespace="$1"
   local session_name="$2"
-  kubectl -n "$namespace" get pods -l "$(session_attachable_pod_selector "$session_name")" -o jsonpath='{.items[0].metadata.name}'
+  kubectl -n "$namespace" get pods -l "$(session_managed_pod_selector "$session_name")" -o json |
+    python3 -c 'import json, sys
+data = json.load(sys.stdin)
+items = data.get("items", [])
+attachable = [item for item in items if item.get("metadata", {}).get("labels", {}).get("okdev.io/attachable", "").strip().lower() == "true"]
+selected = attachable or items
+if selected:
+    print(selected[0].get("metadata", {}).get("name", ""))'
 }
 
 session_attachable_pod_names() {
   local namespace="$1"
   local session_name="$2"
-  kubectl -n "$namespace" get pods -l "$(session_attachable_pod_selector "$session_name")" -o jsonpath='{.items[*].metadata.name}'
+  kubectl -n "$namespace" get pods -l "$(session_managed_pod_selector "$session_name")" -o json |
+    python3 -c 'import json, sys
+data = json.load(sys.stdin)
+items = data.get("items", [])
+attachable = [item for item in items if item.get("metadata", {}).get("labels", {}).get("okdev.io/attachable", "").strip().lower() == "true"]
+selected = attachable or items
+print(" ".join(item.get("metadata", {}).get("name", "") for item in selected if item.get("metadata", {}).get("name")))' 
 }
