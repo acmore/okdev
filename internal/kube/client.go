@@ -1024,48 +1024,37 @@ func (c *Client) CopyFromPod(ctx context.Context, namespace, podName, remotePath
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 		return err
 	}
-	tempPath, err := tempDownloadPath(localPath)
+	tempFile, err := createTempDownloadFile(localPath)
 	if err != nil {
 		return err
 	}
-	f, err := os.Create(tempPath)
-	if err != nil {
-		return err
-	}
+	tempPath := tempFile.Name()
+	closed := false
 	defer func() {
-		_ = f.Close()
+		if !closed {
+			_ = tempFile.Close()
+		}
 		_ = os.Remove(tempPath)
 	}()
 	var errBuf bytes.Buffer
 	cmd := []string{"sh", "-lc", fmt.Sprintf("cat %s", shellQuote(remotePath))}
-	if err := c.execStream(ctx, cs, cfg, namespace, podName, "", cmd, nil, f, &errBuf, false); err != nil {
+	if err := c.execStream(ctx, cs, cfg, namespace, podName, "", cmd, nil, tempFile, &errBuf, false); err != nil {
 		return err
 	}
-	if err := f.Close(); err != nil {
+	if err := tempFile.Close(); err != nil {
 		return err
 	}
+	closed = true
 	if err := os.Rename(tempPath, localPath); err != nil {
 		return err
 	}
 	return nil
 }
 
-func tempDownloadPath(localPath string) (string, error) {
+func createTempDownloadFile(localPath string) (*os.File, error) {
 	dir := filepath.Dir(localPath)
 	base := filepath.Base(localPath)
-	f, err := os.CreateTemp(dir, base+".tmp-*")
-	if err != nil {
-		return "", err
-	}
-	path := f.Name()
-	if err := f.Close(); err != nil {
-		_ = os.Remove(path)
-		return "", err
-	}
-	if err := os.Remove(path); err != nil {
-		return "", err
-	}
-	return path, nil
+	return os.CreateTemp(dir, base+".tmp-*")
 }
 
 func (c *Client) StreamFromPod(ctx context.Context, namespace, podName, script string, stdout io.Writer) error {

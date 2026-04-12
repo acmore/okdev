@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -389,6 +390,19 @@ func TestPSStatIsZombie(t *testing.T) {
 	}
 	if psStatIsZombie("Ss") {
 		t.Fatal("did not expect normal ps state to be zombie")
+	}
+}
+
+func TestZombieCheckCache(t *testing.T) {
+	zombieCheckCache = sync.Map{}
+	storeZombieCheck(12345, true)
+	if got, ok := cachedZombieCheck(12345); !ok || !got {
+		t.Fatalf("expected cached zombie=true, got %v ok=%v", got, ok)
+	}
+
+	zombieCheckCache.Store(12345, zombieCacheEntry{zombie: true, seenAt: time.Now().Add(-zombieCheckCacheTTL - time.Millisecond)})
+	if _, ok := cachedZombieCheck(12345); ok {
+		t.Fatal("expected expired zombie check to be ignored")
 	}
 }
 
