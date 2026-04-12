@@ -168,7 +168,7 @@ func TestRunDetachExec(t *testing.T) {
 		{Name: "okdev-sess-worker-1", Phase: "Running"},
 	}
 	var stdout bytes.Buffer
-	err := runDetachExec(context.Background(), client, "default", pods, "dev", "python train.py", &stdout)
+	err := runDetachExec(context.Background(), client, "default", pods, "dev", "python train.py", pdshDefaultFanout, &stdout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestRunDetachExecWithError(t *testing.T) {
 		{Name: "okdev-sess-worker-1", Phase: "Running"},
 	}
 	var stdout bytes.Buffer
-	err := runDetachExec(context.Background(), client, "default", pods, "dev", "python train.py", &stdout)
+	err := runDetachExec(context.Background(), client, "default", pods, "dev", "python train.py", pdshDefaultFanout, &stdout)
 	if err == nil {
 		t.Fatal("expected error for partial failure")
 	}
@@ -214,7 +214,7 @@ func TestRunMultiExecSuccess(t *testing.T) {
 		{Name: "okdev-sess-worker-1", Phase: "Running"},
 	}
 	var stdout, stderr bytes.Buffer
-	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-lc", "echo ok"}, "", 0, false, &stdout, &stderr)
+	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-lc", "echo ok"}, "", 0, false, pdshDefaultFanout, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestRunMultiExecPartialFailure(t *testing.T) {
 		{Name: "okdev-sess-worker-1", Phase: "Running"},
 	}
 	var stdout, stderr bytes.Buffer
-	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-lc", "echo ok"}, "", 0, false, &stdout, &stderr)
+	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-lc", "echo ok"}, "", 0, false, pdshDefaultFanout, &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error for partial failure")
 	}
@@ -252,7 +252,7 @@ func TestRunMultiExecTimeout(t *testing.T) {
 		{Name: "pod-0", Phase: "Running"},
 	}
 	var stdout, stderr bytes.Buffer
-	err := runMultiExec(context.Background(), slowClient, "default", pods, "dev", []string{"sh", "-c", "sleep 100"}, "", 50*time.Millisecond, false, &stdout, &stderr)
+	err := runMultiExec(context.Background(), slowClient, "default", pods, "dev", []string{"sh", "-c", "sleep 100"}, "", 50*time.Millisecond, false, pdshDefaultFanout, &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -269,7 +269,7 @@ func TestRunMultiExecNoPrefix(t *testing.T) {
 		{Name: "pod-0", Phase: "Running"},
 	}
 	var stdout, stderr bytes.Buffer
-	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-c", "echo hello"}, "", 0, true, &stdout, &stderr)
+	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-c", "echo hello"}, "", 0, true, pdshDefaultFanout, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestRunMultiExecWithLogDir(t *testing.T) {
 	}
 	logDir := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-c", "echo gpu"}, logDir, 0, false, &stdout, &stderr)
+	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-c", "echo gpu"}, logDir, 0, false, pdshDefaultFanout, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

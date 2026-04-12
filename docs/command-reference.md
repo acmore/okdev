@@ -26,7 +26,7 @@
 - `okdev target show`
 - `okdev target set [--pod <name> | --role <role>]`
 - `okdev agent list`
-- `okdev exec [--shell /bin/bash] [--cmd "..."] [--no-tty] [--all | --pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--detach] [--timeout <duration>] [--log-dir <path>] [--no-prefix]`
+- `okdev exec [--shell /bin/bash] [--cmd "..."] [--no-tty] [--all | --pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--detach] [--timeout <duration>] [--log-dir <path>] [--no-prefix] [--fanout N]`
 - `okdev logs [session] [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
 - `okdev ssh [session] [--setup-key] [--user root] [--cmd "..."] [--no-tmux] [--forward-agent|--no-forward-agent]`
 - `okdev ports`
@@ -78,6 +78,7 @@
 - `--timeout`: per-pod command timeout (e.g., `30s`, `5m`). Pods exceeding the timeout are cancelled and reported as failed.
 - `--log-dir`: write per-pod output to `<dir>/<short-name>.log`. Streaming to stdout still happens.
 - `--no-prefix`: suppress the pod name prefix in output. Useful when targeting a single pod or piping.
+- `--fanout N`: maximum concurrent pod executions (default 16).
 - `--all`, `--pod`, `--role`, and `--label` are mutually exclusive.
 
 ### `okdev init [--workload pod|job|pytorchjob|generic] [--template <name>|<path>|<url>] [--set key=value] [--stignore-preset default|python|node|go|rust] [--force]`

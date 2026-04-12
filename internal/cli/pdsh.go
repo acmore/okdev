@@ -30,6 +30,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 	var timeout time.Duration
 	var logDir string
 	var noPrefix bool
+	var fanout int
 
 	cmd := &cobra.Command{
 		Use:   "exec [session]",
@@ -68,7 +69,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 			}
 
 			if multiPod || detach {
-				return runMultiPodExec(cmd, cc, cmdStr, allPods, podNames, role, labels, exclude, container, detach, timeout, logDir, noPrefix)
+				return runMultiPodExec(cmd, cc, cmdStr, allPods, podNames, role, labels, exclude, container, detach, timeout, logDir, noPrefix, fanout)
 			}
 
 			// Single-pod mode (existing behavior)
@@ -111,6 +112,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 	cmd.Flags().DurationVar(&timeout, "timeout", 0, "Per-pod command timeout (e.g., 30s, 5m)")
 	cmd.Flags().StringVar(&logDir, "log-dir", "", "Write per-pod logs to directory")
 	cmd.Flags().BoolVar(&noPrefix, "no-prefix", false, "Suppress pod name prefix in output")
+	cmd.Flags().IntVar(&fanout, "fanout", pdshDefaultFanout, "Maximum concurrent pod executions")
 	return cmd
 }
 
@@ -147,7 +149,7 @@ func validateMultiPodFlags(allPods bool, podNames []string, role string, labels 
 	return nil
 }
 
-func runMultiPodExec(cmd *cobra.Command, cc *commandContext, cmdStr string, allPods bool, podNames []string, role string, labels []string, exclude []string, container string, detach bool, timeout time.Duration, logDir string, noPrefix bool) error {
+func runMultiPodExec(cmd *cobra.Command, cc *commandContext, cmdStr string, allPods bool, podNames []string, role string, labels []string, exclude []string, container string, detach bool, timeout time.Duration, logDir string, noPrefix bool, fanout int) error {
 	ctx := cmd.Context()
 	labelSel := "okdev.io/managed=true,okdev.io/session=" + cc.sessionName
 	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
@@ -186,12 +188,17 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, cmdStr string, allP
 		}
 	}
 
+	effectiveFanout := fanout
+	if effectiveFanout <= 0 {
+		effectiveFanout = pdshDefaultFanout
+	}
+
 	if detach {
-		return runDetachExec(ctx, cc.kube, cc.namespace, pods, targetContainer, cmdStr, cmd.OutOrStdout())
+		return runDetachExec(ctx, cc.kube, cc.namespace, pods, targetContainer, cmdStr, effectiveFanout, cmd.OutOrStdout())
 	}
 
 	execCmd := []string{"sh", "-lc", cmdStr}
-	return runMultiExec(ctx, cc.kube, cc.namespace, pods, targetContainer, execCmd, logDir, timeout, noPrefix, cmd.OutOrStdout(), cmd.ErrOrStderr())
+	return runMultiExec(ctx, cc.kube, cc.namespace, pods, targetContainer, execCmd, logDir, timeout, noPrefix, effectiveFanout, cmd.OutOrStdout(), cmd.ErrOrStderr())
 }
 
 type podExecResult struct {
@@ -199,7 +206,7 @@ type podExecResult struct {
 	err error
 }
 
-func runMultiExec(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, command []string, logDir string, timeout time.Duration, noPrefix bool, stdout, stderr io.Writer) error {
+func runMultiExec(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, command []string, logDir string, timeout time.Duration, noPrefix bool, fanout int, stdout, stderr io.Writer) error {
 	podNames := make([]string, len(pods))
 	for i, p := range pods {
 		podNames[i] = p.Name
@@ -208,7 +215,7 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 
 	var writeMu sync.Mutex
 	results := make(chan podExecResult, len(pods))
-	sem := make(chan struct{}, pdshDefaultFanout)
+	sem := make(chan struct{}, fanout)
 
 	var wg sync.WaitGroup
 	for i, pod := range pods {
@@ -287,7 +294,7 @@ func detachCommand(cmd string) []string {
 	return []string{"sh", "-c", "nohup sh -c " + quoted + " >/dev/null 2>&1 &"}
 }
 
-func runDetachExec(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, cmdStr string, out io.Writer) error {
+func runDetachExec(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, cmdStr string, fanout int, out io.Writer) error {
 	podNames := make([]string, len(pods))
 	for i, p := range pods {
 		podNames[i] = p.Name
@@ -296,7 +303,7 @@ func runDetachExec(ctx context.Context, client connect.ExecClient, namespace str
 	command := detachCommand(cmdStr)
 
 	results := make(chan podExecResult, len(pods))
-	sem := make(chan struct{}, pdshDefaultFanout)
+	sem := make(chan struct{}, fanout)
 
 	var wg sync.WaitGroup
 	for i, pod := range pods {

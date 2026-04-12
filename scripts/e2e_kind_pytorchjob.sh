@@ -161,6 +161,126 @@ echo "Verifying SSH into master pod"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --setup-key --cmd 'echo pytorchjob-ssh-ok'
 
 # ---------------------------------------------------------------------------
+# Multi-pod exec (pdsh) verification
+# ---------------------------------------------------------------------------
+
+echo "Testing exec --all --cmd across all session pods"
+EXEC_ALL_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --cmd 'echo hello-from-$(hostname)' --no-tty)
+echo "$EXEC_ALL_OUTPUT"
+# Expect prefixed output from 3 pods (1 master + 2 workers).
+EXEC_ALL_LINES=$(echo "$EXEC_ALL_OUTPUT" | grep -c 'hello-from-')
+if [[ "$EXEC_ALL_LINES" -lt 3 ]]; then
+  echo "ERROR: expected exec --all output from 3 pods, got $EXEC_ALL_LINES lines" >&2
+  echo "$EXEC_ALL_OUTPUT" >&2
+  exit 1
+fi
+echo "exec --all verified ($EXEC_ALL_LINES pods responded)"
+
+echo "Testing exec --role master --cmd targets only master"
+EXEC_MASTER_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role master --cmd 'echo master-only' --no-tty)
+echo "$EXEC_MASTER_OUTPUT"
+EXEC_MASTER_LINES=$(echo "$EXEC_MASTER_OUTPUT" | grep -c 'master-only')
+if [[ "$EXEC_MASTER_LINES" -ne 1 ]]; then
+  echo "ERROR: expected exec --role master to target 1 pod, got $EXEC_MASTER_LINES" >&2
+  echo "$EXEC_MASTER_OUTPUT" >&2
+  exit 1
+fi
+echo "exec --role master verified"
+
+echo "Testing exec --role worker --cmd targets only workers"
+EXEC_WORKER_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role worker --cmd 'echo worker-only' --no-tty)
+echo "$EXEC_WORKER_OUTPUT"
+EXEC_WORKER_LINES=$(echo "$EXEC_WORKER_OUTPUT" | grep -c 'worker-only')
+if [[ "$EXEC_WORKER_LINES" -ne 2 ]]; then
+  echo "ERROR: expected exec --role worker to target 2 pods, got $EXEC_WORKER_LINES" >&2
+  echo "$EXEC_WORKER_OUTPUT" >&2
+  exit 1
+fi
+echo "exec --role worker verified"
+
+echo "Testing exec --all --exclude targets subset"
+# Get master pod name to exclude it.
+EXCLUDE_MASTER_POD=$(kubectl -n "$NAMESPACE" get pods \
+  -l "training.kubeflow.org/job-name=$SESSION_NAME,training.kubeflow.org/replica-type=master" \
+  -o jsonpath='{.items[0].metadata.name}')
+EXEC_EXCLUDE_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --exclude "$EXCLUDE_MASTER_POD" --cmd 'echo after-exclude' --no-tty)
+echo "$EXEC_EXCLUDE_OUTPUT"
+EXEC_EXCLUDE_LINES=$(echo "$EXEC_EXCLUDE_OUTPUT" | grep -c 'after-exclude')
+if [[ "$EXEC_EXCLUDE_LINES" -ne 2 ]]; then
+  echo "ERROR: expected exec --all --exclude to target 2 pods, got $EXEC_EXCLUDE_LINES" >&2
+  echo "$EXEC_EXCLUDE_OUTPUT" >&2
+  exit 1
+fi
+echo "exec --all --exclude verified"
+
+echo "Testing exec --all --no-prefix suppresses pod name prefix"
+EXEC_NOPREFIX_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-prefix --cmd 'echo raw-output' --no-tty)
+echo "$EXEC_NOPREFIX_OUTPUT"
+# In no-prefix mode, lines should be raw (no "podname: " prefix).
+if echo "$EXEC_NOPREFIX_OUTPUT" | grep -qE '^[a-z0-9-]+: raw-output$'; then
+  echo "ERROR: expected no-prefix mode but found prefixed output" >&2
+  echo "$EXEC_NOPREFIX_OUTPUT" >&2
+  exit 1
+fi
+EXEC_NOPREFIX_LINES=$(echo "$EXEC_NOPREFIX_OUTPUT" | grep -c 'raw-output')
+if [[ "$EXEC_NOPREFIX_LINES" -lt 3 ]]; then
+  echo "ERROR: expected 3 raw-output lines in no-prefix mode, got $EXEC_NOPREFIX_LINES" >&2
+  exit 1
+fi
+echo "exec --all --no-prefix verified"
+
+echo "Testing exec --all --log-dir writes per-pod log files"
+EXEC_LOG_DIR=$(mktemp -d)
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --cmd 'echo log-test' --no-tty --log-dir "$EXEC_LOG_DIR"
+EXEC_LOG_COUNT=$(find "$EXEC_LOG_DIR" -name '*.log' | wc -l | tr -d ' ')
+if [[ "$EXEC_LOG_COUNT" -lt 3 ]]; then
+  echo "ERROR: expected at least 3 log files in $EXEC_LOG_DIR, found $EXEC_LOG_COUNT" >&2
+  ls -la "$EXEC_LOG_DIR" >&2
+  exit 1
+fi
+for logfile in "$EXEC_LOG_DIR"/*.log; do
+  if [[ ! -s "$logfile" ]]; then
+    echo "ERROR: log file $logfile is empty" >&2
+    exit 1
+  fi
+done
+rm -rf "$EXEC_LOG_DIR"
+echo "exec --all --log-dir verified"
+
+echo "Testing exec --all --fanout 1 (serial execution)"
+EXEC_FANOUT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --fanout 1 --cmd 'echo fanout-test' --no-tty)
+echo "$EXEC_FANOUT_OUTPUT"
+EXEC_FANOUT_LINES=$(echo "$EXEC_FANOUT_OUTPUT" | grep -c 'fanout-test')
+if [[ "$EXEC_FANOUT_LINES" -lt 3 ]]; then
+  echo "ERROR: expected 3 pods with fanout=1, got $EXEC_FANOUT_LINES" >&2
+  exit 1
+fi
+echo "exec --all --fanout 1 verified"
+
+echo "Testing exec --detach launches background command"
+DETACH_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --detach --cmd 'touch /tmp/detach-marker' --no-tty)
+echo "$DETACH_OUTPUT"
+DETACH_LINES=$(echo "$DETACH_OUTPUT" | grep -c 'detached')
+if [[ "$DETACH_LINES" -lt 3 ]]; then
+  echo "ERROR: expected 3 detached confirmations, got $DETACH_LINES" >&2
+  echo "$DETACH_OUTPUT" >&2
+  exit 1
+fi
+# Give detached commands a moment to run.
+sleep 2
+# Verify the marker file was created on at least the master.
+DETACH_MARKER_MASTER=$(kubectl -n "$NAMESPACE" get pods \
+  -l "training.kubeflow.org/job-name=$SESSION_NAME,training.kubeflow.org/replica-type=master" \
+  -o jsonpath='{.items[0].metadata.name}')
+if ! kubectl -n "$NAMESPACE" exec "$DETACH_MARKER_MASTER" -c pytorch -- test -f /tmp/detach-marker; then
+  echo "ERROR: detached command did not create marker on master pod" >&2
+  exit 1
+fi
+echo "exec --detach verified"
+
+echo "Multi-pod exec (pdsh) tests completed"
+
+# ---------------------------------------------------------------------------
 # Lifecycle hook verification
 # ---------------------------------------------------------------------------
 MASTER_POD=$(kubectl -n "$NAMESPACE" get pods \
