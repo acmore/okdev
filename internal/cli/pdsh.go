@@ -1,8 +1,16 @@
 package cli
 
 import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/acmore/okdev/internal/connect"
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/shellutil"
 	"github.com/spf13/cobra"
@@ -64,6 +72,94 @@ func newExecCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&cmdStr, "cmd", "", "Command string to execute")
 	cmd.Flags().BoolVar(&noTTY, "no-tty", false, "Disable TTY allocation")
 	return cmd
+}
+
+type podExecResult struct {
+	pod string
+	err error
+}
+
+func runMultiExec(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, command []string, logDir string, timeout time.Duration, noPrefix bool, stdout, stderr io.Writer) error {
+	podNames := make([]string, len(pods))
+	for i, p := range pods {
+		podNames[i] = p.Name
+	}
+	shortNames := shortPodNames(podNames)
+
+	var writeMu sync.Mutex
+	results := make(chan podExecResult, len(pods))
+	sem := make(chan struct{}, pdshDefaultFanout)
+
+	var wg sync.WaitGroup
+	for i, pod := range pods {
+		wg.Add(1)
+		go func(pod kube.PodSummary, shortName string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			execCtx := ctx
+			var cancel context.CancelFunc
+			if timeout > 0 {
+				execCtx, cancel = context.WithTimeout(ctx, timeout)
+				defer cancel()
+			}
+
+			var podStdout, podStderr io.Writer
+			if noPrefix {
+				podStdout = stdout
+				podStderr = stderr
+			} else {
+				pw := newPrefixedWriter(shortName, stdout, &writeMu)
+				pe := newPrefixedWriter(shortName, stderr, &writeMu)
+				defer pw.Flush()
+				defer pe.Flush()
+				podStdout = pw
+				podStderr = pe
+			}
+
+			if logDir != "" {
+				logPath := filepath.Join(logDir, shortName+".log")
+				f, err := os.Create(logPath)
+				if err != nil {
+					results <- podExecResult{pod: pod.Name, err: fmt.Errorf("create log file: %w", err)}
+					return
+				}
+				defer f.Close()
+				podStdout = io.MultiWriter(podStdout, f)
+				podStderr = io.MultiWriter(podStderr, f)
+			}
+
+			err := connect.RunOnContainer(execCtx, client, namespace, pod.Name, container, command, false, nil, podStdout, podStderr)
+			results <- podExecResult{pod: pod.Name, err: err}
+		}(pod, shortNames[i])
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	var failures []podExecResult
+	for r := range results {
+		if r.err != nil {
+			failures = append(failures, r)
+		}
+	}
+	if len(failures) > 0 {
+		nameMap := make(map[string]string, len(podNames))
+		for i, n := range podNames {
+			nameMap[n] = shortNames[i]
+		}
+		parts := make([]string, 0, len(failures))
+		for _, f := range failures {
+			short := nameMap[f.pod]
+			parts = append(parts, fmt.Sprintf("%s (%v)", short, f.err))
+		}
+		fmt.Fprintf(stderr, "FAILED: %s\n", strings.Join(parts, ", "))
+		return fmt.Errorf("%d of %d pods failed", len(failures), len(pods))
+	}
+	return nil
 }
 
 func detachCommand(cmd string) []string {
