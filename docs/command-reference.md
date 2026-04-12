@@ -26,7 +26,7 @@
 - `okdev target show`
 - `okdev target set [--pod <name> | --role <role>]`
 - `okdev agent list`
-- `okdev exec [--shell /bin/bash] [--cmd "..."] [--no-tty] [--all | --pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--detach] [--timeout <duration>] [--log-dir <path>] [--no-prefix] [--fanout N]`
+- `okdev exec [session] [--shell /bin/bash] [--no-tty] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--detach] [--timeout <duration>] [--log-dir <path>] [--no-prefix] [--fanout N] [-- command...]`
 - `okdev cp [session] <src> <dst> [--all | --pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--fanout N]`
 - `okdev logs [session] [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
 - `okdev ssh [session] [--setup-key] [--user root] [--cmd "..."] [--no-tmux] [--forward-agent|--no-forward-agent]`
@@ -64,12 +64,11 @@
 - `okdev down` removes staged agent auth symlinks/runtime files when it can still reach the target container.
 - `okdev` does not own agent process launch; users run `codex`, `claude`, `gemini`, `opencode`, or similar CLIs manually after connecting.
 
-### `okdev exec [session]`
+### `okdev exec [session] [-- command...]`
 
 - Opens a shell or runs a command in one or more session pods.
-- **Single-pod mode** (default): opens an interactive shell or runs `--cmd` on the pinned target pod.
-- **Multi-pod mode** (pdsh-style): activated by `--all`, `--pod`, `--role`, or `--label`. Runs `--cmd` (required) across matched pods in parallel with output prefixed by short pod name.
-- `--all`: target all running pods in the session.
+- Without `-- command...`, opens an interactive shell on the pinned target pod.
+- With `-- command...`, runs the command across all running pods by default, with output prefixed by short pod name.
 - `--pod`: target specific pods by name (repeatable or comma-separated).
 - `--role`: target pods by `okdev.io/workload-role` label (case-insensitive).
 - `--label`: target pods by arbitrary label `key=value` (repeatable, AND logic).
@@ -80,7 +79,7 @@
 - `--log-dir`: write per-pod output to `<dir>/<short-name>.log`. Streaming to stdout still happens.
 - `--no-prefix`: suppress the pod name prefix in output. Useful when targeting a single pod or piping.
 - `--fanout N`: maximum concurrent pod executions (default 16).
-- `--all`, `--pod`, `--role`, and `--label` are mutually exclusive.
+- `--pod`, `--role`, and `--label` are mutually exclusive.
 
 ### `okdev cp [session] <src> <dst>`
 

@@ -310,61 +310,54 @@ func TestRunMultiExecWithLogDir(t *testing.T) {
 func TestValidateMultiPodFlags(t *testing.T) {
 	tests := []struct {
 		name     string
-		allPods  bool
 		podNames []string
 		role     string
 		labels   []string
 		exclude  []string
-		cmdStr   string
+		hasCmd   bool
 		detach   bool
 		wantErr  string
 	}{
 		{
-			name:    "all and role mutually exclusive",
-			allPods: true, role: "worker", cmdStr: "echo hi",
-			wantErr: "mutually exclusive",
-		},
-		{
-			name:    "all and pod mutually exclusive",
-			allPods: true, podNames: []string{"p1"}, cmdStr: "echo hi",
-			wantErr: "mutually exclusive",
-		},
-		{
-			name:    "multi-pod requires cmd",
-			allPods: true,
-			wantErr: "--cmd is required",
+			name:    "role requires command",
+			role:    "worker",
+			wantErr: "command after -- is required",
 		},
 		{
 			name:    "detach requires cmd",
 			detach:  true,
-			wantErr: "--cmd is required",
+			wantErr: "command after -- is required",
 		},
 		{
 			name:    "exclude without selector",
-			exclude: []string{"p1"}, cmdStr: "echo hi",
-			wantErr: "--exclude requires",
+			exclude: []string{"p1"},
+			wantErr: "command after -- is required",
 		},
 		{
-			name:     "exclude with pod",
-			podNames: []string{"p1"}, exclude: []string{"p1"}, cmdStr: "echo hi",
+			name:     "exclude with pod and command",
+			podNames: []string{"p1"}, exclude: []string{"p1"}, hasCmd: true,
 			wantErr: "--exclude cannot be used with --pod",
 		},
 		{
-			name:    "valid all with cmd",
-			allPods: true, cmdStr: "echo hi",
+			name:   "valid default all with command",
+			hasCmd: true,
 		},
 		{
 			name: "valid role with cmd",
-			role: "worker", cmdStr: "echo hi",
+			role: "worker", hasCmd: true,
+		},
+		{
+			name:    "valid exclude with default all",
+			exclude: []string{"p1"}, hasCmd: true,
 		},
 		{
 			name:   "valid detach with cmd",
-			detach: true, cmdStr: "echo hi",
+			detach: true, hasCmd: true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateMultiPodFlags(tt.allPods, tt.podNames, tt.role, tt.labels, tt.exclude, tt.cmdStr, tt.detach)
+			err := validateMultiPodFlags(tt.podNames, tt.role, tt.labels, tt.exclude, tt.hasCmd, tt.detach)
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
