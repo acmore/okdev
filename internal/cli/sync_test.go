@@ -411,3 +411,29 @@ func TestWaitForDetachedSyncthingStartRejectsDeadProcess(t *testing.T) {
 		t.Fatal("expected dead process to be rejected")
 	}
 }
+
+func TestReadFileTailReadsOnlyTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sync.log")
+	content := append(bytes.Repeat([]byte("x"), 4096), []byte("tail-line\n")...)
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readFileTail(path, len("tail-line\n"))
+	if got != "tail-line" {
+		t.Fatalf("expected tail-line, got %q", got)
+	}
+}
+
+func TestReadFileTailHandlesShortAndMissingFiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sync.log")
+	if err := os.WriteFile(path, []byte("short\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFileTail(path, 1024); got != "short" {
+		t.Fatalf("expected short file content, got %q", got)
+	}
+	if got := readFileTail(filepath.Join(t.TempDir(), "missing.log"), 1024); got != "" {
+		t.Fatalf("expected missing file to return empty string, got %q", got)
+	}
+}
