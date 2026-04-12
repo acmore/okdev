@@ -142,7 +142,7 @@ echo "Sync health status verified"
 echo "Waiting for synced file to appear remotely with correct content"
 SYNC_OK=false
 for i in $(seq 1 30); do
-  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'if [ -f /workspace/hello.txt ]; then cat /workspace/hello.txt; fi' || true)
+  REMOTE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role master --no-tty --no-prefix -- sh -lc 'if [ -f /workspace/hello.txt ]; then cat /workspace/hello.txt; fi' || true)
   if [[ "$REMOTE_CONTENT" == "hello from pytorchjob e2e" ]]; then
     SYNC_OK=true
     echo "Sync verified on attempt $i"
@@ -287,7 +287,7 @@ echo "Multi-pod exec (pdsh) tests completed"
 echo "Testing cp upload single file to target pod"
 echo "cp-test-content" >"$SYNC_DIR/cp-test.txt"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp "$SYNC_DIR/cp-test.txt" :/tmp/cp-test.txt
-CP_VERIFY=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'cat /tmp/cp-test.txt')
+CP_VERIFY=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role master --no-tty --no-prefix -- sh -lc 'cat /tmp/cp-test.txt')
 if [[ "$CP_VERIFY" != "cp-test-content" ]]; then
   echo "ERROR: cp upload single file failed, got '$CP_VERIFY'" >&2
   exit 1

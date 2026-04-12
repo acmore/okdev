@@ -97,7 +97,7 @@ wait_remote_file() {
   local expected="$3"
   for i in $(seq 1 30); do
     local content
-    content=$("$OKDEV_BIN" --config "$cfg" --session "$session" exec --no-tty -- sh -lc 'if [ -f /workspace/session.txt ]; then cat /workspace/session.txt; fi' || true)
+    content=$("$OKDEV_BIN" --config "$cfg" --session "$session" exec --no-tty --no-prefix -- sh -lc 'if [ -f /workspace/session.txt ]; then cat /workspace/session.txt; fi' || true)
     if [[ "$content" == "$expected" ]]; then
       return 0
     fi
