@@ -902,6 +902,17 @@ func (c *Client) ExecInteractive(ctx context.Context, namespace, pod string, tty
 	return c.execStream(ctx, cs, cfg, namespace, pod, container, command, stdin, stdout, stderr, tty)
 }
 
+func (c *Client) ExecInteractiveInContainer(ctx context.Context, namespace, pod, container string, tty bool, command []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) error {
+	if len(command) == 0 {
+		return errors.New("exec command cannot be empty")
+	}
+	cs, cfg, err := c.clientset()
+	if err != nil {
+		return err
+	}
+	return c.execStream(ctx, cs, cfg, namespace, pod, container, command, stdin, stdout, stderr, tty)
+}
+
 func (c *Client) PortForward(ctx context.Context, namespace, pod string, forwards []string, stdout io.Writer, stderr io.Writer) error {
 	backoff := time.Second
 	const maxBackoff = 30 * time.Second

@@ -187,4 +187,7 @@ const (
 
 	// Maximum total restoration attempts before giving up.
 	syncHealthCheckMaxRetries = 15
+
+	// Maximum concurrent pod exec operations in multi-pod mode.
+	pdshDefaultFanout = 16
 )
