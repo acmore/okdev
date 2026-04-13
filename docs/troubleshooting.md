@@ -26,7 +26,8 @@
 - `sync.engine=syncthing` requires local Syncthing bootstrap (handled by `okdev`) and sidecar image pull success.
 - Current Syncthing implementation supports a single `local:remote` mapping.
 - If you see `ErrImagePull` / GHCR `403`, use a publicly pullable `spec.sidecar.image` or adjust registry permissions.
-- If `okdev status --details` shows stale local sync state or a stale PID file, run `okdev sync --reset`.
+- If `okdev status --details` shows stale local sync state or a stale PID file, run `okdev sync --reset`. For mesh sessions, `--reset` also probes receiver health and repairs any broken mesh connections.
+- `okdev status --details` shows live mesh health when receivers exist, including per-receiver connection and sync status.
 - If the session pod was recreated, rerun `okdev up` to re-bootstrap local sync against the new pod.
 - Re-run `okdev ports` if the sync connection depends on managed SSH forwarding that may have been interrupted.
 

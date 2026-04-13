@@ -50,6 +50,9 @@ func newSyncCmd(opts *Options) *cobra.Command {
 	var foreground bool
 	var dryRun bool
 	var reset bool
+	var force bool
+	var resetLocal bool
+	var resetMesh bool
 
 	cmd := &cobra.Command{
 		Use:   "sync",
@@ -75,6 +78,12 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if foreground {
 				background = false
 			}
+			if force && !reset {
+				return fmt.Errorf("--force can only be used with --reset")
+			}
+			if (resetLocal || resetMesh) && !reset {
+				return fmt.Errorf("--local and --mesh can only be used with --reset")
+			}
 			pairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
 			if err != nil {
 				return err
@@ -83,7 +92,17 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: sync session=%s namespace=%s engine=%s mode=%s\n", cc.sessionName, cc.namespace, engine, mode)
 				fmt.Fprintf(cmd.OutOrStdout(), "- paths: %v\n", pairs)
 				if reset {
-					fmt.Fprintln(cmd.OutOrStdout(), "- would reset local sync state for this session before setup")
+					scope := "all"
+					if resetLocal && !resetMesh {
+						scope = "local"
+					} else if resetMesh && !resetLocal {
+						scope = "mesh"
+					}
+					if force {
+						fmt.Fprintf(cmd.OutOrStdout(), "- would force reset %s sync\n", scope)
+					} else {
+						fmt.Fprintf(cmd.OutOrStdout(), "- would check %s sync health, reset only broken components\n", scope)
+					}
 				}
 				if background {
 					fmt.Fprintln(cmd.OutOrStdout(), "- detached background mode enabled")
@@ -104,13 +123,21 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			}
 
 			if reset {
-				if err := resetSyncthingSessionState(cc.sessionName); err != nil {
-					return err
+				wantLocal := !resetMesh || resetLocal
+				wantMesh := !resetLocal || resetMesh
+
+				if wantLocal {
+					if err := resetLocalSync(cmd, cc, force); err != nil {
+						return err
+					}
 				}
-				if err := saveSyncthingTargetSessionState(cc.sessionName, syncthingSessionTargetState{}); err != nil {
-					return err
+				if wantMesh {
+					if force {
+						return forceRepairMesh(cmd, cc, target.PodName)
+					}
+					return repairMeshIfNeeded(cmd, cc, target.PodName)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Reset local sync state for session %s\n", cc.sessionName)
+				return nil
 			}
 
 			if !background && mode == "bi" && os.Getenv("OKDEV_SYNCTHING_BACKGROUND_CHILD") != "1" {
@@ -142,7 +169,10 @@ func newSyncCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&mode, "mode", "bi", "Sync mode: up|down|bi")
 	cmd.Flags().BoolVar(&background, "background", true, "Run syncthing sync as a detached background process")
 	cmd.Flags().BoolVar(&foreground, "foreground", false, "Run syncthing sync in the foreground for troubleshooting")
-	cmd.Flags().BoolVar(&reset, "reset", false, "Stop existing local sync state for this session and bootstrap again")
+	cmd.Flags().BoolVar(&reset, "reset", false, "Check sync health and reset broken components")
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "Force reset without health check (requires --reset)")
+	cmd.Flags().BoolVar(&resetLocal, "local", false, "Scope --reset to local-to-hub sync only")
+	cmd.Flags().BoolVar(&resetMesh, "mesh", false, "Scope --reset to mesh receivers only")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview sync actions without transferring files")
 
 	cmd.AddCommand(newSyncResetRemoteCmd(opts))
@@ -212,6 +242,111 @@ func reportSyncthingTargetReset(w io.Writer, sessionName string, reset bool) {
 		return
 	}
 	fmt.Fprintf(w, "Reset local sync state for session %s: target pod was recreated\n", sessionName)
+}
+
+func resetLocalSync(cmd *cobra.Command, cc *commandContext, force bool) error {
+	if !force {
+		health, reason := checkSyncHealth(cc.sessionName)
+		if health == syncHealthActive {
+			fmt.Fprintf(cmd.OutOrStdout(), "Local sync: healthy\n")
+			return nil
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Local sync: %s (%s)\n", health, reason)
+	}
+
+	if err := resetSyncthingSessionState(cc.sessionName); err != nil {
+		return err
+	}
+	if err := saveSyncthingTargetSessionState(cc.sessionName, syncthingSessionTargetState{}); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Reset local sync state for session %s\n", cc.sessionName)
+
+	logPath, started, err := startDetachedSyncthingSync(cc.opts, "two-phase", cc.sessionName, cc.namespace, cc.cfgPath)
+	if err != nil {
+		return err
+	}
+	if started {
+		fmt.Fprintf(cmd.OutOrStdout(), "Sync re-established, logs: %s\n", logPath)
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "Sync already running, logs: %s\n", logPath)
+	}
+	return nil
+}
+
+func meshResetLabels(sessionName string) map[string]string {
+	return map[string]string{
+		"okdev.io/managed": "true",
+		"okdev.io/session": sessionName,
+	}
+}
+
+func repairMeshIfNeeded(cmd *cobra.Command, cc *commandContext, hubPod string) error {
+	labels := meshResetLabels(cc.sessionName)
+	ctx, cancel := context.WithTimeout(cmd.Context(), meshSetupTimeout+30*time.Second)
+	defer cancel()
+
+	count, err := meshReceiverCount(ctx, cc.kube, cc.namespace, labels)
+	if err != nil || count == 0 {
+		return nil
+	}
+
+	folderID := "okdev-" + cc.sessionName
+	workspaceMountPath := cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath)
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Checking mesh health for %d receiver(s) …\n", count)
+	health, err := checkMeshHealth(ctx, cc.opts, cc.kube, cc.namespace, cc.sessionName, labels, hubPod, folderID)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: mesh health check failed: %v\n", err)
+		return nil
+	}
+
+	broken := brokenMeshReceiverPods(health)
+	if len(broken) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "Mesh: all receivers healthy")
+		return nil
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Mesh: %d broken receiver(s): %s\n", len(broken), strings.Join(broken, ", "))
+	return doMeshRepair(cmd, ctx, cc, labels, hubPod, folderID, workspaceMountPath)
+}
+
+func forceRepairMesh(cmd *cobra.Command, cc *commandContext, hubPod string) error {
+	labels := meshResetLabels(cc.sessionName)
+	ctx, cancel := context.WithTimeout(cmd.Context(), meshSetupTimeout+30*time.Second)
+	defer cancel()
+
+	count, err := meshReceiverCount(ctx, cc.kube, cc.namespace, labels)
+	if err != nil || count == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "No mesh receivers found")
+		return nil
+	}
+
+	folderID := "okdev-" + cc.sessionName
+	workspaceMountPath := cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath)
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Force resetting mesh for %d receiver(s) …\n", count)
+	return doMeshRepair(cmd, ctx, cc, labels, hubPod, folderID, workspaceMountPath)
+}
+
+func doMeshRepair(cmd *cobra.Command, ctx context.Context, cc *commandContext, labels map[string]string, hubPod, folderID, workspaceMountPath string) error {
+	fmt.Fprintln(cmd.OutOrStdout(), "Repairing mesh sync …")
+	result, meshErr := repairMeshReceivers(ctx, cc.opts, cc.kube, cc.namespace, cc.sessionName, labels, hubPod, folderID, workspaceMountPath, func(status string) {
+		fmt.Fprintf(cmd.OutOrStdout(), "  mesh: %s\n", status)
+	})
+	if meshErr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: mesh repair failed: %v\n", meshErr)
+		return nil
+	}
+	if result != nil {
+		fmt.Fprintf(cmd.OutOrStdout(), "Mesh: %s\n", formatMeshSummary(result))
+		for _, r := range result.Receivers {
+			if r.Err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: mesh receiver %s: %v\n", r.Pod, r.Err)
+			}
+		}
+	}
+	return nil
 }
 
 func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfgPath string) (string, bool, error) {

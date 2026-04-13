@@ -932,6 +932,218 @@ if [[ "$MESH_WORKER_OK" != "true" ]]; then
 fi
 echo "Mesh workspace sync verified on all workers"
 
+# ---------------------------------------------------------------------------
+# status --details: verify live mesh health output
+# ---------------------------------------------------------------------------
+
+echo "Verifying status --details shows live mesh health"
+MESH_HEALTH_STATUS=""
+for i in $(seq 1 15); do
+  MESH_HEALTH_STATUS=$(HOME="$MESH_HOME" "$OKDEV_BIN" --config "$MESH_CFG" --session "$MESH_SESSION" status --details)
+  if [[ "$MESH_HEALTH_STATUS" == *"receiver(s) healthy"* ]]; then
+    break
+  fi
+  if [[ "$i" -eq 15 ]]; then
+    echo "ERROR: expected status --details to include live mesh health" >&2
+    echo "$MESH_HEALTH_STATUS" >&2
+    exit 1
+  fi
+  echo "Mesh health not in status yet, retrying ($i/15)"
+  sleep 3
+done
+echo "$MESH_HEALTH_STATUS"
+
+# All receivers should be healthy at this point.
+if [[ "$MESH_HEALTH_STATUS" != *"2/2 receiver(s) healthy"* ]]; then
+  echo "ERROR: expected 2/2 receivers healthy in status output" >&2
+  echo "$MESH_HEALTH_STATUS" >&2
+  exit 1
+fi
+# Each worker should show "synced".
+for WPOD in $MESH_WORKERS; do
+  if [[ "$MESH_HEALTH_STATUS" != *"$WPOD: synced"* ]]; then
+    echo "ERROR: expected worker $WPOD to show synced in mesh health" >&2
+    echo "$MESH_HEALTH_STATUS" >&2
+    exit 1
+  fi
+done
+echo "Live mesh health in status --details verified"
+
+# ---------------------------------------------------------------------------
+# sync --reset flag validation
+# ---------------------------------------------------------------------------
+
+echo "Verifying --force/--local/--mesh require --reset"
+set +e
+ERR_FORCE=$(HOME="$MESH_HOME" "$OKDEV_BIN" --config "$MESH_CFG" --session "$MESH_SESSION" sync --force 2>&1)
+ERR_FORCE_RC=$?
+ERR_LOCAL=$(HOME="$MESH_HOME" "$OKDEV_BIN" --config "$MESH_CFG" --session "$MESH_SESSION" sync --local 2>&1)
+ERR_LOCAL_RC=$?
+ERR_MESH=$(HOME="$MESH_HOME" "$OKDEV_BIN" --config "$MESH_CFG" --session "$MESH_SESSION" sync --mesh 2>&1)
+ERR_MESH_RC=$?
+set -e
+if [[ "$ERR_FORCE_RC" -eq 0 ]]; then
+  echo "ERROR: --force without --reset should fail" >&2; exit 1
+fi
+if [[ "$ERR_LOCAL_RC" -eq 0 ]]; then
+  echo "ERROR: --local without --reset should fail" >&2; exit 1
+fi
+if [[ "$ERR_MESH_RC" -eq 0 ]]; then
+  echo "ERROR: --mesh without --reset should fail" >&2; exit 1
+fi
+echo "Flag validation verified"
+
+# ---------------------------------------------------------------------------
+# sync --reset --local: check local sync only, skip mesh
+# ---------------------------------------------------------------------------
+
+echo "Testing sync --reset --local (should check local sync, skip mesh)"
+RESET_LOCAL_OUTPUT=$(HOME="$MESH_HOME" "$OKDEV_BIN" --config "$MESH_CFG" --session "$MESH_SESSION" sync --reset --local 2>&1)
+echo "$RESET_LOCAL_OUTPUT"
+if [[ "$RESET_LOCAL_OUTPUT" != *"Local sync: healthy"* ]]; then
+  echo "ERROR: expected --reset --local to report local sync health" >&2
+  exit 1
+fi
+# Should NOT contain mesh output since --local scopes to local only.
+if [[ "$RESET_LOCAL_OUTPUT" == *"mesh"* ]] || [[ "$RESET_LOCAL_OUTPUT" == *"Mesh"* ]] || [[ "$RESET_LOCAL_OUTPUT" == *"receiver"* ]]; then
+  echo "ERROR: --reset --local should not touch mesh" >&2
+  exit 1
+fi
+echo "sync --reset --local verified"
+
+# ---------------------------------------------------------------------------
+# sync --reset --mesh: break receiver, repair mesh only
+# ---------------------------------------------------------------------------
+
+echo "Breaking a mesh receiver's syncthing config to test --reset --mesh"
+BREAK_WPOD=$(echo "$MESH_WORKERS" | awk '{print $1}')
+kubectl -n "$NAMESPACE" exec "$BREAK_WPOD" -c okdev-sidecar -- sh -c \
+  'syncthing generate --home /var/syncthing/config >/dev/null 2>&1; kill $(cat /var/syncthing/syncthing.pid 2>/dev/null) 2>/dev/null; sleep 1; syncthing serve --home /var/syncthing/config --no-browser --no-default-folder >/dev/null 2>&1 &'
+
+echo "Waiting for receiver to become unhealthy"
+BROKEN_DETECTED=false
+for i in $(seq 1 10); do
+  BREAK_STATUS=$(HOME="$MESH_HOME" "$OKDEV_BIN" --config "$MESH_CFG" --session "$MESH_SESSION" status --details 2>&1 || true)
+  if [[ "$BREAK_STATUS" != *"2/2 receiver(s) healthy"* ]] && [[ "$BREAK_STATUS" == *"receiver(s) healthy"* ]]; then
+    BROKEN_DETECTED=true
+    echo "Broken receiver detected in status on attempt $i"
+    break
+  fi
+  sleep 3
+done
+if [[ "$BROKEN_DETECTED" != "true" ]]; then
+  echo "WARNING: could not confirm receiver became unhealthy via status; proceeding with --reset --mesh anyway"
+fi
+
+echo "Running sync --reset --mesh to repair only mesh receivers"
+RESET_MESH_OUTPUT=$(HOME="$MESH_HOME" "$OKDEV_BIN" --config "$MESH_CFG" --session "$MESH_SESSION" sync --reset --mesh 2>&1)
+echo "$RESET_MESH_OUTPUT"
+
+# Should NOT contain local sync output since --mesh scopes to mesh only.
+if [[ "$RESET_MESH_OUTPUT" == *"Local sync:"* ]]; then
+  echo "ERROR: --reset --mesh should not check local sync" >&2
+  exit 1
+fi
+
+# Should have handled mesh receivers.
+if [[ "$RESET_MESH_OUTPUT" == *"broken receiver"* ]] || [[ "$RESET_MESH_OUTPUT" == *"Repairing mesh"* ]] || [[ "$RESET_MESH_OUTPUT" == *"all receivers healthy"* ]]; then
+  echo "sync --reset --mesh handling confirmed"
+else
+  echo "NOTE: sync --reset --mesh output: $RESET_MESH_OUTPUT"
+fi
+
+echo "Verifying file sync works after --reset --mesh"
+echo "post-mesh-reset" >"$MESH_SYNC/post-mesh-reset.txt"
+
+POST_MESH_RESET_OK=false
+for i in $(seq 1 30); do
+  MASTER_CONTENT=$(kubectl -n "$NAMESPACE" exec "$MESH_MASTER" -c pytorch -- cat /workspace/post-mesh-reset.txt 2>/dev/null || true)
+  if [[ "$MASTER_CONTENT" == "post-mesh-reset" ]]; then
+    POST_MESH_RESET_OK=true
+    echo "Post --reset --mesh file on master verified on attempt $i"
+    break
+  fi
+  sleep 2
+done
+if [[ "$POST_MESH_RESET_OK" != "true" ]]; then
+  echo "ERROR: file did not sync to master after --reset --mesh" >&2
+  exit 1
+fi
+
+for WPOD in $MESH_WORKERS; do
+  WORKER_MESH_OK=false
+  for attempt in $(seq 1 30); do
+    WORKER_CONTENT=$(kubectl -n "$NAMESPACE" exec "$WPOD" -c pytorch -- cat /workspace/post-mesh-reset.txt 2>/dev/null || true)
+    if [[ "$WORKER_CONTENT" == "post-mesh-reset" ]]; then
+      WORKER_MESH_OK=true
+      echo "Post --reset --mesh file on worker $WPOD verified on attempt $attempt"
+      break
+    fi
+    sleep 2
+  done
+  if [[ "$WORKER_MESH_OK" != "true" ]]; then
+    echo "ERROR: file did not sync to worker $WPOD via mesh after --reset --mesh" >&2
+    exit 1
+  fi
+done
+echo "sync --reset --mesh repair verified"
+
+# ---------------------------------------------------------------------------
+# sync --reset -f --mesh: force mesh reset without health check
+# ---------------------------------------------------------------------------
+
+echo "Testing sync --reset --force --mesh (force mesh reset, skip health check)"
+FORCE_MESH_OUTPUT=$(HOME="$MESH_HOME" "$OKDEV_BIN" --config "$MESH_CFG" --session "$MESH_SESSION" sync --reset --force --mesh 2>&1)
+echo "$FORCE_MESH_OUTPUT"
+
+# Should NOT contain local sync output.
+if [[ "$FORCE_MESH_OUTPUT" == *"Local sync:"* ]]; then
+  echo "ERROR: --reset --force --mesh should not check local sync" >&2
+  exit 1
+fi
+# Should force repair without checking health first.
+if [[ "$FORCE_MESH_OUTPUT" != *"Force resetting mesh"* ]]; then
+  echo "ERROR: expected force mesh reset output" >&2
+  exit 1
+fi
+echo "sync --reset --force --mesh verified"
+
+# ---------------------------------------------------------------------------
+# sync --reset (bare): check both local + mesh, repair broken
+# ---------------------------------------------------------------------------
+
+echo "Testing bare sync --reset (checks both local + mesh)"
+RESET_BOTH_OUTPUT=$(HOME="$MESH_HOME" "$OKDEV_BIN" --config "$MESH_CFG" --session "$MESH_SESSION" sync --reset 2>&1)
+echo "$RESET_BOTH_OUTPUT"
+
+# Should check local sync health.
+if [[ "$RESET_BOTH_OUTPUT" != *"Local sync:"* ]]; then
+  echo "ERROR: bare --reset should check local sync health" >&2
+  exit 1
+fi
+# Should also check mesh.
+if [[ "$RESET_BOTH_OUTPUT" == *"receiver"* ]] || [[ "$RESET_BOTH_OUTPUT" == *"Mesh"* ]] || [[ "$RESET_BOTH_OUTPUT" == *"mesh"* ]]; then
+  echo "bare sync --reset handled both local and mesh"
+else
+  echo "NOTE: bare --reset may have skipped mesh (no receivers or no mesh labels)"
+fi
+echo "sync --reset (bare) verified"
+
+echo "Verifying mesh health is still good after all reset tests"
+REPAIRED_STATUS=""
+for i in $(seq 1 15); do
+  REPAIRED_STATUS=$(HOME="$MESH_HOME" "$OKDEV_BIN" --config "$MESH_CFG" --session "$MESH_SESSION" status --details)
+  if [[ "$REPAIRED_STATUS" == *"2/2 receiver(s) healthy"* ]]; then
+    echo "Mesh health fully recovered on attempt $i"
+    break
+  fi
+  if [[ "$i" -eq 15 ]]; then
+    echo "WARNING: mesh health did not show 2/2 healthy after all reset tests, got:"
+    echo "$REPAIRED_STATUS"
+  fi
+  sleep 3
+done
+
 echo "Tearing down mesh session"
 HOME="$MESH_HOME" "$OKDEV_BIN" --config "$MESH_CFG" --session "$MESH_SESSION" down --yes
 

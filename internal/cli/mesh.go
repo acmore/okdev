@@ -470,6 +470,139 @@ func configureAndWaitMeshReceiver(ctx context.Context, opts *Options, k *kube.Cl
 	}
 }
 
+// meshReceiverHealth describes the live syncthing health of a single receiver.
+type meshReceiverHealth struct {
+	Pod       string `json:"pod"`
+	Connected bool   `json:"connected"`
+	InSync    bool   `json:"inSync"`
+	NeedBytes int64  `json:"needBytes,omitempty"`
+	Err       string `json:"error,omitempty"`
+}
+
+// meshHealthSummary is the result of probing all mesh receivers.
+type meshHealthSummary struct {
+	HubPod    string               `json:"hubPod"`
+	FolderID  string               `json:"folderID"`
+	Receivers []meshReceiverHealth `json:"receivers"`
+}
+
+// checkMeshHealth probes each mesh receiver's syncthing API to determine
+// connection and sync status. It returns per-receiver health without
+// modifying any configuration.
+func checkMeshHealth(ctx context.Context, opts *Options, k *kube.Client, namespace, sessionName string, labels map[string]string, hubPod, folderID string) (*meshHealthSummary, error) {
+	selector := workload.DiscoveryLabelSelector(labels)
+	if selector != "" {
+		selector += ","
+	}
+	selector += meshReceiverLabelSelector
+	pods, err := k.ListPods(ctx, namespace, false, selector)
+	if err != nil {
+		return nil, fmt.Errorf("list mesh receiver pods: %w", err)
+	}
+	var receivers []kube.PodSummary
+	for _, p := range pods {
+		if !p.Deleting && p.Phase == "Running" {
+			receivers = append(receivers, p)
+		}
+	}
+	if len(receivers) == 0 {
+		return nil, nil
+	}
+
+	hubKey, err := readRemoteSyncthingAPIKey(ctx, k, namespace, hubPod)
+	if err != nil {
+		return nil, fmt.Errorf("read hub API key: %w", err)
+	}
+	cancelPF, hubBase, _, err := startSyncthingPortForward(ctx, opts, namespace, hubPod)
+	if err != nil {
+		return nil, fmt.Errorf("port-forward to hub: %w", err)
+	}
+	defer cancelPF()
+	if err := waitSyncthingAPI(ctx, hubBase, hubKey, syncthingAPIReadyTimeout); err != nil {
+		return nil, fmt.Errorf("hub syncthing API not ready: %w", err)
+	}
+
+	results := make([]meshReceiverHealth, len(receivers))
+	var wg sync.WaitGroup
+	for i, recv := range receivers {
+		wg.Add(1)
+		go func(idx int, pod kube.PodSummary) {
+			defer wg.Done()
+			results[idx] = probeMeshReceiver(ctx, opts, k, namespace, pod, hubBase, hubKey, folderID)
+		}(i, recv)
+	}
+	wg.Wait()
+
+	return &meshHealthSummary{HubPod: hubPod, FolderID: folderID, Receivers: results}, nil
+}
+
+func probeMeshReceiver(ctx context.Context, opts *Options, k *kube.Client, namespace string, pod kube.PodSummary, hubBase, hubKey, folderID string) meshReceiverHealth {
+	h := meshReceiverHealth{Pod: pod.Name}
+
+	recvKey, err := readRemoteSyncthingAPIKey(ctx, k, namespace, pod.Name)
+	if err != nil {
+		h.Err = fmt.Sprintf("read API key: %v", err)
+		return h
+	}
+	cancelPF, recvBase, _, err := startSyncthingPortForward(ctx, opts, namespace, pod.Name)
+	if err != nil {
+		h.Err = fmt.Sprintf("port-forward: %v", err)
+		return h
+	}
+	defer cancelPF()
+	if err := waitSyncthingAPI(ctx, recvBase, recvKey, 5*time.Second); err != nil {
+		h.Err = fmt.Sprintf("API not ready: %v", err)
+		return h
+	}
+
+	recvDeviceID, err := syncthingDeviceID(ctx, recvBase, recvKey)
+	if err != nil {
+		h.Err = fmt.Sprintf("read device ID: %v", err)
+		return h
+	}
+
+	hubDeviceID, err := syncthingDeviceID(ctx, hubBase, hubKey)
+	if err != nil {
+		h.Err = fmt.Sprintf("read hub device ID: %v", err)
+		return h
+	}
+
+	recvConn, _ := syncthingPeerConnected(ctx, recvBase, recvKey, hubDeviceID)
+	hubConn, _ := syncthingPeerConnected(ctx, hubBase, hubKey, recvDeviceID)
+	h.Connected = recvConn && hubConn
+
+	_, needBytes, pollErr := syncthingCompletion(ctx, recvBase, recvKey, folderID, hubDeviceID)
+	if pollErr == nil {
+		h.NeedBytes = needBytes
+		h.InSync = needBytes == 0 && h.Connected
+	} else {
+		h.Err = fmt.Sprintf("completion poll: %v", pollErr)
+	}
+	return h
+}
+
+// brokenMeshReceiverPods returns the pod names of receivers that are not
+// connected or not in sync.
+func brokenMeshReceiverPods(summary *meshHealthSummary) []string {
+	if summary == nil {
+		return nil
+	}
+	var broken []string
+	for _, r := range summary.Receivers {
+		if r.Err != "" || !r.Connected || !r.InSync {
+			broken = append(broken, r.Pod)
+		}
+	}
+	return broken
+}
+
+// repairMeshReceivers re-runs the full mesh setup which reconfigures all
+// receivers. setupMesh is idempotent — healthy receivers reconverge quickly
+// while broken ones get reconfigured.
+func repairMeshReceivers(ctx context.Context, opts *Options, k *kube.Client, namespace, sessionName string, labels map[string]string, hubPod, folderID, workspaceMountPath string, onStatus func(string)) (*meshSummary, error) {
+	return setupMesh(ctx, opts, k, namespace, sessionName, labels, hubPod, folderID, workspaceMountPath, meshSetupTimeout, onStatus)
+}
+
 // meshReceiverCount returns the number of receiver pods discovered in a session.
 func meshReceiverCount(ctx context.Context, k *kube.Client, namespace string, labels map[string]string) (int, error) {
 	selector := workload.DiscoveryLabelSelector(labels)
