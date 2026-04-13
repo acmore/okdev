@@ -332,17 +332,16 @@ echo "Verifying SSH into master pod"
 # Multi-pod exec (pdsh) verification
 # ---------------------------------------------------------------------------
 
-echo "Testing exec -- across all session pods"
-EXEC_ALL_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'echo hello-from-$(hostname)')
-echo "$EXEC_ALL_OUTPUT"
-# Expect prefixed output from 3 pods (1 master + 2 workers).
-EXEC_ALL_LINES=$(echo "$EXEC_ALL_OUTPUT" | grep -c 'hello-from-')
-if [[ "$EXEC_ALL_LINES" -lt 3 ]]; then
-  echo "ERROR: expected exec output from 3 pods, got $EXEC_ALL_LINES lines" >&2
-  echo "$EXEC_ALL_OUTPUT" >&2
+echo "Testing exec -- targets single (target) pod"
+EXEC_SINGLE_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'echo hello-from-$(hostname)')
+echo "$EXEC_SINGLE_OUTPUT"
+EXEC_SINGLE_LINES=$(echo "$EXEC_SINGLE_OUTPUT" | grep -c 'hello-from-')
+if [[ "$EXEC_SINGLE_LINES" -ne 1 ]]; then
+  echo "ERROR: expected exec output from 1 pod (target), got $EXEC_SINGLE_LINES lines" >&2
+  echo "$EXEC_SINGLE_OUTPUT" >&2
   exit 1
 fi
-echo "exec verified ($EXEC_ALL_LINES pods responded)"
+echo "exec single-pod verified"
 
 echo "Testing exec --role master -- targets only master"
 EXEC_MASTER_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role master --no-tty -- sh -lc 'echo master-only')
@@ -381,8 +380,8 @@ if [[ "$EXEC_EXCLUDE_LINES" -ne 2 ]]; then
 fi
 echo "exec --exclude verified"
 
-echo "Testing exec --no-prefix suppresses pod name prefix"
-EXEC_NOPREFIX_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-prefix --no-tty -- sh -lc 'echo raw-output')
+echo "Testing exec --role worker --no-prefix suppresses pod name prefix"
+EXEC_NOPREFIX_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role worker --no-prefix --no-tty -- sh -lc 'echo raw-output')
 echo "$EXEC_NOPREFIX_OUTPUT"
 # In no-prefix mode, lines should be raw (no "podname: " prefix).
 if echo "$EXEC_NOPREFIX_OUTPUT" | grep -qE '^[a-z0-9-]+: raw-output$'; then
@@ -391,18 +390,18 @@ if echo "$EXEC_NOPREFIX_OUTPUT" | grep -qE '^[a-z0-9-]+: raw-output$'; then
   exit 1
 fi
 EXEC_NOPREFIX_LINES=$(echo "$EXEC_NOPREFIX_OUTPUT" | grep -c 'raw-output')
-if [[ "$EXEC_NOPREFIX_LINES" -lt 3 ]]; then
-  echo "ERROR: expected 3 raw-output lines in no-prefix mode, got $EXEC_NOPREFIX_LINES" >&2
+if [[ "$EXEC_NOPREFIX_LINES" -ne 2 ]]; then
+  echo "ERROR: expected 2 raw-output lines in no-prefix mode, got $EXEC_NOPREFIX_LINES" >&2
   exit 1
 fi
-echo "exec --no-prefix verified"
+echo "exec --role worker --no-prefix verified"
 
-echo "Testing exec --log-dir writes per-pod log files"
+echo "Testing exec --role worker --log-dir writes per-pod log files"
 EXEC_LOG_DIR=$(mktemp -d)
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --log-dir "$EXEC_LOG_DIR" -- sh -lc 'echo log-test'
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role worker --no-tty --log-dir "$EXEC_LOG_DIR" -- sh -lc 'echo log-test'
 EXEC_LOG_COUNT=$(find "$EXEC_LOG_DIR" -name '*.log' | wc -l | tr -d ' ')
-if [[ "$EXEC_LOG_COUNT" -lt 3 ]]; then
-  echo "ERROR: expected at least 3 log files in $EXEC_LOG_DIR, found $EXEC_LOG_COUNT" >&2
+if [[ "$EXEC_LOG_COUNT" -ne 2 ]]; then
+  echo "ERROR: expected 2 log files in $EXEC_LOG_DIR, found $EXEC_LOG_COUNT" >&2
   ls -la "$EXEC_LOG_DIR" >&2
   exit 1
 fi
@@ -413,17 +412,17 @@ for logfile in "$EXEC_LOG_DIR"/*.log; do
   fi
 done
 rm -rf "$EXEC_LOG_DIR"
-echo "exec --log-dir verified"
+echo "exec --role worker --log-dir verified"
 
-echo "Testing exec --fanout 1 (serial execution)"
-EXEC_FANOUT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --fanout 1 --no-tty -- sh -lc 'echo fanout-test')
+echo "Testing exec --role worker --fanout 1 (serial execution)"
+EXEC_FANOUT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role worker --fanout 1 --no-tty -- sh -lc 'echo fanout-test')
 echo "$EXEC_FANOUT_OUTPUT"
 EXEC_FANOUT_LINES=$(echo "$EXEC_FANOUT_OUTPUT" | grep -c 'fanout-test')
-if [[ "$EXEC_FANOUT_LINES" -lt 3 ]]; then
-  echo "ERROR: expected 3 pods with fanout=1, got $EXEC_FANOUT_LINES" >&2
+if [[ "$EXEC_FANOUT_LINES" -ne 2 ]]; then
+  echo "ERROR: expected 2 pods with fanout=1, got $EXEC_FANOUT_LINES" >&2
   exit 1
 fi
-echo "exec --fanout 1 verified"
+echo "exec --role worker --fanout 1 verified"
 
 echo "Testing exec --detach launches background command"
 DETACH_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --detach --no-tty -- sh -lc 'touch /tmp/detach-marker')
@@ -478,17 +477,23 @@ mkdir -p "$CP_DIR/sub"
 echo "file-a" >"$CP_DIR/a.txt"
 echo "file-b" >"$CP_DIR/sub/b.txt"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp --all "$CP_DIR" :/tmp/cp-upload-dir
-CP_ALL_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'cat /tmp/cp-upload-dir/a.txt && cat /tmp/cp-upload-dir/sub/b.txt')
-echo "$CP_ALL_OUTPUT"
-CP_ALL_LINES=$(echo "$CP_ALL_OUTPUT" | grep -c 'file-a')
-if [[ "$CP_ALL_LINES" -lt 3 ]]; then
-  echo "ERROR: expected cp --all to reach 3 pods, got $CP_ALL_LINES" >&2
+CP_MASTER_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role master --no-tty --no-prefix -- sh -lc 'cat /tmp/cp-upload-dir/a.txt && cat /tmp/cp-upload-dir/sub/b.txt')
+if [[ "$CP_MASTER_OUTPUT" != *"file-a"* ]]; then
+  echo "ERROR: cp --all did not reach master, got '$CP_MASTER_OUTPUT'" >&2
+  exit 1
+fi
+CP_WORKER_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role worker --no-tty -- sh -lc 'cat /tmp/cp-upload-dir/a.txt')
+echo "$CP_WORKER_OUTPUT"
+CP_WORKER_LINES=$(echo "$CP_WORKER_OUTPUT" | grep -c 'file-a')
+if [[ "$CP_WORKER_LINES" -ne 2 ]]; then
+  echo "ERROR: expected cp --all to reach 2 worker pods, got $CP_WORKER_LINES" >&2
   exit 1
 fi
 echo "cp upload directory to all pods verified"
 
 echo "Testing cp download from all pods"
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'echo download-$(hostname) > /tmp/cp-download.txt'
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role master --no-tty -- sh -lc 'echo download-$(hostname) > /tmp/cp-download.txt'
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role worker --no-tty -- sh -lc 'echo download-$(hostname) > /tmp/cp-download.txt'
 CP_DL_DIR="$WORKDIR/cp-download"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp --all :/tmp/cp-download.txt "$CP_DL_DIR"
 CP_DL_COUNT=$(find "$CP_DL_DIR" -name 'cp-download.txt' | wc -l | tr -d ' ')
@@ -500,7 +505,8 @@ fi
 echo "cp download from all pods verified"
 
 echo "Testing cp download directory from all pods"
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'mkdir -p /tmp/cp-download-dir/nested && echo dir-$(hostname) > /tmp/cp-download-dir/root.txt && echo nested-$(hostname) > /tmp/cp-download-dir/nested/value.txt'
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role master --no-tty -- sh -lc 'mkdir -p /tmp/cp-download-dir/nested && echo dir-$(hostname) > /tmp/cp-download-dir/root.txt && echo nested-$(hostname) > /tmp/cp-download-dir/nested/value.txt'
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role worker --no-tty -- sh -lc 'mkdir -p /tmp/cp-download-dir/nested && echo dir-$(hostname) > /tmp/cp-download-dir/root.txt && echo nested-$(hostname) > /tmp/cp-download-dir/nested/value.txt'
 CP_DIR_DL="$WORKDIR/cp-dir-download"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp --all :/tmp/cp-download-dir "$CP_DIR_DL"
 CP_DIR_ROOT_COUNT=$(find "$CP_DIR_DL" -path '*/cp-download-dir/root.txt' | wc -l | tr -d ' ')

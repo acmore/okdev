@@ -37,10 +37,10 @@ func newExecCmd(opts *Options) *cobra.Command {
 		Example: `  # Open an interactive shell
   okdev exec
 
-  # Run a command on all session pods
+  # Run a command on the target pod
   okdev exec -- nvidia-smi
 
-  # Run on a specific role
+  # Run on all pods matching a role
   okdev exec --role worker -- df -h /workspace
 
   # Detach a background command on worker pods
@@ -59,16 +59,16 @@ func newExecCmd(opts *Options) *cobra.Command {
 				return err
 			}
 
-			multiPod := len(commandArgs) > 0 || len(podNames) > 0 || role != "" || len(labels) > 0 || detach
+			multiPod := len(podNames) > 0 || role != "" || len(labels) > 0 || len(exclude) > 0 || detach
 			if err := validateMultiPodFlags(podNames, role, labels, exclude, len(commandArgs) > 0, detach); err != nil {
 				return err
 			}
 
-			if multiPod || detach {
+			if multiPod {
 				return runMultiPodExec(cmd, cc, commandArgs, podNames, role, labels, exclude, container, detach, timeout, logDir, noPrefix, fanout)
 			}
 
-			// Single-pod mode (existing behavior)
+			// Single-pod mode: interactive shell or command on the target pod.
 			target, err := resolveTargetRef(cmd.Context(), cc.opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
 			if err != nil {
 				return err
@@ -79,12 +79,17 @@ func newExecCmd(opts *Options) *cobra.Command {
 			stopMaintenance := startSessionMaintenanceWithClient(cc.kube, cc.namespace, cc.sessionName, cmd.OutOrStdout(), true)
 			defer stopMaintenance()
 
-			execCmd := []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}
-			if shell != "" {
-				execCmd = []string{shell}
-			}
-			if len(execCmd) == 1 && strings.TrimSpace(execCmd[0]) == "" {
+			var execCmd []string
+			if len(commandArgs) > 0 {
+				execCmd = commandArgs
+			} else {
 				execCmd = []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}
+				if shell != "" {
+					execCmd = []string{shell}
+				}
+				if len(execCmd) == 1 && strings.TrimSpace(execCmd[0]) == "" {
+					execCmd = []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}
+				}
 			}
 			return runConnectWithClient(cc.kube, cc.namespace, target, execCmd, !noTTY)
 		},

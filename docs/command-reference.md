@@ -68,7 +68,8 @@
 
 - Opens a shell or runs a command in one or more session pods.
 - Without `-- command...`, opens an interactive shell on the pinned target pod.
-- With `-- command...`, runs the command across all running pods by default, with output prefixed by short pod name.
+- With `-- command...`, runs the command on the pinned target pod by default.
+- Use `--role`, `--pod`, or `--label` to fan out across multiple pods in parallel, with output prefixed by short pod name.
 - `--pod`: target specific pods by name (repeatable or comma-separated).
 - `--role`: target pods by `okdev.io/workload-role` label (case-insensitive).
 - `--label`: target pods by arbitrary label `key=value` (repeatable, AND logic).
