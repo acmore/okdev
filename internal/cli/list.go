@@ -18,11 +18,11 @@ func newListCmd(opts *Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List dev sessions",
-		Example: `  # List your sessions in the current namespace
+		Example: `  # List your sessions across all namespaces
   okdev list
 
-  # List across all namespaces
-  okdev list --all-namespaces
+  # Narrow to a specific namespace
+  okdev list --namespace proj-tango
 
   # List all users' sessions
   okdev list --all-users
@@ -31,6 +31,8 @@ func newListCmd(opts *Options) *cobra.Command {
   okdev list --output json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc := &commandContext{opts: opts}
+			explicitNamespace := strings.TrimSpace(opts.Namespace) != ""
+			effectiveAllNamespaces := allNamespaces || !explicitNamespace
 			ns := opts.Namespace
 			activeSession, activeErr := session.LoadActiveSession()
 			if activeErr != nil {
@@ -57,7 +59,7 @@ func newListCmd(opts *Options) *cobra.Command {
 			if !allUsers {
 				label = label + "," + ownerLabelSelector(opts)
 			}
-			pods, err := cc.kube.ListPods(ctx, cc.namespace, allNamespaces, label)
+			pods, err := cc.kube.ListPods(ctx, cc.namespace, effectiveAllNamespaces, label)
 			if err != nil {
 				return err
 			}

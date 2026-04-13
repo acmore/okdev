@@ -80,6 +80,75 @@ func TestNewListCmdOutputsJSON(t *testing.T) {
 	}
 }
 
+func TestNewListCmdDefaultsToAllNamespacesForCurrentOwner(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/pods":
+			_, _ = io.WriteString(w, `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"namespace":"proj-tango","name":"okdev-sess-a","creationTimestamp":"2026-03-29T00:00:00Z","labels":{"okdev.io/session":"sess-a","okdev.io/owner":"alice","okdev.io/workload-type":"pod"}},"status":{"phase":"Running","containerStatuses":[{"name":"dev","ready":true,"restartCount":1}]}}]}`)
+		case "/api/v1/namespaces/default/pods":
+			_, _ = io.WriteString(w, `{"kind":"PodList","apiVersion":"v1","items":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("KUBECONFIG", writeCLITLSTestKubeconfig(t, server))
+	cfgPath := writeCLIConfig(t, "default")
+	opts := &Options{ConfigPath: cfgPath, Context: "dev", Output: "json", Owner: "alice"}
+	cmd := newListCmd(opts)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("list execute: %v", err)
+	}
+
+	var rows []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+		t.Fatalf("json unmarshal: %v\n%s", err, out.String())
+	}
+	if len(rows) != 1 || rows[0]["session"] != "sess-a" || rows[0]["namespace"] != "proj-tango" {
+		t.Fatalf("unexpected list rows: %#v", rows)
+	}
+}
+
+func TestNewListCmdNamespaceOverrideNarrowsResults(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/namespaces/demo/pods":
+			_, _ = io.WriteString(w, `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"namespace":"demo","name":"okdev-sess-a","creationTimestamp":"2026-03-29T00:00:00Z","labels":{"okdev.io/session":"sess-a","okdev.io/owner":"alice","okdev.io/workload-type":"pod"}},"status":{"phase":"Running","containerStatuses":[{"name":"dev","ready":true,"restartCount":1}]}}]}`)
+		case "/api/v1/pods":
+			_, _ = io.WriteString(w, `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"namespace":"proj-tango","name":"okdev-sess-b","creationTimestamp":"2026-03-29T00:00:00Z","labels":{"okdev.io/session":"sess-b","okdev.io/owner":"alice","okdev.io/workload-type":"pod"}},"status":{"phase":"Running","containerStatuses":[{"name":"dev","ready":true,"restartCount":1}]}}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("KUBECONFIG", writeCLITLSTestKubeconfig(t, server))
+	opts := &Options{Namespace: "demo", Context: "dev", Output: "json", Owner: "alice"}
+	cmd := newListCmd(opts)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("list execute: %v", err)
+	}
+
+	var rows []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+		t.Fatalf("json unmarshal: %v\n%s", err, out.String())
+	}
+	if len(rows) != 1 || rows[0]["session"] != "sess-a" || rows[0]["namespace"] != "demo" {
+		t.Fatalf("unexpected list rows: %#v", rows)
+	}
+}
+
 func TestNewStatusCmdDetailsRequiresSingleSession(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
