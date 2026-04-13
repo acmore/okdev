@@ -57,11 +57,13 @@ func PreparePodSpecForTarget(podSpec corev1.PodSpec, volumes []corev1.Volume, wo
 	})
 
 	targetIndex := targetContainerIndex(spec.Containers, targetContainer)
+	workspaceMount := corev1.VolumeMount{
+		Name:      "workspace",
+		MountPath: workspaceMountPath,
+	}
 	if targetIndex >= 0 {
-		spec.Containers[targetIndex].VolumeMounts = ensureVolumeMount(spec.Containers[targetIndex].VolumeMounts, corev1.VolumeMount{
-			Name:      "workspace",
-			MountPath: workspaceMountPath,
-		})
+		spec.Containers[targetIndex].VolumeMounts = ensureVolumeMount(spec.Containers[targetIndex].VolumeMounts, workspaceMount)
+		workspaceMount = workspaceMountForSidecar(spec.Containers[targetIndex].VolumeMounts, workspaceMount)
 		spec.Containers[targetIndex].VolumeMounts = ensureVolumeMount(spec.Containers[targetIndex].VolumeMounts, corev1.VolumeMount{
 			Name:      "okdev-runtime",
 			MountPath: "/var/okdev",
@@ -99,7 +101,7 @@ func PreparePodSpecForTarget(podSpec corev1.PodSpec, volumes []corev1.Volume, wo
 				{ContainerPort: 22000, Name: "st-sync"},
 			},
 			VolumeMounts: []corev1.VolumeMount{
-				{Name: "workspace", MountPath: workspaceMountPath},
+				workspaceMount,
 				{Name: "syncthing-home", MountPath: "/var/syncthing"},
 				{Name: "okdev-runtime", MountPath: "/var/okdev"},
 			},
@@ -186,6 +188,15 @@ func ensureVolumeMount(mounts []corev1.VolumeMount, vm corev1.VolumeMount) []cor
 		}
 	}
 	return append(mounts, vm)
+}
+
+func workspaceMountForSidecar(mounts []corev1.VolumeMount, fallback corev1.VolumeMount) corev1.VolumeMount {
+	for _, mount := range mounts {
+		if mount.Name == fallback.Name && mount.MountPath == fallback.MountPath {
+			return mount
+		}
+	}
+	return fallback
 }
 
 func ensureEnvVar(envs []corev1.EnvVar, env corev1.EnvVar) []corev1.EnvVar {
