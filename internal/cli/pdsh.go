@@ -215,6 +215,8 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 		podNames[i] = p.Name
 	}
 	shortNames := shortPodNames(podNames)
+	colorEnabled := isInteractiveWriter(stdout)
+	displayPrefixes := formatPodPrefixes(shortNames, colorEnabled)
 
 	var writeMu sync.Mutex
 	noPrefixOut := &lockedWriter{w: stdout}
@@ -225,7 +227,7 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 	var wg sync.WaitGroup
 	for i, pod := range pods {
 		wg.Add(1)
-		go func(pod kube.PodSummary, shortName string) {
+		go func(pod kube.PodSummary, shortName, displayPrefix string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -242,8 +244,8 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 				podStdout = noPrefixOut
 				podStderr = noPrefixErr
 			} else {
-				pw := newPrefixedWriter(shortName, stdout, &writeMu)
-				pe := newPrefixedWriter(shortName, stderr, &writeMu)
+				pw := newPrefixedWriter(displayPrefix, stdout, &writeMu)
+				pe := newPrefixedWriter(displayPrefix, stderr, &writeMu)
 				defer pw.Flush()
 				defer pe.Flush()
 				podStdout = pw
@@ -264,7 +266,7 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 
 			err := connect.RunOnContainer(execCtx, client, namespace, pod.Name, container, command, false, nil, podStdout, podStderr)
 			results <- podExecResult{pod: pod.Name, err: err}
-		}(pod, shortNames[i])
+		}(pod, shortNames[i], displayPrefixes[i])
 	}
 
 	go func() {
@@ -305,6 +307,8 @@ func runDetachExec(ctx context.Context, client connect.ExecClient, namespace str
 		podNames[i] = p.Name
 	}
 	shortNames := shortPodNames(podNames)
+	colorEnabled := isInteractiveWriter(out)
+	displayPrefixes := formatPodPrefixes(shortNames, colorEnabled)
 	command := detachCommand(cmdStr)
 
 	results := make(chan podExecResult, len(pods))
@@ -327,19 +331,21 @@ func runDetachExec(ctx context.Context, client connect.ExecClient, namespace str
 		close(results)
 	}()
 
+	displayMap := make(map[string]string, len(podNames))
 	nameMap := make(map[string]string, len(podNames))
 	for i, n := range podNames {
+		displayMap[n] = displayPrefixes[i]
 		nameMap[n] = shortNames[i]
 	}
 
 	var failCount int
 	for r := range results {
-		short := nameMap[r.pod]
+		prefix := displayMap[r.pod]
 		if r.err != nil {
-			fmt.Fprintf(out, "%s: error: %v\n", short, r.err)
+			fmt.Fprintf(out, "%s error: %v\n", prefix, r.err)
 			failCount++
 		} else {
-			fmt.Fprintf(out, "%s: detached\n", short)
+			fmt.Fprintf(out, "%s detached\n", prefix)
 		}
 	}
 	if failCount > 0 {

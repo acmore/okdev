@@ -57,6 +57,47 @@ func shortPodNames(names []string) []string {
 	return out
 }
 
+func maxPrefixWidth(names []string) int {
+	w := 0
+	for _, n := range names {
+		if len(n) > w {
+			w = len(n)
+		}
+	}
+	return w
+}
+
+var podPrefixColors = []string{
+	"\033[36m", // cyan
+	"\033[33m", // yellow
+	"\033[32m", // green
+	"\033[35m", // magenta
+	"\033[34m", // blue
+	"\033[91m", // bright red
+	"\033[96m", // bright cyan
+	"\033[93m", // bright yellow
+}
+
+func podPrefixColor(index int) string {
+	return podPrefixColors[index%len(podPrefixColors)]
+}
+
+const prefixReset = "\033[0m"
+
+func formatPodPrefixes(shortNames []string, color bool) []string {
+	width := maxPrefixWidth(shortNames)
+	out := make([]string, len(shortNames))
+	for i, name := range shortNames {
+		padded := fmt.Sprintf("%-*s", width, name)
+		if color {
+			out[i] = podPrefixColor(i) + "[" + padded + "]" + prefixReset
+		} else {
+			out[i] = "[" + padded + "]"
+		}
+	}
+	return out
+}
+
 // prefixedWriter is a thread-safe io.Writer that buffers input and emits
 // complete lines prefixed with the pod short name. Partial lines are held
 // until a newline arrives or Flush is called.
@@ -81,7 +122,7 @@ func (w *prefixedWriter) Write(p []byte) (int, error) {
 			break
 		}
 		w.mu.Lock()
-		fmt.Fprintf(w.dest, "%s: %s", w.prefix, line)
+		fmt.Fprintf(w.dest, "%s %s", w.prefix, line)
 		w.mu.Unlock()
 	}
 	return len(p), nil
@@ -93,7 +134,7 @@ func (w *prefixedWriter) Flush() {
 		return
 	}
 	w.mu.Lock()
-	fmt.Fprintf(w.dest, "%s: %s\n", w.prefix, w.buf.String())
+	fmt.Fprintf(w.dest, "%s %s\n", w.prefix, w.buf.String())
 	w.mu.Unlock()
 	w.buf.Reset()
 }
