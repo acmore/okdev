@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
@@ -72,26 +74,27 @@ type detailedStatusSSH struct {
 }
 
 type detailedStatusSync struct {
-	Engine             string   `json:"engine"`
-	Health             string   `json:"health,omitempty"`
-	HealthDetail       string   `json:"healthDetail,omitempty"`
-	ConfiguredPaths    []string `json:"configuredPaths,omitempty"`
-	BackgroundStatus   string   `json:"backgroundStatus,omitempty"`
-	BackgroundPID      int      `json:"backgroundPid,omitempty"`
-	PIDPath            string   `json:"pidPath,omitempty"`
-	LogPath            string   `json:"logPath,omitempty"`
-	LocalHome          string   `json:"localHome,omitempty"`
-	LocalDaemonLogPath string   `json:"localDaemonLogPath,omitempty"`
-	ConflictCount      int      `json:"conflictCount,omitempty"`
-	ConflictPaths      []string `json:"conflictPaths,omitempty"`
-	MeshLines          []string `json:"meshLines,omitempty"`
+	Engine             string             `json:"engine"`
+	Health             string             `json:"health,omitempty"`
+	HealthDetail       string             `json:"healthDetail,omitempty"`
+	ConfiguredPaths    []string           `json:"configuredPaths,omitempty"`
+	BackgroundStatus   string             `json:"backgroundStatus,omitempty"`
+	BackgroundPID      int                `json:"backgroundPid,omitempty"`
+	PIDPath            string             `json:"pidPath,omitempty"`
+	LogPath            string             `json:"logPath,omitempty"`
+	LocalHome          string             `json:"localHome,omitempty"`
+	LocalDaemonLogPath string             `json:"localDaemonLogPath,omitempty"`
+	ConflictCount      int                `json:"conflictCount,omitempty"`
+	ConflictPaths      []string           `json:"conflictPaths,omitempty"`
+	MeshLines          []string           `json:"meshLines,omitempty"`
+	MeshHealth         *meshHealthSummary `json:"meshHealth,omitempty"`
 }
 
 type detailedStatusLogs struct {
 	OKDevLog string `json:"okdevLog,omitempty"`
 }
 
-func gatherDetailedStatus(ctx context.Context, cfg *config.DevEnvironment, cfgPath, namespace string, view sessionView, client statusDetailsClient) detailedStatus {
+func gatherDetailedStatus(ctx context.Context, opts *Options, cfg *config.DevEnvironment, cfgPath, namespace string, view sessionView, client statusDetailsClient) detailedStatus {
 	detail := detailedStatus{
 		Session:   view.Session,
 		Namespace: view.Namespace,
@@ -111,6 +114,11 @@ func gatherDetailedStatus(ctx context.Context, cfg *config.DevEnvironment, cfgPa
 	detail.SSH = buildDetailedSSH(view.Session, cfg.Spec.Ports)
 	detail.Sync = buildDetailedSync(view.Session, cfg, cfgPath)
 	detail.Sync.MeshLines = buildMeshLinesFromPods(view.Pods)
+	if kubeClient, ok := client.(*kube.Client); ok && opts != nil {
+		if liveMesh := probeLiveMeshHealth(ctx, opts, kubeClient, namespace, view); liveMesh != nil {
+			detail.Sync.MeshHealth = liveMesh
+		}
+	}
 	if agentClient, ok := client.(agentExecClient); ok && len(cfg.Spec.Agents) > 0 && strings.TrimSpace(view.TargetPod) != "" && strings.TrimSpace(target.SelectedContainer) != "" {
 		if rows, err := configuredAgentStatusRows(ctx, agentClient, namespace, view.TargetPod, target.SelectedContainer, cfg.Spec.Agents); err == nil {
 			detail.Agents = rows
@@ -265,6 +273,32 @@ func buildMeshLinesFromPods(pods []kube.PodSummary) []string {
 	return lines
 }
 
+func probeLiveMeshHealth(ctx context.Context, opts *Options, k *kube.Client, namespace string, view sessionView) *meshHealthSummary {
+	var hubPod string
+	for _, p := range view.Pods {
+		if strings.TrimSpace(p.Labels["okdev.io/mesh-role"]) == "hub" {
+			hubPod = p.Name
+			break
+		}
+	}
+	if hubPod == "" {
+		return nil
+	}
+	labels := map[string]string{
+		"okdev.io/managed": "true",
+		"okdev.io/session": view.Session,
+	}
+	folderID := "okdev-" + view.Session
+	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	summary, err := checkMeshHealth(probeCtx, opts, k, namespace, view.Session, labels, hubPod, folderID)
+	if err != nil {
+		slog.Debug("status: mesh health probe failed", "error", err)
+		return nil
+	}
+	return summary
+}
+
 func buildDetailedLogs() detailedStatusLogs {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -368,10 +402,13 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 		}
 	}
 
-	if len(detail.Sync.MeshLines) > 0 {
+	if len(detail.Sync.MeshLines) > 0 || detail.Sync.MeshHealth != nil {
 		fmt.Fprintln(w, "\nMesh:")
 		for _, line := range detail.Sync.MeshLines {
 			fmt.Fprintf(w, "- %s\n", line)
+		}
+		if detail.Sync.MeshHealth != nil {
+			printMeshHealth(w, detail.Sync.MeshHealth)
 		}
 	}
 
@@ -507,6 +544,31 @@ func managedSSHConfigPresent(hostAlias string) (bool, error) {
 func writeIndentedBlock(w io.Writer, content, indent string) {
 	for _, line := range strings.Split(strings.TrimRight(content, "\n"), "\n") {
 		fmt.Fprintf(w, "%s%s\n", indent, line)
+	}
+}
+
+func printMeshHealth(w io.Writer, health *meshHealthSummary) {
+	if health == nil {
+		return
+	}
+	healthy := 0
+	for _, r := range health.Receivers {
+		if r.Err == "" && r.Connected && r.InSync {
+			healthy++
+		}
+	}
+	total := len(health.Receivers)
+	fmt.Fprintf(w, "- live health: %d/%d receiver(s) healthy\n", healthy, total)
+	for _, r := range health.Receivers {
+		state := "synced"
+		if r.Err != "" {
+			state = "error: " + r.Err
+		} else if !r.Connected {
+			state = "disconnected"
+		} else if !r.InSync {
+			state = fmt.Sprintf("syncing (%d bytes remaining)", r.NeedBytes)
+		}
+		fmt.Fprintf(w, "  %s: %s\n", r.Pod, state)
 	}
 }
 

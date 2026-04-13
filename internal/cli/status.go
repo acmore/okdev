@@ -61,7 +61,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 				if all || len(views) != 1 {
 					return fmt.Errorf("--details requires a single session")
 				}
-				detail := gatherDetailedStatus(cmd.Context(), cc.cfg, cc.cfgPath, cc.namespace, views[0], cc.kube)
+				detail := gatherDetailedStatus(cmd.Context(), opts, cc.cfg, cc.cfgPath, cc.namespace, views[0], cc.kube)
 				if opts.Output == "json" {
 					return outputJSON(cmd.OutOrStdout(), detail)
 				}

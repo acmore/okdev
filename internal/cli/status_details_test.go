@@ -113,7 +113,7 @@ func TestGatherDetailedStatusIncludesDiagnostics(t *testing.T) {
 	if err := os.WriteFile(statusPIDPath, []byte("not-a-pid\n"), 0o644); err != nil {
 		t.Fatalf("write status pid: %v", err)
 	}
-	detail := gatherDetailedStatus(context.Background(), cfg, "/tmp/.okdev.yaml", "default", view, fakeStatusDetailsClient{
+	detail := gatherDetailedStatus(context.Background(), nil, cfg, "/tmp/.okdev.yaml", "default", view, fakeStatusDetailsClient{
 		describe: "details",
 		results: map[string]error{
 			"command -v codex >/dev/null 2>&1": nil,
@@ -167,7 +167,7 @@ func TestGatherDetailedStatusDoesNotCreateRuntimeDirectories(t *testing.T) {
 		Pods:      []kube.PodSummary{{Name: "pod-1", Namespace: "default"}},
 	}
 
-	_ = gatherDetailedStatus(context.Background(), cfg, "/tmp/.okdev.yaml", "default", view, nil)
+	_ = gatherDetailedStatus(context.Background(), nil, cfg, "/tmp/.okdev.yaml", "default", view, nil)
 
 	for _, path := range []string{
 		filepath.Join(home, ".okdev", "ssh"),
@@ -264,6 +264,52 @@ func TestPrintDetailedStatusIncludesSections(t *testing.T) {
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected output to contain %q: %q", want, got)
+		}
+	}
+}
+
+func TestPrintDetailedStatusIncludesMeshHealth(t *testing.T) {
+	var out bytes.Buffer
+	printDetailedStatus(&out, detailedStatus{
+		Session:   "sess1",
+		Namespace: "default",
+		Owner:     "me",
+		Workload:  "pytorchjob",
+		Phase:     "Running",
+		Ready:     "1/1",
+		Age:       "2h",
+		Target: detailedStatusTarget{
+			SelectedPod:       "trainer-0",
+			SelectedContainer: "dev",
+		},
+		SSH: detailedStatusSSH{HostAlias: "okdev-sess1", ManagedForwardStatus: "running"},
+		Sync: detailedStatusSync{
+			Engine:           "syncthing",
+			BackgroundStatus: "running",
+			MeshLines:        []string{"topology: hub-and-spoke", "hub: trainer-0", "receivers: 2"},
+			MeshHealth: &meshHealthSummary{
+				HubPod:   "trainer-0",
+				FolderID: "okdev-sess1",
+				Receivers: []meshReceiverHealth{
+					{Pod: "worker-0", Connected: true, InSync: true},
+					{Pod: "worker-1", Connected: false},
+				},
+			},
+		},
+		Logs: detailedStatusLogs{OKDevLog: "/tmp/okdev.log"},
+	})
+
+	got := out.String()
+	for _, want := range []string{
+		"Mesh:",
+		"topology: hub-and-spoke",
+		"hub: trainer-0",
+		"1/2 receiver(s) healthy",
+		"worker-0: synced",
+		"worker-1: disconnected",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected output to contain %q:\n%s", want, got)
 		}
 	}
 }

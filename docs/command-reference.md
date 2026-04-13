@@ -186,7 +186,11 @@
 - Advanced command. Starts detached background sync by default; use `--foreground` for sync debugging, or explicit one-way sync (`up`/`down`).
 - For default `--mode bi`, no-op when background sync is already active for the session.
 - `--background`: explicitly request detached background mode.
-- `--reset`: stop the session's existing local sync processes and local Syncthing state, then bootstrap sync again.
+- `--reset`: check local-to-hub sync and mesh receiver health, then reset only what is broken. Skips the local sync teardown when the primary sync is already healthy. For sessions with mesh receivers, probes each receiver and re-runs mesh setup only when broken or disconnected receivers are found.
+- `--reset --force` / `--reset -f`: unconditionally reset without health checks.
+- `--reset --local`: scope reset to local-to-hub sync only (skip mesh).
+- `--reset --mesh`: scope reset to mesh receivers only (skip local sync).
+- `--reset --force --local` / `--reset --force --mesh`: force reset a specific component.
 - `okdev init` writes the starter config and, for built-in templates, a starter local `.stignore` file for the initialized sync root.
 
 ### `okdev upgrade`
