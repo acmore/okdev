@@ -290,7 +290,11 @@ func configureSyncthingMeshHub(ctx context.Context, base, key, hubDeviceID strin
 			fm["path"] = folderPath
 			fm["type"] = "sendreceive"
 			fm["markerName"] = "."
-			fm["devices"] = folderDevices
+			mergedDevices, err := syncthingMergeMeshHubFolderDevices(fm["devices"], devices, hubDeviceID, receiverIDs)
+			if err != nil {
+				return err
+			}
+			fm["devices"] = mergedDevices
 			applyManagedSyncthingFolderDefaults(fm, 60, 1, false)
 			filteredFolders = append(filteredFolders, fm)
 			foundFolder = true
@@ -313,6 +317,67 @@ func configureSyncthingMeshHub(ctx context.Context, base, key, hubDeviceID strin
 	cfg["folders"] = filteredFolders
 
 	return syncthingSetConfig(ctx, base, key, cfg)
+}
+
+func syncthingMergeMeshHubFolderDevices(existingFolderDevices, devices any, hubDeviceID string, receiverIDs []string) ([]any, error) {
+	deviceEntries, err := syncthingObjectArray(map[string]any{"devices": devices}, "devices")
+	if err != nil {
+		return nil, err
+	}
+	deviceNames := make(map[string]string, len(deviceEntries))
+	for _, d := range deviceEntries {
+		m, err := syncthingObjectMap(d, "devices")
+		if err != nil {
+			return nil, err
+		}
+		deviceNames[asString(m["deviceID"])] = asString(m["name"])
+	}
+
+	merged := make([]any, 0, 1+len(receiverIDs)+1)
+	merged = append(merged, map[string]any{"deviceID": hubDeviceID})
+	receiverSet := make(map[string]struct{}, len(receiverIDs))
+	for _, id := range receiverIDs {
+		receiverSet[id] = struct{}{}
+	}
+
+	folderEntries, ok := existingFolderDevices.([]any)
+	if ok {
+		seen := map[string]struct{}{hubDeviceID: {}}
+		for _, d := range folderEntries {
+			m, err := syncthingObjectMap(d, "folder devices")
+			if err != nil {
+				return nil, err
+			}
+			id := asString(m["deviceID"])
+			if id == "" {
+				continue
+			}
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			if _, isReceiver := receiverSet[id]; isReceiver {
+				continue
+			}
+			if deviceNames[id] == "okdev-mesh-receiver" {
+				continue
+			}
+			seen[id] = struct{}{}
+			merged = append(merged, map[string]any{"deviceID": id})
+		}
+		for _, id := range receiverIDs {
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			seen[id] = struct{}{}
+			merged = append(merged, map[string]any{"deviceID": id})
+		}
+		return merged, nil
+	}
+
+	for _, id := range receiverIDs {
+		merged = append(merged, map[string]any{"deviceID": id})
+	}
+	return merged, nil
 }
 
 // configureAndWaitMeshReceiver configures a single receiver pod's syncthing

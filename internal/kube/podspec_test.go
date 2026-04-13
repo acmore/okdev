@@ -95,6 +95,40 @@ func TestPreparePodSpecAddsWorkspaceMountOnDevAndSidecar(t *testing.T) {
 	}
 }
 
+func TestPreparePodSpecMirrorsTargetWorkspaceSubPathOnSidecar(t *testing.T) {
+	spec, err := PreparePodSpecForTarget(corev1.PodSpec{
+		Containers: []corev1.Container{
+			{
+				Name:  "pytorch",
+				Image: "ubuntu",
+				VolumeMounts: []corev1.VolumeMount{
+					{
+						Name:      "workspace",
+						MountPath: "/workspace",
+						SubPath:   "users/e2e/workspace",
+					},
+				},
+			},
+		},
+	}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", corev1.ResourceRequirements{}, false, "", "pytorch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sidecar := findContainer(spec.Containers, "okdev-sidecar")
+	if sidecar == nil {
+		t.Fatal("sidecar container not found")
+	}
+	for _, mount := range sidecar.VolumeMounts {
+		if mount.Name == "workspace" {
+			if mount.MountPath != "/workspace" || mount.SubPath != "users/e2e/workspace" {
+				t.Fatalf("expected sidecar workspace mount to mirror target subPath, got %+v", mount)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected sidecar workspace mount, got %+v", sidecar.VolumeMounts)
+}
+
 func TestPreparePodSpecErrorsOnEmptyImage(t *testing.T) {
 	if _, err := PreparePodSpec(corev1.PodSpec{}, nil, "/workspace", "", corev1.ResourceRequirements{}, false, ""); err == nil {
 		t.Fatal("expected error for empty sidecar image")
