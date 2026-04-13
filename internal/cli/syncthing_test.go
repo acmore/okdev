@@ -653,6 +653,7 @@ func TestRunTwoPhaseInitialSync(t *testing.T) {
 	var (
 		mu             sync.Mutex
 		configPuts     int
+		ignoreCalls    int
 		overrideCalls  int
 		restartCalls   int
 		needBytesValue int64 = 1024 // starts non-zero, switches to 0 after override
@@ -687,6 +688,9 @@ func TestRunTwoPhaseInitialSync(t *testing.T) {
 				w.Write([]byte(`{"myID":"DEVICE-ID"}`))
 			case r.Method == http.MethodGet && r.URL.Path == "/rest/system/connections":
 				w.Write([]byte(`{"connections":{"REMOTE":{"connected":true},"LOCAL":{"connected":true}}}`))
+			case r.Method == http.MethodPost && r.URL.Path == "/rest/db/ignores":
+				ignoreCalls++
+				w.WriteHeader(http.StatusOK)
 			case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/rest/db/override"):
 				overrideCalls++
 				// Simulate: after override, remote becomes in sync.
@@ -727,6 +731,9 @@ func TestRunTwoPhaseInitialSync(t *testing.T) {
 	// Verify override was called at least twice (phase 1 + phase 1b).
 	if overrideCalls < 2 {
 		t.Fatalf("expected /rest/db/override to be called at least twice (phase 1 + 1b), got %d", overrideCalls)
+	}
+	if ignoreCalls < 2 {
+		t.Fatalf("expected /rest/db/ignores to be called at least twice (phase 1 + phase 2), got %d", ignoreCalls)
 	}
 
 	// Verify neither instance reported restart-required in phase 2.
@@ -811,6 +818,8 @@ func TestRunTwoPhaseInitialSyncWaitsForDeletionConvergence(t *testing.T) {
 				w.Write([]byte(`{"myID":"DEVICE-ID"}`))
 			case r.Method == http.MethodGet && r.URL.Path == "/rest/system/connections":
 				w.Write([]byte(`{"connections":{"REMOTE":{"connected":true},"LOCAL":{"connected":true}}}`))
+			case r.Method == http.MethodPost && r.URL.Path == "/rest/db/ignores":
+				w.WriteHeader(http.StatusOK)
 			case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/rest/db/override"):
 				overrideCalls++
 				w.WriteHeader(http.StatusOK)
@@ -890,6 +899,8 @@ func TestRunTwoPhaseInitialSyncWaitsForPeerConnection(t *testing.T) {
 				connectionPolls++
 				connected := connectionPolls >= connectionReadyAt
 				fmt.Fprintf(w, `{"connections":{"REMOTE":{"connected":%t},"LOCAL":{"connected":%t}}}`, connected, connected)
+			case r.Method == http.MethodPost && r.URL.Path == "/rest/db/ignores":
+				w.WriteHeader(http.StatusOK)
 			case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/rest/db/override"):
 				overrideCalls++
 				w.WriteHeader(http.StatusOK)
