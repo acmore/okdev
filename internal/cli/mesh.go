@@ -40,19 +40,48 @@ func setupMesh(ctx context.Context, opts *Options, k *kube.Client, namespace, se
 		selector += ","
 	}
 	selector += meshReceiverLabelSelector
-	pods, err := k.ListPods(ctx, namespace, false, selector)
-	if err != nil {
-		return nil, fmt.Errorf("discover mesh receiver pods: %w", err)
-	}
-	// Filter out deleting pods.
-	receivers := make([]kube.PodSummary, 0, len(pods))
-	for _, p := range pods {
-		if !p.Deleting && p.Phase == "Running" {
-			receivers = append(receivers, p)
+
+	// Wait for receiver pods to reach Running phase before configuring.
+	var receivers []kube.PodSummary
+	deadline := time.Now().Add(timeout)
+	for {
+		pods, err := k.ListPods(ctx, namespace, false, selector)
+		if err != nil {
+			return nil, fmt.Errorf("discover mesh receiver pods: %w", err)
+		}
+		receivers = make([]kube.PodSummary, 0, len(pods))
+		for _, p := range pods {
+			if !p.Deleting && p.Phase == "Running" {
+				receivers = append(receivers, p)
+			}
+		}
+		allPods := 0
+		for _, p := range pods {
+			if !p.Deleting {
+				allPods++
+			}
+		}
+		if len(receivers) == allPods && allPods > 0 {
+			break
+		}
+		if allPods == 0 {
+			return nil, nil // no receivers at all
+		}
+		if time.Now().After(deadline) {
+			slog.Warn("mesh: timed out waiting for receiver pods to become Running", "running", len(receivers), "total", allPods)
+			break
+		}
+		if onStatus != nil {
+			onStatus(fmt.Sprintf("waiting for receiver pods (%d/%d running)", len(receivers), allPods))
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(2 * time.Second):
 		}
 	}
 	if len(receivers) == 0 {
-		return nil, nil // no receivers, nothing to do
+		return nil, nil
 	}
 
 	slog.Debug("mesh: discovered receiver pods", "count", len(receivers))

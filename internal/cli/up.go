@@ -714,13 +714,15 @@ func upSetup(state *upState) error {
 				func(status string) { state.ui.stepRun("mesh", status) })
 			if meshErr != nil {
 				state.ui.warnf("mesh setup failed: %v", meshErr)
-			} else {
+			} else if meshResult != nil {
 				state.ui.stepDone("mesh", formatMeshSummary(meshResult))
 				for _, r := range meshResult.Receivers {
 					if r.Err != nil {
 						state.ui.warnf("mesh receiver %s: %v", r.Pod, r.Err)
 					}
 				}
+			} else {
+				state.ui.stepDone("mesh", "no receivers ready")
 			}
 		}
 	}
