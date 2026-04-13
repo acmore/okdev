@@ -697,6 +697,36 @@ func upSetup(state *upState) error {
 		state.ui.stepDone("initial sync", "complete")
 	}
 
+	// Mesh sync: if receiver pods exist, configure syncthing mesh from hub
+	// to receivers so all pods get the workspace without a shared PVC.
+	if len(state.syncPairs) > 0 {
+		meshCount, meshCountErr := meshReceiverCount(state.ctx, state.command.kube, state.command.namespace, state.labels)
+		if meshCountErr != nil {
+			slog.Debug("mesh: could not count receivers", "error", meshCountErr)
+		}
+		if meshCountErr == nil && meshCount > 0 {
+			state.ui.stepRun("mesh", fmt.Sprintf("configuring %d receiver sidecar(s)", meshCount))
+			folderID := "okdev-" + state.command.sessionName
+			workspaceMountPath := state.command.cfg.EffectiveWorkspaceMountPath(state.command.cfgPath)
+			meshResult, meshErr := setupMesh(state.ctx, state.opts, state.command.kube,
+				state.command.namespace, state.command.sessionName, state.labels,
+				target.PodName, folderID, workspaceMountPath, meshSetupTimeout,
+				func(status string) { state.ui.stepRun("mesh", status) })
+			if meshErr != nil {
+				state.ui.warnf("mesh setup failed: %v", meshErr)
+			} else if meshResult != nil {
+				state.ui.stepDone("mesh", formatMeshSummary(meshResult))
+				for _, r := range meshResult.Receivers {
+					if r.Err != nil {
+						state.ui.warnf("mesh receiver %s: %v", r.Pod, r.Err)
+					}
+				}
+			} else {
+				state.ui.stepDone("mesh", "no receivers ready")
+			}
+		}
+	}
+
 	postSyncCmd := resolvePostSyncCommand(state.command.cfg, state.command.cfgPath)
 	if postSyncCmd != "" && len(state.syncPairs) > 0 {
 		state.ui.stepRun("postSync", "running on all pods with shared workspace")
