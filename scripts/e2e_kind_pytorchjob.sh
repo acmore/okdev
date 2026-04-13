@@ -620,3 +620,136 @@ for i in $(seq 1 15); do
 done
 
 echo "PyTorchJob smoke test completed (1 master + 2 workers, all lifecycle hooks verified)"
+
+# ---------------------------------------------------------------------------
+# Syncthing mesh test: workers get sidecars, no shared PVC
+# ---------------------------------------------------------------------------
+echo ""
+echo "=== Syncthing Mesh Test (no shared PVC) ==="
+
+MESH_SESSION="e2e-ptjob-mesh"
+MESH_WORKDIR="$(make_workdir)"
+MESH_HOME="$MESH_WORKDIR/home"
+MESH_CFG="$MESH_WORKDIR/.okdev/okdev.yaml"
+MESH_SYNC="$MESH_WORKDIR/workspace"
+MESH_MANIFEST="$MESH_WORKDIR/.okdev/pytorchjob.yaml"
+
+mkdir -p "$MESH_HOME" "$MESH_SYNC" "$MESH_HOME/.kube"
+cp "$KUBECONFIG_PATH" "$MESH_HOME/.kube/config"
+
+mesh_cleanup() {
+  "$OKDEV_BIN" --config "$MESH_CFG" --session "$MESH_SESSION" down --yes >/dev/null 2>&1 || true
+}
+# We already have the EXIT trap for the PVC test; add mesh cleanup.
+trap 'mesh_cleanup; cleanup' EXIT
+
+echo "Scaffolding mesh PyTorchJob config"
+cd "$MESH_WORKDIR"
+HOME="$MESH_HOME" "$OKDEV_BIN" init \
+  --workload pytorchjob \
+  --yes \
+  --name "$MESH_SESSION" \
+  --namespace "$NAMESPACE" \
+  --sidecar-image "$SIDECAR_IMAGE" \
+  --ssh-user root \
+  --sync-local "$MESH_SYNC" \
+  --sync-remote /workspace
+
+# Patch manifest: container name, image, command (same as PVC test).
+replace_all_in_file "$MESH_MANIFEST" 'name: dev' 'name: pytorch'
+replace_all_in_file "$MESH_MANIFEST" 'image: # TODO: replace with your image' 'image: ubuntu:22.04'
+replace_all_in_file "$MESH_MANIFEST" 'command: ["sleep", "infinity"]' 'command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]'
+replace_all_in_file "$MESH_CFG" 'container: dev' 'container: pytorch'
+
+# Key difference: workers keep sidecar: true (the default) instead of false.
+# This enables syncthing mesh — no PVC needed. Workers use emptyDir volumes.
+# We only need to disable the worker attachable flag (not the default target).
+python3 - <<'PY' "$MESH_CFG"
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+old = '      - path: "spec.pytorchReplicaSpecs.Worker.template"\n'
+new = '      - path: "spec.pytorchReplicaSpecs.Worker.template"\n        attachable: false\n'
+if old not in text:
+    raise SystemExit("worker inject path not found")
+path.write_text(text.replace(old, new, 1))
+PY
+
+# Set 2 worker replicas + short terminationGracePeriodSeconds.
+python3 - <<'PY' "$MESH_MANIFEST"
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+old = "Worker:\n      replicas: 1"
+new = "Worker:\n      replicas: 2"
+if old in text:
+    text = text.replace(old, new, 1)
+text = text.replace("        spec:\n          containers:", "        spec:\n          terminationGracePeriodSeconds: 5\n          containers:")
+path.write_text(text)
+PY
+
+# Disable persistent SSH sessions for CI.
+insert_after_line_once "$MESH_CFG" '  ssh:' '    persistentSession: false'
+
+echo "Mesh config:"
+cat "$MESH_CFG"
+
+echo "mesh-hello" >"$MESH_SYNC/mesh-hello.txt"
+
+echo "Starting mesh PyTorchJob session"
+HOME="$MESH_HOME" "$OKDEV_BIN" --config "$MESH_CFG" --session "$MESH_SESSION" up --wait-timeout 5m
+
+echo "Checking mesh status"
+MESH_STATUS=$(HOME="$MESH_HOME" "$OKDEV_BIN" --config "$MESH_CFG" --session "$MESH_SESSION" status --details)
+echo "$MESH_STATUS"
+if [[ "$MESH_STATUS" != *"health: active"* ]]; then
+  echo "ERROR: expected mesh session sync health to be active" >&2
+  exit 1
+fi
+if [[ "$MESH_STATUS" != *"topology: hub-and-spoke"* ]]; then
+  echo "ERROR: expected mesh topology in status output" >&2
+  exit 1
+fi
+echo "Mesh status verified"
+
+echo "Verifying workspace synced to master via syncthing"
+MESH_WORKLOAD=$(HOME="$MESH_HOME" session_workload_name "$NAMESPACE" "$MESH_SESSION")
+MESH_MASTER=$(kubectl -n "$NAMESPACE" get pods \
+  -l "training.kubeflow.org/job-name=$MESH_WORKLOAD,training.kubeflow.org/replica-type=master" \
+  -o jsonpath='{.items[0].metadata.name}')
+MASTER_CONTENT=$(kubectl -n "$NAMESPACE" exec "$MESH_MASTER" -c pytorch -- cat /workspace/mesh-hello.txt 2>/dev/null || true)
+if [[ "$MASTER_CONTENT" != "mesh-hello" ]]; then
+  echo "ERROR: expected mesh-hello.txt on master, got '$MASTER_CONTENT'" >&2
+  exit 1
+fi
+echo "Master workspace verified"
+
+echo "Verifying workspace synced to workers via mesh (no PVC)"
+MESH_WORKERS=$(kubectl -n "$NAMESPACE" get pods \
+  -l "training.kubeflow.org/job-name=$MESH_WORKLOAD,training.kubeflow.org/replica-type=worker" \
+  -o jsonpath='{.items[*].metadata.name}')
+MESH_WORKER_OK=true
+for WPOD in $MESH_WORKERS; do
+  WORKER_CONTENT=""
+  for attempt in $(seq 1 30); do
+    WORKER_CONTENT=$(kubectl -n "$NAMESPACE" exec "$WPOD" -c pytorch -- cat /workspace/mesh-hello.txt 2>/dev/null || true)
+    if [[ "$WORKER_CONTENT" == "mesh-hello" ]]; then
+      echo "Worker $WPOD workspace verified on attempt $attempt"
+      break
+    fi
+    if [[ "$attempt" -eq 30 ]]; then
+      echo "ERROR: expected mesh-hello.txt on worker $WPOD, got '$WORKER_CONTENT'" >&2
+      MESH_WORKER_OK=false
+    fi
+    sleep 2
+  done
+done
+if [[ "$MESH_WORKER_OK" != "true" ]]; then
+  exit 1
+fi
+echo "Mesh workspace sync verified on all workers"
+
+echo "Tearing down mesh session"
+HOME="$MESH_HOME" "$OKDEV_BIN" --config "$MESH_CFG" --session "$MESH_SESSION" down --yes
+
+echo "Syncthing mesh test completed"

@@ -1279,6 +1279,119 @@ func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	}
 }
 
+func TestConfigureSyncthingMeshHubKeepsAllReceiversInFolder(t *testing.T) {
+	cfg := map[string]any{
+		"devices": []any{
+			map[string]any{
+				"deviceID":  "RECV2",
+				"addresses": []any{"tcp://old:22000"},
+			},
+		},
+		"folders": []any{
+			map[string]any{
+				"id":         "default",
+				"label":      "Default Folder",
+				"path":       "/Users/test/Sync",
+				"markerName": ".stfolder",
+			},
+			map[string]any{
+				"id":      "okdev-test",
+				"path":    "/tmp/old",
+				"type":    "sendonly",
+				"devices": []any{map[string]any{"deviceID": "HUB"}, map[string]any{"deviceID": "RECV2"}},
+			},
+		},
+	}
+	var putBodies int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/rest/config":
+			_ = json.NewEncoder(w).Encode(cfg)
+		case r.Method == http.MethodPut && r.URL.Path == "/rest/config":
+			putBodies++
+			if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+				t.Fatal(err)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	err := configureSyncthingMeshHub(context.Background(), srv.URL, "k", "HUB", map[string]string{
+		"RECV2": "tcp://10.0.0.2:22000",
+		"RECV1": "tcp://10.0.0.1:22000",
+	}, "okdev-test", "/workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if putBodies != 1 {
+		t.Fatalf("expected 1 config write, got %d", putBodies)
+	}
+
+	devices, err := syncthingObjectArray(cfg, "devices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deviceAddrs := map[string][]any{}
+	for _, d := range devices {
+		m, err := syncthingObjectMap(d, "devices")
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := asString(m["deviceID"])
+		addrs, ok := m["addresses"].([]any)
+		if !ok {
+			t.Fatalf("expected addresses array for %s, got %#v", id, m["addresses"])
+		}
+		deviceAddrs[id] = addrs
+	}
+	for id, wantAddr := range map[string]string{
+		"RECV1": "tcp://10.0.0.1:22000",
+		"RECV2": "tcp://10.0.0.2:22000",
+	} {
+		addrs := deviceAddrs[id]
+		if len(addrs) != 1 || addrs[0] != wantAddr {
+			t.Fatalf("unexpected addresses for %s: %#v", id, addrs)
+		}
+	}
+
+	folders, err := syncthingObjectArray(cfg, "folders")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(folders) != 1 {
+		t.Fatalf("expected default folder removed, got %d folders", len(folders))
+	}
+	folder, err := syncthingObjectMap(folders[0], "folders")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := asString(folder["path"]); got != "/workspace" {
+		t.Fatalf("unexpected folder path %q", got)
+	}
+	if got := asString(folder["type"]); got != "sendreceive" {
+		t.Fatalf("unexpected folder type %q", got)
+	}
+	folderDevices, ok := folder["devices"].([]any)
+	if !ok {
+		t.Fatalf("expected folder devices array, got %#v", folder["devices"])
+	}
+	gotIDs := make([]string, 0, len(folderDevices))
+	for _, d := range folderDevices {
+		m, err := syncthingObjectMap(d, "folder devices")
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotIDs = append(gotIDs, asString(m["deviceID"]))
+	}
+	wantIDs := []string{"HUB", "RECV1", "RECV2"}
+	if strings.Join(gotIDs, ",") != strings.Join(wantIDs, ",") {
+		t.Fatalf("unexpected folder device IDs %v, want %v", gotIDs, wantIDs)
+	}
+}
+
 func TestWriteSTIgnoreDefaultExcludes(t *testing.T) {
 	dir := t.TempDir()
 	if err := writeSTIgnore(dir, defaultSyncExcludes); err != nil {

@@ -73,6 +73,7 @@ type PodSummary struct {
 	Ready       string
 	Restarts    int32
 	Reason      string
+	PodIP       string
 }
 
 type PodReadinessProgress struct {
@@ -1477,6 +1478,7 @@ func podSummaryFromPod(p *corev1.Pod) PodSummary {
 		Ready:       fmt.Sprintf("%d/%d", readyContainers, totalContainers),
 		Restarts:    restarts,
 		Reason:      reason,
+		PodIP:       p.Status.PodIP,
 	}
 }
 

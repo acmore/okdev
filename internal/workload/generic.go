@@ -114,6 +114,11 @@ func (r *GenericRuntime) Apply(ctx context.Context, k ApplyClient, namespace str
 		template.Labels = templateLabels
 		template.Annotations = templateAnnotations
 		if inject.Sidecar == nil || *inject.Sidecar {
+			if injectAttachable(inject) {
+				templateLabels["okdev.io/mesh-role"] = "hub"
+			} else {
+				templateLabels["okdev.io/mesh-role"] = "receiver"
+			}
 			template.Spec, err = kube.PreparePodSpecForTarget(template.Spec, r.Volumes, r.WorkspaceMountPath, r.SidecarImage, r.SidecarResources, r.Tmux, r.PreStop, r.interactiveContainer())
 			if err != nil {
 				return err
