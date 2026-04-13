@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -119,64 +120,93 @@ func setupMesh(ctx context.Context, opts *Options, k *kube.Client, namespace, se
 	hubAddr := fmt.Sprintf("tcp://%s:22000", hubSummary.PodIP)
 	slog.Debug("mesh: hub info", "deviceID", hubDeviceID, "addr", hubAddr)
 
-	// 4. Configure each receiver sidecar in parallel.
+	// 4. Read all receiver device IDs and API keys in parallel.
 	if onStatus != nil {
-		onStatus(fmt.Sprintf("configuring %d receiver sidecar(s)", len(receivers)))
+		onStatus(fmt.Sprintf("reading credentials for %d receiver(s)", len(receivers)))
 	}
-	results := make([]meshReceiverStatus, len(receivers))
+	type receiverInfo struct {
+		Pod      kube.PodSummary
+		APIKey   string
+		DeviceID string
+		Err      error
+	}
+	recvInfos := make([]receiverInfo, len(receivers))
 	var wg sync.WaitGroup
 	for i, recv := range receivers {
 		wg.Add(1)
 		go func(idx int, pod kube.PodSummary) {
 			defer wg.Done()
-			results[idx] = configureAndWaitMeshReceiver(ctx, opts, k, namespace, pod, hubDeviceID, hubAddr, folderID, workspaceMountPath, timeout)
+			info := receiverInfo{Pod: pod}
+			key, err := readRemoteSyncthingAPIKey(ctx, k, namespace, pod.Name)
+			if err != nil {
+				info.Err = fmt.Errorf("read receiver API key: %w", err)
+				recvInfos[idx] = info
+				return
+			}
+			info.APIKey = key
+			cancelPF, base, _, err := startSyncthingPortForward(ctx, opts, namespace, pod.Name)
+			if err != nil {
+				info.Err = fmt.Errorf("port-forward to receiver: %w", err)
+				recvInfos[idx] = info
+				return
+			}
+			defer cancelPF()
+			if err := waitSyncthingAPI(ctx, base, key, syncthingAPIReadyTimeout); err != nil {
+				info.Err = fmt.Errorf("receiver syncthing API not ready: %w", err)
+				recvInfos[idx] = info
+				return
+			}
+			devID, err := syncthingDeviceID(ctx, base, key)
+			if err != nil {
+				info.Err = fmt.Errorf("read receiver device ID: %w", err)
+				recvInfos[idx] = info
+				return
+			}
+			info.DeviceID = devID
+			recvInfos[idx] = info
 		}(i, recv)
 	}
 	wg.Wait()
 
-	// 5. Add receiver device IDs to hub config so hub accepts connections.
-	recvByName := make(map[string]kube.PodSummary, len(receivers))
-	for _, recv := range receivers {
-		recvByName[recv.Name] = recv
+	// 5. Configure hub to know about ALL receivers BEFORE receivers connect.
+	if onStatus != nil {
+		onStatus("configuring hub with receiver device IDs")
 	}
-	for _, r := range results {
-		if r.Err != nil {
+	hubPeers := make(map[string]string)
+	for i, info := range recvInfos {
+		if info.Err != nil {
 			continue
 		}
-		recv, ok := recvByName[r.Pod]
-		if !ok || recv.PodIP == "" {
-			slog.Warn("mesh: receiver pod IP unavailable for hub config", "pod", r.Pod)
+		if info.Pod.PodIP == "" {
+			recvInfos[i].Err = fmt.Errorf("receiver pod IP unavailable for hub config")
+			slog.Warn("mesh: receiver pod IP unavailable for hub config", "pod", info.Pod.Name)
 			continue
 		}
-		// Read receiver device ID and add to hub.
-		recvKey, keyErr := readRemoteSyncthingAPIKey(ctx, k, namespace, r.Pod)
-		if keyErr != nil {
-			slog.Warn("mesh: could not read receiver API key for hub config", "pod", r.Pod, "error", keyErr)
-			continue
-		}
-		cancelRecvPF, recvBase, _, pfErr := startSyncthingPortForward(ctx, opts, namespace, r.Pod)
-		if pfErr != nil {
-			slog.Warn("mesh: could not port-forward to receiver for device ID", "pod", r.Pod, "error", pfErr)
-			continue
-		}
-		recvDeviceID, idErr := syncthingDeviceID(ctx, recvBase, recvKey)
-		cancelRecvPF()
-		if idErr != nil {
-			slog.Warn("mesh: could not read receiver device ID", "pod", r.Pod, "error", idErr)
-			continue
-		}
-		// Configure hub to know about this receiver.
-		if cfgErr := configureSyncthingPeer(ctx, hubBase, hubKey,
-			hubDeviceID, recvDeviceID,
-			fmt.Sprintf("tcp://%s:22000", recv.PodIP),
-			folderID, workspaceMountPath,
-			"sendreceive", // hub keeps sendreceive
-			60, 1,
-			false, false, false,
-		); cfgErr != nil {
-			slog.Warn("mesh: could not add receiver to hub config", "pod", r.Pod, "error", cfgErr)
+		hubPeers[info.DeviceID] = fmt.Sprintf("tcp://%s:22000", info.Pod.PodIP)
+	}
+	if len(hubPeers) > 0 {
+		if err := configureSyncthingMeshHub(ctx, hubBase, hubKey, hubDeviceID, hubPeers, folderID, workspaceMountPath); err != nil {
+			return nil, fmt.Errorf("configure hub syncthing mesh: %w", err)
 		}
 	}
+
+	// 6. Configure each receiver sidecar to peer with hub, then wait for sync.
+	if onStatus != nil {
+		onStatus(fmt.Sprintf("configuring %d receiver sidecar(s)", len(receivers)))
+	}
+	results := make([]meshReceiverStatus, len(receivers))
+	for i, info := range recvInfos {
+		wg.Add(1)
+		go func(idx int, ri receiverInfo) {
+			defer wg.Done()
+			if ri.Err != nil {
+				results[idx] = meshReceiverStatus{Pod: ri.Pod.Name, Err: ri.Err}
+				return
+			}
+			results[idx] = configureAndWaitMeshReceiver(ctx, opts, k, namespace, ri.Pod, ri.APIKey, ri.DeviceID, hubBase, hubKey, hubDeviceID, hubAddr, folderID, workspaceMountPath, timeout)
+		}(i, info)
+	}
+	wg.Wait()
 
 	summary := &meshSummary{
 		HubPod:    hubPod,
@@ -185,21 +215,114 @@ func setupMesh(ctx context.Context, opts *Options, k *kube.Client, namespace, se
 	return summary, nil
 }
 
+func configureSyncthingMeshHub(ctx context.Context, base, key, hubDeviceID string, receiverDeviceAddrs map[string]string, folderID, folderPath string) error {
+	cfg, err := syncthingGetConfig(ctx, base, key)
+	if err != nil {
+		return err
+	}
+	applyManagedSyncthingGlobalDefaults(cfg, false)
+
+	devices, err := syncthingObjectArray(cfg, "devices")
+	if err != nil {
+		return err
+	}
+	deviceIndex := make(map[string]int, len(devices))
+	for i, d := range devices {
+		m, err := syncthingObjectMap(d, "devices")
+		if err != nil {
+			return err
+		}
+		if id := asString(m["deviceID"]); id != "" {
+			deviceIndex[id] = i
+		}
+	}
+
+	receiverIDs := make([]string, 0, len(receiverDeviceAddrs))
+	for id := range receiverDeviceAddrs {
+		receiverIDs = append(receiverIDs, id)
+	}
+	sort.Strings(receiverIDs)
+	for _, id := range receiverIDs {
+		addresses := syncthingDeviceAddresses(receiverDeviceAddrs[id])
+		if idx, ok := deviceIndex[id]; ok {
+			m, err := syncthingObjectMap(devices[idx], "devices")
+			if err != nil {
+				return err
+			}
+			m["addresses"] = addresses
+			m["compression"] = "metadata"
+			applyManagedSyncthingDeviceDefaults(m)
+			devices[idx] = m
+			continue
+		}
+		device := map[string]any{
+			"deviceID":    id,
+			"name":        "okdev-mesh-receiver",
+			"addresses":   addresses,
+			"compression": "metadata",
+		}
+		applyManagedSyncthingDeviceDefaults(device)
+		devices = append(devices, device)
+	}
+	cfg["devices"] = devices
+
+	folders, err := syncthingObjectArray(cfg, "folders")
+	if err != nil {
+		return err
+	}
+	folderDevices := make([]any, 0, len(receiverIDs)+1)
+	folderDevices = append(folderDevices, map[string]any{"deviceID": hubDeviceID})
+	for _, id := range receiverIDs {
+		folderDevices = append(folderDevices, map[string]any{"deviceID": id})
+	}
+
+	filteredFolders := make([]any, 0, len(folders))
+	foundFolder := false
+	for _, f := range folders {
+		fm, err := syncthingObjectMap(f, "folders")
+		if err != nil {
+			return err
+		}
+		if asString(fm["id"]) == "default" {
+			continue
+		}
+		if asString(fm["id"]) == folderID {
+			fm["path"] = folderPath
+			fm["type"] = "sendreceive"
+			fm["markerName"] = "."
+			fm["devices"] = folderDevices
+			applyManagedSyncthingFolderDefaults(fm, 60, 1, false)
+			filteredFolders = append(filteredFolders, fm)
+			foundFolder = true
+			continue
+		}
+		filteredFolders = append(filteredFolders, fm)
+	}
+	if !foundFolder {
+		folder := map[string]any{
+			"id":         folderID,
+			"label":      folderID,
+			"path":       folderPath,
+			"type":       "sendreceive",
+			"markerName": ".",
+			"devices":    folderDevices,
+		}
+		applyManagedSyncthingFolderDefaults(folder, 60, 1, false)
+		filteredFolders = append(filteredFolders, folder)
+	}
+	cfg["folders"] = filteredFolders
+
+	return syncthingSetConfig(ctx, base, key, cfg)
+}
+
 // configureAndWaitMeshReceiver configures a single receiver pod's syncthing
 // to peer with the hub and waits for initial sync to complete.
-func configureAndWaitMeshReceiver(ctx context.Context, opts *Options, k *kube.Client, namespace string, pod kube.PodSummary, hubDeviceID, hubAddr, folderID, workspaceMountPath string, timeout time.Duration) meshReceiverStatus {
+func configureAndWaitMeshReceiver(ctx context.Context, opts *Options, k *kube.Client, namespace string, pod kube.PodSummary, recvKey, recvDeviceID, hubBase, hubKey, hubDeviceID, hubAddr, folderID, workspaceMountPath string, timeout time.Duration) meshReceiverStatus {
 	status := meshReceiverStatus{Pod: pod.Name}
 
 	// Ensure the receiver sidecar has syncthing running.
 	if _, err := execInSyncthingContainer(ctx, k, namespace, pod.Name, "command -v syncthing >/dev/null 2>&1"); err != nil {
 		status.Err = fmt.Errorf("syncthing not available in sidecar: %w", err)
-		return status
-	}
-
-	// Read receiver credentials and device ID.
-	recvKey, err := readRemoteSyncthingAPIKey(ctx, k, namespace, pod.Name)
-	if err != nil {
-		status.Err = fmt.Errorf("read receiver syncthing API key: %w", err)
 		return status
 	}
 
@@ -212,12 +335,6 @@ func configureAndWaitMeshReceiver(ctx context.Context, opts *Options, k *kube.Cl
 
 	if err := waitSyncthingAPI(ctx, recvBase, recvKey, syncthingAPIReadyTimeout); err != nil {
 		status.Err = fmt.Errorf("receiver syncthing API not ready: %w", err)
-		return status
-	}
-
-	recvDeviceID, err := syncthingDeviceID(ctx, recvBase, recvKey)
-	if err != nil {
-		status.Err = fmt.Errorf("read receiver device ID: %w", err)
 		return status
 	}
 
@@ -248,8 +365,20 @@ func configureAndWaitMeshReceiver(ctx context.Context, opts *Options, k *kube.Cl
 	ticker := time.NewTicker(meshSyncPollInterval)
 	defer ticker.Stop()
 	for {
+		receiverConnected, recvConnErr := syncthingPeerConnected(ctx, recvBase, recvKey, hubDeviceID)
+		hubConnected, hubConnErr := syncthingPeerConnected(ctx, hubBase, hubKey, recvDeviceID)
+		if recvConnErr != nil {
+			slog.Debug("mesh: receiver connection poll error", "pod", pod.Name, "error", recvConnErr)
+		}
+		if hubConnErr != nil {
+			slog.Debug("mesh: hub connection poll error", "pod", pod.Name, "error", hubConnErr)
+		}
+		if receiverConnected && hubConnected {
+			status.Connected = true
+		}
+
 		_, needBytes, pollErr := syncthingCompletion(ctx, recvBase, recvKey, folderID, hubDeviceID)
-		if pollErr == nil && needBytes == 0 {
+		if pollErr == nil && needBytes == 0 && status.Connected {
 			status.Synced = true
 			slog.Debug("mesh: receiver synced", "pod", pod.Name)
 			return status
@@ -258,7 +387,9 @@ func configureAndWaitMeshReceiver(ctx context.Context, opts *Options, k *kube.Cl
 			slog.Debug("mesh: receiver sync poll error", "pod", pod.Name, "error", pollErr)
 		}
 		if time.Now().After(deadline) {
-			if pollErr != nil {
+			if !status.Connected {
+				status.Err = fmt.Errorf("mesh sync timed out waiting for hub/receiver connection")
+			} else if pollErr != nil {
 				status.Err = fmt.Errorf("mesh sync timed out: %w", pollErr)
 			} else {
 				status.Err = fmt.Errorf("mesh sync timed out, %d bytes remaining", needBytes)
