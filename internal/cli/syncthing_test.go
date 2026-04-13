@@ -319,14 +319,22 @@ func TestWriteRemoteSTIgnoreInPodWritesConfiguredPatterns(t *testing.T) {
 	if rec.namespace != "default" || rec.pod != "pod-a" || rec.container != syncthingContainerName {
 		t.Fatalf("unexpected exec target namespace=%q pod=%q container=%q", rec.namespace, rec.pod, rec.container)
 	}
+	if rec.copyDest != "/workspace/.stignore.tmp" {
+		t.Fatalf("expected temp copy destination, got %q", rec.copyDest)
+	}
+	if rec.copyBody != "profiles/\n*.prof\n" {
+		t.Fatalf("unexpected copied .stignore content %q", rec.copyBody)
+	}
 	for _, want := range []string{
 		"mkdir -p '/workspace'",
-		"printf %s 'profiles/\n*.prof\n'",
-		"> '/workspace/.stignore'",
+		"mv '/workspace/.stignore.tmp' '/workspace/.stignore'",
 	} {
 		if !strings.Contains(rec.script, want) {
 			t.Fatalf("expected remote .stignore script to contain %q, got %q", want, rec.script)
 		}
+	}
+	if strings.Contains(rec.script, "profiles/") || strings.Contains(rec.script, "*.prof") {
+		t.Fatalf("expected remote payload to be streamed, script was %q", rec.script)
 	}
 }
 
@@ -387,6 +395,9 @@ type syncthingExecRecorder struct {
 	pod       string
 	container string
 	script    string
+	copyPath  string
+	copyDest  string
+	copyBody  string
 	out       []byte
 	err       error
 }
@@ -397,6 +408,20 @@ func (r *syncthingExecRecorder) ExecShInContainer(_ context.Context, namespace, 
 	r.container = container
 	r.script = script
 	return r.out, r.err
+}
+
+func (r *syncthingExecRecorder) CopyToPodInContainer(_ context.Context, namespace, localPath, pod, container, remotePath string) error {
+	r.namespace = namespace
+	r.pod = pod
+	r.container = container
+	r.copyPath = localPath
+	r.copyDest = remotePath
+	body, err := os.ReadFile(localPath)
+	if err != nil {
+		return err
+	}
+	r.copyBody = string(body)
+	return r.err
 }
 
 func TestParseLocalSyncthingAPIBaseUsesLatestLoopbackAddress(t *testing.T) {
@@ -694,7 +719,7 @@ func TestRunTwoPhaseInitialSync(t *testing.T) {
 		compression:    false,
 	}
 
-	err := runTwoPhaseInitialSync(ctx, &buf, localSrv.URL, "k", "LOCAL", remoteSrv.URL, "k", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "/tmp/remote", sc)
+	err := runTwoPhaseInitialSync(ctx, &buf, localSrv.URL, "k", "LOCAL", remoteSrv.URL, "k", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "/tmp/remote", nil, sc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -817,7 +842,7 @@ func TestRunTwoPhaseInitialSyncWaitsForDeletionConvergence(t *testing.T) {
 	var buf bytes.Buffer
 	sc := syncthingSyncConfig{rescanInterval: 300, watcherDelay: 1}
 
-	err := runTwoPhaseInitialSync(context.Background(), &buf, localSrv.URL, "k", "LOCAL", remoteSrv.URL, "k", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "/tmp/remote", sc)
+	err := runTwoPhaseInitialSync(context.Background(), &buf, localSrv.URL, "k", "LOCAL", remoteSrv.URL, "k", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "/tmp/remote", nil, sc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -887,7 +912,7 @@ func TestRunTwoPhaseInitialSyncWaitsForPeerConnection(t *testing.T) {
 
 	var buf bytes.Buffer
 	sc := syncthingSyncConfig{rescanInterval: 300, watcherDelay: 1}
-	err := runTwoPhaseInitialSync(context.Background(), &buf, localSrv.URL, "k", "LOCAL", remoteSrv.URL, "k", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "/tmp/remote", sc)
+	err := runTwoPhaseInitialSync(context.Background(), &buf, localSrv.URL, "k", "LOCAL", remoteSrv.URL, "k", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "/tmp/remote", nil, sc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1125,6 +1150,41 @@ func TestSyncthingAPIRequestWithContextRejectsErrorStatus(t *testing.T) {
 	}
 }
 
+func TestSyncthingSetIgnoresPostsPatterns(t *testing.T) {
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+		if r.URL.Path != "/rest/db/ignores" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("folder"); got != "okdev-test" {
+			t.Fatalf("unexpected folder query %q", got)
+		}
+		if got := r.Header.Get("X-API-Key"); got != "secret" {
+			t.Fatalf("unexpected API key %q", got)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Fatalf("unexpected content type %q", got)
+		}
+		var err error
+		gotBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write([]byte(`{"ignore":["profiles/","*.prof"]}`))
+	}))
+	defer srv.Close()
+
+	if err := syncthingSetIgnores(context.Background(), srv.URL, "secret", "okdev-test", []string{"profiles/", "*.prof"}); err != nil {
+		t.Fatal(err)
+	}
+	if string(gotBody) != `{"ignore":["profiles/","*.prof"]}` {
+		t.Fatalf("unexpected request body %s", gotBody)
+	}
+}
+
 func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	cfg := map[string]any{
 		"devices": []any{},
@@ -1279,6 +1339,170 @@ func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	}
 }
 
+func TestConfigureSyncthingPeerPrunesStaleManagedPeerDevices(t *testing.T) {
+	cfg := map[string]any{
+		"devices": []any{
+			map[string]any{
+				"deviceID":  "STALE-1",
+				"name":      "okdev-peer",
+				"addresses": []any{"tcp://127.0.0.1:22001"},
+			},
+			map[string]any{
+				"deviceID":  "KEEP-MANUAL",
+				"name":      "teammate-laptop",
+				"addresses": []any{"dynamic"},
+			},
+			map[string]any{
+				"deviceID":  "STALE-2",
+				"name":      "okdev-peer",
+				"addresses": []any{"tcp://127.0.0.1:22002"},
+			},
+		},
+		"folders": []any{},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/rest/config":
+			_ = json.NewEncoder(w).Encode(cfg)
+		case r.Method == http.MethodPut && r.URL.Path == "/rest/config":
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(body, &cfg); err != nil {
+				t.Fatal(err)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, 0, false, false, false); err != nil {
+		t.Fatal(err)
+	}
+
+	devices, err := syncthingObjectArray(cfg, "devices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 2 {
+		t.Fatalf("expected current managed peer plus manual device, got %d devices", len(devices))
+	}
+
+	gotIDs := make([]string, 0, len(devices))
+	for _, d := range devices {
+		m, err := syncthingObjectMap(d, "devices")
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotIDs = append(gotIDs, asString(m["deviceID"]))
+	}
+	wantIDs := []string{"KEEP-MANUAL", "REMOTE"}
+	if strings.Join(gotIDs, ",") != strings.Join(wantIDs, ",") {
+		t.Fatalf("unexpected device IDs %v, want %v", gotIDs, wantIDs)
+	}
+}
+
+func TestConfigureSyncthingPeerPreservesMeshReceiverFolderPeers(t *testing.T) {
+	cfg := map[string]any{
+		"devices": []any{
+			map[string]any{
+				"deviceID":  "LOCAL",
+				"name":      managedSyncthingPeer,
+				"addresses": []any{"dynamic"},
+			},
+			map[string]any{
+				"deviceID":  "RECV",
+				"name":      "okdev-mesh-receiver",
+				"addresses": []any{"tcp://10.0.0.2:22000"},
+			},
+		},
+		"folders": []any{
+			map[string]any{
+				"id":   "okdev-test",
+				"path": "/workspace",
+				"type": "sendreceive",
+				"devices": []any{
+					map[string]any{"deviceID": "REMOTE"},
+					map[string]any{"deviceID": "LOCAL"},
+					map[string]any{"deviceID": "RECV"},
+				},
+			},
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/rest/config":
+			_ = json.NewEncoder(w).Encode(cfg)
+		case r.Method == http.MethodPut && r.URL.Path == "/rest/config":
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(body, &cfg); err != nil {
+				t.Fatal(err)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "REMOTE", "LOCAL", "", "okdev-test", "/workspace", "sendreceive", 300, 1, false, false, false); err != nil {
+		t.Fatal(err)
+	}
+
+	folders, err := syncthingObjectArray(cfg, "folders")
+	if err != nil {
+		t.Fatal(err)
+	}
+	folder, err := syncthingObjectMap(folders[0], "folders")
+	if err != nil {
+		t.Fatal(err)
+	}
+	folderDevices, ok := folder["devices"].([]any)
+	if !ok {
+		t.Fatalf("expected folder devices array, got %#v", folder["devices"])
+	}
+	gotIDs := make([]string, 0, len(folderDevices))
+	for _, d := range folderDevices {
+		m, err := syncthingObjectMap(d, "folder devices")
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotIDs = append(gotIDs, asString(m["deviceID"]))
+	}
+	wantIDs := []string{"REMOTE", "LOCAL", "RECV"}
+	if strings.Join(gotIDs, ",") != strings.Join(wantIDs, ",") {
+		t.Fatalf("unexpected folder device IDs %v, want %v", gotIDs, wantIDs)
+	}
+}
+
+func TestSyncthingBootstrapAndRuntimeContexts(t *testing.T) {
+	parent := context.Background()
+	bootstrapCtx, cancel, runtimeCtx := syncthingBootstrapAndRuntimeContexts(parent)
+	t.Cleanup(cancel)
+
+	if runtimeCtx != parent {
+		t.Fatal("expected runtime context to be the parent command context")
+	}
+
+	if _, ok := runtimeCtx.Deadline(); ok {
+		t.Fatal("expected runtime context to avoid the bootstrap deadline")
+	}
+
+	deadline, ok := bootstrapCtx.Deadline()
+	if !ok {
+		t.Fatal("expected bootstrap context to have a deadline")
+	}
+	if remaining := time.Until(deadline); remaining <= 0 || remaining > syncthingBootstrapTimeout {
+		t.Fatalf("unexpected bootstrap deadline remaining %s", remaining)
+	}
+}
+
 func TestConfigureSyncthingMeshHubKeepsAllReceiversInFolder(t *testing.T) {
 	cfg := map[string]any{
 		"devices": []any{
@@ -1405,6 +1629,88 @@ func TestWriteSTIgnoreDefaultExcludes(t *testing.T) {
 		if !strings.Contains(string(got), pattern) {
 			t.Fatalf("expected default exclude %q in stignore, got %q", pattern, got)
 		}
+	}
+}
+
+func TestConfigureSyncthingMeshHubPreservesExistingNonReceiverFolderPeers(t *testing.T) {
+	cfg := map[string]any{
+		"devices": []any{
+			map[string]any{
+				"deviceID":  "HUB",
+				"name":      "hub",
+				"addresses": []any{"dynamic"},
+			},
+			map[string]any{
+				"deviceID":  "LOCAL",
+				"name":      managedSyncthingPeer,
+				"addresses": []any{"tcp://127.0.0.1:22000"},
+			},
+		},
+		"folders": []any{
+			map[string]any{
+				"id":   "okdev-test",
+				"path": "/workspace",
+				"type": "sendreceive",
+				"devices": []any{
+					map[string]any{"deviceID": "HUB"},
+					map[string]any{"deviceID": "LOCAL"},
+				},
+			},
+		},
+		"options": map[string]any{},
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case http.MethodGet + " /rest/config":
+			if err := json.NewEncoder(w).Encode(cfg); err != nil {
+				t.Fatal(err)
+			}
+		case http.MethodPut + " /rest/config":
+			if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+				t.Fatal(err)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	err := configureSyncthingMeshHub(context.Background(), srv.URL, "k", "HUB", map[string]string{
+		"RECV2": "tcp://10.0.0.2:22000",
+		"RECV1": "tcp://10.0.0.1:22000",
+	}, "okdev-test", "/workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	folders, err := syncthingObjectArray(cfg, "folders")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(folders) != 1 {
+		t.Fatalf("expected 1 folder, got %d", len(folders))
+	}
+	folder, err := syncthingObjectMap(folders[0], "folders")
+	if err != nil {
+		t.Fatal(err)
+	}
+	folderDevices, ok := folder["devices"].([]any)
+	if !ok {
+		t.Fatalf("expected folder devices array, got %#v", folder["devices"])
+	}
+	gotIDs := make([]string, 0, len(folderDevices))
+	for _, d := range folderDevices {
+		m, err := syncthingObjectMap(d, "folder devices")
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotIDs = append(gotIDs, asString(m["deviceID"]))
+	}
+	wantIDs := []string{"HUB", "LOCAL", "RECV1", "RECV2"}
+	if strings.Join(gotIDs, ",") != strings.Join(wantIDs, ",") {
+		t.Fatalf("unexpected folder device IDs %v, want %v", gotIDs, wantIDs)
 	}
 }
 

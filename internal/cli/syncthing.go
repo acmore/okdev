@@ -37,6 +37,7 @@ import (
 const (
 	syncthingContainerName = "okdev-sidecar"
 	localSyncthingGUIAddr  = "127.0.0.1:0"
+	managedSyncthingPeer   = "okdev-peer"
 )
 
 // defaultSyncExcludes are written to a starter .stignore when one does not
@@ -57,24 +58,24 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		return fmt.Errorf("syncthing engine currently supports exactly one sync path mapping")
 	}
 
-	ctx, cancel := context.WithTimeout(cmd.Context(), syncthingBootstrapTimeout)
-	defer cancel()
-	localBinary, err := syncthing.EnsureBinary(ctx, cfg.Spec.Sync.Syncthing.Version, cfg.Spec.Sync.Syncthing.AutoInstallEnabled())
+	bootstrapCtx, cancelBootstrap, runtimeCtx := syncthingBootstrapAndRuntimeContexts(cmd.Context())
+	defer cancelBootstrap()
+	localBinary, err := syncthing.EnsureBinary(bootstrapCtx, cfg.Spec.Sync.Syncthing.Version, cfg.Spec.Sync.Syncthing.AutoInstallEnabled())
 	if err != nil {
 		return fmt.Errorf("prepare local syncthing binary: %w", err)
 	}
 
-	target, err := resolveTargetRef(cmd.Context(), opts, cfg, namespace, sessionName, k)
+	target, err := resolveTargetRef(bootstrapCtx, opts, cfg, namespace, sessionName, k)
 	if err != nil {
 		return err
 	}
 	pod := target.PodName
-	if _, err := execInSyncthingContainer(ctx, k, namespace, pod, "command -v syncthing >/dev/null 2>&1"); err != nil {
-		refreshed, refreshErr := resolveTargetRef(cmd.Context(), opts, cfg, namespace, sessionName, k)
+	if _, err := execInSyncthingContainer(bootstrapCtx, k, namespace, pod, "command -v syncthing >/dev/null 2>&1"); err != nil {
+		refreshed, refreshErr := resolveTargetRef(bootstrapCtx, opts, cfg, namespace, sessionName, k)
 		if refreshErr == nil && strings.TrimSpace(refreshed.PodName) != "" && refreshed.PodName != pod {
 			pod = refreshed.PodName
 			target = refreshed
-			if _, retryErr := execInSyncthingContainer(ctx, k, namespace, pod, "command -v syncthing >/dev/null 2>&1"); retryErr == nil {
+			if _, retryErr := execInSyncthingContainer(bootstrapCtx, k, namespace, pod, "command -v syncthing >/dev/null 2>&1"); retryErr == nil {
 				err = nil
 			} else {
 				err = retryErr
@@ -96,41 +97,38 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	if err := writeLocalSTIgnore(absLocal); err != nil {
 		return err
 	}
-	if _, err := execInSyncthingContainer(ctx, k, namespace, pod, fmt.Sprintf("mkdir -p %s", syncengine.ShellEscape(pair.Remote))); err != nil {
-		return err
-	}
-	if err := writeRemoteSTIgnoreInPod(ctx, k, namespace, pod, pair.Remote, cfg.Spec.Sync.RemoteIgnore); err != nil {
+	if _, err := execInSyncthingContainer(bootstrapCtx, k, namespace, pod, fmt.Sprintf("mkdir -p %s", syncengine.ShellEscape(pair.Remote))); err != nil {
 		return err
 	}
 	localHome, err := localSyncthingHome(sessionName)
 	if err != nil {
 		return err
 	}
-	cancelPF, localRemoteAPIBase, localRemotePeerAddr, err := startSyncthingPortForward(ctx, opts, namespace, pod)
+	cancelPF, localRemoteAPIBase, localRemotePeerAddr, err := startSyncthingPortForward(runtimeCtx, opts, namespace, pod)
 	if err != nil {
 		return err
 	}
 	defer cancelPF()
 
-	remoteKey, err := readRemoteSyncthingAPIKey(ctx, k, namespace, pod)
+	remoteKey, err := readRemoteSyncthingAPIKey(bootstrapCtx, k, namespace, pod)
 	if err != nil {
 		return err
 	}
 
-	localBase, localKey, localPID, err := startAndWaitForLocalSyncthing(ctx, localBinary, localHome)
+	localBase, localKey, localPID, err := startAndWaitForLocalSyncthing(bootstrapCtx, localBinary, localHome)
 	if err != nil {
 		return err
 	}
 	remoteBase := localRemoteAPIBase
-	if err := waitSyncthingAPI(ctx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
+	if err := waitSyncthingAPI(bootstrapCtx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
 		return fmt.Errorf("remote syncthing not ready: %w", err)
 	}
 
-	localID, err := syncthingDeviceID(ctx, localBase, localKey)
+	localID, err := syncthingDeviceID(bootstrapCtx, localBase, localKey)
 	if err != nil {
 		return err
 	}
-	remoteID, err := syncthingDeviceID(ctx, remoteBase, remoteKey)
+	remoteID, err := syncthingDeviceID(bootstrapCtx, remoteBase, remoteKey)
 	if err != nil {
 		return err
 	}
@@ -150,19 +148,22 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	if mode == "two-phase" {
 		// The bootstrap context has a short timeout (syncthingBootstrapTimeout).
 		// Two-phase initial sync may take much longer, so use a dedicated context.
-		twoPhaseCtx, twoPhaseCancel := context.WithTimeout(context.Background(), initialSyncTimeout)
+		twoPhaseCtx, twoPhaseCancel := context.WithTimeout(runtimeCtx, initialSyncTimeout)
 		defer twoPhaseCancel()
-		if err := runTwoPhaseInitialSync(twoPhaseCtx, cmd.OutOrStdout(), localBase, localKey, localID, remoteBase, remoteKey, remoteID, localRemotePeerAddr, folderID, absLocal, pair.Remote, syncCfg); err != nil {
+		if err := runTwoPhaseInitialSync(twoPhaseCtx, cmd.OutOrStdout(), localBase, localKey, localID, remoteBase, remoteKey, remoteID, localRemotePeerAddr, folderID, absLocal, pair.Remote, cfg.Spec.Sync.RemoteIgnore, syncCfg); err != nil {
 			return fmt.Errorf("two-phase initial sync: %w", err)
 		}
 		mode = "bi"
 	} else {
 		folderTypeLocal, folderTypeRemote := folderTypesForMode(mode)
-		if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression); err != nil {
+		if err := configureSyncthingPeer(bootstrapCtx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression); err != nil {
 			return fmt.Errorf("configure local syncthing: %w", err)
 		}
-		if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, "", folderID, pair.Remote, folderTypeRemote, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression); err != nil {
+		if err := configureSyncthingPeer(bootstrapCtx, remoteBase, remoteKey, remoteID, localID, "", folderID, pair.Remote, folderTypeRemote, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression); err != nil {
 			return fmt.Errorf("configure remote syncthing: %w", err)
+		}
+		if err := syncthingSetIgnores(bootstrapCtx, remoteBase, remoteKey, folderID, cfg.Spec.Sync.RemoteIgnore); err != nil {
+			return fmt.Errorf("configure remote syncthing ignores: %w", err)
 		}
 	}
 
@@ -188,7 +189,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	defer signal.Stop(sigCh)
 
 	checker := &liveSyncHealthChecker{
-		ctx:       ctx,
+		ctx:       runtimeCtx,
 		opts:      opts,
 		namespace: namespace,
 		pod:       pod,
@@ -203,6 +204,11 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to stop local syncthing: %v\n", err)
 	}
 	return nil
+}
+
+func syncthingBootstrapAndRuntimeContexts(parent context.Context) (context.Context, context.CancelFunc, context.Context) {
+	bootstrapCtx, cancel := context.WithTimeout(parent, syncthingBootstrapTimeout)
+	return bootstrapCtx, cancel, parent
 }
 
 // syncHealthChecker abstracts the peer connectivity check and port-forward
@@ -491,6 +497,7 @@ func writeLocalSTIgnore(localPath string) error {
 
 func writeRemoteSTIgnoreInPod(ctx context.Context, k interface {
 	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+	CopyToPodInContainer(context.Context, string, string, string, string, string) error
 }, namespace, pod, remotePath string, excludes []string) error {
 	content, ok := buildSTIgnoreContent(excludes)
 	if !ok {
@@ -501,8 +508,25 @@ func writeRemoteSTIgnoreInPod(ctx context.Context, k interface {
 		return fmt.Errorf("refusing to write remote .stignore at unsafe sync root %q", remotePath)
 	}
 	stignorePath := path.Join(remotePath, ".stignore")
+	tempPath := stignorePath + ".tmp"
+	tempFile, err := os.CreateTemp("", "okdev-remote-stignore-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp .stignore file: %w", err)
+	}
+	tempLocalPath := tempFile.Name()
+	defer os.Remove(tempLocalPath)
+	if _, err := tempFile.WriteString(content); err != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("write temp .stignore file: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("close temp .stignore file: %w", err)
+	}
+	if err := k.CopyToPodInContainer(ctx, namespace, tempLocalPath, pod, syncthingContainerName, tempPath); err != nil {
+		return fmt.Errorf("copy remote .stignore: %w", err)
+	}
 	esc := syncengine.ShellEscape
-	script := fmt.Sprintf("mkdir -p %s && printf %%s %s > %s", esc(remotePath), esc(content), esc(stignorePath))
+	script := fmt.Sprintf("mkdir -p %s && mv %s %s", esc(remotePath), esc(tempPath), esc(stignorePath))
 	if _, err := execInSyncthingContainer(ctx, k, namespace, pod, script); err != nil {
 		return fmt.Errorf("write remote .stignore: %w", err)
 	}
@@ -1408,7 +1432,7 @@ type syncthingSyncConfig struct {
 //     deletions before entering bidirectional mode.
 //  2. Reconfigure both sides to sendreceive and restart only if Syncthing
 //     reports that the applied config requires it.
-func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, localKey, localID, remoteBase, remoteKey, remoteID, peerAddr, folderID, localPath, remotePath string, sc syncthingSyncConfig) error {
+func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, localKey, localID, remoteBase, remoteKey, remoteID, peerAddr, folderID, localPath, remotePath string, remoteIgnores []string, sc syncthingSyncConfig) error {
 	// Phase 1: sendonly + ignoreDelete on local, receiveonly on remote.
 	fmt.Fprintln(out, "Phase 1: local-authoritative initial sync …")
 	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, peerAddr, folderID, localPath, "sendonly", sc.rescanInterval, sc.watcherDelay, true, sc.relays, sc.compression); err != nil {
@@ -1416,6 +1440,9 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 	}
 	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, "", folderID, remotePath, "receiveonly", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
 		return fmt.Errorf("configure remote (phase 1): %w", err)
+	}
+	if err := syncthingSetIgnores(ctx, remoteBase, remoteKey, folderID, remoteIgnores); err != nil {
+		return fmt.Errorf("configure remote ignores (phase 1): %w", err)
 	}
 
 	// Poll until remote is in sync, calling override on every tick.
@@ -1496,6 +1523,9 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 	}
 	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, "", folderID, remotePath, "sendreceive", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
 		return fmt.Errorf("configure remote (phase 2): %w", err)
+	}
+	if err := syncthingSetIgnores(ctx, remoteBase, remoteKey, folderID, remoteIgnores); err != nil {
+		return fmt.Errorf("configure remote ignores (phase 2): %w", err)
 	}
 
 	localRestartRequired, err := syncthingRestartRequired(ctx, localBase, localKey)
@@ -1602,31 +1632,40 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 	}
 	addresses := syncthingDeviceAddresses(peerAddr)
 	foundDevice := false
-	for i, d := range devices {
+	filteredDevices := make([]any, 0, len(devices))
+	for _, d := range devices {
 		m, err := syncthingObjectMap(d, "devices")
 		if err != nil {
 			return err
 		}
-		if asString(m["deviceID"]) == peerID {
+		deviceID := asString(m["deviceID"])
+		if deviceID != peerID && isManagedSyncthingPeerDevice(m, selfID) {
+			continue
+		}
+		if deviceID == peerID {
+			if foundDevice {
+				continue
+			}
 			m["addresses"] = addresses
 			m["compression"] = compressionMode
 			applyManagedSyncthingDeviceDefaults(m)
-			devices[i] = m
 			foundDevice = true
-			break
+			filteredDevices = append(filteredDevices, m)
+			continue
 		}
+		filteredDevices = append(filteredDevices, m)
 	}
 	if !foundDevice {
 		device := map[string]any{
 			"deviceID":    peerID,
-			"name":        "okdev-peer",
+			"name":        managedSyncthingPeer,
 			"addresses":   addresses,
 			"compression": compressionMode,
 		}
 		applyManagedSyncthingDeviceDefaults(device)
-		devices = append(devices, device)
+		filteredDevices = append(filteredDevices, device)
 	}
-	cfg["devices"] = devices
+	cfg["devices"] = filteredDevices
 
 	folders, err := syncthingObjectArray(cfg, "folders")
 	if err != nil {
@@ -1646,10 +1685,11 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 			fm["path"] = folderPath
 			fm["type"] = folderType
 			fm["markerName"] = "."
-			fm["devices"] = []any{
-				map[string]any{"deviceID": selfID},
-				map[string]any{"deviceID": peerID},
+			mergedDevices, err := syncthingMergeFolderDevices(fm["devices"], filteredDevices, selfID, peerID)
+			if err != nil {
+				return err
 			}
+			fm["devices"] = mergedDevices
 			applyManagedSyncthingFolderDefaults(fm, rescanIntervalSeconds, watcherDelaySeconds, ignoreDelete)
 			filteredFolders = append(filteredFolders, fm)
 			foundFolder = true
@@ -1678,6 +1718,62 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 		return err
 	}
 	return nil
+}
+
+func syncthingMergeFolderDevices(existingFolderDevices, devices any, selfID, peerID string) ([]any, error) {
+	deviceEntries, err := syncthingObjectArray(map[string]any{"devices": devices}, "devices")
+	if err != nil {
+		return nil, err
+	}
+	deviceNames := make(map[string]string, len(deviceEntries))
+	for _, d := range deviceEntries {
+		m, err := syncthingObjectMap(d, "devices")
+		if err != nil {
+			return nil, err
+		}
+		deviceNames[asString(m["deviceID"])] = asString(m["name"])
+	}
+
+	merged := []any{
+		map[string]any{"deviceID": selfID},
+	}
+	seen := map[string]struct{}{selfID: {}}
+	if strings.TrimSpace(peerID) != "" && peerID != selfID {
+		merged = append(merged, map[string]any{"deviceID": peerID})
+		seen[peerID] = struct{}{}
+	}
+
+	folderEntries, ok := existingFolderDevices.([]any)
+	if !ok {
+		return merged, nil
+	}
+	for _, d := range folderEntries {
+		m, err := syncthingObjectMap(d, "folder devices")
+		if err != nil {
+			return nil, err
+		}
+		id := asString(m["deviceID"])
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		if deviceNames[id] != "okdev-mesh-receiver" {
+			continue
+		}
+		seen[id] = struct{}{}
+		merged = append(merged, map[string]any{"deviceID": id})
+	}
+	return merged, nil
+}
+
+func isManagedSyncthingPeerDevice(device map[string]any, selfID string) bool {
+	deviceID := asString(device["deviceID"])
+	if deviceID == "" || deviceID == selfID {
+		return false
+	}
+	return asString(device["name"]) == managedSyncthingPeer
 }
 
 // updateSyncthingDeviceAddress updates only the peer address for an existing
@@ -1872,6 +1968,25 @@ func syncthingPost(ctx context.Context, base, key, path string, body []byte) err
 		return err
 	}
 	return nil
+}
+
+func syncthingSetIgnores(ctx context.Context, base, key, folderID string, ignores []string) error {
+	trimmed := make([]string, 0, len(ignores))
+	for _, ignore := range ignores {
+		ignore = strings.TrimSpace(ignore)
+		if ignore == "" {
+			continue
+		}
+		trimmed = append(trimmed, ignore)
+	}
+	payload := map[string][]string{"ignore": trimmed}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	path := fmt.Sprintf("/rest/db/ignores?folder=%s", url.QueryEscape(folderID))
+	_, err = syncthingAPIRequestWithContext(ctx, http.MethodPost, base, key, path, body, "application/json")
+	return err
 }
 
 func syncthingAPIRequestWithContext(ctx context.Context, method, base, key, path string, body []byte, contentType string) ([]byte, error) {
