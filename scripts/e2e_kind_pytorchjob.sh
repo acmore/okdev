@@ -8,6 +8,9 @@ SIDECAR_IMAGE="${SIDECAR_IMAGE:-okdev-sidecar:v0.0.0-e2e}"
 SESSION_NAME="${SESSION_NAME:-e2e-ptjob}"
 NAMESPACE="${NAMESPACE:-default}"
 PVC_NAME="${PVC_NAME:-${SESSION_NAME}-workspace}"
+PVC_WORKSPACE_SUBPATH="${PVC_WORKSPACE_SUBPATH:-users/e2e/workspace}"
+SECONDARY_PVC_MOUNT="${SECONDARY_PVC_MOUNT:-/proj-tango-pvc}"
+PVC_OUTSIDE_WORKSPACE_DIR="${PVC_OUTSIDE_WORKSPACE_DIR:-shared-outside-workspace}"
 WORKDIR="$(make_workdir)"
 HOME_DIR="${HOME_DIR:-$WORKDIR/home}"
 CFG_PATH="$WORKDIR/.okdev/okdev.yaml"
@@ -15,6 +18,7 @@ SYNC_DIR="$WORKDIR/workspace"
 ORIG_HOME="${HOME}"
 ORIG_KUBECONFIG="${KUBECONFIG:-}"
 KUBECONFIG_PATH="$HOME_DIR/.kube/config"
+PVC_INIT_POD="${SESSION_NAME}-pvc-init"
 
 mkdir -p "$HOME_DIR" "$SYNC_DIR" "$HOME_DIR/.kube"
 if [[ -n "$ORIG_KUBECONFIG" ]]; then
@@ -37,6 +41,7 @@ cleanup() {
     cat "$HOME_DIR/.okdev/sessions/${SESSION_NAME}/syncthing/local.log" 2>/dev/null || true
   fi
   "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes >/dev/null 2>&1 || true
+  kubectl -n "$NAMESPACE" delete pod "$PVC_INIT_POD" >/dev/null 2>&1 || true
   kubectl -n "$NAMESPACE" delete pvc "$PVC_NAME" >/dev/null 2>&1 || true
   return "$status"
 }
@@ -51,6 +56,26 @@ refresh_pytorchjob_pods() {
   WORKER_PODS=$(kubectl -n "$NAMESPACE" get pods \
     -l "training.kubeflow.org/job-name=$workload_name,training.kubeflow.org/replica-type=worker" \
     -o jsonpath='{.items[*].metadata.name}')
+}
+
+wait_for_pod_file_content() {
+  local pod="$1"
+  local path="$2"
+  local expected="$3"
+  local label="$4"
+  local content=""
+
+  for attempt in $(seq 1 30); do
+    content=$(kubectl -n "$NAMESPACE" exec "$pod" -c pytorch -- sh -lc "cat '$path' 2>/dev/null || true")
+    if [[ "$content" == "$expected" ]]; then
+      echo "$label verified on attempt $attempt"
+      return 0
+    fi
+    sleep 2
+  done
+
+  echo "ERROR: expected $label on pod $pod at $path, got '$content'" >&2
+  return 1
 }
 
 echo "Scaffolding PyTorchJob config via okdev init"
@@ -71,7 +96,37 @@ MANIFEST_PATH="$WORKDIR/.okdev/pytorchjob.yaml"
 replace_all_in_file "$MANIFEST_PATH" 'name: dev' 'name: pytorch'
 replace_all_in_file "$MANIFEST_PATH" 'image: # TODO: replace with your image' 'image: ubuntu:22.04'
 replace_all_in_file "$MANIFEST_PATH" 'command: ["sleep", "infinity"]' 'command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]'
-perl -0pi -e 's/- name: workspace\n              emptyDir: \{\}/- name: workspace\n              persistentVolumeClaim:\n                claimName: '"$PVC_NAME"'/g' "$MANIFEST_PATH"
+python3 - <<'PY' "$MANIFEST_PATH" "$PVC_NAME" "$PVC_WORKSPACE_SUBPATH" "$SECONDARY_PVC_MOUNT"
+import pathlib, sys
+
+path = pathlib.Path(sys.argv[1])
+pvc_name = sys.argv[2]
+workspace_subpath = sys.argv[3]
+secondary_mount = sys.argv[4]
+text = path.read_text()
+
+old_mount = """- name: workspace
+                  mountPath: /workspace"""
+new_mount = f"""- name: workspace
+                  mountPath: /workspace
+                  subPath: {workspace_subpath}
+                - name: workspace
+                  mountPath: {secondary_mount}"""
+if old_mount not in text:
+    raise SystemExit("workspace mount not found")
+text = text.replace(old_mount, new_mount)
+
+old_volume = """- name: workspace
+              emptyDir: {}"""
+new_volume = f"""- name: workspace
+              persistentVolumeClaim:
+                claimName: {pvc_name}"""
+if old_volume not in text:
+    raise SystemExit("workspace volume not found")
+text = text.replace(old_volume, new_volume)
+
+path.write_text(text)
+PY
 replace_all_in_file "$CFG_PATH" 'container: dev' 'container: pytorch'
 python3 - <<'PY' "$CFG_PATH"
 import pathlib, sys
@@ -134,6 +189,51 @@ spec:
       storage: 1Gi
 EOF
 
+echo "Preparing PVC subdirectories for /workspace subPath coverage"
+kubectl -n "$NAMESPACE" delete pod "$PVC_INIT_POD" --ignore-not-found >/dev/null 2>&1 || true
+kubectl -n "$NAMESPACE" apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${PVC_INIT_POD}
+spec:
+  restartPolicy: Never
+  containers:
+    - name: init
+      image: busybox:1.36
+      command:
+        - sh
+        - -lc
+        - mkdir -p /pvc/${PVC_WORKSPACE_SUBPATH} /pvc/${PVC_OUTSIDE_WORKSPACE_DIR}
+      volumeMounts:
+        - name: workspace
+          mountPath: /pvc
+  volumes:
+    - name: workspace
+      persistentVolumeClaim:
+        claimName: ${PVC_NAME}
+EOF
+
+PVC_INIT_PHASE=""
+for i in $(seq 1 30); do
+  PVC_INIT_PHASE=$(kubectl -n "$NAMESPACE" get pod "$PVC_INIT_POD" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+  if [[ "$PVC_INIT_PHASE" == "Succeeded" ]]; then
+    break
+  fi
+  if [[ "$PVC_INIT_PHASE" == "Failed" ]]; then
+    kubectl -n "$NAMESPACE" logs "$PVC_INIT_POD" >&2 || true
+    echo "ERROR: failed to initialize PVC subdirectories" >&2
+    exit 1
+  fi
+  sleep 1
+done
+if [[ "$PVC_INIT_PHASE" != "Succeeded" ]]; then
+  kubectl -n "$NAMESPACE" logs "$PVC_INIT_POD" >&2 || true
+  echo "ERROR: timed out initializing PVC subdirectories" >&2
+  exit 1
+fi
+kubectl -n "$NAMESPACE" delete pod "$PVC_INIT_POD" >/dev/null 2>&1 || true
+
 echo "Starting PyTorchJob smoke session (1 master + 2 workers)"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m
 
@@ -171,6 +271,58 @@ if [[ "$SYNC_OK" != "true" ]]; then
   echo "ERROR: synced file content did not match after 30 attempts" >&2
   exit 1
 fi
+
+echo "Waiting for PyTorchJob pods before validating PVC mount layout"
+PODS_READY=false
+for i in $(seq 1 30); do
+  refresh_pytorchjob_pods
+  if [[ -n "${MASTER_POD:-}" ]] && [[ "$(echo "$WORKER_PODS" | wc -w | tr -d ' ')" -eq 2 ]]; then
+    PODS_READY=true
+    break
+  fi
+  sleep 2
+done
+if [[ "$PODS_READY" != "true" ]]; then
+  echo "ERROR: expected 1 master pod and 2 worker pods before PVC mount verification" >&2
+  exit 1
+fi
+
+echo "Verifying PVC subPath is visible through the full PVC mount on master"
+wait_for_pod_file_content \
+  "$MASTER_POD" \
+  "$SECONDARY_PVC_MOUNT/$PVC_WORKSPACE_SUBPATH/hello.txt" \
+  "hello from pytorchjob e2e" \
+  "secondary PVC mount on master"
+
+echo "Verifying workers see the synced workspace through both mount paths"
+for WPOD in $WORKER_PODS; do
+  wait_for_pod_file_content \
+    "$WPOD" \
+    "/workspace/hello.txt" \
+    "hello from pytorchjob e2e" \
+    "workspace mount on worker $WPOD"
+  wait_for_pod_file_content \
+    "$WPOD" \
+    "$SECONDARY_PVC_MOUNT/$PVC_WORKSPACE_SUBPATH/hello.txt" \
+    "hello from pytorchjob e2e" \
+    "secondary PVC mount on worker $WPOD"
+done
+
+echo "Writing through the full PVC mount and verifying the /workspace subPath view"
+kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- sh -lc \
+  "echo shared-through-secondary > '$SECONDARY_PVC_MOUNT/$PVC_WORKSPACE_SUBPATH/from-secondary.txt'"
+wait_for_pod_file_content \
+  "$MASTER_POD" \
+  "/workspace/from-secondary.txt" \
+  "shared-through-secondary" \
+  "master workspace view of secondary mount write"
+for WPOD in $WORKER_PODS; do
+  wait_for_pod_file_content \
+    "$WPOD" \
+    "/workspace/from-secondary.txt" \
+    "shared-through-secondary" \
+    "worker workspace view of secondary mount write on $WPOD"
+done
 
 echo "Verifying SSH into master pod"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --setup-key --cmd 'echo pytorchjob-ssh-ok'
@@ -461,6 +613,22 @@ for WPOD in $WORKER_PODS; do
   echo "preStop handler verified on $WPOD"
 done
 
+echo "Creating sibling PVC data outside the synced workspace subPath"
+kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- sh -lc \
+  "mkdir -p '$SECONDARY_PVC_MOUNT/$PVC_OUTSIDE_WORKSPACE_DIR' && echo keep > '$SECONDARY_PVC_MOUNT/$PVC_OUTSIDE_WORKSPACE_DIR/keep.txt'"
+wait_for_pod_file_content \
+  "$MASTER_POD" \
+  "$SECONDARY_PVC_MOUNT/$PVC_OUTSIDE_WORKSPACE_DIR/keep.txt" \
+  "keep" \
+  "master sibling PVC data"
+for WPOD in $WORKER_PODS; do
+  wait_for_pod_file_content \
+    "$WPOD" \
+    "$SECONDARY_PVC_MOUNT/$PVC_OUTSIDE_WORKSPACE_DIR/keep.txt" \
+    "keep" \
+    "worker sibling PVC data on $WPOD"
+done
+
 echo "Creating remote-only stale file before workspace reset"
 kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- sh -lc 'mkdir -p /workspace/generated && echo stale > /workspace/generated/stale.txt'
 for WPOD in $WORKER_PODS; do
@@ -505,6 +673,20 @@ for WPOD in $WORKER_PODS; do
   fi
 done
 echo "Workspace reset verified across all pods"
+
+echo "Verifying reset-remote preserved sibling PVC data outside the synced subPath"
+wait_for_pod_file_content \
+  "$MASTER_POD" \
+  "$SECONDARY_PVC_MOUNT/$PVC_OUTSIDE_WORKSPACE_DIR/keep.txt" \
+  "keep" \
+  "master sibling PVC data after reset"
+for WPOD in $WORKER_PODS; do
+  wait_for_pod_file_content \
+    "$WPOD" \
+    "$SECONDARY_PVC_MOUNT/$PVC_OUTSIDE_WORKSPACE_DIR/keep.txt" \
+    "keep" \
+    "worker sibling PVC data after reset on $WPOD"
+done
 
 echo "Verifying sync remains active after reset"
 POST_RESET_STATUS=""
