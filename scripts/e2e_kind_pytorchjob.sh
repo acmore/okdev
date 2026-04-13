@@ -173,8 +173,6 @@ cat "$CFG_PATH"
 echo "Generated manifest:"
 cat "$MANIFEST_PATH"
 
-echo "hello from pytorchjob e2e" >"$SYNC_DIR/hello.txt"
-
 echo "Creating shared workspace PVC"
 kubectl -n "$NAMESPACE" apply -f - <<EOF
 apiVersion: v1
@@ -253,6 +251,9 @@ for i in $(seq 1 15); do
   sleep 2
 done
 echo "Sync health status verified"
+
+echo "Writing local file for PyTorchJob workspace sync verification"
+echo "hello from pytorchjob e2e" >"$SYNC_DIR/hello.txt"
 
 echo "Waiting for synced file to appear remotely with correct content"
 SYNC_OK=false
