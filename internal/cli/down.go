@@ -336,7 +336,7 @@ func waitForResourceDeletion(ctx context.Context, k downWaitClient, namespace, a
 	for {
 		exists, err := k.ResourceExists(ctx, namespace, apiVersion, kind, name)
 		if err != nil {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || strings.Contains(err.Error(), "context deadline") {
 				return downWaitContextError(ctx, timeoutMessage)
 			}
 			return fmt.Errorf("check %s/%s deletion: %w", kind, name, err)
@@ -359,7 +359,7 @@ func waitForSessionPodsDeleted(ctx context.Context, k downWaitClient, namespace,
 	for {
 		pods, err := k.ListPods(ctx, namespace, false, selector)
 		if err != nil {
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || strings.Contains(err.Error(), "context deadline") {
 				return downWaitContextError(ctx, "timed out waiting for session pods to terminate")
 			}
 			return fmt.Errorf("list session pods while waiting for deletion: %w", err)
