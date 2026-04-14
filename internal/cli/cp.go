@@ -42,6 +42,7 @@ func newCpCmd(opts *Options) *cobra.Command {
 	var exclude []string
 	var container string
 	var fanout int
+	var readyOnly bool
 
 	cmd := &cobra.Command{
 		Use:   "cp [session] <src> <dst>",
@@ -97,7 +98,7 @@ func newCpCmd(opts *Options) *cobra.Command {
 			}
 
 			if multiPod {
-				return runMultiPodCp(cmd, cc, localPath, remotePath, upload, allPods, podNames, role, labels, exclude, container, fanout)
+				return runMultiPodCp(cmd, cc, localPath, remotePath, upload, allPods, podNames, role, labels, exclude, container, fanout, readyOnly)
 			}
 
 			// Single-pod mode.
@@ -120,6 +121,7 @@ func newCpCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringSliceVar(&exclude, "exclude", nil, "Exclude specific pods (repeatable/comma-separated)")
 	cmd.Flags().StringVar(&container, "container", "", "Override target container")
 	cmd.Flags().IntVar(&fanout, "fanout", pdshDefaultFanout, "Maximum concurrent pod transfers")
+	cmd.Flags().BoolVar(&readyOnly, "ready-only", false, "Copy only to/from pods that are already running (skip readiness check)")
 	return cmd
 }
 
@@ -188,30 +190,54 @@ type cpResult struct {
 	err error
 }
 
-func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath string, upload bool, allPods bool, podNames []string, role string, labels []string, exclude []string, container string, fanout int) error {
+func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath string, upload bool, allPods bool, podNames []string, role string, labels []string, exclude []string, container string, fanout int, readyOnly bool) error {
 	ctx := cmd.Context()
 	labelSel := selectorForSessionRun(cc.sessionName)
 	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
 	if err != nil {
 		return fmt.Errorf("list session pods: %w", err)
 	}
-	pods := filterRunningPods(sessionPods)
 
+	// Apply user-specified filters before the readiness check so the
+	// running-vs-total comparison only considers targeted pods.
+	filteredPods := sessionPods
 	switch {
 	case allPods:
 		// keep all
 	case len(podNames) > 0:
-		pods = filterPodsByName(pods, podNames)
+		filteredPods = filterPodsByName(filteredPods, podNames)
 	case role != "":
-		pods = filterPodsByRole(pods, role)
+		filteredPods = filterPodsByRole(filteredPods, role)
 	case len(labels) > 0:
-		pods = filterPodsByLabels(pods, labels)
+		filteredPods = filterPodsByLabels(filteredPods, labels)
 	}
 	if len(exclude) > 0 {
-		pods = excludePods(pods, exclude)
+		filteredPods = excludePods(filteredPods, exclude)
 	}
+
+	if len(filteredPods) == 0 {
+		return fmt.Errorf("no pods match the specified filters in session %q", cc.sessionName)
+	}
+
+	pods := filterRunningPods(filteredPods)
+
 	if len(pods) == 0 {
-		return fmt.Errorf("no running pods match the specified filters in session %q", cc.sessionName)
+		return fmt.Errorf("no running pods in session %q (0/%d pods ready)", cc.sessionName, len(filteredPods))
+	}
+
+	if len(pods) < len(filteredPods) && !readyOnly {
+		notReady := make([]string, 0, len(filteredPods)-len(pods))
+		runningSet := make(map[string]bool, len(pods))
+		for _, p := range pods {
+			runningSet[p.Name] = true
+		}
+		for _, p := range filteredPods {
+			if !runningSet[p.Name] {
+				notReady = append(notReady, fmt.Sprintf("%s (%s)", p.Name, p.Phase))
+			}
+		}
+		return fmt.Errorf("%d/%d pods are not running: %s\nUse --ready-only to copy on the %d ready pods",
+			len(notReady), len(filteredPods), strings.Join(notReady, ", "), len(pods))
 	}
 
 	targetContainer := container
