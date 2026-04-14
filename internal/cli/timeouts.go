@@ -20,6 +20,12 @@ const (
 	// Extra headroom added around up wait timeout when building the parent context.
 	upContextBuffer = 2 * time.Minute
 
+	// Default --wait-timeout for `okdev down`.
+	downDefaultWaitTimeout = 2 * time.Minute
+
+	// Extra headroom added around down wait timeout when building the parent context.
+	downContextBuffer = 30 * time.Second
+
 	// Timeout for session-access and ownership checks.
 	sessionAccessTimeout = 15 * time.Second
 

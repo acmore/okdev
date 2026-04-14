@@ -19,7 +19,7 @@
 - `okdev template show <name>`
 - `okdev validate`
 - `okdev up [--wait-timeout 10m] [--dry-run]`
-- `okdev down [session] [--delete-pvc] [--dry-run] [--output json]`
+- `okdev down [session] [--delete-pvc] [--dry-run] [--wait] [--wait-timeout 2m] [--output json]`
 - `okdev status [session] [--all] [--all-users] [--details]`
 - `okdev list [--all-namespaces] [--all-users]`
 - `okdev use <session>`
@@ -143,12 +143,14 @@
 - When `sync.engine=syncthing`, `okdev up` refreshes the session's local Syncthing processes, starts background sync in bidirectional mode by default, and waits for the initial sync to converge before exiting.
 - `spec.ports` is materialized as SSH `LocalForward` or `RemoteForward` based on `direction`.
 
-### `okdev down [session] [--delete-pvc] [--dry-run] [--output json]`
+### `okdev down [session] [--delete-pvc] [--dry-run] [--wait] [--wait-timeout 2m] [--output json]`
 
 - Deletes the current session workload and cleans up local SSH/sync metadata.
 - When `session` is provided, `okdev` can resolve the saved config from session metadata even outside the repo.
 - Prompts for confirmation by default; use `--yes` in scripts or non-interactive environments.
 - `--dry-run`: previews what would be deleted without removing cluster or local state.
+- `--wait`: waits for the workload object to disappear and then for any remaining session pods to terminate before returning.
+- `--wait-timeout`: caps the total time spent waiting for workload/pod termination when `--wait` is enabled.
 - `--output json`: emits a machine-readable summary of the planned or completed deletion and local cleanup steps.
 - `--delete-pvc` remains accepted for compatibility but is ignored; `okdev` no longer manages PVC lifecycle automatically.
 
