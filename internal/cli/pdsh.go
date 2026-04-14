@@ -29,6 +29,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 	var logDir string
 	var noPrefix bool
 	var fanout int
+	var readyOnly bool
 
 	cmd := &cobra.Command{
 		Use:   "exec [session]",
@@ -65,7 +66,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 			}
 
 			if multiPod || detach {
-				return runMultiPodExec(cmd, cc, commandArgs, podNames, role, labels, exclude, container, detach, timeout, logDir, noPrefix, fanout)
+				return runMultiPodExec(cmd, cc, commandArgs, podNames, role, labels, exclude, container, detach, timeout, logDir, noPrefix, fanout, readyOnly)
 			}
 
 			// Single-pod mode (existing behavior)
@@ -101,6 +102,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&logDir, "log-dir", "", "Write per-pod logs to directory")
 	cmd.Flags().BoolVar(&noPrefix, "no-prefix", false, "Suppress pod name prefix in output")
 	cmd.Flags().IntVar(&fanout, "fanout", pdshDefaultFanout, "Maximum concurrent pod executions")
+	cmd.Flags().BoolVar(&readyOnly, "ready-only", false, "Run only on pods that are already running (skip readiness check)")
 	return cmd
 }
 
@@ -147,30 +149,52 @@ func validateMultiPodFlags(podNames []string, role string, labels []string, excl
 	return nil
 }
 
-func runMultiPodExec(cmd *cobra.Command, cc *commandContext, commandArgs []string, podNames []string, role string, labels []string, exclude []string, container string, detach bool, timeout time.Duration, logDir string, noPrefix bool, fanout int) error {
+func runMultiPodExec(cmd *cobra.Command, cc *commandContext, commandArgs []string, podNames []string, role string, labels []string, exclude []string, container string, detach bool, timeout time.Duration, logDir string, noPrefix bool, fanout int, readyOnly bool) error {
 	ctx := cmd.Context()
 	labelSel := selectorForSessionRun(cc.sessionName)
 	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
 	if err != nil {
 		return fmt.Errorf("list session pods: %w", err)
 	}
-	pods := filterRunningPods(sessionPods)
 
+	// Apply user-specified filters before the readiness check so the
+	// running-vs-total comparison only considers targeted pods.
+	allPods := sessionPods
 	switch {
 	case len(podNames) > 0:
-		pods = filterPodsByName(pods, podNames)
+		allPods = filterPodsByName(allPods, podNames)
 	case role != "":
-		pods = filterPodsByRole(pods, role)
+		allPods = filterPodsByRole(allPods, role)
 	case len(labels) > 0:
-		pods = filterPodsByLabels(pods, labels)
+		allPods = filterPodsByLabels(allPods, labels)
+	}
+	if len(exclude) > 0 {
+		allPods = excludePods(allPods, exclude)
 	}
 
-	if len(exclude) > 0 {
-		pods = excludePods(pods, exclude)
+	pods := filterRunningPods(allPods)
+
+	if len(allPods) == 0 {
+		return fmt.Errorf("no pods match the specified filters in session %q", cc.sessionName)
 	}
 
 	if len(pods) == 0 {
-		return fmt.Errorf("no running pods match the specified filters in session %q", cc.sessionName)
+		return fmt.Errorf("no running pods in session %q (0/%d pods ready)", cc.sessionName, len(allPods))
+	}
+
+	if len(pods) < len(allPods) && !readyOnly {
+		notReady := make([]string, 0, len(allPods)-len(pods))
+		runningSet := make(map[string]bool, len(pods))
+		for _, p := range pods {
+			runningSet[p.Name] = true
+		}
+		for _, p := range allPods {
+			if !runningSet[p.Name] {
+				notReady = append(notReady, fmt.Sprintf("%s (%s)", p.Name, p.Phase))
+			}
+		}
+		return fmt.Errorf("%d/%d pods are not running: %s\nUse --ready-only to run on the %d ready pods",
+			len(notReady), len(allPods), strings.Join(notReady, ", "), len(pods))
 	}
 
 	targetContainer := container
@@ -215,6 +239,8 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 		podNames[i] = p.Name
 	}
 	shortNames := shortPodNames(podNames)
+	colorEnabled := isInteractiveWriter(stdout)
+	displayPrefixes := formatPodPrefixes(shortNames, colorEnabled)
 
 	var writeMu sync.Mutex
 	noPrefixOut := &lockedWriter{w: stdout}
@@ -225,7 +251,7 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 	var wg sync.WaitGroup
 	for i, pod := range pods {
 		wg.Add(1)
-		go func(pod kube.PodSummary, shortName string) {
+		go func(pod kube.PodSummary, shortName, displayPrefix string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -242,8 +268,8 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 				podStdout = noPrefixOut
 				podStderr = noPrefixErr
 			} else {
-				pw := newPrefixedWriter(shortName, stdout, &writeMu)
-				pe := newPrefixedWriter(shortName, stderr, &writeMu)
+				pw := newPrefixedWriter(displayPrefix, stdout, &writeMu)
+				pe := newPrefixedWriter(displayPrefix, stderr, &writeMu)
 				defer pw.Flush()
 				defer pe.Flush()
 				podStdout = pw
@@ -264,7 +290,7 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 
 			err := connect.RunOnContainer(execCtx, client, namespace, pod.Name, container, command, false, nil, podStdout, podStderr)
 			results <- podExecResult{pod: pod.Name, err: err}
-		}(pod, shortNames[i])
+		}(pod, shortNames[i], displayPrefixes[i])
 	}
 
 	go func() {
@@ -305,6 +331,8 @@ func runDetachExec(ctx context.Context, client connect.ExecClient, namespace str
 		podNames[i] = p.Name
 	}
 	shortNames := shortPodNames(podNames)
+	colorEnabled := isInteractiveWriter(out)
+	displayPrefixes := formatPodPrefixes(shortNames, colorEnabled)
 	command := detachCommand(cmdStr)
 
 	results := make(chan podExecResult, len(pods))
@@ -327,19 +355,21 @@ func runDetachExec(ctx context.Context, client connect.ExecClient, namespace str
 		close(results)
 	}()
 
+	displayMap := make(map[string]string, len(podNames))
 	nameMap := make(map[string]string, len(podNames))
 	for i, n := range podNames {
+		displayMap[n] = displayPrefixes[i]
 		nameMap[n] = shortNames[i]
 	}
 
 	var failCount int
 	for r := range results {
-		short := nameMap[r.pod]
+		prefix := displayMap[r.pod]
 		if r.err != nil {
-			fmt.Fprintf(out, "%s: error: %v\n", short, r.err)
+			fmt.Fprintf(out, "%s error: %v\n", prefix, r.err)
 			failCount++
 		} else {
-			fmt.Fprintf(out, "%s: detached\n", short)
+			fmt.Fprintf(out, "%s detached\n", prefix)
 		}
 	}
 	if failCount > 0 {

@@ -172,7 +172,7 @@ func TestRunDetachExec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "worker-0: detached") || !strings.Contains(stdout.String(), "worker-1: detached") {
+	if !strings.Contains(stdout.String(), "worker-0] detached") || !strings.Contains(stdout.String(), "worker-1] detached") {
 		t.Fatalf("expected detach confirmation, got %q", stdout.String())
 	}
 }
@@ -193,10 +193,10 @@ func TestRunDetachExecWithError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for partial failure")
 	}
-	if !strings.Contains(stdout.String(), "worker-0: detached") {
+	if !strings.Contains(stdout.String(), "worker-0] detached") {
 		t.Fatalf("expected detach for worker-0, got %q", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "worker-1: error:") {
+	if !strings.Contains(stdout.String(), "worker-1] error:") {
 		t.Fatalf("expected error for worker-1, got %q", stdout.String())
 	}
 }
@@ -218,7 +218,7 @@ func TestRunMultiExecSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "worker-0: ok") || !strings.Contains(stdout.String(), "worker-1: ok") {
+	if !strings.Contains(stdout.String(), "worker-0] ok") || !strings.Contains(stdout.String(), "worker-1] ok") {
 		t.Fatalf("expected prefixed output, got %q", stdout.String())
 	}
 }
@@ -371,5 +371,25 @@ func TestValidateMultiPodFlags(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
 			}
 		})
+	}
+}
+
+func TestFilterRunningPodsReadinessCheck(t *testing.T) {
+	allPods := []kube.PodSummary{
+		{Name: "leader-0", Phase: "Running"},
+		{Name: "worker-0", Phase: "Pending"},
+		{Name: "worker-1", Phase: "ContainerCreating"},
+	}
+	running := filterRunningPods(allPods)
+
+	// Without --ready-only, should detect the gap.
+	if len(running) == len(allPods) {
+		t.Fatal("expected fewer running pods than total")
+	}
+	if len(running) != 1 {
+		t.Fatalf("expected 1 running pod, got %d", len(running))
+	}
+	if running[0].Name != "leader-0" {
+		t.Fatalf("expected leader-0, got %s", running[0].Name)
 	}
 }

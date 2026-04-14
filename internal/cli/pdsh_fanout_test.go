@@ -223,10 +223,10 @@ func TestMultiExecPipelineAllPodsWithPrefixedOutput(t *testing.T) {
 
 	// Step 4: verify prefixed output
 	output := stdout.String()
-	if !strings.Contains(output, "worker-0: gpu0: NVIDIA A100") {
+	if !strings.Contains(output, "[worker-0] gpu0: NVIDIA A100") {
 		t.Fatalf("expected prefixed output for worker-0, got %q", output)
 	}
-	if !strings.Contains(output, "worker-1: gpu1: NVIDIA H100") {
+	if !strings.Contains(output, "[worker-1] gpu1: NVIDIA H100") {
 		t.Fatalf("expected prefixed output for worker-1, got %q", output)
 	}
 }
@@ -327,13 +327,13 @@ func TestMultiExecPipelinePartialFailureWithDetach(t *testing.T) {
 	}
 
 	output := stdout.String()
-	if !strings.Contains(output, "worker-0: detached") {
+	if !strings.Contains(output, "worker-0] detached") {
 		t.Fatalf("expected worker-0 detached, got %q", output)
 	}
-	if !strings.Contains(output, "worker-1: error: container not ready") {
+	if !strings.Contains(output, "worker-1] error: container not ready") {
 		t.Fatalf("expected worker-1 error, got %q", output)
 	}
-	if !strings.Contains(output, "worker-2: detached") {
+	if !strings.Contains(output, "worker-2] detached") {
 		t.Fatalf("expected worker-2 detached, got %q", output)
 	}
 }
@@ -361,7 +361,7 @@ func TestMultiExecPipelineNoPrefixModeMultiplePods(t *testing.T) {
 
 	output := stdout.String()
 	// In no-prefix mode, output should NOT contain the pod name prefix.
-	if strings.Contains(output, "worker-0:") || strings.Contains(output, "worker-1:") {
+	if strings.Contains(output, "[worker-0]") || strings.Contains(output, "[worker-1]") {
 		t.Fatalf("expected no prefix in output, got %q", output)
 	}
 	if !strings.Contains(output, "alpha") || !strings.Contains(output, "bravo") {
@@ -526,7 +526,7 @@ func TestMultiExecFullPipelineRoleFilterFanoutLogDir(t *testing.T) {
 
 	// Verify prefixed output present.
 	output := stdout.String()
-	if !strings.Contains(output, "worker-0:") || !strings.Contains(output, "worker-1:") || !strings.Contains(output, "worker-3:") {
+	if !strings.Contains(output, "[worker-0]") || !strings.Contains(output, "[worker-1]") || !strings.Contains(output, "[worker-3]") {
 		t.Fatalf("expected prefixed output for workers 0,1,3, got %q", output)
 	}
 }
