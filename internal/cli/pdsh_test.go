@@ -373,3 +373,23 @@ func TestValidateMultiPodFlags(t *testing.T) {
 		})
 	}
 }
+
+func TestFilterRunningPodsReadinessCheck(t *testing.T) {
+	allPods := []kube.PodSummary{
+		{Name: "leader-0", Phase: "Running"},
+		{Name: "worker-0", Phase: "Pending"},
+		{Name: "worker-1", Phase: "ContainerCreating"},
+	}
+	running := filterRunningPods(allPods)
+
+	// Without --ready-only, should detect the gap.
+	if len(running) == len(allPods) {
+		t.Fatal("expected fewer running pods than total")
+	}
+	if len(running) != 1 {
+		t.Fatalf("expected 1 running pod, got %d", len(running))
+	}
+	if running[0].Name != "leader-0" {
+		t.Fatalf("expected leader-0, got %s", running[0].Name)
+	}
+}
