@@ -384,8 +384,8 @@ echo "exec --exclude verified"
 echo "Testing exec --no-prefix suppresses pod name prefix"
 EXEC_NOPREFIX_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-prefix --no-tty -- sh -lc 'echo raw-output')
 echo "$EXEC_NOPREFIX_OUTPUT"
-# In no-prefix mode, lines should be raw (no "podname: " prefix).
-if echo "$EXEC_NOPREFIX_OUTPUT" | grep -qE '^[a-z0-9-]+: raw-output$'; then
+# In no-prefix mode, lines should be raw (no "[podname]" prefix).
+if echo "$EXEC_NOPREFIX_OUTPUT" | grep -qE '^\[.*\] raw-output$'; then
   echo "ERROR: expected no-prefix mode but found prefixed output" >&2
   echo "$EXEC_NOPREFIX_OUTPUT" >&2
   exit 1

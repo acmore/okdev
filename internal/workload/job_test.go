@@ -75,7 +75,7 @@ spec:
 			{
 				Name:      "trainer-older",
 				Phase:     "Running",
-				Ready:     "0/1",
+				Ready:     "1/1",
 				CreatedAt: time.Now().Add(-2 * time.Minute),
 				Labels:    map[string]string{"okdev.io/attachable": "true"},
 			},

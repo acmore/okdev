@@ -139,8 +139,9 @@ func isReadyString(s string) bool {
 type candidateSelector func(ctx context.Context, k podLister, namespace string) (TargetRef, []kube.PodSummary, error)
 
 // waitForCandidatePodReady polls for a candidate pod and waits for it to
-// become ready. Used by multi-pod runtimes where pod discovery may take
-// time after the workload is applied.
+// become ready, then waits for all remaining pods to become ready as well.
+// Used by multi-pod runtimes where pod discovery may take time after the
+// workload is applied.
 func waitForCandidatePodReady(
 	ctx context.Context,
 	k WaitClient,
@@ -168,7 +169,7 @@ func waitForCandidatePodReady(
 			}
 			waitErr := k.WaitReadyWithProgress(ctx, namespace, target.PodName, waitTimeout, onProgress)
 			if waitErr == nil {
-				return nil
+				return waitForRemainingPods(ctx, k, namespace, selectCandidate, deadline, onProgress)
 			}
 			if shouldRetryCandidateWait(waitErr) {
 				continue
@@ -188,6 +189,59 @@ func waitForCandidatePodReady(
 		}
 	}
 	return fmt.Errorf("%s", timeoutMessage)
+}
+
+// waitForRemainingPods waits for all non-ready pods discovered by
+// selectCandidate to become ready before the deadline. It polls the pod
+// list and calls WaitReadyWithProgress for each pod that is not yet ready.
+func waitForRemainingPods(
+	ctx context.Context,
+	k WaitClient,
+	namespace string,
+	selectCandidate candidateSelector,
+	deadline time.Time,
+	onProgress func(kube.PodReadinessProgress),
+) error {
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("timed out waiting for all pods to become ready")
+		}
+
+		_, pods, err := selectCandidate(ctx, k, namespace)
+		if err != nil {
+			return err
+		}
+
+		var pending []kube.PodSummary
+		for _, p := range pods {
+			if !isReadyString(strings.TrimSpace(p.Ready)) {
+				pending = append(pending, p)
+			}
+		}
+		if len(pending) == 0 {
+			return nil
+		}
+
+		progress := summarizePodsAsProgress(pods)
+		if onProgress != nil {
+			progress.Reason = fmt.Sprintf("waiting for %d/%d pods", len(pending), len(pods))
+			onProgress(progress)
+		}
+
+		// Wait for the first non-ready pod; once it's ready we re-check all.
+		waitTimeout := time.Until(deadline)
+		if waitTimeout <= 0 {
+			return fmt.Errorf("timed out waiting for all pods to become ready")
+		}
+		waitErr := k.WaitReadyWithProgress(ctx, namespace, pending[0].Name, waitTimeout, onProgress)
+		if waitErr != nil {
+			if shouldRetryCandidateWait(waitErr) {
+				continue
+			}
+			return waitErr
+		}
+	}
 }
 
 func shouldRetryCandidateWait(err error) bool {
