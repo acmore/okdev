@@ -150,7 +150,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		// Two-phase initial sync may take much longer, so use a dedicated context.
 		twoPhaseCtx, twoPhaseCancel := context.WithTimeout(runtimeCtx, initialSyncTimeout)
 		defer twoPhaseCancel()
-		if err := runTwoPhaseInitialSync(twoPhaseCtx, cmd.OutOrStdout(), localBase, localKey, localID, remoteBase, remoteKey, remoteID, localRemotePeerAddr, folderID, absLocal, pair.Remote, cfg.Spec.Sync.RemoteIgnore, syncCfg); err != nil {
+		if err := runTwoPhaseInitialSync(twoPhaseCtx, cmd.OutOrStdout(), localBase, localKey, localID, remoteBase, remoteKey, remoteID, localRemotePeerAddr, folderID, absLocal, pair.Remote, syncCfg); err != nil {
 			return fmt.Errorf("two-phase initial sync: %w", err)
 		}
 		mode = "bi"
@@ -161,9 +161,6 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		}
 		if err := configureSyncthingPeer(bootstrapCtx, remoteBase, remoteKey, remoteID, localID, "", folderID, pair.Remote, folderTypeRemote, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression); err != nil {
 			return fmt.Errorf("configure remote syncthing: %w", err)
-		}
-		if err := syncthingSetIgnores(bootstrapCtx, remoteBase, remoteKey, folderID, cfg.Spec.Sync.RemoteIgnore); err != nil {
-			return fmt.Errorf("configure remote syncthing ignores: %w", err)
 		}
 	}
 
@@ -493,44 +490,6 @@ func writeLocalSTIgnore(localPath string) error {
 		return err
 	}
 	return writeSTIgnore(localPath, defaultSyncExcludes)
-}
-
-func writeRemoteSTIgnoreInPod(ctx context.Context, k interface {
-	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
-	CopyToPodInContainer(context.Context, string, string, string, string, string) error
-}, namespace, pod, remotePath string, excludes []string) error {
-	content, ok := buildSTIgnoreContent(excludes)
-	if !ok {
-		return nil
-	}
-	remotePath = strings.TrimRight(strings.TrimSpace(remotePath), "/")
-	if remotePath == "" || remotePath == "." || remotePath == "/" {
-		return fmt.Errorf("refusing to write remote .stignore at unsafe sync root %q", remotePath)
-	}
-	stignorePath := path.Join(remotePath, ".stignore")
-	tempPath := stignorePath + ".tmp"
-	tempFile, err := os.CreateTemp("", "okdev-remote-stignore-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp .stignore file: %w", err)
-	}
-	tempLocalPath := tempFile.Name()
-	defer os.Remove(tempLocalPath)
-	if _, err := tempFile.WriteString(content); err != nil {
-		_ = tempFile.Close()
-		return fmt.Errorf("write temp .stignore file: %w", err)
-	}
-	if err := tempFile.Close(); err != nil {
-		return fmt.Errorf("close temp .stignore file: %w", err)
-	}
-	if err := k.CopyToPodInContainer(ctx, namespace, tempLocalPath, pod, syncthingContainerName, tempPath); err != nil {
-		return fmt.Errorf("copy remote .stignore: %w", err)
-	}
-	esc := syncengine.ShellEscape
-	script := fmt.Sprintf("mkdir -p %s && mv %s %s", esc(remotePath), esc(tempPath), esc(stignorePath))
-	if _, err := execInSyncthingContainer(ctx, k, namespace, pod, script); err != nil {
-		return fmt.Errorf("write remote .stignore: %w", err)
-	}
-	return nil
 }
 
 func buildSTIgnoreContent(excludes []string) (string, bool) {
@@ -1432,7 +1391,7 @@ type syncthingSyncConfig struct {
 //     deletions before entering bidirectional mode.
 //  2. Reconfigure both sides to sendreceive and restart only if Syncthing
 //     reports that the applied config requires it.
-func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, localKey, localID, remoteBase, remoteKey, remoteID, peerAddr, folderID, localPath, remotePath string, remoteIgnores []string, sc syncthingSyncConfig) error {
+func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, localKey, localID, remoteBase, remoteKey, remoteID, peerAddr, folderID, localPath, remotePath string, sc syncthingSyncConfig) error {
 	// Phase 1: sendonly + ignoreDelete on local, receiveonly on remote.
 	fmt.Fprintln(out, "Phase 1: local-authoritative initial sync …")
 	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, peerAddr, folderID, localPath, "sendonly", sc.rescanInterval, sc.watcherDelay, true, sc.relays, sc.compression); err != nil {
@@ -1440,9 +1399,6 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 	}
 	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, "", folderID, remotePath, "receiveonly", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
 		return fmt.Errorf("configure remote (phase 1): %w", err)
-	}
-	if err := syncthingSetIgnores(ctx, remoteBase, remoteKey, folderID, remoteIgnores); err != nil {
-		return fmt.Errorf("configure remote ignores (phase 1): %w", err)
 	}
 
 	// Poll until remote is in sync, calling override on every tick.
@@ -1523,9 +1479,6 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 	}
 	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, "", folderID, remotePath, "sendreceive", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
 		return fmt.Errorf("configure remote (phase 2): %w", err)
-	}
-	if err := syncthingSetIgnores(ctx, remoteBase, remoteKey, folderID, remoteIgnores); err != nil {
-		return fmt.Errorf("configure remote ignores (phase 2): %w", err)
 	}
 
 	localRestartRequired, err := syncthingRestartRequired(ctx, localBase, localKey)

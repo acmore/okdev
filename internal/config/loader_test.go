@@ -281,7 +281,7 @@ spec:
 	}
 }
 
-func TestLoadAcceptsSyncRemoteIgnore(t *testing.T) {
+func TestLoadRejectsRemovedSyncRemoteIgnore(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, DefaultFile)
 	raw := []byte(`
@@ -295,18 +295,14 @@ spec:
     paths: [".:/workspace"]
     remoteIgnore:
       - profiles/
-      - "*.prof"
 `)
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	cfg, _, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if got := cfg.Spec.Sync.RemoteIgnore; len(got) != 2 || got[0] != "profiles/" || got[1] != "*.prof" {
-		t.Fatalf("unexpected remoteIgnore %+v", got)
+	_, _, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "spec.sync.remoteIgnore is removed") {
+		t.Fatalf("expected removed sync.remoteIgnore error, got %v", err)
 	}
 }
 

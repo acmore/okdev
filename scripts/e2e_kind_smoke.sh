@@ -74,20 +74,6 @@ fi
 replace_all_in_file "$CFG_PATH" 'persistentSession: true' 'persistentSession: false'
 insert_after_line_once "$CFG_PATH" '  ssh:' '    persistentSession: false'
 insert_after_line_once "$CFG_PATH" '  ssh:' '    forwardAgent: true'
-python3 - "$CFG_PATH" <<'PY'
-import pathlib
-import sys
-
-path = pathlib.Path(sys.argv[1])
-text = path.read_text()
-block = '    remoteIgnore:\n      - profiles/\n      - "*.prof"\n'
-if "remoteIgnore:" not in text:
-    marker = "\n  ports:\n"
-    if marker not in text:
-        raise SystemExit("ports block not found")
-    text = text.replace(marker, "\n" + block + "  ports:\n", 1)
-path.write_text(text)
-PY
 
 echo "Generated config:"
 cat "$CFG_PATH"
@@ -207,36 +193,6 @@ if [[ "$SYNC_OK" != "true" ]]; then
   echo "ERROR: synced file content did not match after 30 attempts" >&2
   exit 1
 fi
-
-echo "Verifying remoteIgnore writes remote .stignore and keeps profiling data local-only"
-REMOTE_STIGNORE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'cat /workspace/.stignore 2>/dev/null || true')
-if [[ "$REMOTE_STIGNORE" != *"profiles/"* || "$REMOTE_STIGNORE" != *"*.prof"* ]]; then
-  echo "ERROR: expected remote .stignore to contain remoteIgnore patterns" >&2
-  echo "$REMOTE_STIGNORE" >&2
-  exit 1
-fi
-mkdir -p "$SYNC_DIR/profiles"
-echo "local profile payload" >"$SYNC_DIR/profiles/run.prof"
-echo "remote ignore control" >"$SYNC_DIR/remote-ignore-control.txt"
-CONTROL_SYNCED=false
-for i in $(seq 1 30); do
-  REMOTE_CONTROL=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'if [ -f /workspace/remote-ignore-control.txt ]; then cat /workspace/remote-ignore-control.txt; fi' || true)
-  if [[ "$REMOTE_CONTROL" == "remote ignore control" ]]; then
-    CONTROL_SYNCED=true
-    break
-  fi
-  sleep 2
-done
-if [[ "$CONTROL_SYNCED" != "true" ]]; then
-  echo "ERROR: expected non-ignored control file to sync while testing remoteIgnore" >&2
-  exit 1
-fi
-REMOTE_PROFILE_STATE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'if [ -e /workspace/profiles/run.prof ]; then echo present; else echo absent; fi' || true)
-if [[ "$REMOTE_PROFILE_STATE" != "absent" ]]; then
-  echo "ERROR: expected remoteIgnore to keep profiling data out of remote workspace, got $REMOTE_PROFILE_STATE" >&2
-  exit 1
-fi
-echo "remoteIgnore behavior verified"
 
 echo "Verifying repeated okdev up reuses active sync"
 SYNC_PID_BEFORE=""
