@@ -77,6 +77,7 @@ func resolveCommandContext(opts *Options, resolver sessionResolver) (*commandCon
 	if err != nil {
 		return nil, err
 	}
+	effectiveOpts.ConfigPath = cfgPath
 	cc := &commandContext{
 		opts:      effectiveOpts,
 		cfg:       cfg,
@@ -345,6 +346,12 @@ func resolveSessionNameWithReader(opts *Options, cfg *config.DevEnvironment, nam
 		if err != nil {
 			return "", err
 		}
+		if !sessionMatchesConfigPath(resolvedActive, opts.ConfigPath) {
+			resolvedActive = ""
+		}
+		if resolvedActive == "" {
+			goto inferExistingSession
+		}
 		exists, existsErr := sessionPodExists(reader, namespace, resolvedActive)
 		if existsErr == nil {
 			if exists {
@@ -358,8 +365,9 @@ func resolveSessionNameWithReader(opts *Options, cfg *config.DevEnvironment, nam
 			return resolvedActive, nil
 		}
 	}
+inferExistingSession:
 	if inferExisting {
-		inferred, err := inferExistingSessionForRepo(opts, cfg, namespace)
+		inferred, err := inferExistingSessionForRepo(opts, cfg, namespace, reader)
 		if err != nil {
 			return "", err
 		}
@@ -367,7 +375,36 @@ func resolveSessionNameWithReader(opts *Options, cfg *config.DevEnvironment, nam
 			return inferred, nil
 		}
 	}
-	return session.Resolve("", cfg.Spec.Session.DefaultNameTemplate)
+	return session.ResolveDefault(cfg.Spec.Session.DefaultNameTemplate)
+}
+
+func sessionMatchesConfigPath(sessionName, currentConfigPath string) bool {
+	currentConfigPath = normalizeConfigPath(currentConfigPath)
+	if currentConfigPath == "" || strings.TrimSpace(sessionName) == "" {
+		return true
+	}
+	info, err := session.LoadInfo(sessionName)
+	if err != nil {
+		slog.Debug("failed to load session info for config match", "session", sessionName, "error", err)
+		return true
+	}
+	savedConfigPath := normalizeConfigPath(info.ConfigPath)
+	if savedConfigPath == "" {
+		return true
+	}
+	return savedConfigPath == currentConfigPath
+}
+
+func normalizeConfigPath(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(trimmed)
+	if err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(trimmed)
 }
 
 func sessionPodExists(k sessionAccessReader, namespace, sessionName string) (bool, error) {
@@ -387,7 +424,7 @@ func sessionPodExists(k sessionAccessReader, namespace, sessionName string) (boo
 	return false, err
 }
 
-func inferExistingSessionForRepo(opts *Options, cfg *config.DevEnvironment, namespace string) (string, error) {
+func inferExistingSessionForRepo(opts *Options, cfg *config.DevEnvironment, namespace string, reader sessionAccessReader) (string, error) {
 	root, err := session.RepoRoot()
 	if err != nil || strings.TrimSpace(root) == "" {
 		return "", nil
@@ -406,14 +443,20 @@ func inferExistingSessionForRepo(opts *Options, cfg *config.DevEnvironment, name
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), sessionExistsTimeout)
 	defer cancel()
-	pods, err := newKubeClient(opts).ListPods(ctx, namespace, false, strings.Join(label, ","))
+	pods, err := reader.ListPods(ctx, namespace, false, strings.Join(label, ","))
 	if err != nil {
 		return "", err
 	}
 	if len(pods) == 0 {
 		return "", nil
 	}
+	currentConfigPath := normalizeConfigPath(opts.ConfigPath)
 	sort.Slice(pods, func(i, j int) bool {
+		iMatch := sessionMatchesConfigPath(sessionNameFromPodSummary(pods[i]), currentConfigPath)
+		jMatch := sessionMatchesConfigPath(sessionNameFromPodSummary(pods[j]), currentConfigPath)
+		if iMatch != jMatch {
+			return iMatch
+		}
 		return pods[i].CreatedAt.After(pods[j].CreatedAt)
 	})
 	for _, p := range pods {

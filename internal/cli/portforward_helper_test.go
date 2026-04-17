@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -19,15 +20,41 @@ func (b *blockingPFClient) PortForward(ctx context.Context, namespace, pod strin
 	return ctx.Err()
 }
 
+type listeningPFClient struct {
+	done chan struct{}
+}
+
+func (l *listeningPFClient) PortForward(ctx context.Context, namespace, pod string, forwards []string, stdout io.Writer, stderr io.Writer) error {
+	if len(forwards) != 1 {
+		return nil
+	}
+	parts := strings.SplitN(forwards[0], ":", 2)
+	if len(parts) != 2 {
+		return nil
+	}
+	port, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return err
+	}
+	ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		return err
+	}
+	defer ln.Close()
+	<-ctx.Done()
+	close(l.done)
+	return ctx.Err()
+}
+
 func TestStartManagedPortForwardCancelWaitsForWorker(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
 	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
 
-	client := &blockingPFClient{done: make(chan struct{})}
+	client := &listeningPFClient{done: make(chan struct{})}
 	cancel, err := startManagedPortForwardWithClient(context.Background(), client, "ns", "pod", []string{strconv.Itoa(port) + ":9999"})
 	if err != nil {
 		t.Fatal(err)
@@ -38,6 +65,27 @@ func TestStartManagedPortForwardCancelWaitsForWorker(t *testing.T) {
 	case <-client.done:
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("expected port-forward worker to stop after cancel")
+	}
+}
+
+func TestStartManagedPortForwardRejectsOccupiedLocalPort(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	client := &blockingPFClient{done: make(chan struct{})}
+	cancel, err := startManagedPortForwardWithClient(context.Background(), client, "ns", "pod", []string{strconv.Itoa(port) + ":9999"})
+	if cancel != nil {
+		cancel()
+	}
+	if err == nil {
+		t.Fatal("expected occupied local port error")
+	}
+	if !isPortListenConflict(err) {
+		t.Fatalf("expected listen conflict error, got %v", err)
 	}
 }
 

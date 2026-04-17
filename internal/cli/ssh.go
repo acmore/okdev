@@ -1006,6 +1006,9 @@ func isPortListenConflict(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, errLocalPortInUse) {
+		return true
+	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "address already in use") ||
 		strings.Contains(msg, "unable to listen on any of the requested ports")

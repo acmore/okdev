@@ -22,6 +22,10 @@ func Resolve(explicit string, template string) (string, error) {
 	if active != "" {
 		return sanitize(active), nil
 	}
+	return ResolveDefault(template)
+}
+
+func ResolveDefault(template string) (string, error) {
 	repo, _, user, err := contextValues()
 	if err != nil {
 		return "", err
