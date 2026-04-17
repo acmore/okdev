@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"time"
 )
+
+var errLocalPortInUse = errors.New("local port already in use")
 
 func startManagedPortForward(ctx context.Context, opts *Options, namespace, pod string, forwards []string) (context.CancelFunc, error) {
 	return startManagedPortForwardWithClient(ctx, newKubeClient(opts), namespace, pod, forwards)
@@ -22,6 +25,10 @@ func startManagedPortForwardNoProbe(ctx context.Context, opts *Options, namespac
 func startManagedPortForwardWithClient(ctx context.Context, k interface {
 	PortForward(context.Context, string, string, []string, io.Writer, io.Writer) error
 }, namespace, pod string, forwards []string) (context.CancelFunc, error) {
+	ports := localPortsFromForwards(forwards)
+	if occupied := occupiedLocalPorts(ports); len(occupied) > 0 {
+		return nil, fmt.Errorf("%w: local port %d already has a listener", errLocalPortInUse, occupied[0])
+	}
 	pfCtx, cancel := context.WithCancel(ctx)
 	errCh := make(chan error, 1)
 	doneCh := make(chan struct{})
@@ -44,7 +51,6 @@ func startManagedPortForwardWithClient(ctx context.Context, k interface {
 		}
 	}
 
-	ports := localPortsFromForwards(forwards)
 	readinessTicker := time.NewTicker(portForwardPollInterval)
 	defer readinessTicker.Stop()
 	timeout := time.NewTimer(portForwardReadinessTimeout)
@@ -74,6 +80,10 @@ func startManagedPortForwardWithClient(ctx context.Context, k interface {
 func startManagedPortForwardNoProbeWithClient(ctx context.Context, k interface {
 	PortForward(context.Context, string, string, []string, io.Writer, io.Writer) error
 }, namespace, pod string, forwards []string) (context.CancelFunc, error) {
+	ports := localPortsFromForwards(forwards)
+	if occupied := occupiedLocalPorts(ports); len(occupied) > 0 {
+		return nil, fmt.Errorf("%w: local port %d already has a listener", errLocalPortInUse, occupied[0])
+	}
 	pfCtx, cancel := context.WithCancel(ctx)
 	errCh := make(chan error, 1)
 	doneCh := make(chan struct{})
@@ -185,4 +195,24 @@ func probePortForward(localPort int) bool {
 	}
 	defer conn.Close()
 	return true
+}
+
+func occupiedLocalPorts(ports []int) []int {
+	occupied := make([]int, 0, len(ports))
+	for _, p := range ports {
+		if p <= 0 {
+			continue
+		}
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", p), portForwardDialTimeout)
+		if err == nil {
+			_ = conn.Close()
+			occupied = append(occupied, p)
+			continue
+		}
+		var opErr *net.OpError
+		if errors.As(err, &opErr) {
+			continue
+		}
+	}
+	return occupied
 }

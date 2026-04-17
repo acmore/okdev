@@ -77,3 +77,41 @@ func TestResolveDefaultTemplateOmitsBranch(t *testing.T) {
 		t.Fatalf("unexpected resolved default name %q", name)
 	}
 }
+
+func TestResolveDefaultIgnoresActiveSession(t *testing.T) {
+	tmp := t.TempDir()
+	repo := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	origWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+	if err := os.Chdir(repo); err != nil {
+		t.Fatal(err)
+	}
+	resetRepoRootCache()
+	t.Setenv("HOME", filepath.Join(tmp, "home"))
+	t.Setenv("USER", "alice")
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
+		}
+	}
+	run("init", "-b", "feature/demo")
+
+	if err := SaveActiveSession("other-session"); err != nil {
+		t.Fatalf("SaveActiveSession: %v", err)
+	}
+
+	name, err := ResolveDefault("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "repo-alice" {
+		t.Fatalf("unexpected resolved default name %q", name)
+	}
+}
