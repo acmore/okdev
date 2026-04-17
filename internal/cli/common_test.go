@@ -345,6 +345,47 @@ func TestResolveCommandContextUsesResolver(t *testing.T) {
 	}
 }
 
+func TestResolveCommandContextPersistsDiscoveredConfigPathForResolver(t *testing.T) {
+	tmp := t.TempDir()
+	repo := filepath.Join(tmp, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(repo, ".okdev.yaml")
+	if err := os.WriteFile(cfgPath, []byte(""+
+		"apiVersion: okdev.io/v1alpha1\n"+
+		"kind: DevEnvironment\n"+
+		"metadata:\n"+
+		"  name: demo\n"+
+		"spec:\n"+
+		"  namespace: team-a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	origWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+	if err := os.Chdir(repo); err != nil {
+		t.Fatal(err)
+	}
+	resolvedCfgPath, err := config.ResolvePath("")
+	if err != nil {
+		t.Fatalf("ResolvePath: %v", err)
+	}
+
+	cc, err := resolveCommandContext(&Options{}, func(opts *Options, _ *config.DevEnvironment, _ string) (string, error) {
+		if opts.ConfigPath != resolvedCfgPath {
+			t.Fatalf("expected resolver to see discovered config path %q, got %q", resolvedCfgPath, opts.ConfigPath)
+		}
+		return "sess-a", nil
+	})
+	if err != nil {
+		t.Fatalf("resolveCommandContext: %v", err)
+	}
+	if cc.cfgPath != resolvedCfgPath {
+		t.Fatalf("unexpected cfg path %q", cc.cfgPath)
+	}
+}
+
 func TestOptionsWithSessionConfigUsesSavedSessionMetadata(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)

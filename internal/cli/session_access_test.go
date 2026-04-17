@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
@@ -153,5 +155,104 @@ func TestResolveSessionNameWithReaderKeepsControllerBackedActiveSession(t *testi
 	}
 	if got != "job-session" {
 		t.Fatalf("expected controller-backed active session to be preserved, got %q", got)
+	}
+}
+
+func TestResolveSessionNameWithReaderIgnoresActiveSessionFromDifferentConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repoRoot, err := session.RepoRoot()
+	if err != nil {
+		t.Fatalf("RepoRoot: %v", err)
+	}
+	if err := session.SaveActiveSession("sess-a"); err != nil {
+		t.Fatalf("SaveActiveSession: %v", err)
+	}
+	if err := session.SaveInfo(session.Info{
+		Name:       "sess-a",
+		RepoRoot:   repoRoot,
+		ConfigPath: filepath.Join(repoRoot, "service-a", ".okdev.yaml"),
+		Namespace:  "default",
+	}); err != nil {
+		t.Fatalf("SaveInfo: %v", err)
+	}
+
+	cfg := &config.DevEnvironment{}
+	cfg.Spec.Session.DefaultNameTemplate = "fresh-session"
+
+	got, err := resolveSessionNameWithReader(&Options{
+		ConfigPath: filepath.Join(repoRoot, "service-b", ".okdev.yaml"),
+	}, cfg, "default", false, fakeSessionAccessReader{
+		pods: []kube.PodSummary{{
+			Name: "okdev-sess-a",
+			Labels: map[string]string{
+				"okdev.io/managed": "true",
+				"okdev.io/session": "sess-a",
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("resolveSessionNameWithReader: %v", err)
+	}
+	if got != "fresh-session" {
+		t.Fatalf("expected different-config active session to be ignored, got %q", got)
+	}
+}
+
+func TestResolveSessionNameWithReaderInfersSessionMatchingCurrentConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repoRoot, err := session.RepoRoot()
+	if err != nil {
+		t.Fatalf("RepoRoot: %v", err)
+	}
+
+	currentConfig := filepath.Join(repoRoot, "Mooncake", ".okdev.yaml")
+	otherConfig := filepath.Join(repoRoot, "Elsewhere", ".okdev.yaml")
+	if err := session.SaveInfo(session.Info{
+		Name:       "older-match",
+		RepoRoot:   repoRoot,
+		ConfigPath: currentConfig,
+		Namespace:  "default",
+	}); err != nil {
+		t.Fatalf("SaveInfo current match: %v", err)
+	}
+	if err := session.SaveInfo(session.Info{
+		Name:       "newer-mismatch",
+		RepoRoot:   repoRoot,
+		ConfigPath: otherConfig,
+		Namespace:  "default",
+	}); err != nil {
+		t.Fatalf("SaveInfo other match: %v", err)
+	}
+
+	cfg := &config.DevEnvironment{}
+	got, err := resolveSessionNameWithReader(&Options{
+		ConfigPath: currentConfig,
+	}, cfg, "default", true, fakeSessionAccessReader{
+		pods: []kube.PodSummary{
+			{
+				Name:      "okdev-newer-mismatch",
+				CreatedAt: time.Now(),
+				Labels: map[string]string{
+					"okdev.io/managed": "true",
+					"okdev.io/session": "newer-mismatch",
+					"okdev.io/repo":    filepath.Base(repoRoot),
+				},
+			},
+			{
+				Name:      "okdev-older-match",
+				CreatedAt: time.Now().Add(-time.Hour),
+				Labels: map[string]string{
+					"okdev.io/managed": "true",
+					"okdev.io/session": "older-match",
+					"okdev.io/repo":    filepath.Base(repoRoot),
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolveSessionNameWithReader: %v", err)
+	}
+	if got != "older-match" {
+		t.Fatalf("expected config-matching inferred session, got %q", got)
 	}
 }
