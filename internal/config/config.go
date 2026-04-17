@@ -118,7 +118,6 @@ type MetadataMap struct {
 type SyncSpec struct {
 	Paths         []string      `yaml:"paths"`
 	PreservePaths []string      `yaml:"preservePaths"`
-	RemoteIgnore  []string      `yaml:"remoteIgnore,omitempty"`
 	Engine        string        `yaml:"engine"`
 	Syncthing     SyncthingSpec `yaml:"syncthing"`
 }

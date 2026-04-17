@@ -310,52 +310,6 @@ func TestWriteLocalSTIgnorePreservesExistingFileWhenDefaultsImplicit(t *testing.
 	}
 }
 
-func TestWriteRemoteSTIgnoreInPodWritesConfiguredPatterns(t *testing.T) {
-	rec := &syncthingExecRecorder{}
-	err := writeRemoteSTIgnoreInPod(context.Background(), rec, "default", "pod-a", "/workspace", []string{"profiles/", "*.prof"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rec.namespace != "default" || rec.pod != "pod-a" || rec.container != syncthingContainerName {
-		t.Fatalf("unexpected exec target namespace=%q pod=%q container=%q", rec.namespace, rec.pod, rec.container)
-	}
-	if rec.copyDest != "/workspace/.stignore.tmp" {
-		t.Fatalf("expected temp copy destination, got %q", rec.copyDest)
-	}
-	if rec.copyBody != "profiles/\n*.prof\n" {
-		t.Fatalf("unexpected copied .stignore content %q", rec.copyBody)
-	}
-	for _, want := range []string{
-		"mkdir -p '/workspace'",
-		"mv '/workspace/.stignore.tmp' '/workspace/.stignore'",
-	} {
-		if !strings.Contains(rec.script, want) {
-			t.Fatalf("expected remote .stignore script to contain %q, got %q", want, rec.script)
-		}
-	}
-	if strings.Contains(rec.script, "profiles/") || strings.Contains(rec.script, "*.prof") {
-		t.Fatalf("expected remote payload to be streamed, script was %q", rec.script)
-	}
-}
-
-func TestWriteRemoteSTIgnoreInPodSkipsEmptyPatterns(t *testing.T) {
-	rec := &syncthingExecRecorder{}
-	if err := writeRemoteSTIgnoreInPod(context.Background(), rec, "default", "pod-a", "/workspace", nil); err != nil {
-		t.Fatal(err)
-	}
-	if rec.script != "" {
-		t.Fatalf("expected no remote .stignore write, got %q", rec.script)
-	}
-}
-
-func TestWriteRemoteSTIgnoreInPodRejectsUnsafeRoot(t *testing.T) {
-	rec := &syncthingExecRecorder{}
-	err := writeRemoteSTIgnoreInPod(context.Background(), rec, "default", "pod-a", "/", []string{"profiles/"})
-	if err == nil || !strings.Contains(err.Error(), "unsafe sync root") {
-		t.Fatalf("expected unsafe root error, got %v", err)
-	}
-}
-
 func TestStopLocalSyncthingForHomeStopsRecordedPID(t *testing.T) {
 	home := t.TempDir()
 	cmd := exec.Command("sleep", "30")
@@ -395,9 +349,6 @@ type syncthingExecRecorder struct {
 	pod       string
 	container string
 	script    string
-	copyPath  string
-	copyDest  string
-	copyBody  string
 	out       []byte
 	err       error
 }
@@ -408,20 +359,6 @@ func (r *syncthingExecRecorder) ExecShInContainer(_ context.Context, namespace, 
 	r.container = container
 	r.script = script
 	return r.out, r.err
-}
-
-func (r *syncthingExecRecorder) CopyToPodInContainer(_ context.Context, namespace, localPath, pod, container, remotePath string) error {
-	r.namespace = namespace
-	r.pod = pod
-	r.container = container
-	r.copyPath = localPath
-	r.copyDest = remotePath
-	body, err := os.ReadFile(localPath)
-	if err != nil {
-		return err
-	}
-	r.copyBody = string(body)
-	return r.err
 }
 
 func TestParseLocalSyncthingAPIBaseUsesLatestLoopbackAddress(t *testing.T) {
@@ -653,7 +590,6 @@ func TestRunTwoPhaseInitialSync(t *testing.T) {
 	var (
 		mu             sync.Mutex
 		configPuts     int
-		ignoreCalls    int
 		overrideCalls  int
 		restartCalls   int
 		needBytesValue int64 = 1024 // starts non-zero, switches to 0 after override
@@ -688,9 +624,6 @@ func TestRunTwoPhaseInitialSync(t *testing.T) {
 				w.Write([]byte(`{"myID":"DEVICE-ID"}`))
 			case r.Method == http.MethodGet && r.URL.Path == "/rest/system/connections":
 				w.Write([]byte(`{"connections":{"REMOTE":{"connected":true},"LOCAL":{"connected":true}}}`))
-			case r.Method == http.MethodPost && r.URL.Path == "/rest/db/ignores":
-				ignoreCalls++
-				w.WriteHeader(http.StatusOK)
 			case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/rest/db/override"):
 				overrideCalls++
 				// Simulate: after override, remote becomes in sync.
@@ -723,7 +656,7 @@ func TestRunTwoPhaseInitialSync(t *testing.T) {
 		compression:    false,
 	}
 
-	err := runTwoPhaseInitialSync(ctx, &buf, localSrv.URL, "k", "LOCAL", remoteSrv.URL, "k", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "/tmp/remote", nil, sc)
+	err := runTwoPhaseInitialSync(ctx, &buf, localSrv.URL, "k", "LOCAL", remoteSrv.URL, "k", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "/tmp/remote", sc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -732,10 +665,6 @@ func TestRunTwoPhaseInitialSync(t *testing.T) {
 	if overrideCalls < 2 {
 		t.Fatalf("expected /rest/db/override to be called at least twice (phase 1 + 1b), got %d", overrideCalls)
 	}
-	if ignoreCalls < 2 {
-		t.Fatalf("expected /rest/db/ignores to be called at least twice (phase 1 + phase 2), got %d", ignoreCalls)
-	}
-
 	// Verify neither instance reported restart-required in phase 2.
 	if restartCalls != 0 {
 		t.Fatalf("expected 0 restart calls when restart-required=false, got %d", restartCalls)
@@ -818,8 +747,6 @@ func TestRunTwoPhaseInitialSyncWaitsForDeletionConvergence(t *testing.T) {
 				w.Write([]byte(`{"myID":"DEVICE-ID"}`))
 			case r.Method == http.MethodGet && r.URL.Path == "/rest/system/connections":
 				w.Write([]byte(`{"connections":{"REMOTE":{"connected":true},"LOCAL":{"connected":true}}}`))
-			case r.Method == http.MethodPost && r.URL.Path == "/rest/db/ignores":
-				w.WriteHeader(http.StatusOK)
 			case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/rest/db/override"):
 				overrideCalls++
 				w.WriteHeader(http.StatusOK)
@@ -851,7 +778,7 @@ func TestRunTwoPhaseInitialSyncWaitsForDeletionConvergence(t *testing.T) {
 	var buf bytes.Buffer
 	sc := syncthingSyncConfig{rescanInterval: 300, watcherDelay: 1}
 
-	err := runTwoPhaseInitialSync(context.Background(), &buf, localSrv.URL, "k", "LOCAL", remoteSrv.URL, "k", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "/tmp/remote", nil, sc)
+	err := runTwoPhaseInitialSync(context.Background(), &buf, localSrv.URL, "k", "LOCAL", remoteSrv.URL, "k", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "/tmp/remote", sc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -899,8 +826,6 @@ func TestRunTwoPhaseInitialSyncWaitsForPeerConnection(t *testing.T) {
 				connectionPolls++
 				connected := connectionPolls >= connectionReadyAt
 				fmt.Fprintf(w, `{"connections":{"REMOTE":{"connected":%t},"LOCAL":{"connected":%t}}}`, connected, connected)
-			case r.Method == http.MethodPost && r.URL.Path == "/rest/db/ignores":
-				w.WriteHeader(http.StatusOK)
 			case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/rest/db/override"):
 				overrideCalls++
 				w.WriteHeader(http.StatusOK)
@@ -923,7 +848,7 @@ func TestRunTwoPhaseInitialSyncWaitsForPeerConnection(t *testing.T) {
 
 	var buf bytes.Buffer
 	sc := syncthingSyncConfig{rescanInterval: 300, watcherDelay: 1}
-	err := runTwoPhaseInitialSync(context.Background(), &buf, localSrv.URL, "k", "LOCAL", remoteSrv.URL, "k", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "/tmp/remote", nil, sc)
+	err := runTwoPhaseInitialSync(context.Background(), &buf, localSrv.URL, "k", "LOCAL", remoteSrv.URL, "k", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "/tmp/remote", sc)
 	if err != nil {
 		t.Fatal(err)
 	}
