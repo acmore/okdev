@@ -1034,10 +1034,57 @@ func (c *Client) CopyFromPod(ctx context.Context, namespace, podName, remotePath
 }
 
 func (c *Client) CopyFromPodInContainer(ctx context.Context, namespace, podName, container, remotePath, localPath string) error {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		lastErr = c.copyFromPodInContainerOnce(ctx, namespace, podName, container, remotePath, localPath)
+		if lastErr == nil {
+			return nil
+		}
+		if !isRetryableCopyStreamError(lastErr) || attempt == 2 {
+			return lastErr
+		}
+		time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+	}
+	return lastErr
+}
+
+func (c *Client) copyFromPodInContainerOnce(ctx context.Context, namespace, podName, container, remotePath, localPath string) error {
 	cs, cfg, err := c.clientset()
 	if err != nil {
 		return err
 	}
+	parent := filepath.Dir(remotePath)
+	base := filepath.Base(remotePath)
+	cmd := []string{"sh", "-lc", fmt.Sprintf("tar cf - -C %s %s", shellQuote(parent), shellQuote(base))}
+	tarFile, err := os.CreateTemp("", "okdev-copy-*.tar")
+	if err != nil {
+		return err
+	}
+	tarPath := tarFile.Name()
+	defer os.Remove(tarPath)
+	var errBuf bytes.Buffer
+	if err := c.execStream(ctx, cs, cfg, namespace, podName, container, cmd, nil, tarFile, &errBuf, false); err != nil {
+		_ = tarFile.Close()
+		return err
+	}
+	if _, err := tarFile.Seek(0, io.SeekStart); err != nil {
+		_ = tarFile.Close()
+		return err
+	}
+	if err := extractSingleFileFromTar(tarFile, localPath); err != nil {
+		_ = tarFile.Close()
+		return err
+	}
+	return tarFile.Close()
+}
+
+func createTempDownloadFile(localPath string) (*os.File, error) {
+	dir := filepath.Dir(localPath)
+	base := filepath.Base(localPath)
+	return os.CreateTemp(dir, base+".tmp-*")
+}
+
+func extractSingleFileFromTar(r io.Reader, localPath string) error {
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 		return err
 	}
@@ -1053,25 +1100,45 @@ func (c *Client) CopyFromPodInContainer(ctx context.Context, namespace, podName,
 		}
 		_ = os.Remove(tempPath)
 	}()
-	var errBuf bytes.Buffer
-	cmd := []string{"sh", "-lc", fmt.Sprintf("cat %s", shellQuote(remotePath))}
-	if err := c.execStream(ctx, cs, cfg, namespace, podName, container, cmd, nil, tempFile, &errBuf, false); err != nil {
+
+	tr := tar.NewReader(r)
+	foundFile := false
+	var fileMode os.FileMode = 0o644
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		switch hdr.Typeflag {
+		case tar.TypeDir, tar.TypeXHeader, tar.TypeXGlobalHeader, tar.TypeGNULongName, tar.TypeGNULongLink:
+			continue
+		case tar.TypeReg, tar.TypeRegA:
+			if foundFile {
+				return fmt.Errorf("tar archive contains multiple files")
+			}
+			if _, err := io.Copy(tempFile, tr); err != nil {
+				return err
+			}
+			fileMode = os.FileMode(hdr.Mode)
+			foundFile = true
+		default:
+			return fmt.Errorf("tar archive entry %q has unsupported type", hdr.Name)
+		}
+	}
+	if !foundFile {
+		return fmt.Errorf("tar archive contained no file")
+	}
+	if err := tempFile.Chmod(fileMode); err != nil {
 		return err
 	}
 	if err := tempFile.Close(); err != nil {
 		return err
 	}
 	closed = true
-	if err := os.Rename(tempPath, localPath); err != nil {
-		return err
-	}
-	return nil
-}
-
-func createTempDownloadFile(localPath string) (*os.File, error) {
-	dir := filepath.Dir(localPath)
-	base := filepath.Base(localPath)
-	return os.CreateTemp(dir, base+".tmp-*")
+	return os.Rename(tempPath, localPath)
 }
 
 func (c *Client) StreamFromPod(ctx context.Context, namespace, podName, script string, stdout io.Writer) error {
@@ -1185,6 +1252,21 @@ func (c *Client) CopyDirToPod(ctx context.Context, namespace, pod, container, lo
 
 // CopyDirFromPod streams a remote directory as a tar archive and extracts it locally.
 func (c *Client) CopyDirFromPod(ctx context.Context, namespace, pod, container, remoteDir, localDir string) error {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		lastErr = c.copyDirFromPodOnce(ctx, namespace, pod, container, remoteDir, localDir)
+		if lastErr == nil {
+			return nil
+		}
+		if !isRetryableCopyStreamError(lastErr) || attempt == 2 {
+			return lastErr
+		}
+		time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+	}
+	return lastErr
+}
+
+func (c *Client) copyDirFromPodOnce(ctx context.Context, namespace, pod, container, remoteDir, localDir string) error {
 	cs, cfg, err := c.clientset()
 	if err != nil {
 		return err
@@ -1213,6 +1295,40 @@ func (c *Client) CopyDirFromPod(ctx context.Context, namespace, pod, container, 
 		return err
 	}
 	return tarFile.Close()
+}
+
+func isRetryableCopyStreamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	nonRetryable := []string{
+		"not found",
+		"no such file",
+		"permission denied",
+		"is a directory",
+		"tar archive contains multiple files",
+		"tar archive contained no file",
+		"unsupported type",
+	}
+	for _, s := range nonRetryable {
+		if strings.Contains(msg, s) {
+			return false
+		}
+	}
+	retryable := []string{
+		"unexpected eof",
+		"context deadline exceeded",
+		"unexpected error when reading response body",
+		"connection reset by peer",
+		"timeout",
+	}
+	for _, s := range retryable {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsRemoteDir probes whether remotePath is a directory on the pod.

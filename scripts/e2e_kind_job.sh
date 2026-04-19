@@ -127,11 +127,44 @@ if [[ "$(cat "$CP_DL")" != "cp-job-content" ]]; then
 fi
 echo "cp download single file verified"
 
+echo "Testing cp download binary file with --pod"
+CP_BIN_SRC="$WORKDIR/cp-job-binary.bin"
+CP_BIN_GZ="$WORKDIR/cp-job-binary.bin.gz"
+dd if=/dev/urandom of="$CP_BIN_SRC" bs=1024 count=256 status=none
+gzip -c "$CP_BIN_SRC" >"$CP_BIN_GZ"
+JOB_POD_NAME=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
+CP_BIN_REMOTE=/tmp/cp-job-binary.bin.gz
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp "$CP_BIN_GZ" ":$CP_BIN_REMOTE"
+CP_BIN_DL="$WORKDIR/cp-job-binary-downloaded.bin.gz"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp --pod "$JOB_POD_NAME" ":$CP_BIN_REMOTE" "$CP_BIN_DL"
+if [[ ! -f "$CP_BIN_DL" ]]; then
+  echo "ERROR: cp --pod binary download did not create the requested flat file path" >&2
+  find "$WORKDIR" -maxdepth 3 \( -name 'cp-job-binary*' -o -name "$(basename "$CP_BIN_DL")" \) >&2
+  exit 1
+fi
+if [[ -d "$CP_BIN_DL" || -e "$CP_BIN_DL/$JOB_POD_NAME" ]]; then
+  echo "ERROR: cp --pod binary download created a nested per-pod path" >&2
+  find "$WORKDIR" -maxdepth 4 \( -name 'cp-job-binary*' -o -name "$JOB_POD_NAME" \) >&2
+  exit 1
+fi
+if ! gzip -t "$CP_BIN_DL"; then
+  echo "ERROR: cp --pod binary download produced an invalid gzip" >&2
+  exit 1
+fi
+CP_BIN_SHA=$(sha256sum "$CP_BIN_GZ" | awk '{print $1}')
+CP_BIN_DL_SHA=$(sha256sum "$CP_BIN_DL" | awk '{print $1}')
+if [[ "$CP_BIN_SHA" != "$CP_BIN_DL_SHA" ]]; then
+  echo "ERROR: cp --pod binary download checksum mismatch" >&2
+  echo "expected: $CP_BIN_SHA" >&2
+  echo "actual:   $CP_BIN_DL_SHA" >&2
+  exit 1
+fi
+echo "cp download binary file with --pod verified"
+
 echo "File copy (okdev cp) tests completed"
 
 WORKLOAD_NAME=$(session_workload_name "$NAMESPACE" "$SESSION_NAME")
 ORIGINAL_JOB_UID=$(kubectl -n "$NAMESPACE" get job "$WORKLOAD_NAME" -o jsonpath='{.metadata.uid}')
-JOB_POD_NAME=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
 ORIGINAL_POD_UID=$(kubectl -n "$NAMESPACE" get pod "$JOB_POD_NAME" -o jsonpath='{.metadata.uid}')
 
 echo "Changing job workload spec to trigger drift detection"
