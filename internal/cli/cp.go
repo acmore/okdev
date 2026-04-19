@@ -185,6 +185,20 @@ func multiPodDownloadPath(localPath, shortName, remotePath string, remoteIsDir b
 	return filepath.Join(podDir, filepath.Base(remotePath))
 }
 
+func downloadTargetPath(localPath, shortName, remotePath string, remoteIsDir bool, podCount int) string {
+	if podCount == 1 {
+		return localPath
+	}
+	return multiPodDownloadPath(localPath, shortName, remotePath, remoteIsDir)
+}
+
+func downloadSuccessDestination(localPath, shortName string, podCount int) string {
+	if podCount == 1 {
+		return localPath
+	}
+	return filepath.Join(localPath, shortName) + string(os.PathSeparator)
+}
+
 type cpResult struct {
 	pod string
 	err error
@@ -263,6 +277,7 @@ func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath
 	out := cmd.OutOrStdout()
 	results := make(chan cpResult, len(pods))
 	sem := make(chan struct{}, effectiveFanout)
+	podCount := len(pods)
 
 	var wg sync.WaitGroup
 	for _, pod := range pods {
@@ -277,17 +292,12 @@ func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath
 			if upload {
 				cpErr = runSinglePodCp(ctx, cc.kube, cc.namespace, pod.Name, targetContainer, localPath, remotePath, true, io.Discard)
 			} else {
-				podDir := filepath.Join(localPath, short)
-				if err := os.MkdirAll(podDir, 0o755); err != nil {
-					results <- cpResult{pod: pod.Name, err: err}
-					return
-				}
 				isRemoteDir, err := cc.kube.IsRemoteDir(ctx, cc.namespace, pod.Name, targetContainer, remotePath)
 				if err != nil {
 					results <- cpResult{pod: pod.Name, err: err}
 					return
 				}
-				podLocalPath := multiPodDownloadPath(localPath, short, remotePath, isRemoteDir)
+				podLocalPath := downloadTargetPath(localPath, short, remotePath, isRemoteDir, podCount)
 				cpErr = runSinglePodCp(ctx, cc.kube, cc.namespace, pod.Name, targetContainer, podLocalPath, remotePath, false, io.Discard)
 			}
 			results <- cpResult{pod: pod.Name, err: cpErr}
@@ -309,7 +319,7 @@ func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath
 			if upload {
 				fmt.Fprintf(out, "%s: copied %s -> :%s\n", short, localPath, remotePath)
 			} else {
-				fmt.Fprintf(out, "%s: copied :%s -> %s/%s/\n", short, remotePath, localPath, short)
+				fmt.Fprintf(out, "%s: copied :%s -> %s\n", short, remotePath, downloadSuccessDestination(localPath, short, podCount))
 			}
 		}
 	}

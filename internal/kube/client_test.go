@@ -192,6 +192,24 @@ func TestIsRetryablePortForwardError(t *testing.T) {
 	}
 }
 
+func TestIsRetryableCopyStreamError(t *testing.T) {
+	if isRetryableCopyStreamError(nil) {
+		t.Fatal("expected nil error to be non-retryable")
+	}
+	if !isRetryableCopyStreamError(errors.New("unexpected EOF")) {
+		t.Fatal("expected unexpected EOF to be retryable")
+	}
+	if !isRetryableCopyStreamError(errors.New("context deadline exceeded")) {
+		t.Fatal("expected context deadline exceeded to be retryable")
+	}
+	if isRetryableCopyStreamError(errors.New("no such file or directory")) {
+		t.Fatal("expected missing file to be non-retryable")
+	}
+	if isRetryableCopyStreamError(errors.New("tar archive contained no file")) {
+		t.Fatal("expected tar validation error to be non-retryable")
+	}
+}
+
 func TestPodProgressAndSummary(t *testing.T) {
 	now := metav1.NewTime(time.Unix(10, 0))
 	pod := &corev1.Pod{

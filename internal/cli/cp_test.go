@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -96,6 +97,70 @@ func TestMultiPodDownloadPath(t *testing.T) {
 	}
 	if got := multiPodDownloadPath("/tmp/out", "worker-0", "/workspace/results", true); got != "/tmp/out/worker-0" {
 		t.Fatalf("directory download path = %q", got)
+	}
+}
+
+func TestDownloadTargetPath(t *testing.T) {
+	tests := []struct {
+		name        string
+		localPath   string
+		shortName   string
+		remotePath  string
+		remoteIsDir bool
+		podCount    int
+		want        string
+	}{
+		{
+			name:       "single pod file stays flat",
+			localPath:  "/tmp/out.txt",
+			shortName:  "worker-0",
+			remotePath: "/workspace/result.txt",
+			podCount:   1,
+			want:       "/tmp/out.txt",
+		},
+		{
+			name:        "single pod directory stays flat",
+			localPath:   "/tmp/out",
+			shortName:   "worker-0",
+			remotePath:  "/workspace/results",
+			remoteIsDir: true,
+			podCount:    1,
+			want:        "/tmp/out",
+		},
+		{
+			name:       "multi pod file nests by pod",
+			localPath:  "/tmp/out",
+			shortName:  "worker-0",
+			remotePath: "/workspace/result.txt",
+			podCount:   2,
+			want:       filepath.Join("/tmp/out", "worker-0", "result.txt"),
+		},
+		{
+			name:        "multi pod directory nests by pod",
+			localPath:   "/tmp/out",
+			shortName:   "worker-0",
+			remotePath:  "/workspace/results",
+			remoteIsDir: true,
+			podCount:    2,
+			want:        filepath.Join("/tmp/out", "worker-0"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := downloadTargetPath(tt.localPath, tt.shortName, tt.remotePath, tt.remoteIsDir, tt.podCount); got != tt.want {
+				t.Fatalf("download target path = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDownloadSuccessDestination(t *testing.T) {
+	if got := downloadSuccessDestination("/tmp/out.txt", "worker-0", 1); got != "/tmp/out.txt" {
+		t.Fatalf("single pod success destination = %q", got)
+	}
+	if got := downloadSuccessDestination("/tmp/out", "worker-0", 2); got != filepath.Join("/tmp/out", "worker-0")+string(filepath.Separator) {
+		t.Fatalf("multi pod success destination = %q", got)
 	}
 }
 
