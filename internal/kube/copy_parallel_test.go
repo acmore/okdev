@@ -307,3 +307,165 @@ func joinLines(ss []string) string {
 	}
 	return out
 }
+
+func TestParseProbeOutputGNUStat(t *testing.T) {
+	// GNU stat -c '%s %a %F' output for a 180 MB regular file.
+	got, err := parseProbeOutput([]byte("188784172 644 regular file\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Size != 188784172 {
+		t.Fatalf("size: got %d", got.Size)
+	}
+	if got.Mode != 0o644 {
+		t.Fatalf("mode: got %o", got.Mode)
+	}
+	if !got.IsRegular {
+		t.Fatal("expected IsRegular=true")
+	}
+}
+
+func TestParseProbeOutputDirectory(t *testing.T) {
+	got, err := parseProbeOutput([]byte("4096 755 directory"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.IsRegular {
+		t.Fatal("directory must not be IsRegular")
+	}
+}
+
+func TestParseProbeOutputFallbackFormat(t *testing.T) {
+	// The portable fallback in probeRemoteFile emits "regular" or "other"
+	// rather than "regular file".
+	got, err := parseProbeOutput([]byte("100 644 regular"))
+	if err != nil || !got.IsRegular {
+		t.Fatalf("parse=%+v err=%v", got, err)
+	}
+	got, err = parseProbeOutput([]byte("100 644 other"))
+	if err != nil || got.IsRegular {
+		t.Fatalf("parse=%+v err=%v", got, err)
+	}
+}
+
+func TestParseProbeOutputEmpty(t *testing.T) {
+	if _, err := parseProbeOutput([]byte("")); err == nil {
+		t.Fatal("expected error on empty output")
+	}
+	if _, err := parseProbeOutput([]byte("bad")); err == nil {
+		t.Fatal("expected error on malformed output")
+	}
+}
+
+func TestSplitFileRangesEqualSplit(t *testing.T) {
+	ranges := splitFileRanges(200, 4)
+	if len(ranges) != 4 {
+		t.Fatalf("expected 4 ranges, got %d", len(ranges))
+	}
+	want := [][2]int64{{0, 50}, {50, 50}, {100, 50}, {150, 50}}
+	if !reflect.DeepEqual(ranges, want) {
+		t.Fatalf("got %v want %v", ranges, want)
+	}
+}
+
+func TestSplitFileRangesRemainderGoesToLast(t *testing.T) {
+	ranges := splitFileRanges(203, 4)
+	// Base chunk 203/4 = 50, remainder (3) lands on the last worker.
+	want := [][2]int64{{0, 50}, {50, 50}, {100, 50}, {150, 53}}
+	if !reflect.DeepEqual(ranges, want) {
+		t.Fatalf("got %v want %v", ranges, want)
+	}
+	// Ranges must be contiguous and cover exactly [0, 203).
+	var covered int64
+	for _, r := range ranges {
+		if r[0] != covered {
+			t.Fatalf("gap before %v", r)
+		}
+		covered += r[1]
+	}
+	if covered != 203 {
+		t.Fatalf("coverage %d != 203", covered)
+	}
+}
+
+func TestSplitFileRangesSmallerThanN(t *testing.T) {
+	// When N > size, we get the size as a single range (the remainder
+	// absorbs everything, earlier zero-length ranges are dropped).
+	ranges := splitFileRanges(3, 10)
+	if len(ranges) != 1 || ranges[0] != [2]int64{0, 3} {
+		t.Fatalf("got %v", ranges)
+	}
+}
+
+func TestSplitFileRangesZero(t *testing.T) {
+	if got := splitFileRanges(0, 4); got != nil {
+		t.Fatalf("expected nil for zero size, got %v", got)
+	}
+}
+
+func TestAdaptiveFileParallelismRespectsCap(t *testing.T) {
+	// File under threshold always drops to 1.
+	if got := adaptiveFileParallelism(8*1024*1024, 8); got != 1 {
+		t.Fatalf("small file: got %d, want 1", got)
+	}
+	// 64 MiB file is big enough for up to 4 workers (64/16 = 4), capped at
+	// requested=8, so we get 4.
+	if got := adaptiveFileParallelism(64*1024*1024, 8); got != 4 {
+		t.Fatalf("64MiB,8: got %d, want 4", got)
+	}
+	// 1 GiB file ideal = 64 workers but user caps at 4.
+	if got := adaptiveFileParallelism(1*1024*1024*1024, 4); got != 4 {
+		t.Fatalf("1GiB,4: got %d, want 4", got)
+	}
+	// Invalid requested count is floored to 1.
+	if got := adaptiveFileParallelism(1*1024*1024*1024, 0); got != 1 {
+		t.Fatalf("requested=0: got %d, want 1", got)
+	}
+}
+
+// TestOffsetWriterConcurrent verifies that concurrent writes to disjoint
+// offsets through offsetWriter land correctly — this is the concurrency
+// contract every parallel range worker depends on.
+func TestOffsetWriterConcurrent(t *testing.T) {
+	tmp, err := os.CreateTemp(t.TempDir(), "off-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tmp.Close()
+	const total = 1024 * 1024 // 1 MiB
+	if err := tmp.Truncate(total); err != nil {
+		t.Fatal(err)
+	}
+
+	const workers = 8
+	chunk := total / workers
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			w := &offsetWriter{dst: tmp, offset: int64(idx * chunk)}
+			// Write `chunk` bytes of the worker's index so we can verify
+			// ranges didn't get scrambled.
+			data := bytes.Repeat([]byte{byte('A' + idx)}, chunk)
+			if _, err := w.Write(data); err != nil {
+				t.Errorf("worker %d: %v", idx, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	buf := make([]byte, total)
+	if _, err := tmp.ReadAt(buf, 0); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < workers; i++ {
+		expected := byte('A' + i)
+		for j := 0; j < chunk; j++ {
+			if buf[i*chunk+j] != expected {
+				t.Fatalf("worker %d byte %d: got %q want %q",
+					i, j, buf[i*chunk+j], expected)
+			}
+		}
+	}
+}

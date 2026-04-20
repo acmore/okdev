@@ -437,3 +437,301 @@ func writeFilesTar(dir string, files []RemoteFileEntry, w io.Writer, progress *C
 	}
 	return nil
 }
+
+// RemoteFileInfo is the minimal stat shape we need to plan a parallel
+// single-file download. Size is the file's byte length; Mode is the POSIX
+// mode bits (lower 9 bits only); IsRegular distinguishes regular files from
+// directories, symlinks, sockets, etc.
+type RemoteFileInfo struct {
+	Size      int64
+	Mode      os.FileMode
+	IsRegular bool
+}
+
+// probeRemoteFile collects size, mode, and type for path in a single exec so
+// we can decide how to transfer it without a follow-up round-trip. The
+// output format is one line with three space-separated fields: SIZE MODE
+// TYPE. TYPE is `regular` for regular files (anything else causes callers to
+// refuse parallel chunking).
+func (c *Client) probeRemoteFile(ctx context.Context, namespace, pod, container, path string) (*RemoteFileInfo, error) {
+	// Prefer GNU stat for its predictable -c format; fall back to a portable
+	// shell computation using `wc -c` (size), the mode bits derived from
+	// `ls -l`, and a coarse type check via `test -f`.
+	script := fmt.Sprintf(
+		`p=%s; if stat -c '%%s %%a %%F' "$p" 2>/dev/null; then :; else s=$(wc -c <"$p" 2>/dev/null || echo 0); if [ -f "$p" ]; then t=regular; else t=other; fi; echo "$s 644 $t"; fi`,
+		shellutil.Quote(path),
+	)
+	out, err := c.ExecShInContainer(ctx, namespace, pod, container, script)
+	if err != nil {
+		return nil, fmt.Errorf("probe %s: %w", path, err)
+	}
+	return parseProbeOutput(out)
+}
+
+// parseProbeOutput decodes the single-line probe emitted by probeRemoteFile.
+// Extracted so we can unit-test the parser without round-tripping through
+// exec.
+func parseProbeOutput(raw []byte) (*RemoteFileInfo, error) {
+	line := strings.TrimSpace(string(raw))
+	if line == "" {
+		return nil, fmt.Errorf("empty probe output")
+	}
+	fields := strings.Fields(line)
+	if len(fields) < 3 {
+		return nil, fmt.Errorf("unexpected probe output: %q", line)
+	}
+	size, err := strconv.ParseInt(fields[0], 10, 64)
+	if err != nil || size < 0 {
+		return nil, fmt.Errorf("invalid size %q", fields[0])
+	}
+	// GNU stat prints mode as octal digits without a leading 0, so ParseUint
+	// with base 8 picks up "644", "755", etc. correctly. We cap to the
+	// low-9 permission bits — type bits are irrelevant for chmod on the
+	// local side.
+	mode, err := strconv.ParseUint(fields[1], 8, 32)
+	if err != nil {
+		mode = 0o644
+	}
+	// GNU stat's %F prints a human-readable type description. "regular file"
+	// and "regular empty file" both start with "regular"; everything else
+	// (directory, symlink, etc.) doesn't. The portable fallback in
+	// probeRemoteFile emits "regular" or "other" directly.
+	typ := strings.ToLower(strings.Join(fields[2:], " "))
+	isReg := strings.HasPrefix(typ, "regular")
+	return &RemoteFileInfo{
+		Size:      size,
+		Mode:      os.FileMode(mode) & os.ModePerm,
+		IsRegular: isReg,
+	}, nil
+}
+
+// minBytesForFileParallel is the file-size floor below which range splits
+// cost more than they save: dd process startup plus the SPDY stream setup
+// for each chunk dominates when each chunk would be a few MiB.
+const minBytesForFileParallel = 16 * 1024 * 1024
+
+// adaptiveFileParallelism chooses how many concurrent ranges to run given a
+// file size and the user's requested cap. Small files get fewer workers so
+// a 20 MiB download with --parallel 8 doesn't burn setup time on 8 tiny
+// ranges. The schedule is intentionally coarse; the only hard rules are:
+// never exceed `requested`, never go below 1, and always require that each
+// worker own at least ~8 MiB of data so range-read overhead is amortized.
+func adaptiveFileParallelism(size int64, requested int) int {
+	if requested < 1 {
+		requested = 1
+	}
+	if size < minBytesForFileParallel {
+		return 1
+	}
+	// One worker per ~16 MiB of data, capped at requested.
+	ideal := int(size / (16 * 1024 * 1024))
+	if ideal < 1 {
+		ideal = 1
+	}
+	if ideal > requested {
+		ideal = requested
+	}
+	return ideal
+}
+
+// splitFileRanges divides [0,size) into n contiguous byte ranges. The last
+// range absorbs the remainder so no bytes are dropped when size % n != 0.
+// Returns offset/length pairs suitable for `dd iflag=skip_bytes,count_bytes`
+// or `tail -c +OFFSET | head -c LENGTH`.
+func splitFileRanges(size int64, n int) [][2]int64 {
+	if n < 1 {
+		n = 1
+	}
+	if size <= 0 {
+		return nil
+	}
+	base := size / int64(n)
+	out := make([][2]int64, 0, n)
+	var off int64
+	for i := 0; i < n; i++ {
+		length := base
+		if i == n-1 {
+			length = size - off
+		}
+		if length <= 0 {
+			continue
+		}
+		out = append(out, [2]int64{off, length})
+		off += length
+	}
+	return out
+}
+
+// CopyFileFromPodParallelWithOptions downloads a single file from the pod
+// using up to `parallel` concurrent byte-range streams. It falls back to
+// CopyFromPodInContainerWithOptions (one exec, tar-wrapped) whenever:
+//   - parallel <= 1 (explicitly sequential)
+//   - the probe fails (can't determine size/mode)
+//   - the file isn't regular (directory, symlink, etc.)
+//   - the file is smaller than minBytesForFileParallel
+//
+// The parallel path is optimized for the high-RTT case where per-SPDY-stream
+// flow control caps a single stream well below available bandwidth.
+func (c *Client) CopyFileFromPodParallelWithOptions(ctx context.Context, namespace, pod, container, remotePath, localPath string, parallel int, opts CopyOptions) error {
+	if parallel <= 1 {
+		return c.CopyFromPodInContainerWithOptions(ctx, namespace, pod, container, remotePath, localPath, opts)
+	}
+
+	opts.Progress.phase("probing remote file")
+	info, probeErr := c.probeRemoteFile(ctx, namespace, pod, container, remotePath)
+	opts.Progress.phase("")
+	if probeErr != nil || !info.IsRegular || info.Size < minBytesForFileParallel {
+		return c.CopyFromPodInContainerWithOptions(ctx, namespace, pod, container, remotePath, localPath, opts)
+	}
+	eff := adaptiveFileParallelism(info.Size, parallel)
+	if eff <= 1 {
+		return c.CopyFromPodInContainerWithOptions(ctx, namespace, pod, container, remotePath, localPath, opts)
+	}
+	ranges := splitFileRanges(info.Size, eff)
+
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		return err
+	}
+	// Pre-allocate the tmp file so worker WriteAt calls can land at their
+	// final offsets without racing extensions. Using CreateTemp gives us a
+	// unique name adjacent to the destination, matching the atomic-rename
+	// pattern used elsewhere.
+	tmp, err := createTempDownloadFile(localPath)
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanupTmp := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+	if err := tmp.Truncate(info.Size); err != nil {
+		cleanupTmp()
+		return fmt.Errorf("preallocate %s: %w", tmpPath, err)
+	}
+
+	opts.Progress.fileStart(filepath.Base(localPath), info.Size)
+	if err := c.runFileRangesDownload(ctx, namespace, pod, container, remotePath, tmp, ranges, opts.Progress); err != nil {
+		cleanupTmp()
+		return err
+	}
+	opts.Progress.fileEnd(filepath.Base(localPath))
+
+	if err := tmp.Chmod(info.Mode | 0o600); err != nil {
+		cleanupTmp()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, localPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
+// runFileRangesDownload fans out one exec stream per byte range, each
+// reading its slice via `tail -c +OFFSET | head -c LENGTH` (universally
+// portable) and writing into the pre-allocated tmp file at the matching
+// offset via WriteAt. The first worker error cancels the rest.
+func (c *Client) runFileRangesDownload(ctx context.Context, namespace, pod, container, remotePath string, dst *os.File, ranges [][2]int64, progress *CopyProgress) error {
+	cs, cfg, err := c.clientset()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(ranges))
+	for _, r := range ranges {
+		wg.Add(1)
+		go func(offset, length int64) {
+			defer wg.Done()
+			if _, err := c.downloadFileRange(ctx, cs, cfg, namespace, pod, container, remotePath, dst, offset, length, progress); err != nil {
+				errCh <- err
+				cancel()
+			}
+		}(r[0], r[1])
+	}
+	wg.Wait()
+	close(errCh)
+	for e := range errCh {
+		if e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
+// downloadFileRange pulls [offset, offset+length) from remotePath and writes
+// it into dst at the matching offset. Returns the number of bytes actually
+// written so callers (resume logic in particular) can distinguish
+// "connection died after N bytes" from "connection died with zero progress".
+// The remote command uses `tail -c +N | head -c L` instead of
+// `dd iflag=skip_bytes` because the former works on GNU coreutils, BSD
+// coreutils, and busybox alike; `dd`'s byte-level skip/count flags have
+// patchy busybox support.
+func (c *Client) downloadFileRange(ctx context.Context, cs *kubernetes.Clientset, cfg *rest.Config, namespace, pod, container, remotePath string, dst *os.File, offset, length int64, progress *CopyProgress) (int64, error) {
+	// tail's `+N` argument is 1-indexed (start at byte N), so offset 0 maps
+	// to `tail -c +1`. head -c bounds the output length exactly, which
+	// means any over-read from tail's buffering is discarded harmlessly.
+	script := fmt.Sprintf(
+		"tail -c +%d %s | head -c %d",
+		offset+1,
+		shellutil.Quote(remotePath),
+		length,
+	)
+	cmd := []string{"sh", "-lc", script}
+
+	pr, pw := io.Pipe()
+	var errBuf bytes.Buffer
+	execErrCh := make(chan error, 1)
+	go func() {
+		err := c.execStream(ctx, cs, cfg, namespace, pod, container, cmd, nil, pw, &errBuf, false)
+		_ = pw.CloseWithError(err)
+		execErrCh <- err
+	}()
+
+	// offsetWriter writes to dst at a specific base offset, advancing with
+	// each Write. It also reports to progress so the shared CopyProgress
+	// ticks up as bytes land on disk (not just arrive over the wire).
+	w := &offsetWriter{dst: dst, offset: offset, progress: progress}
+	copied, copyErr := io.Copy(w, pr)
+	_ = pr.Close()
+	execErr := <-execErrCh
+	if copyErr != nil {
+		return copied, fmt.Errorf("range [%d,%d) copy: %w", offset, offset+length, copyErr)
+	}
+	if execErr != nil {
+		msg := strings.TrimSpace(errBuf.String())
+		if msg != "" {
+			return copied, fmt.Errorf("range [%d,%d) exec: %w: %s", offset, offset+length, execErr, msg)
+		}
+		return copied, fmt.Errorf("range [%d,%d) exec: %w", offset, offset+length, execErr)
+	}
+	if copied != length {
+		return copied, fmt.Errorf("range [%d,%d) delivered %d bytes", offset, offset+length, copied)
+	}
+	return copied, nil
+}
+
+// offsetWriter is a scratch io.Writer that writes via WriteAt into a shared
+// *os.File at a moving offset. Workers own disjoint ranges so there's no
+// overlap and WriteAt is safe to call concurrently per POSIX.
+type offsetWriter struct {
+	dst      *os.File
+	offset   int64
+	progress *CopyProgress
+}
+
+func (w *offsetWriter) Write(p []byte) (int, error) {
+	n, err := w.dst.WriteAt(p, w.offset)
+	if n > 0 {
+		w.offset += int64(n)
+		w.progress.bytes(n)
+	}
+	return n, err
+}

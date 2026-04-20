@@ -1145,6 +1145,20 @@ func (c *Client) CopyFromPodInContainer(ctx context.Context, namespace, podName,
 }
 
 func (c *Client) CopyFromPodInContainerWithOptions(ctx context.Context, namespace, podName, container, remotePath, localPath string, opts CopyOptions) error {
+	// Preferred path: probe the remote file so we know its size/mode up
+	// front, pre-allocate a tmp file, and stream via `tail -c +N | head -c L`.
+	// A mid-stream failure lets us resume from the last byte successfully
+	// written instead of restarting the whole transfer — critical on
+	// high-latency clusters where a single stream may hit a ~30-minute
+	// intermediate timeout mid-file.
+	if info, err := c.probeRemoteFile(ctx, namespace, podName, container, remotePath); err == nil && info.IsRegular {
+		return c.copyFileFromPodSequentialResume(ctx, namespace, podName, container, remotePath, localPath, info, opts.Progress)
+	}
+
+	// Fallback path for probe failures (no stat in busybox, permission
+	// wrinkles, etc.) or non-regular files: the legacy tar-wrapped
+	// extraction. Retries here can't resume — the tar stream restarts from
+	// scratch — so they stop after any byte has been produced locally.
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		produced, err := c.copyFromPodInContainerOnce(ctx, namespace, podName, container, remotePath, localPath, opts.Progress)
@@ -1152,14 +1166,92 @@ func (c *Client) CopyFromPodInContainerWithOptions(ctx context.Context, namespac
 			return nil
 		}
 		lastErr = err
-		// Don't retry once bytes have been written locally: restarting would
-		// silently redo a partially-transferred large file.
 		if produced || !isRetryableCopyStreamError(err) || attempt == 2 {
 			return err
 		}
 		time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
 	}
 	return lastErr
+}
+
+// copyFileFromPodSequentialResume streams a single regular file into
+// localPath with resume-on-retry semantics. The tmp file is pre-allocated
+// to info.Size via Truncate; each attempt downloads [offset, size) into
+// that file using downloadFileRange. On partial-progress error the next
+// attempt picks up where this one left off, avoiding the re-download loop
+// that the tar-based path suffers from. No-progress errors still bail out
+// after a few attempts so genuine failures don't spin forever.
+func (c *Client) copyFileFromPodSequentialResume(ctx context.Context, namespace, podName, container, remotePath, localPath string, info *RemoteFileInfo, progress *CopyProgress) error {
+	cs, cfg, err := c.clientset()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		return err
+	}
+	tmp, err := createTempDownloadFile(localPath)
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+	if err := tmp.Truncate(info.Size); err != nil {
+		cleanup()
+		return fmt.Errorf("preallocate %s: %w", tmpPath, err)
+	}
+
+	progress.fileStart(filepath.Base(localPath), info.Size)
+
+	const maxNoProgressAttempts = 3
+	var offset int64
+	noProgress := 0
+	for {
+		remaining := info.Size - offset
+		if remaining <= 0 {
+			break
+		}
+		copied, runErr := c.downloadFileRange(ctx, cs, cfg, namespace, podName, container, remotePath, tmp, offset, remaining, progress)
+		offset += copied
+		if runErr == nil {
+			break
+		}
+		if !isRetryableCopyStreamError(runErr) {
+			cleanup()
+			return runErr
+		}
+		if copied <= 0 {
+			noProgress++
+			if noProgress >= maxNoProgressAttempts {
+				cleanup()
+				return runErr
+			}
+		} else {
+			// We made forward progress this attempt; reset the no-progress
+			// counter so a transfer that's actually streaming (just
+			// periodically blipping) can recover indefinitely.
+			noProgress = 0
+		}
+		time.Sleep(time.Duration(noProgress+1) * 500 * time.Millisecond)
+	}
+
+	progress.fileEnd(filepath.Base(localPath))
+
+	if err := tmp.Chmod(info.Mode | 0o600); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, localPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 // copyFromPodInContainerOnce streams a single remote file as a one-entry tar
@@ -1251,10 +1343,17 @@ func extractSingleFileFromTar(r io.Reader, localPath string, progress *CopyProgr
 			if progress != nil {
 				dst = &countingWriter{w: tempFile, progress: progress}
 			}
-			if _, err := io.Copy(dst, tr); err != nil {
-				return produced, err
+			// Flip `produced` as soon as any byte has landed on disk so the
+			// retry loop in CopyFromPodInContainerWithOptions doesn't restart
+			// from scratch (which would double-count progress and silently
+			// redo a partially-transferred file).
+			n, copyErr := io.Copy(dst, tr)
+			if n > 0 {
+				produced = true
 			}
-			produced = true
+			if copyErr != nil {
+				return produced, copyErr
+			}
 			fileMode = os.FileMode(hdr.Mode)
 			foundFile = true
 			progress.fileEnd(entryName)
@@ -1371,11 +1470,17 @@ func extractTarToDir(r io.Reader, dir string, progress *CopyProgress) (produced 
 			if progress != nil {
 				dst = &countingWriter{w: f, progress: progress}
 			}
-			if _, err := io.Copy(dst, tr); err != nil {
-				_ = f.Close()
-				return produced, err
+			// Flip `produced` on first byte so retries don't restart an
+			// in-progress tar extraction (which would re-send the whole
+			// archive and double-count progress).
+			n, copyErr := io.Copy(dst, tr)
+			if n > 0 {
+				produced = true
 			}
-			produced = true
+			if copyErr != nil {
+				_ = f.Close()
+				return produced, copyErr
+			}
 			progress.fileEnd(hdr.Name)
 			if err := f.Close(); err != nil {
 				return produced, err

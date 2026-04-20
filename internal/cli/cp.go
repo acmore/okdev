@@ -243,8 +243,11 @@ func runSinglePodCp(ctx context.Context, client *kube.Client, namespace, pod, co
 
 // runSinglePodCpWithParallel is the work-horse copy path. When parallel > 1
 // and the operation is a directory copy, it fans out onto
-// CopyDir{To,From}PodParallelWithOptions. Single-file copies ignore parallel
-// today; range-based single-file parallelism is left for a follow-up.
+// CopyDir{To,From}PodParallelWithOptions. Single-file downloads with
+// parallel > 1 use range-based chunking via CopyFileFromPodParallelWithOptions;
+// single-file uploads still use the single-stream path today because
+// in-place reassembly on the pod requires dd seek_bytes support that isn't
+// universally available on busybox.
 func runSinglePodCpWithParallel(ctx context.Context, client *kube.Client, namespace, pod, container, localPath, remotePath string, upload bool, parallel int, opts kube.CopyOptions) error {
 	if upload {
 		info, err := os.Stat(localPath)
@@ -272,6 +275,9 @@ func runSinglePodCpWithParallel(ctx context.Context, client *kube.Client, namesp
 			return client.CopyDirFromPodParallelWithOptions(ctx, namespace, pod, container, remotePath, localPath, parallel, opts)
 		}
 		return client.CopyDirFromPodWithOptions(ctx, namespace, pod, container, remotePath, localPath, opts)
+	}
+	if parallel > 1 {
+		return client.CopyFileFromPodParallelWithOptions(ctx, namespace, pod, container, remotePath, localPath, parallel, opts)
 	}
 	return client.CopyFromPodInContainerWithOptions(ctx, namespace, pod, container, remotePath, localPath, opts)
 }

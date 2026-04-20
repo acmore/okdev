@@ -153,6 +153,69 @@ func TestExtractSingleFileFromTarRejectsTruncatedArchive(t *testing.T) {
 	}
 }
 
+// TestExtractSingleFileFromTarMidStreamFailureReportsProduced exercises the
+// partial-write bug that caused progress to accumulate across retries: if
+// io.Copy errors after writing some bytes, `produced` must be true so the
+// outer retry loop stops instead of restarting the transfer from scratch.
+func TestExtractSingleFileFromTarMidStreamFailureReportsProduced(t *testing.T) {
+	payload := bytes.Repeat([]byte("x"), 4096)
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Name: "f.txt", Mode: 0o644, Size: int64(len(payload)), Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Chop the archive mid-body so tar.Reader raises an error after some
+	// bytes have been copied out. 1024 < 2048 < full body (4096) so the copy
+	// will succeed for a bit then fail.
+	raw := buf.Bytes()
+	// Keep the 512-byte header + 2048 payload bytes, cut the rest.
+	truncated := raw[:512+2048]
+
+	produced, err := extractSingleFileFromTar(bytes.NewReader(truncated), filepath.Join(t.TempDir(), "out.txt"), nil)
+	if err == nil {
+		t.Fatal("expected mid-stream tar extraction to fail")
+	}
+	if !produced {
+		t.Fatal("produced must be true after partial write; without this the retry loop double-counts progress")
+	}
+}
+
+// TestExtractTarToDirMidStreamFailureReportsProduced is the dir-copy twin of
+// the single-file test above. A truncated multi-file archive must still
+// report produced=true when the first file was written in full, and also
+// when the failure happens mid-way through a file's body.
+func TestExtractTarToDirMidStreamFailureReportsProduced(t *testing.T) {
+	payload := bytes.Repeat([]byte("x"), 4096)
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Name: "a.txt", Mode: 0o644, Size: int64(len(payload)), Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw := buf.Bytes()
+	truncated := raw[:512+2048]
+
+	dir := t.TempDir()
+	produced, err := extractTarToDir(bytes.NewReader(truncated), dir, nil)
+	if err == nil {
+		t.Fatal("expected mid-stream tar extraction to fail")
+	}
+	if !produced {
+		t.Fatal("produced must be true after partial write")
+	}
+}
+
 func TestExtractTarToDirReportsProduced(t *testing.T) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
