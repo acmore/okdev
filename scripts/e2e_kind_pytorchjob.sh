@@ -898,6 +898,22 @@ if [[ -e "$MESH_SYNC/a" ]]; then
   echo "ERROR: expected explicit sync remote $MESH_REMOTE_ROOT to avoid creating local $MESH_SYNC/a" >&2
   exit 1
 fi
+
+echo "Waiting for mesh receivers to report healthy before verifying synced files"
+MESH_HEALTH_STATUS=""
+for i in $(seq 1 15); do
+  MESH_HEALTH_STATUS=$(HOME="$MESH_HOME" "$OKDEV_BIN" --config "$MESH_CFG" --session "$MESH_SESSION" status --details)
+  if [[ "$MESH_HEALTH_STATUS" == *"2/2 receiver(s) healthy"* ]]; then
+    echo "Mesh health fully converged on attempt $i"
+    break
+  fi
+  if [[ "$i" -eq 15 ]]; then
+    echo "ERROR: expected mesh status to show 2/2 healthy receivers before file verification" >&2
+    echo "$MESH_HEALTH_STATUS" >&2
+    exit 1
+  fi
+  sleep 3
+done
 echo "Mesh status verified"
 
 echo "Verifying workspace synced to master via syncthing"
