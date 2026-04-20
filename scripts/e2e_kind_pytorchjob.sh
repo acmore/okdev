@@ -905,12 +905,21 @@ MESH_WORKLOAD=$(HOME="$MESH_HOME" session_workload_name "$NAMESPACE" "$MESH_SESS
 MESH_MASTER=$(kubectl -n "$NAMESPACE" get pods \
   -l "training.kubeflow.org/job-name=$MESH_WORKLOAD,training.kubeflow.org/replica-type=master" \
   -o jsonpath='{.items[0].metadata.name}')
-MASTER_CONTENT=$(kubectl -n "$NAMESPACE" exec "$MESH_MASTER" -c pytorch -- cat "$MESH_REMOTE_ROOT/mesh-hello.txt" 2>/dev/null || true)
-if [[ "$MASTER_CONTENT" != "mesh-hello" ]]; then
+MASTER_CONTENT=""
+MASTER_SYNC_OK=false
+for attempt in $(seq 1 30); do
+  MASTER_CONTENT=$(kubectl -n "$NAMESPACE" exec "$MESH_MASTER" -c pytorch -- cat "$MESH_REMOTE_ROOT/mesh-hello.txt" 2>/dev/null || true)
+  if [[ "$MASTER_CONTENT" == "mesh-hello" ]]; then
+    MASTER_SYNC_OK=true
+    echo "Master workspace verified on attempt $attempt"
+    break
+  fi
+  sleep 2
+done
+if [[ "$MASTER_SYNC_OK" != "true" ]]; then
   echo "ERROR: expected mesh-hello.txt on master, got '$MASTER_CONTENT'" >&2
   exit 1
 fi
-echo "Master workspace verified"
 
 echo "Verifying workspace synced to workers via mesh (no PVC)"
 MESH_WORKERS=$(kubectl -n "$NAMESPACE" get pods \
