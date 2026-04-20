@@ -415,8 +415,13 @@ func (d *DevEnvironment) workspaceMountPathFromManifest(configPath string) strin
 	if err != nil {
 		return ""
 	}
+	// Workload manifests are Go templates that get rendered at apply time
+	// (e.g. {{ .WorkloadName }}). Strip placeholders with a safe stub so the
+	// YAML parser can still extract the workspace mount path, which is
+	// independent of the template variables.
+	sanitized := stripGoTemplatePlaceholders(raw)
 	var obj map[string]any
-	if err := yaml.Unmarshal(raw, &obj); err != nil {
+	if err := yaml.Unmarshal(sanitized, &obj); err != nil {
 		return ""
 	}
 	targetContainer := strings.TrimSpace(d.Spec.Workload.Attach.Container)
@@ -437,6 +442,17 @@ func (d *DevEnvironment) workspaceMountPathFromManifest(configPath string) strin
 		}
 	}
 	return ""
+}
+
+// goTemplatePlaceholderPattern matches Go template actions like
+// `{{ .WorkloadName }}` or `{{- .RunID -}}` that may appear in workload
+// manifests. They are rendered at apply time, but we need to be able to parse
+// the unrendered manifest as YAML when resolving things like the workspace
+// mount path, which does not depend on template variables.
+var goTemplatePlaceholderPattern = regexp.MustCompile(`\{\{-?[^}]*-?\}\}`)
+
+func stripGoTemplatePlaceholders(raw []byte) []byte {
+	return goTemplatePlaceholderPattern.ReplaceAll(raw, []byte("okdev-placeholder"))
 }
 
 func resolveObjectPath(root map[string]any, path string) (map[string]any, bool) {
