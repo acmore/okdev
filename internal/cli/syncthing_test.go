@@ -162,9 +162,12 @@ func TestWaitForLocalFolderScanCompletes(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	err := waitForLocalFolderScan(context.Background(), srv.URL, "k", "okdev-test", 5*time.Second)
+	globalFiles, err := waitForLocalFolderScan(context.Background(), srv.URL, "k", "okdev-test", false, 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if globalFiles != 1 {
+		t.Fatalf("expected globalFiles=1, got %d", globalFiles)
 	}
 	mu.Lock()
 	if calls < 3 {
@@ -178,10 +181,39 @@ func TestWaitForLocalFolderScanTimeout(t *testing.T) {
 		_, _ = w.Write([]byte(`{"state":"scanning","globalFiles":0}`))
 	}))
 	defer srv.Close()
-	err := waitForLocalFolderScan(context.Background(), srv.URL, "k", "okdev-test", 500*time.Millisecond)
+	_, err := waitForLocalFolderScan(context.Background(), srv.URL, "k", "okdev-test", false, 500*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
+}
+
+func TestWaitForLocalFolderScanWaitsForExpectedFiles(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		c := calls
+		mu.Unlock()
+		if c <= 2 {
+			_, _ = w.Write([]byte(`{"state":"idle","globalFiles":0}`))
+		} else {
+			_, _ = w.Write([]byte(`{"state":"idle","globalFiles":1}`))
+		}
+	}))
+	defer srv.Close()
+	globalFiles, err := waitForLocalFolderScan(context.Background(), srv.URL, "k", "okdev-test", true, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if globalFiles != 1 {
+		t.Fatalf("expected globalFiles=1, got %d", globalFiles)
+	}
+	mu.Lock()
+	if calls < 3 {
+		t.Fatalf("expected at least 3 calls, got %d", calls)
+	}
+	mu.Unlock()
 }
 
 func TestSyncthingInitialSyncComplete(t *testing.T) {
@@ -709,7 +741,7 @@ func TestRunTwoPhaseInitialSync(t *testing.T) {
 				needBytesValue = 0
 				w.WriteHeader(http.StatusOK)
 			case r.Method == http.MethodGet && r.URL.Path == "/rest/db/status":
-				fmt.Fprintf(w, `{"needBytes":%d,"state":"idle","globalFiles":1}`, needBytesValue)
+				fmt.Fprintf(w, `{"needBytes":%d,"state":"idle","globalFiles":1,"localFiles":1}`, needBytesValue)
 			case r.Method == http.MethodGet && r.URL.Path == "/rest/config/restart-required":
 				w.Write([]byte(`{"requiresRestart":false}`))
 			case r.Method == http.MethodPost && r.URL.Path == "/rest/system/restart":
@@ -838,7 +870,7 @@ func TestRunTwoPhaseInitialSyncWaitsForDeletionConvergence(t *testing.T) {
 					}
 					// else need = 0, converged
 				}
-				fmt.Fprintf(w, `{"needBytes":%d,"state":"idle","globalFiles":1}`, need)
+				fmt.Fprintf(w, `{"needBytes":%d,"state":"idle","globalFiles":1,"localFiles":1}`, need)
 			case r.Method == http.MethodGet && r.URL.Path == "/rest/config/restart-required":
 				w.Write([]byte(`{"requiresRestart":false}`))
 			case r.Method == http.MethodPost && r.URL.Path == "/rest/system/restart":
@@ -909,7 +941,7 @@ func TestRunTwoPhaseInitialSyncWaitsForPeerConnection(t *testing.T) {
 				overrideCalls++
 				w.WriteHeader(http.StatusOK)
 			case r.Method == http.MethodGet && r.URL.Path == "/rest/db/status":
-				w.Write([]byte(`{"needBytes":0,"state":"idle","globalFiles":1}`))
+				w.Write([]byte(`{"needBytes":0,"state":"idle","globalFiles":1,"localFiles":1}`))
 			case r.Method == http.MethodGet && r.URL.Path == "/rest/config/restart-required":
 				w.Write([]byte(`{"requiresRestart":false}`))
 			case r.Method == http.MethodPost && r.URL.Path == "/rest/system/restart":

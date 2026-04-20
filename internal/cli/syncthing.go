@@ -1099,21 +1099,51 @@ func syncthingFolderNeedBytes(ctx context.Context, base, key, folderID string) (
 	return payload.NeedBytes, nil
 }
 
-// syncthingFolderStatus returns the state and globalFiles count for a folder.
-func syncthingFolderStatus(ctx context.Context, base, key, folderID string) (state string, globalFiles int64, err error) {
+type syncthingFolderStatusInfo struct {
+	State       string
+	GlobalFiles int64
+	LocalFiles  int64
+	NeedBytes   int64
+}
+
+func syncthingFolderStatusInfoForFolder(ctx context.Context, base, key, folderID string) (syncthingFolderStatusInfo, error) {
 	path := fmt.Sprintf("/rest/db/status?folder=%s", url.QueryEscape(folderID))
 	body, err := syncthingAPIRequestWithContext(ctx, http.MethodGet, base, key, path, nil, "")
 	if err != nil {
-		return "", 0, err
+		return syncthingFolderStatusInfo{}, err
 	}
 	var payload struct {
 		State       string `json:"state"`
 		GlobalFiles int64  `json:"globalFiles"`
+		LocalFiles  int64  `json:"localFiles"`
+		NeedBytes   int64  `json:"needBytes"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
+		return syncthingFolderStatusInfo{}, err
+	}
+	return syncthingFolderStatusInfo{
+		State:       payload.State,
+		GlobalFiles: payload.GlobalFiles,
+		LocalFiles:  payload.LocalFiles,
+		NeedBytes:   payload.NeedBytes,
+	}, nil
+}
+
+// syncthingFolderStatus returns the state and globalFiles count for a folder.
+func syncthingFolderStatus(ctx context.Context, base, key, folderID string) (state string, globalFiles int64, err error) {
+	status, err := syncthingFolderStatusInfoForFolder(ctx, base, key, folderID)
+	if err != nil {
 		return "", 0, err
 	}
-	return payload.State, payload.GlobalFiles, nil
+	return status.State, status.GlobalFiles, nil
+}
+
+func syncthingFolderHasLocalFiles(ctx context.Context, base, key, folderID string, expectedFiles int64) (bool, syncthingFolderStatusInfo, error) {
+	status, err := syncthingFolderStatusInfoForFolder(ctx, base, key, folderID)
+	if err != nil {
+		return false, syncthingFolderStatusInfo{}, err
+	}
+	return status.GlobalFiles >= expectedFiles && status.LocalFiles >= expectedFiles, status, nil
 }
 
 // syncthingFolderScanned checks whether the syncthing folder has completed its
@@ -1139,26 +1169,48 @@ func syncthingFolderScanned(ctx context.Context, base, key, folderID string) (bo
 // waitForLocalFolderScan polls the local syncthing until the folder has
 // completed its initial scan. This must be called before trusting completion
 // or needBytes values, since an unscanned folder reports 0 need (empty index).
-func waitForLocalFolderScan(ctx context.Context, base, key, folderID string, timeout time.Duration) error {
+func waitForLocalFolderScan(ctx context.Context, base, key, folderID string, expectFiles bool, timeout time.Duration) (int64, error) {
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		scanned, err := syncthingFolderScanned(ctx, base, key, folderID)
+		state, globalFiles, err := syncthingFolderStatus(ctx, base, key, folderID)
 		if err != nil {
 			slog.Debug("syncthing folder scan check failed", "folder", folderID, "error", err)
-		} else if scanned {
-			return nil
+		} else {
+			scanned := false
+			switch state {
+			case "idle", "syncing", "sync-waiting", "sync-preparing":
+				scanned = true
+			}
+			if scanned && (!expectFiles || globalFiles > 0) {
+				return globalFiles, nil
+			}
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("folder %s did not complete initial scan within %s", folderID, timeout)
+			return 0, fmt.Errorf("folder %s did not complete initial scan within %s", folderID, timeout)
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return 0, ctx.Err()
 		case <-ticker.C:
 		}
 	}
+}
+
+func localPathHasSyncCandidates(localPath string) bool {
+	entries, err := os.ReadDir(localPath)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		switch entry.Name() {
+		case ".stignore", ".stfolder":
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func syncthingPeerConnected(ctx context.Context, base, key, peerID string) (bool, error) {
@@ -1249,7 +1301,7 @@ func (e *syncthingRateEstimator) Estimate(now time.Time, totalBytes int64) (int6
 // opening a second port-forward just for the probe.
 func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
-}, namespace, pod, sessionName, mode string, bootstrapResume bool, timeout time.Duration, onStatus func(string), onProgress func(syncthingInitialSyncProgress)) error {
+}, namespace, pod, sessionName, localPath, mode string, bootstrapResume bool, timeout time.Duration, onStatus func(string), onProgress func(syncthingInitialSyncProgress)) error {
 	folderID := "okdev-" + sessionName
 	localHome, err := localSyncthingStatusHome(sessionName)
 	if err != nil {
@@ -1322,14 +1374,11 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 	// Wait for the local folder's initial scan to finish before polling
 	// completion. An unscanned folder has an empty index, so both local and
 	// remote report 0 needBytes — causing a premature "sync complete".
-	if err := waitForLocalFolderScan(ctx, localBase, localKey, folderID, timeout); err != nil {
-		slog.Debug("waitForInitialSync: local folder scan wait failed, proceeding with poll", "error", err)
+	localHasSyncCandidates := localPathHasSyncCandidates(localPath)
+	localGlobalFiles, err := waitForLocalFolderScan(ctx, localBase, localKey, folderID, localHasSyncCandidates, timeout)
+	if err != nil {
+		return fmt.Errorf("wait for local folder scan: %w", err)
 	}
-
-	// Snapshot local globalFiles after scan. Used in two-phase mode to
-	// verify the remote has received the local index before accepting
-	// completion.
-	_, localGlobalFiles, _ := syncthingFolderStatus(ctx, localBase, localKey, folderID)
 
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(syncthingProgressInterval)
@@ -1382,9 +1431,9 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 					// completion can be 100% just because the remote
 					// hasn't learned about any files yet.
 					if localGlobalFiles > 0 {
-						_, remoteGlobal, statusErr := syncthingFolderStatus(ctx, remoteBase, remoteKey, folderID)
-						if statusErr != nil || remoteGlobal == 0 {
-							slog.Debug("waitForInitialSync: remote index not received yet", "localGlobalFiles", localGlobalFiles, "remoteGlobal", remoteGlobal)
+						remoteReady, remoteStatus, statusErr := syncthingFolderHasLocalFiles(ctx, remoteBase, remoteKey, folderID, localGlobalFiles)
+						if statusErr != nil || !remoteReady {
+							slog.Debug("waitForInitialSync: remote files not materialized yet", "localGlobalFiles", localGlobalFiles, "remoteGlobal", remoteStatus.GlobalFiles, "remoteLocal", remoteStatus.LocalFiles)
 							// Fall through to wait tick.
 						} else {
 							return nil
@@ -1492,15 +1541,11 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 	// Wait for the local folder's initial scan to complete before polling
 	// completion. Without this, the local index may be empty and the remote
 	// would report 0 needBytes — causing a premature "sync complete".
-	if err := waitForLocalFolderScan(ctx, localBase, localKey, folderID, initialSyncTimeout); err != nil {
+	localHasSyncCandidates := localPathHasSyncCandidates(localPath)
+	localGlobalFiles, err := waitForLocalFolderScan(ctx, localBase, localKey, folderID, localHasSyncCandidates, initialSyncTimeout)
+	if err != nil {
 		return fmt.Errorf("wait for local folder scan (phase 1): %w", err)
 	}
-
-	// Get the local folder's globalFiles count after scan. If the local has
-	// files, the remote must also know about them (globalFiles > 0) before
-	// we can trust its needBytes=0 as "sync complete" rather than "hasn't
-	// received the index yet".
-	_, localGlobalFiles, _ := syncthingFolderStatus(ctx, localBase, localKey, folderID)
 
 	// Poll until remote is in sync, calling override on every tick.
 	deadline := time.Now().Add(initialSyncTimeout)
@@ -1523,12 +1568,12 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 				// exchange hasn't completed yet — needBytes=0 is misleading.
 				indexReceived := true
 				if localGlobalFiles > 0 {
-					_, remoteGlobal, statusErr := syncthingFolderStatus(ctx, remoteBase, remoteKey, folderID)
+					remoteReady, remoteStatus, statusErr := syncthingFolderHasLocalFiles(ctx, remoteBase, remoteKey, folderID, localGlobalFiles)
 					if statusErr != nil {
 						slog.Debug("syncthing remote folder status poll failed", "error", statusErr)
 						indexReceived = false
-					} else if remoteGlobal == 0 {
-						slog.Debug("syncthing remote has not received index yet", "localGlobalFiles", localGlobalFiles)
+					} else if !remoteReady {
+						slog.Debug("syncthing remote files not materialized yet", "localGlobalFiles", localGlobalFiles, "remoteGlobal", remoteStatus.GlobalFiles, "remoteLocal", remoteStatus.LocalFiles)
 						indexReceived = false
 					}
 				}

@@ -681,7 +681,7 @@ func upSetup(state *upState) error {
 			localPath = state.syncPairs[0].Local
 		}
 		warnedLargeSync := false
-		if err := waitForInitialSync(state.ctx, state.opts, state.command.kube, state.command.namespace, target.PodName, state.command.sessionName, syncStartMode, bootstrapResume, initialSyncTimeout, func(status string) {
+		if err := waitForInitialSync(state.ctx, state.opts, state.command.kube, state.command.namespace, target.PodName, state.command.sessionName, localPath, syncStartMode, bootstrapResume, initialSyncTimeout, func(status string) {
 			state.ui.stepRun("initial sync", status)
 		}, func(progress syncthingInitialSyncProgress) {
 			state.ui.stepRun("initial sync", formatInitialSyncProgressDetail(progress))

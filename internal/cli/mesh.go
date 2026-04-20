@@ -452,7 +452,19 @@ func configureAndWaitMeshReceiver(ctx context.Context, opts *Options, k *kube.Cl
 		}
 
 		_, needBytes, pollErr := syncthingCompletion(ctx, recvBase, recvKey, folderID, hubDeviceID)
-		if pollErr == nil && needBytes == 0 && status.Connected {
+		filesReady := true
+		if pollErr == nil && status.Connected {
+			if hubStatus, err := syncthingFolderStatusInfoForFolder(ctx, hubBase, hubKey, folderID); err == nil && hubStatus.LocalFiles > 0 {
+				receiverReady, _, readyErr := syncthingFolderHasLocalFiles(ctx, recvBase, recvKey, folderID, hubStatus.LocalFiles)
+				if readyErr != nil {
+					slog.Debug("mesh: receiver file materialization poll error", "pod", pod.Name, "error", readyErr)
+					filesReady = false
+				} else {
+					filesReady = receiverReady
+				}
+			}
+		}
+		if pollErr == nil && needBytes == 0 && status.Connected && filesReady {
 			status.Synced = true
 			slog.Debug("mesh: receiver synced", "pod", pod.Name)
 			return status
@@ -583,7 +595,19 @@ func probeMeshReceiver(ctx context.Context, opts *Options, k *kube.Client, names
 	_, needBytes, pollErr := syncthingCompletion(ctx, recvBase, recvKey, folderID, hubDeviceID)
 	if pollErr == nil {
 		h.NeedBytes = needBytes
-		h.InSync = needBytes == 0 && h.Connected
+		filesReady := true
+		if h.Connected {
+			if hubStatus, err := syncthingFolderStatusInfoForFolder(ctx, hubBase, hubKey, folderID); err == nil && hubStatus.LocalFiles > 0 {
+				receiverReady, _, readyErr := syncthingFolderHasLocalFiles(ctx, recvBase, recvKey, folderID, hubStatus.LocalFiles)
+				if readyErr != nil {
+					h.Err = fmt.Sprintf("file materialization poll: %v", readyErr)
+					filesReady = false
+				} else {
+					filesReady = receiverReady
+				}
+			}
+		}
+		h.InSync = needBytes == 0 && h.Connected && filesReady
 	} else {
 		h.Err = fmt.Sprintf("completion poll: %v", pollErr)
 	}
