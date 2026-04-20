@@ -141,6 +141,28 @@ func TestSyncStartMode(t *testing.T) {
 	}
 }
 
+func TestUpSyncRestartRequired(t *testing.T) {
+	cases := []struct {
+		name           string
+		resetWorkspace bool
+		configChanged  bool
+		health         syncHealthStatus
+		want           bool
+	}{
+		{name: "active sync reused", health: syncHealthActive, want: false},
+		{name: "stale sync reused", health: syncHealthStale, want: false},
+		{name: "stopped sync restarted", health: syncHealthStopped, want: true},
+		{name: "reset restarts active sync", resetWorkspace: true, health: syncHealthActive, want: true},
+		{name: "config change restarts active sync", configChanged: true, health: syncHealthActive, want: true},
+	}
+
+	for _, tc := range cases {
+		if got := upSyncRestartRequired(tc.resetWorkspace, tc.configChanged, tc.health); got != tc.want {
+			t.Fatalf("%s: got %v want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestSyncPairsSummary(t *testing.T) {
 	if got := syncPairsSummary(nil, "->"); got != "no paths" {
 		t.Fatalf("unexpected empty summary %q", got)

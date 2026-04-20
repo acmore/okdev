@@ -996,9 +996,10 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, str
 		}
 		configChanged = changed
 	}
-	active := syncthingSessionActive(state.command.sessionName)
-	restartRequired := state.flags.resetWorkspace || configChanged || !active
-	startMode = syncStartMode(state.flags.resetWorkspace, targetReset, hasConfigState, configChanged, active)
+	syncHealth, _ := checkSyncHealth(state.command.sessionName)
+	syncRunning := syncHealth != syncHealthStopped
+	restartRequired := upSyncRestartRequired(state.flags.resetWorkspace, configChanged, syncHealth)
+	startMode = syncStartMode(state.flags.resetWorkspace, targetReset, hasConfigState, configChanged, syncRunning)
 	// Signal waitForInitialSync to probe the remote folder type for an
 	// incomplete bootstrap, reusing the port-forward it already opens.
 	bootstrapResume = len(state.syncPairs) == 1 && hasConfigState && !state.flags.resetWorkspace && !targetReset
@@ -1047,12 +1048,8 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, str
 	return summary, modeSym, startMode, bootstrapResume, nil
 }
 
-func syncthingSessionActive(sessionName string) bool {
-	if strings.TrimSpace(sessionName) == "" {
-		return false
-	}
-	status, _ := checkSyncHealth(sessionName)
-	return status == syncHealthActive
+func upSyncRestartRequired(resetWorkspace, configChanged bool, health syncHealthStatus) bool {
+	return resetWorkspace || configChanged || health == syncHealthStopped
 }
 
 type workloadExistenceChecker interface {

@@ -126,7 +126,7 @@ wait_status_active "$CFG_B" "$SESSION_B"
 wait_remote_file "$CFG_A" "$SESSION_A" "hello from session a"
 wait_remote_file "$CFG_B" "$SESSION_B" "hello from session b"
 
-LIST_OUTPUT=$("$OKDEV_BIN" list)
+LIST_OUTPUT=$("$OKDEV_BIN" --config "$CFG_A" list)
 if [[ "$LIST_OUTPUT" != *"$SESSION_A"* || "$LIST_OUTPUT" != *"$SESSION_B"* ]]; then
   echo "ERROR: expected okdev list to include both sessions" >&2
   echo "$LIST_OUTPUT" >&2
