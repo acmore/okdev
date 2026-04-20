@@ -827,6 +827,33 @@ mesh_cleanup() {
 # We already have the EXIT trap for the PVC test; add mesh cleanup.
 trap 'mesh_cleanup; cleanup' EXIT
 
+dump_mesh_diagnostics() {
+  local pod="$1"
+  local role="$2"
+  echo "--- mesh diagnostic dump (pod=$pod role=$role) ---"
+  echo "--- $role pytorch: ls -la $MESH_REMOTE_ROOT ---"
+  kubectl -n "$NAMESPACE" exec "$pod" -c pytorch -- ls -la "$MESH_REMOTE_ROOT" 2>&1 || true
+  echo "--- $role pytorch: ls -la /workspace ---"
+  kubectl -n "$NAMESPACE" exec "$pod" -c pytorch -- ls -la /workspace 2>&1 || true
+  echo "--- $role sidecar: ls -la $MESH_REMOTE_ROOT ---"
+  kubectl -n "$NAMESPACE" exec "$pod" -c okdev-sidecar -- ls -la "$MESH_REMOTE_ROOT" 2>&1 || true
+  echo "--- $role sidecar: ls -la /workspace ---"
+  kubectl -n "$NAMESPACE" exec "$pod" -c okdev-sidecar -- ls -la /workspace 2>&1 || true
+  echo "--- $role sidecar: stat /workspace/a and parents ---"
+  kubectl -n "$NAMESPACE" exec "$pod" -c okdev-sidecar -- sh -c 'for p in /workspace /workspace/a /workspace/a/mesh-hello.txt; do echo "$p:"; stat "$p" 2>&1 || true; done' 2>&1 || true
+  echo "--- $role sidecar: config.xml folders ---"
+  kubectl -n "$NAMESPACE" exec "$pod" -c okdev-sidecar -- sh -c 'cat /var/syncthing/config.xml 2>/dev/null || cat /var/syncthing/config/config.xml 2>/dev/null || true' 2>&1 | grep -E '<folder |<device |path=|<ignoreDelete' || true
+  echo "--- $role sidecar container logs (tail 300) ---"
+  kubectl -n "$NAMESPACE" logs "$pod" -c okdev-sidecar --tail=300 2>&1 || true
+  echo "--- $role sidecar previous container logs (tail 300) ---"
+  kubectl -n "$NAMESPACE" logs "$pod" -c okdev-sidecar --previous --tail=300 2>&1 || true
+  echo "--- local mesh session sync log ---"
+  cat "$MESH_HOME/.okdev/sessions/$MESH_SESSION/syncthing/local.log" 2>/dev/null || true
+  echo "--- mesh status --details ---"
+  HOME="$MESH_HOME" "$OKDEV_BIN" --config "$MESH_CFG" --session "$MESH_SESSION" status --details 2>&1 || true
+  echo "--- end mesh diagnostic dump ---"
+}
+
 echo "Scaffolding mesh PyTorchJob config"
 cd "$MESH_WORKDIR"
 HOME="$MESH_HOME" "$OKDEV_BIN" init \
@@ -934,6 +961,7 @@ for attempt in $(seq 1 30); do
 done
 if [[ "$MASTER_SYNC_OK" != "true" ]]; then
   echo "ERROR: expected mesh-hello.txt on master, got '$MASTER_CONTENT'" >&2
+  dump_mesh_diagnostics "$MESH_MASTER" "master" >&2 || true
   exit 1
 fi
 
@@ -952,6 +980,7 @@ for WPOD in $MESH_WORKERS; do
     fi
     if [[ "$attempt" -eq 30 ]]; then
       echo "ERROR: expected mesh-hello.txt on worker $WPOD, got '$WORKER_CONTENT'" >&2
+      dump_mesh_diagnostics "$WPOD" "worker" >&2 || true
       MESH_WORKER_OK=false
     fi
     sleep 2
