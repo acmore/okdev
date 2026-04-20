@@ -296,6 +296,20 @@ func TestClampParallel(t *testing.T) {
 	}
 }
 
+func TestCpParallelFlagDefaultsToOne(t *testing.T) {
+	cmd := newCpCmd(&Options{})
+	f := cmd.Flags().Lookup("parallel")
+	if f == nil {
+		t.Fatal("--parallel flag missing")
+	}
+	// Parallelism must be strictly opt-in: a recursive single-stream tar is
+	// the fastest path for most trees, and extra streams can measurably slow
+	// copies down when the apiserver/kubelet is the real bottleneck.
+	if f.DefValue != "1" {
+		t.Fatalf("--parallel default = %q, want 1", f.DefValue)
+	}
+}
+
 func TestCpReadinessCheckReadyOnlyBypass(t *testing.T) {
 	allPods := []kube.PodSummary{
 		{Name: "sess-worker-0", Phase: "Running"},

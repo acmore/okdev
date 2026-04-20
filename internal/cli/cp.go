@@ -148,13 +148,18 @@ func newCpCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&container, "container", "", "Override target container")
 	cmd.Flags().IntVar(&fanout, "fanout", pdshDefaultFanout, "Maximum concurrent pod transfers")
 	cmd.Flags().BoolVar(&readyOnly, "ready-only", false, "Copy only to/from pods that are already running (skip readiness check)")
-	cmd.Flags().IntVar(&parallel, "parallel", cpDefaultParallel, "Parallel streams per pod for directory copies (1 = sequential)")
+	cmd.Flags().IntVar(&parallel, "parallel", cpDefaultParallel, "Parallel tar streams per pod for directory copies (default 1; raise only for high-latency/high-bandwidth links where a single stream under-utilizes the pipe)")
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Suppress progress reporting and announce/summary lines")
 	return cmd
 }
 
 const (
-	cpDefaultParallel = 4
+	// cpDefaultParallel keeps directory copies on a single exec stream by
+	// default. Fanning out with explicit file lists trades one recursive tar
+	// walk (fast path) for N walks with per-file stat overhead, and the
+	// apiserver/kubelet is frequently the real bottleneck — so extra streams
+	// can hurt. Users opt in explicitly when they know the pipe can use it.
+	cpDefaultParallel = 1
 	cpMaxParallel     = 16
 	// cpMaxTotalStreams caps total concurrent exec streams against the API
 	// server (fanout × parallel) in multi-pod mode.

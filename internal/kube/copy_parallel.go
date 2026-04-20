@@ -127,10 +127,18 @@ func bucketFilesByLPT(entries []RemoteFileEntry, n int) [][]RemoteFileEntry {
 	return out
 }
 
+// minFilesForParallel is the tree-size floor below which parallelism costs
+// more (extra round-trip for enumeration, per-file stat overhead in tar)
+// than it saves. Callers that request --parallel >1 on a tiny tree are
+// silently downgraded to the single-stream recursive path.
+const minFilesForParallel = 8
+
 // CopyDirFromPodParallelWithOptions downloads remoteDir into localDir using
 // up to parallel concurrent exec streams. Each worker owns a disjoint subset
 // of files balanced by byte size. When parallel <= 1, or the remote contains
-// zero files, this falls back to the single-stream implementation.
+// fewer than minFilesForParallel files, this falls back to the single-stream
+// implementation which runs one recursive `tar cf - <dir>` and avoids the
+// per-file stat/open overhead that the parallel path incurs.
 func (c *Client) CopyDirFromPodParallelWithOptions(ctx context.Context, namespace, pod, container, remoteDir, localDir string, parallel int, opts CopyOptions) error {
 	if parallel <= 1 {
 		return c.CopyDirFromPodWithOptions(ctx, namespace, pod, container, remoteDir, localDir, opts)
@@ -144,7 +152,7 @@ func (c *Client) CopyDirFromPodParallelWithOptions(ctx context.Context, namespac
 	}
 	opts.Progress.phase("")
 
-	if len(entries) == 0 {
+	if len(entries) < minFilesForParallel {
 		return c.CopyDirFromPodWithOptions(ctx, namespace, pod, container, remoteDir, localDir, opts)
 	}
 
@@ -194,19 +202,26 @@ func (c *Client) runBucketDownload(ctx context.Context, cs *kubernetes.Clientset
 		return nil
 	}
 
-	args := make([]string, 0, len(files)+3)
-	args = append(args, "tar", "cf", "-", "-C", shellutil.Quote(remoteDir))
+	// Feed the file list via stdin (`tar cf - -T -`) instead of packing every
+	// path onto the command line. The arg-list approach trips ARG_MAX on
+	// directories with tens of thousands of files; stdin scales indefinitely.
+	// Paths containing newline characters would be misparsed here, but that's
+	// rare enough to punt on — users hitting it can fall back to --parallel 1.
+	var fileList bytes.Buffer
+	fileList.Grow(64 * len(files))
 	for _, f := range files {
-		args = append(args, shellutil.Quote(f.Path))
+		fileList.WriteString(f.Path)
+		fileList.WriteByte('\n')
 	}
-	script := strings.Join(args, " ")
+
+	script := fmt.Sprintf("tar cf - -C %s -T -", shellutil.Quote(remoteDir))
 	cmd := []string{"sh", "-lc", script}
 
 	pr, pw := io.Pipe()
 	var errBuf bytes.Buffer
 	execErrCh := make(chan error, 1)
 	go func() {
-		err := c.execStream(ctx, cs, cfg, namespace, pod, container, cmd, nil, pw, &errBuf, false)
+		err := c.execStream(ctx, cs, cfg, namespace, pod, container, cmd, &fileList, pw, &errBuf, false)
 		_ = pw.CloseWithError(err)
 		execErrCh <- err
 	}()
@@ -242,7 +257,7 @@ func (c *Client) CopyDirToPodParallelWithOptions(ctx context.Context, namespace,
 	if err != nil {
 		return err
 	}
-	if len(entries) == 0 {
+	if len(entries) < minFilesForParallel {
 		return c.CopyDirToPodWithOptions(ctx, namespace, pod, container, localDir, remoteDir, opts)
 	}
 
