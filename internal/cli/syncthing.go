@@ -141,10 +141,6 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		compression:    cfg.Spec.Sync.Syncthing.Compression,
 	}
 
-	if err := markSyncthingReady(sessionName); err != nil {
-		return fmt.Errorf("mark syncthing ready: %w", err)
-	}
-
 	if mode == "two-phase" {
 		// The bootstrap context has a short timeout (syncthingBootstrapTimeout).
 		// Two-phase initial sync may take much longer, so use a dedicated context.
@@ -162,6 +158,10 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		if err := configureSyncthingPeer(bootstrapCtx, remoteBase, remoteKey, remoteID, localID, "", folderID, pair.Remote, folderTypeRemote, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression); err != nil {
 			return fmt.Errorf("configure remote syncthing: %w", err)
 		}
+	}
+
+	if err := markSyncthingReady(sessionName); err != nil {
+		return fmt.Errorf("mark syncthing ready: %w", err)
 	}
 
 	if err := saveSyncthingConfigHash(sessionName, syncthingSessionConfigHash(cfg, absLocal, pair.Remote)); err != nil {
