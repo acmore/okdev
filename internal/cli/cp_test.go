@@ -269,6 +269,24 @@ func TestCpReadinessCheckNoneRunning(t *testing.T) {
 	}
 }
 
+func TestClampParallel(t *testing.T) {
+	tests := []struct {
+		in, want int
+	}{
+		{-5, 1},
+		{0, 1},
+		{1, 1},
+		{4, 4},
+		{cpMaxParallel, cpMaxParallel},
+		{cpMaxParallel + 5, cpMaxParallel},
+	}
+	for _, tc := range tests {
+		if got := clampParallel(tc.in); got != tc.want {
+			t.Errorf("clampParallel(%d) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestCpReadinessCheckReadyOnlyBypass(t *testing.T) {
 	allPods := []kube.PodSummary{
 		{Name: "sess-worker-0", Phase: "Running"},

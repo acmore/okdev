@@ -46,6 +46,7 @@ func newCpCmd(opts *Options) *cobra.Command {
 	var container string
 	var fanout int
 	var readyOnly bool
+	var parallel int
 
 	cmd := &cobra.Command{
 		Use:   "cp [session] <src> <dst>",
@@ -100,8 +101,9 @@ func newCpCmd(opts *Options) *cobra.Command {
 				return err
 			}
 
+			effectiveParallel := clampParallel(parallel)
 			if multiPod {
-				return runMultiPodCp(cmd, cc, localPath, remotePath, upload, allPods, podNames, role, labels, exclude, container, fanout, readyOnly)
+				return runMultiPodCp(cmd, cc, localPath, remotePath, upload, allPods, podNames, role, labels, exclude, container, fanout, readyOnly, effectiveParallel)
 			}
 
 			// Single-pod mode.
@@ -118,7 +120,7 @@ func newCpCmd(opts *Options) *cobra.Command {
 			announceCpStart(cmd.ErrOrStderr(), upload, localPath, remotePath, target.PodName, total, 1)
 			progress := newCpProgress(cmd.ErrOrStderr(), prefix, total)
 			opts := kube.CopyOptions{Progress: progress.kube()}
-			cpErr := runSinglePodCp(cmd.Context(), cc.kube, cc.namespace, target.PodName, targetContainer, localPath, remotePath, upload, opts)
+			cpErr := runSinglePodCpWithParallel(cmd.Context(), cc.kube, cc.namespace, target.PodName, targetContainer, localPath, remotePath, upload, effectiveParallel, opts)
 			progress.stop()
 			if cpErr == nil {
 				if upload {
@@ -139,7 +141,29 @@ func newCpCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&container, "container", "", "Override target container")
 	cmd.Flags().IntVar(&fanout, "fanout", pdshDefaultFanout, "Maximum concurrent pod transfers")
 	cmd.Flags().BoolVar(&readyOnly, "ready-only", false, "Copy only to/from pods that are already running (skip readiness check)")
+	cmd.Flags().IntVar(&parallel, "parallel", cpDefaultParallel, "Parallel streams per pod for directory copies (1 = sequential)")
 	return cmd
+}
+
+const (
+	cpDefaultParallel = 4
+	cpMaxParallel     = 16
+	// cpMaxTotalStreams caps total concurrent exec streams against the API
+	// server (fanout × parallel) in multi-pod mode.
+	cpMaxTotalStreams = 32
+)
+
+// clampParallel keeps the --parallel value inside a safe range so a misread
+// flag can't accidentally spin up hundreds of exec streams against the API
+// server.
+func clampParallel(v int) int {
+	if v < 1 {
+		return 1
+	}
+	if v > cpMaxParallel {
+		return cpMaxParallel
+	}
+	return v
 }
 
 func validateCpFlags(allPods bool, podNames []string, role string, labels []string, exclude []string) error {
@@ -198,12 +222,23 @@ func announceCpStart(w io.Writer, upload bool, localPath, remotePath, pod string
 }
 
 func runSinglePodCp(ctx context.Context, client *kube.Client, namespace, pod, container, localPath, remotePath string, upload bool, opts kube.CopyOptions) error {
+	return runSinglePodCpWithParallel(ctx, client, namespace, pod, container, localPath, remotePath, upload, 1, opts)
+}
+
+// runSinglePodCpWithParallel is the work-horse copy path. When parallel > 1
+// and the operation is a directory copy, it fans out onto
+// CopyDir{To,From}PodParallelWithOptions. Single-file copies ignore parallel
+// today; range-based single-file parallelism is left for a follow-up.
+func runSinglePodCpWithParallel(ctx context.Context, client *kube.Client, namespace, pod, container, localPath, remotePath string, upload bool, parallel int, opts kube.CopyOptions) error {
 	if upload {
 		info, err := os.Stat(localPath)
 		if err != nil {
 			return err
 		}
 		if info.IsDir() {
+			if parallel > 1 {
+				return client.CopyDirToPodParallelWithOptions(ctx, namespace, pod, container, localPath, remotePath, parallel, opts)
+			}
 			return client.CopyDirToPodWithOptions(ctx, namespace, pod, container, localPath, remotePath, opts)
 		}
 		return client.CopyToPodInContainerWithOptions(ctx, namespace, localPath, pod, container, remotePath, opts)
@@ -216,6 +251,9 @@ func runSinglePodCp(ctx context.Context, client *kube.Client, namespace, pod, co
 	if isDir {
 		if err := os.MkdirAll(localPath, 0o755); err != nil {
 			return err
+		}
+		if parallel > 1 {
+			return client.CopyDirFromPodParallelWithOptions(ctx, namespace, pod, container, remotePath, localPath, parallel, opts)
 		}
 		return client.CopyDirFromPodWithOptions(ctx, namespace, pod, container, remotePath, localPath, opts)
 	}
@@ -304,7 +342,7 @@ type cpResult struct {
 	err error
 }
 
-func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath string, upload bool, allPods bool, podNames []string, role string, labels []string, exclude []string, container string, fanout int, readyOnly bool) error {
+func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath string, upload bool, allPods bool, podNames []string, role string, labels []string, exclude []string, container string, fanout int, readyOnly bool, parallel int) error {
 	ctx := cmd.Context()
 	labelSel := selectorForSessionRun(cc.sessionName)
 	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
@@ -364,6 +402,20 @@ func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath
 		effectiveFanout = pdshDefaultFanout
 	}
 
+	// Keep total concurrent exec streams (fanout × parallel) under a soft cap
+	// so a wide `--all` copy doesn't accidentally DoS the API server. Users who
+	// really want higher concurrency can drop --fanout to compensate.
+	effectiveParallel := parallel
+	if effectiveParallel < 1 {
+		effectiveParallel = 1
+	}
+	if effectiveFanout*effectiveParallel > cpMaxTotalStreams {
+		effectiveParallel = cpMaxTotalStreams / effectiveFanout
+		if effectiveParallel < 1 {
+			effectiveParallel = 1
+		}
+	}
+
 	podNameList := make([]string, len(pods))
 	for i, p := range pods {
 		podNameList[i] = p.Name
@@ -413,7 +465,7 @@ func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath
 			copyOpts := kube.CopyOptions{Progress: progress.kubeBytesOnly()}
 			var cpErr error
 			if upload {
-				cpErr = runSinglePodCp(ctx, cc.kube, cc.namespace, pod.Name, targetContainer, localPath, remotePath, true, copyOpts)
+				cpErr = runSinglePodCpWithParallel(ctx, cc.kube, cc.namespace, pod.Name, targetContainer, localPath, remotePath, true, effectiveParallel, copyOpts)
 			} else {
 				isRemoteDir, err := cc.kube.IsRemoteDir(ctx, cc.namespace, pod.Name, targetContainer, remotePath)
 				if err != nil {
@@ -423,7 +475,7 @@ func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath
 					return
 				}
 				podLocalPath := downloadTargetPath(localPath, short, remotePath, isRemoteDir, podCount)
-				cpErr = runSinglePodCp(ctx, cc.kube, cc.namespace, pod.Name, targetContainer, podLocalPath, remotePath, false, copyOpts)
+				cpErr = runSinglePodCpWithParallel(ctx, cc.kube, cc.namespace, pod.Name, targetContainer, podLocalPath, remotePath, false, effectiveParallel, copyOpts)
 			}
 			atomic.AddInt32(&completed, 1)
 			updatePodCount()

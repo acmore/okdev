@@ -91,6 +91,7 @@
 - Files are streamed via `cat` pipes. Directories are tar-streamed automatically.
 - Downloads extract files directly to the destination path as they arrive (no full-archive buffering), so intermediate files become visible on disk during the transfer.
 - Before the transfer begins, an announce line on stderr reports the planned operation with total size when known (e.g. `Downloading :/workspace/data -> ./out (4.32 GB) via sess-master-0`).
+- Directory copies parallelize by default (`--parallel 4`): the source file list is balanced across N concurrent `tar` exec streams per pod so a single slow SPDY connection is no longer the bottleneck. Empty directories inside the tree are not preserved by the parallel path.
 - A throttled single-line progress indicator is rendered to stderr on TTYs showing bytes transferred, total size + percentage (when known), rate, ETA, file count, and current file. On non-TTY output the progress is silent and a final summary line is printed to stdout.
 - `--all`: target all running pods in the session.
 - `--pod`: target specific pods by name (repeatable or comma-separated).
@@ -99,6 +100,7 @@
 - `--exclude`: exclude specific pods from the selected set (repeatable or comma-separated). Cannot be used with `--pod`.
 - `--container`: override which container to copy to/from (default: session target container).
 - `--fanout N`: maximum concurrent pod transfers (default 16).
+- `--parallel N`: parallel streams per pod for directory copies (default 4, max 16). Splits the file list into roughly size-balanced buckets and issues one `tar` exec stream per bucket; single-file copies ignore this flag. In multi-pod mode the effective per-pod parallelism is clamped so total streams (`fanout × parallel`) stays under a safe cap.
 - `--all`, `--pod`, `--role`, and `--label` are mutually exclusive.
 
 ### `okdev init [--workload pod|job|pytorchjob|generic] [--template <name>|<path>|<url>] [--set key=value] [--stignore-preset default|python|node|go|rust] [--force]`
