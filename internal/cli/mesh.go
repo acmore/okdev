@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/acmore/okdev/internal/kube"
+	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/acmore/okdev/internal/workload"
 )
 
@@ -30,11 +32,18 @@ type meshSummary struct {
 	Receivers []meshReceiverStatus
 }
 
+func meshFolderPath(syncPairs []syncengine.Pair, workspaceMountPath string) string {
+	if len(syncPairs) == 1 && strings.TrimSpace(syncPairs[0].Remote) != "" {
+		return syncPairs[0].Remote
+	}
+	return workspaceMountPath
+}
+
 // setupMesh configures syncthing mesh sync between the hub (target) pod and
 // all receiver pods in the session. It reads the hub's syncthing device ID,
 // then configures each receiver's sidecar to peer with the hub. Finally it
 // waits for all receivers to complete initial sync.
-func setupMesh(ctx context.Context, opts *Options, k *kube.Client, namespace, sessionName string, labels map[string]string, hubPod, folderID, workspaceMountPath string, timeout time.Duration, onStatus func(string)) (*meshSummary, error) {
+func setupMesh(ctx context.Context, opts *Options, k *kube.Client, namespace, sessionName string, labels map[string]string, hubPod, folderID, folderPath string, timeout time.Duration, onStatus func(string)) (*meshSummary, error) {
 	// 1. Discover receiver pods.
 	selector := workload.DiscoveryLabelSelector(labels)
 	if selector != "" {
@@ -185,7 +194,7 @@ func setupMesh(ctx context.Context, opts *Options, k *kube.Client, namespace, se
 		hubPeers[info.DeviceID] = fmt.Sprintf("tcp://%s:22000", info.Pod.PodIP)
 	}
 	if len(hubPeers) > 0 {
-		if err := configureSyncthingMeshHub(ctx, hubBase, hubKey, hubDeviceID, hubPeers, folderID, workspaceMountPath); err != nil {
+		if err := configureSyncthingMeshHub(ctx, hubBase, hubKey, hubDeviceID, hubPeers, folderID, folderPath); err != nil {
 			return nil, fmt.Errorf("configure hub syncthing mesh: %w", err)
 		}
 	}
@@ -203,7 +212,7 @@ func setupMesh(ctx context.Context, opts *Options, k *kube.Client, namespace, se
 				results[idx] = meshReceiverStatus{Pod: ri.Pod.Name, Err: ri.Err}
 				return
 			}
-			results[idx] = configureAndWaitMeshReceiver(ctx, opts, k, namespace, ri.Pod, ri.APIKey, ri.DeviceID, hubBase, hubKey, hubDeviceID, hubAddr, folderID, workspaceMountPath, timeout)
+			results[idx] = configureAndWaitMeshReceiver(ctx, opts, k, namespace, ri.Pod, ri.APIKey, ri.DeviceID, hubBase, hubKey, hubDeviceID, hubAddr, folderID, folderPath, timeout)
 		}(i, info)
 	}
 	wg.Wait()
@@ -382,7 +391,7 @@ func syncthingMergeMeshHubFolderDevices(existingFolderDevices, devices any, hubD
 
 // configureAndWaitMeshReceiver configures a single receiver pod's syncthing
 // to peer with the hub and waits for initial sync to complete.
-func configureAndWaitMeshReceiver(ctx context.Context, opts *Options, k *kube.Client, namespace string, pod kube.PodSummary, recvKey, recvDeviceID, hubBase, hubKey, hubDeviceID, hubAddr, folderID, workspaceMountPath string, timeout time.Duration) meshReceiverStatus {
+func configureAndWaitMeshReceiver(ctx context.Context, opts *Options, k *kube.Client, namespace string, pod kube.PodSummary, recvKey, recvDeviceID, hubBase, hubKey, hubDeviceID, hubAddr, folderID, folderPath string, timeout time.Duration) meshReceiverStatus {
 	status := meshReceiverStatus{Pod: pod.Name}
 
 	// Ensure the receiver sidecar has syncthing running.
@@ -404,7 +413,7 @@ func configureAndWaitMeshReceiver(ctx context.Context, opts *Options, k *kube.Cl
 	}
 
 	// Ensure workspace dir exists on receiver.
-	if _, err := execInSyncthingContainer(ctx, k, namespace, pod.Name, fmt.Sprintf("mkdir -p %s", workspaceMountPath)); err != nil {
+	if _, err := execInSyncthingContainer(ctx, k, namespace, pod.Name, fmt.Sprintf("mkdir -p %s", folderPath)); err != nil {
 		slog.Debug("mesh: mkdir workspace on receiver", "pod", pod.Name, "error", err)
 	}
 
@@ -412,7 +421,7 @@ func configureAndWaitMeshReceiver(ctx context.Context, opts *Options, k *kube.Cl
 	if err := configureSyncthingPeer(ctx, recvBase, recvKey,
 		recvDeviceID, hubDeviceID,
 		hubAddr,
-		folderID, workspaceMountPath,
+		folderID, folderPath,
 		"receiveonly",
 		60, 1, // rescan/watcher intervals
 		false, false, // ignoreDelete, relaysEnabled
@@ -599,8 +608,8 @@ func brokenMeshReceiverPods(summary *meshHealthSummary) []string {
 // repairMeshReceivers re-runs the full mesh setup which reconfigures all
 // receivers. setupMesh is idempotent — healthy receivers reconverge quickly
 // while broken ones get reconfigured.
-func repairMeshReceivers(ctx context.Context, opts *Options, k *kube.Client, namespace, sessionName string, labels map[string]string, hubPod, folderID, workspaceMountPath string, onStatus func(string)) (*meshSummary, error) {
-	return setupMesh(ctx, opts, k, namespace, sessionName, labels, hubPod, folderID, workspaceMountPath, meshSetupTimeout, onStatus)
+func repairMeshReceivers(ctx context.Context, opts *Options, k *kube.Client, namespace, sessionName string, labels map[string]string, hubPod, folderID, folderPath string, onStatus func(string)) (*meshSummary, error) {
+	return setupMesh(ctx, opts, k, namespace, sessionName, labels, hubPod, folderID, folderPath, meshSetupTimeout, onStatus)
 }
 
 // meshReceiverCount returns the number of receiver pods discovered in a session.

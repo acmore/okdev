@@ -707,10 +707,10 @@ func upSetup(state *upState) error {
 		if meshCountErr == nil && meshCount > 0 {
 			state.ui.stepRun("mesh", fmt.Sprintf("configuring %d receiver sidecar(s)", meshCount))
 			folderID := "okdev-" + state.command.sessionName
-			workspaceMountPath := state.command.cfg.EffectiveWorkspaceMountPath(state.command.cfgPath)
+			folderPath := meshFolderPath(state.syncPairs, state.command.cfg.EffectiveWorkspaceMountPath(state.command.cfgPath))
 			meshResult, meshErr := setupMesh(state.ctx, state.opts, state.command.kube,
 				state.command.namespace, state.command.sessionName, state.labels,
-				target.PodName, folderID, workspaceMountPath, meshSetupTimeout,
+				target.PodName, folderID, folderPath, meshSetupTimeout,
 				func(status string) { state.ui.stepRun("mesh", status) })
 			if meshErr != nil {
 				state.ui.warnf("mesh setup failed: %v", meshErr)

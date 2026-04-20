@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/acmore/okdev/internal/kube"
+	syncengine "github.com/acmore/okdev/internal/sync"
 )
 
 func TestFormatMeshSummary(t *testing.T) {
@@ -94,5 +95,19 @@ func TestMeshReceiverCount(t *testing.T) {
 	}
 	if count != 2 {
 		t.Fatalf("expected 2 receivers, got %d", count)
+	}
+}
+
+func TestMeshFolderPathUsesExplicitRemoteSyncPath(t *testing.T) {
+	got := meshFolderPath([]syncengine.Pair{{Local: ".", Remote: "/workspace/a"}}, "/workspace")
+	if got != "/workspace/a" {
+		t.Fatalf("expected explicit remote sync path, got %q", got)
+	}
+}
+
+func TestMeshFolderPathFallsBackToWorkspaceMountPath(t *testing.T) {
+	got := meshFolderPath(nil, "/workspace")
+	if got != "/workspace" {
+		t.Fatalf("expected workspace mount path fallback, got %q", got)
 	}
 }
