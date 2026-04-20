@@ -49,6 +49,9 @@ func newCpProgress(w io.Writer, prefix string, total int64) *cpProgress {
 	if p.interactive {
 		p.stopCh = make(chan struct{})
 		p.doneCh = make(chan struct{})
+		// Render once immediately so the user sees the prefix + planned total
+		// without waiting for the first tick.
+		p.render()
 		go p.run()
 	}
 	return p
@@ -125,6 +128,9 @@ func (p *cpProgress) render() {
 		fmt.Fprintf(&line, "/%s (%d%%)", humanBytes(p.total), pct(bytes, p.total))
 	}
 	fmt.Fprintf(&line, " · %s/s", humanBytes(int64(rate)))
+	if eta := p.etaString(bytes, rate); eta != "" {
+		fmt.Fprintf(&line, " · ETA %s", eta)
+	}
 	if files > 0 {
 		fmt.Fprintf(&line, " · %d files", files)
 	}
@@ -146,6 +152,40 @@ func (p *cpProgress) render() {
 	}
 	fmt.Fprintf(p.w, "\r%s%s", rendered, pad)
 	p.lastLen = len(rendered)
+}
+
+// etaString returns a short human ETA (e.g. "42s", "3m12s") if a total and a
+// non-trivial rate are known. It returns "" when a meaningful estimate isn't
+// available yet so the status line skips the field entirely.
+func (p *cpProgress) etaString(bytes int64, rate float64) string {
+	if p.total <= 0 || rate <= 0 || bytes >= p.total {
+		return ""
+	}
+	remaining := p.total - bytes
+	seconds := float64(remaining) / rate
+	if seconds < 0 || seconds > 60*60*24 { // clamp absurd estimates
+		return ""
+	}
+	return formatDuration(time.Duration(seconds * float64(time.Second)))
+}
+
+// formatDuration renders a short human duration like "42s", "3m12s", "1h02m".
+func formatDuration(d time.Duration) string {
+	if d < time.Second {
+		d = time.Second
+	}
+	d = d.Round(time.Second)
+	h := int(d / time.Hour)
+	m := int(d%time.Hour) / int(time.Minute)
+	s := int(d%time.Minute) / int(time.Second)
+	switch {
+	case h > 0:
+		return fmt.Sprintf("%dh%02dm", h, m)
+	case m > 0:
+		return fmt.Sprintf("%dm%02ds", m, s)
+	default:
+		return fmt.Sprintf("%ds", s)
+	}
 }
 
 // summary renders a terse one-line summary of what was transferred. It is

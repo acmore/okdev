@@ -2,9 +2,9 @@ package cli
 
 import (
 	"bytes"
-	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHumanBytes(t *testing.T) {
@@ -71,15 +71,46 @@ func TestCpProgressNonInteractiveCaptures(t *testing.T) {
 	}
 }
 
-// discardTTY satisfies io.Writer but pretends to expose a file descriptor so
-// isInteractiveWriter would return true on interactive builds. It exists to
-// ensure the renderer goroutine starts and stop() drains it cleanly without
-// panics when the output is a TTY-like target.
-type discardTTY struct{ io.Writer }
-
 func TestCpProgressStopIsIdempotent(t *testing.T) {
 	var buf bytes.Buffer
 	p := newCpProgress(&buf, "x", 0)
 	p.stop()
 	p.stop()
+}
+
+func TestFormatDuration(t *testing.T) {
+	cases := map[time.Duration]string{
+		0:                              "1s",
+		500 * time.Millisecond:         "1s",
+		42 * time.Second:               "42s",
+		3*time.Minute + 12*time.Second: "3m12s",
+		2*time.Hour + 5*time.Minute + 30*time.Second: "2h05m",
+	}
+	for d, want := range cases {
+		if got := formatDuration(d); got != want {
+			t.Errorf("formatDuration(%s) = %q, want %q", d, got, want)
+		}
+	}
+}
+
+func TestEtaStringReturnsEmptyWithoutTotal(t *testing.T) {
+	p := &cpProgress{total: 0}
+	if got := p.etaString(100, 10); got != "" {
+		t.Errorf("expected empty ETA without total, got %q", got)
+	}
+}
+
+func TestEtaStringComputesRemaining(t *testing.T) {
+	p := &cpProgress{total: 1000}
+	got := p.etaString(200, 100) // 800 bytes remaining at 100 B/s -> 8s
+	if got != "8s" {
+		t.Errorf("expected ETA=8s, got %q", got)
+	}
+}
+
+func TestEtaStringClampsAbsurdEstimates(t *testing.T) {
+	p := &cpProgress{total: 1 << 40}
+	if got := p.etaString(0, 1); got != "" {
+		t.Errorf("absurd ETA should be suppressed, got %q", got)
+	}
 }

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -114,6 +115,7 @@ func newCpCmd(opts *Options) *cobra.Command {
 			}
 
 			prefix, total := buildSinglePodCpPrefix(cmd.Context(), cc.kube, cc.namespace, target.PodName, targetContainer, localPath, remotePath, upload)
+			announceCpStart(cmd.ErrOrStderr(), upload, localPath, remotePath, target.PodName, total, 1)
 			progress := newCpProgress(cmd.ErrOrStderr(), prefix, total)
 			opts := kube.CopyOptions{Progress: progress.kube()}
 			cpErr := runSinglePodCp(cmd.Context(), cc.kube, cc.namespace, target.PodName, targetContainer, localPath, remotePath, upload, opts)
@@ -164,6 +166,35 @@ func validateCpFlags(allPods bool, podNames []string, role string, labels []stri
 		return fmt.Errorf("--all, --pod, --role, and --label are mutually exclusive")
 	}
 	return nil
+}
+
+// announceCpStart prints a one-shot "about to transfer X" line so the user
+// knows the target size and destination before the progress bar starts
+// ticking. podCount describes how many pods will be touched (1 in single-pod
+// mode, N for multi-pod). The announce goes to stderr alongside the progress
+// line so stdout stays machine-friendly.
+func announceCpStart(w io.Writer, upload bool, localPath, remotePath, pod string, perPodBytes int64, podCount int) {
+	verb := "Downloading"
+	src, dst := fmt.Sprintf(":%s", remotePath), localPath
+	if upload {
+		verb = "Uploading"
+		src, dst = localPath, fmt.Sprintf(":%s", remotePath)
+	}
+	size := ""
+	if perPodBytes > 0 {
+		if podCount > 1 {
+			size = fmt.Sprintf(" (%s × %d pods = %s)", humanBytes(perPodBytes), podCount, humanBytes(perPodBytes*int64(podCount)))
+		} else {
+			size = fmt.Sprintf(" (%s)", humanBytes(perPodBytes))
+		}
+	}
+	via := ""
+	if podCount == 1 && pod != "" {
+		via = fmt.Sprintf(" via %s", pod)
+	} else if podCount > 1 {
+		via = fmt.Sprintf(" across %d pods", podCount)
+	}
+	fmt.Fprintf(w, "%s %s -> %s%s%s\n", verb, src, dst, size, via)
 }
 
 func runSinglePodCp(ctx context.Context, client *kube.Client, namespace, pod, container, localPath, remotePath string, upload bool, opts kube.CopyOptions) error {
@@ -354,8 +385,13 @@ func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath
 	var perPodTotal int64
 	if upload {
 		perPodTotal = localPathSize(localPath)
+	} else if len(pods) > 0 {
+		// Probe one running pod for the remote size so the aggregate total
+		// has a sensible estimate. Assume all pods hold similarly-sized data.
+		perPodTotal = remotePathSize(ctx, cc.kube, cc.namespace, pods[0].Name, targetContainer, remotePath)
 	}
 	totalBytes := perPodTotal * int64(podCount)
+	announceCpStart(errOut, upload, localPath, remotePath, "", perPodTotal, podCount)
 	progress := newCpProgress(errOut, fmt.Sprintf("cp 0/%d pods", podCount), totalBytes)
 	defer progress.stop()
 
