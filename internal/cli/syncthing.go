@@ -1099,27 +1099,36 @@ func syncthingFolderNeedBytes(ctx context.Context, base, key, folderID string) (
 	return payload.NeedBytes, nil
 }
 
-// syncthingFolderScanned checks whether the syncthing folder has completed its
-// initial scan by querying /rest/db/status. Returns true when the folder state
-// is "idle" or "syncing" (i.e. no longer "scanning" or empty). This prevents
-// premature completion checks when the folder index is still empty.
-func syncthingFolderScanned(ctx context.Context, base, key, folderID string) (bool, error) {
+// syncthingFolderStatus returns the state and globalFiles count for a folder.
+func syncthingFolderStatus(ctx context.Context, base, key, folderID string) (state string, globalFiles int64, err error) {
 	path := fmt.Sprintf("/rest/db/status?folder=%s", url.QueryEscape(folderID))
 	body, err := syncthingAPIRequestWithContext(ctx, http.MethodGet, base, key, path, nil, "")
 	if err != nil {
-		return false, err
+		return "", 0, err
 	}
 	var payload struct {
 		State       string `json:"state"`
 		GlobalFiles int64  `json:"globalFiles"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", 0, err
+	}
+	return payload.State, payload.GlobalFiles, nil
+}
+
+// syncthingFolderScanned checks whether the syncthing folder has completed its
+// initial scan by querying /rest/db/status. Returns true when the folder state
+// is "idle" or "syncing" (i.e. no longer "scanning" or empty). This prevents
+// premature completion checks when the folder index is still empty.
+func syncthingFolderScanned(ctx context.Context, base, key, folderID string) (bool, error) {
+	state, _, err := syncthingFolderStatus(ctx, base, key, folderID)
+	if err != nil {
 		return false, err
 	}
 	// A folder that has never scanned reports state="" or "scanning".
 	// Once scanning completes it transitions to "idle" (or "syncing" if
 	// it immediately starts syncing with a peer).
-	switch payload.State {
+	switch state {
 	case "idle", "syncing", "sync-waiting", "sync-preparing":
 		return true, nil
 	default:
@@ -1317,6 +1326,11 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 		slog.Debug("waitForInitialSync: local folder scan wait failed, proceeding with poll", "error", err)
 	}
 
+	// Snapshot local globalFiles after scan. Used in two-phase mode to
+	// verify the remote has received the local index before accepting
+	// completion.
+	_, localGlobalFiles, _ := syncthingFolderStatus(ctx, localBase, localKey, folderID)
+
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(syncthingProgressInterval)
 	defer ticker.Stop()
@@ -1363,7 +1377,21 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 			}
 			if mode == "two-phase" {
 				if syncthingBootstrapInitialSyncComplete(localPct, localNeed) {
-					return nil
+					// When local has files, verify remote received the
+					// index before declaring complete. Without this,
+					// completion can be 100% just because the remote
+					// hasn't learned about any files yet.
+					if localGlobalFiles > 0 {
+						_, remoteGlobal, statusErr := syncthingFolderStatus(ctx, remoteBase, remoteKey, folderID)
+						if statusErr != nil || remoteGlobal == 0 {
+							slog.Debug("waitForInitialSync: remote index not received yet", "localGlobalFiles", localGlobalFiles, "remoteGlobal", remoteGlobal)
+							// Fall through to wait tick.
+						} else {
+							return nil
+						}
+					} else {
+						return nil
+					}
 				}
 			} else if syncthingInitialSyncComplete(localPct, localNeed, remotePct, remoteNeed) {
 				return nil
@@ -1468,6 +1496,12 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 		return fmt.Errorf("wait for local folder scan (phase 1): %w", err)
 	}
 
+	// Get the local folder's globalFiles count after scan. If the local has
+	// files, the remote must also know about them (globalFiles > 0) before
+	// we can trust its needBytes=0 as "sync complete" rather than "hasn't
+	// received the index yet".
+	_, localGlobalFiles, _ := syncthingFolderStatus(ctx, localBase, localKey, folderID)
+
 	// Poll until remote is in sync, calling override on every tick.
 	deadline := time.Now().Add(initialSyncTimeout)
 	ticker := time.NewTicker(syncthingProgressInterval)
@@ -1484,18 +1518,34 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 		} else {
 			fmt.Fprintf(out, "  %s\n", formatTwoPhaseNeedProgress("initial sync", need))
 			if need == 0 {
-				localConnected, localErr := syncthingPeerConnected(ctx, localBase, localKey, remoteID)
-				remoteConnected, remoteErr := syncthingPeerConnected(ctx, remoteBase, remoteKey, localID)
-				if localErr != nil {
-					slog.Debug("syncthing local connection poll failed", "error", localErr)
+				// Verify the remote has received the local's index. If
+				// local has files but remote's globalFiles is 0, the index
+				// exchange hasn't completed yet — needBytes=0 is misleading.
+				indexReceived := true
+				if localGlobalFiles > 0 {
+					_, remoteGlobal, statusErr := syncthingFolderStatus(ctx, remoteBase, remoteKey, folderID)
+					if statusErr != nil {
+						slog.Debug("syncthing remote folder status poll failed", "error", statusErr)
+						indexReceived = false
+					} else if remoteGlobal == 0 {
+						slog.Debug("syncthing remote has not received index yet", "localGlobalFiles", localGlobalFiles)
+						indexReceived = false
+					}
 				}
-				if remoteErr != nil {
-					slog.Debug("syncthing remote connection poll failed", "error", remoteErr)
+				if indexReceived {
+					localConnected, localErr := syncthingPeerConnected(ctx, localBase, localKey, remoteID)
+					remoteConnected, remoteErr := syncthingPeerConnected(ctx, remoteBase, remoteKey, localID)
+					if localErr != nil {
+						slog.Debug("syncthing local connection poll failed", "error", localErr)
+					}
+					if remoteErr != nil {
+						slog.Debug("syncthing remote connection poll failed", "error", remoteErr)
+					}
+					if localConnected && remoteConnected {
+						break
+					}
+					fmt.Fprintln(out, "  waiting for peer connection …")
 				}
-				if localConnected && remoteConnected {
-					break
-				}
-				fmt.Fprintln(out, "  waiting for peer connection …")
 			}
 		}
 		if time.Now().After(deadline) {
