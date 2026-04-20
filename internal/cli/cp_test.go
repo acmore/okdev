@@ -269,6 +269,52 @@ func TestCpReadinessCheckNoneRunning(t *testing.T) {
 	}
 }
 
+func TestCpCommandExposesQuietAndParallelFlags(t *testing.T) {
+	cmd := newCpCmd(&Options{})
+	for _, name := range []string{"quiet", "parallel", "compress"} {
+		if cmd.Flags().Lookup(name) == nil {
+			t.Errorf("expected --%s flag on okdev cp", name)
+		}
+	}
+	for _, short := range []string{"q", "z"} {
+		if cmd.Flags().ShorthandLookup(short) == nil {
+			t.Errorf("expected -%s short flag on okdev cp", short)
+		}
+	}
+}
+
+func TestClampParallel(t *testing.T) {
+	tests := []struct {
+		in, want int
+	}{
+		{-5, 1},
+		{0, 1},
+		{1, 1},
+		{4, 4},
+		{cpMaxParallel, cpMaxParallel},
+		{cpMaxParallel + 5, cpMaxParallel},
+	}
+	for _, tc := range tests {
+		if got := clampParallel(tc.in); got != tc.want {
+			t.Errorf("clampParallel(%d) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestCpParallelFlagDefaultsToOne(t *testing.T) {
+	cmd := newCpCmd(&Options{})
+	f := cmd.Flags().Lookup("parallel")
+	if f == nil {
+		t.Fatal("--parallel flag missing")
+	}
+	// Parallelism must be strictly opt-in: a recursive single-stream tar is
+	// the fastest path for most trees, and extra streams can measurably slow
+	// copies down when the apiserver/kubelet is the real bottleneck.
+	if f.DefValue != "1" {
+		t.Fatalf("--parallel default = %q, want 1", f.DefValue)
+	}
+}
+
 func TestCpReadinessCheckReadyOnlyBypass(t *testing.T) {
 	allPods := []kube.PodSummary{
 		{Name: "sess-worker-0", Phase: "Running"},

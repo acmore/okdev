@@ -3,6 +3,7 @@ package kube
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -1002,11 +1003,104 @@ func (c *Client) portForwardOnce(ctx context.Context, namespace, pod string, for
 	return pf.ForwardPorts()
 }
 
+// CopyProgress provides optional per-file and byte-level callbacks so callers
+// can render transfer progress without the kube package knowing about UI.
+// All fields are optional. Implementations are invoked from the goroutine
+// doing the transfer and should be non-blocking.
+type CopyProgress struct {
+	// OnFileStart is called when a new file (or directory entry) begins
+	// transfer. size is -1 if unknown.
+	OnFileStart func(name string, size int64)
+	// OnBytes is called with the number of bytes that just moved. It may be
+	// called many times per file.
+	OnBytes func(n int)
+	// OnFileEnd is called when the current file finishes.
+	OnFileEnd func(name string)
+	// OnPhase is called when the copy moves between long-running phases (e.g.
+	// enumerating remote files before the first byte lands). An empty phase
+	// signals the renderer to clear any previous phase message. OnPhase may be
+	// nil and callers should use (*CopyProgress).phase to invoke it safely.
+	OnPhase func(phase string)
+}
+
+// CopyOptions holds optional behaviour flags for copy operations.
+type CopyOptions struct {
+	Progress *CopyProgress
+	// Compress gzip-compresses the tar stream on the wire. For directory
+	// copies this wires `tar czf -`/`tar xzf -` on the pod side and a
+	// gzip.Reader/gzip.Writer on the local side. It assumes the remote image
+	// ships `gzip` (ubiquitous in both GNU and busybox tar builds). Useful on
+	// high-latency / low-bandwidth links where the exec relay is the
+	// bottleneck; redundant (and a mild CPU cost) on fast links or on
+	// pre-compressed payloads.
+	Compress bool
+}
+
+func (p *CopyProgress) fileStart(name string, size int64) {
+	if p == nil || p.OnFileStart == nil {
+		return
+	}
+	p.OnFileStart(name, size)
+}
+
+func (p *CopyProgress) bytes(n int) {
+	if p == nil || p.OnBytes == nil || n <= 0 {
+		return
+	}
+	p.OnBytes(n)
+}
+
+func (p *CopyProgress) fileEnd(name string) {
+	if p == nil || p.OnFileEnd == nil {
+		return
+	}
+	p.OnFileEnd(name)
+}
+
+func (p *CopyProgress) phase(s string) {
+	if p == nil || p.OnPhase == nil {
+		return
+	}
+	p.OnPhase(s)
+}
+
+// countingReader wraps an io.Reader and reports byte counts to a CopyProgress.
+type countingReader struct {
+	r        io.Reader
+	progress *CopyProgress
+}
+
+func (cr *countingReader) Read(p []byte) (int, error) {
+	n, err := cr.r.Read(p)
+	if n > 0 {
+		cr.progress.bytes(n)
+	}
+	return n, err
+}
+
+// countingWriter wraps an io.Writer and reports byte counts to a CopyProgress.
+type countingWriter struct {
+	w        io.Writer
+	progress *CopyProgress
+}
+
+func (cw *countingWriter) Write(p []byte) (int, error) {
+	n, err := cw.w.Write(p)
+	if n > 0 {
+		cw.progress.bytes(n)
+	}
+	return n, err
+}
+
 func (c *Client) CopyToPod(ctx context.Context, namespace, localPath, podName, remotePath string) error {
 	return c.CopyToPodInContainer(ctx, namespace, localPath, podName, "", remotePath)
 }
 
 func (c *Client) CopyToPodInContainer(ctx context.Context, namespace, localPath, podName, container, remotePath string) error {
+	return c.CopyToPodInContainerWithOptions(ctx, namespace, localPath, podName, container, remotePath, CopyOptions{})
+}
+
+func (c *Client) CopyToPodInContainerWithOptions(ctx context.Context, namespace, localPath, podName, container, remotePath string, opts CopyOptions) error {
 	cs, cfg, err := c.clientset()
 	if err != nil {
 		return err
@@ -1016,8 +1110,21 @@ func (c *Client) CopyToPodInContainer(ctx context.Context, namespace, localPath,
 		return err
 	}
 	defer f.Close()
+	var size int64 = -1
+	if info, err := f.Stat(); err == nil {
+		size = info.Size()
+	}
+	opts.Progress.fileStart(filepath.Base(localPath), size)
+	var reader io.Reader = f
+	if opts.Progress != nil {
+		reader = &countingReader{r: f, progress: opts.Progress}
+	}
 	cmd := []string{"sh", "-lc", fmt.Sprintf("cat > %s", shellQuote(remotePath))}
-	return c.execStream(ctx, cs, cfg, namespace, podName, container, cmd, f, io.Discard, io.Discard, false)
+	if err := c.execStream(ctx, cs, cfg, namespace, podName, container, cmd, reader, io.Discard, io.Discard, false); err != nil {
+		return err
+	}
+	opts.Progress.fileEnd(filepath.Base(localPath))
+	return nil
 }
 
 func (c *Client) ExtractTarToPod(ctx context.Context, namespace, podName, remoteDir string, tarStream io.Reader) error {
@@ -1034,48 +1141,155 @@ func (c *Client) CopyFromPod(ctx context.Context, namespace, podName, remotePath
 }
 
 func (c *Client) CopyFromPodInContainer(ctx context.Context, namespace, podName, container, remotePath, localPath string) error {
+	return c.CopyFromPodInContainerWithOptions(ctx, namespace, podName, container, remotePath, localPath, CopyOptions{})
+}
+
+func (c *Client) CopyFromPodInContainerWithOptions(ctx context.Context, namespace, podName, container, remotePath, localPath string, opts CopyOptions) error {
+	// Preferred path: probe the remote file so we know its size/mode up
+	// front, pre-allocate a tmp file, and stream via `tail -c +N | head -c L`.
+	// A mid-stream failure lets us resume from the last byte successfully
+	// written instead of restarting the whole transfer — critical on
+	// high-latency clusters where a single stream may hit a ~30-minute
+	// intermediate timeout mid-file.
+	if info, err := c.probeRemoteFile(ctx, namespace, podName, container, remotePath); err == nil && info.IsRegular {
+		return c.copyFileFromPodSequentialResume(ctx, namespace, podName, container, remotePath, localPath, info, opts.Progress)
+	}
+
+	// Fallback path for probe failures (no stat in busybox, permission
+	// wrinkles, etc.) or non-regular files: the legacy tar-wrapped
+	// extraction. Retries here can't resume — the tar stream restarts from
+	// scratch — so they stop after any byte has been produced locally.
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		lastErr = c.copyFromPodInContainerOnce(ctx, namespace, podName, container, remotePath, localPath)
-		if lastErr == nil {
+		produced, err := c.copyFromPodInContainerOnce(ctx, namespace, podName, container, remotePath, localPath, opts.Progress)
+		if err == nil {
 			return nil
 		}
-		if !isRetryableCopyStreamError(lastErr) || attempt == 2 {
-			return lastErr
+		lastErr = err
+		if produced || !isRetryableCopyStreamError(err) || attempt == 2 {
+			return err
 		}
 		time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
 	}
 	return lastErr
 }
 
-func (c *Client) copyFromPodInContainerOnce(ctx context.Context, namespace, podName, container, remotePath, localPath string) error {
+// copyFileFromPodSequentialResume streams a single regular file into
+// localPath with resume-on-retry semantics. The tmp file is pre-allocated
+// to info.Size via Truncate; each attempt downloads [offset, size) into
+// that file using downloadFileRange. On partial-progress error the next
+// attempt picks up where this one left off, avoiding the re-download loop
+// that the tar-based path suffers from. No-progress errors still bail out
+// after a few attempts so genuine failures don't spin forever.
+func (c *Client) copyFileFromPodSequentialResume(ctx context.Context, namespace, podName, container, remotePath, localPath string, info *RemoteFileInfo, progress *CopyProgress) error {
 	cs, cfg, err := c.clientset()
 	if err != nil {
 		return err
 	}
-	parent := filepath.Dir(remotePath)
-	base := filepath.Base(remotePath)
-	cmd := []string{"sh", "-lc", fmt.Sprintf("tar cf - -C %s %s", shellQuote(parent), shellQuote(base))}
-	tarFile, err := os.CreateTemp("", "okdev-copy-*.tar")
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		return err
+	}
+	tmp, err := createTempDownloadFile(localPath)
 	if err != nil {
 		return err
 	}
-	tarPath := tarFile.Name()
-	defer os.Remove(tarPath)
+	tmpPath := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+	if err := tmp.Truncate(info.Size); err != nil {
+		cleanup()
+		return fmt.Errorf("preallocate %s: %w", tmpPath, err)
+	}
+
+	progress.fileStart(filepath.Base(localPath), info.Size)
+
+	const maxNoProgressAttempts = 3
+	var offset int64
+	noProgress := 0
+	for {
+		remaining := info.Size - offset
+		if remaining <= 0 {
+			break
+		}
+		copied, runErr := c.downloadFileRange(ctx, cs, cfg, namespace, podName, container, remotePath, tmp, offset, remaining, progress)
+		offset += copied
+		if runErr == nil {
+			break
+		}
+		if !isRetryableCopyStreamError(runErr) {
+			cleanup()
+			return runErr
+		}
+		if copied <= 0 {
+			noProgress++
+			if noProgress >= maxNoProgressAttempts {
+				cleanup()
+				return runErr
+			}
+		} else {
+			// We made forward progress this attempt; reset the no-progress
+			// counter so a transfer that's actually streaming (just
+			// periodically blipping) can recover indefinitely.
+			noProgress = 0
+		}
+		time.Sleep(time.Duration(noProgress+1) * 500 * time.Millisecond)
+	}
+
+	progress.fileEnd(filepath.Base(localPath))
+
+	if err := tmp.Chmod(info.Mode | 0o600); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, localPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
+// copyFromPodInContainerOnce streams a single remote file as a one-entry tar
+// archive, extracts it to localPath, and reports whether any bytes were
+// written locally (so the caller can skip retries after partial progress).
+func (c *Client) copyFromPodInContainerOnce(ctx context.Context, namespace, podName, container, remotePath, localPath string, progress *CopyProgress) (produced bool, _ error) {
+	cs, cfg, err := c.clientset()
+	if err != nil {
+		return false, err
+	}
+	parent := filepath.Dir(remotePath)
+	base := filepath.Base(remotePath)
+	cmd := []string{"sh", "-lc", fmt.Sprintf("tar cf - -C %s %s", shellQuote(parent), shellQuote(base))}
+
+	pr, pw := io.Pipe()
 	var errBuf bytes.Buffer
-	if err := c.execStream(ctx, cs, cfg, namespace, podName, container, cmd, nil, tarFile, &errBuf, false); err != nil {
-		_ = tarFile.Close()
-		return err
+	execErrCh := make(chan error, 1)
+	go func() {
+		err := c.execStream(ctx, cs, cfg, namespace, podName, container, cmd, nil, pw, &errBuf, false)
+		_ = pw.CloseWithError(err)
+		execErrCh <- err
+	}()
+
+	extractProduced, extractErr := extractSingleFileFromTar(pr, localPath, progress)
+	_ = pr.Close()
+	execErr := <-execErrCh
+
+	if extractErr != nil {
+		return extractProduced, extractErr
 	}
-	if _, err := tarFile.Seek(0, io.SeekStart); err != nil {
-		_ = tarFile.Close()
-		return err
+	if execErr != nil {
+		msg := strings.TrimSpace(errBuf.String())
+		if msg != "" {
+			return extractProduced, fmt.Errorf("%w: %s", execErr, msg)
+		}
+		return extractProduced, execErr
 	}
-	if err := extractSingleFileFromTar(tarFile, localPath); err != nil {
-		_ = tarFile.Close()
-		return err
-	}
-	return tarFile.Close()
+	return extractProduced, nil
 }
 
 func createTempDownloadFile(localPath string) (*os.File, error) {
@@ -1084,13 +1298,16 @@ func createTempDownloadFile(localPath string) (*os.File, error) {
 	return os.CreateTemp(dir, base+".tmp-*")
 }
 
-func extractSingleFileFromTar(r io.Reader, localPath string) error {
+// extractSingleFileFromTar reads a one-entry tar stream and writes the file
+// atomically to localPath. It reports whether any bytes were written so the
+// caller can avoid retrying after partial progress.
+func extractSingleFileFromTar(r io.Reader, localPath string, progress *CopyProgress) (produced bool, _ error) {
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
-		return err
+		return false, err
 	}
 	tempFile, err := createTempDownloadFile(localPath)
 	if err != nil {
-		return err
+		return false, err
 	}
 	tempPath := tempFile.Name()
 	closed := false
@@ -1104,41 +1321,60 @@ func extractSingleFileFromTar(r io.Reader, localPath string) error {
 	tr := tar.NewReader(r)
 	foundFile := false
 	var fileMode os.FileMode = 0o644
+	var entryName string
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return err
+			return produced, err
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir, tar.TypeXHeader, tar.TypeXGlobalHeader, tar.TypeGNULongName, tar.TypeGNULongLink:
 			continue
 		case tar.TypeReg, tar.TypeRegA:
 			if foundFile {
-				return fmt.Errorf("tar archive contains multiple files")
+				return produced, fmt.Errorf("tar archive contains multiple files")
 			}
-			if _, err := io.Copy(tempFile, tr); err != nil {
-				return err
+			entryName = filepath.Base(localPath)
+			progress.fileStart(entryName, hdr.Size)
+			dst := io.Writer(tempFile)
+			if progress != nil {
+				dst = &countingWriter{w: tempFile, progress: progress}
+			}
+			// Flip `produced` as soon as any byte has landed on disk so the
+			// retry loop in CopyFromPodInContainerWithOptions doesn't restart
+			// from scratch (which would double-count progress and silently
+			// redo a partially-transferred file).
+			n, copyErr := io.Copy(dst, tr)
+			if n > 0 {
+				produced = true
+			}
+			if copyErr != nil {
+				return produced, copyErr
 			}
 			fileMode = os.FileMode(hdr.Mode)
 			foundFile = true
+			progress.fileEnd(entryName)
 		default:
-			return fmt.Errorf("tar archive entry %q has unsupported type", hdr.Name)
+			return produced, fmt.Errorf("tar archive entry %q has unsupported type", hdr.Name)
 		}
 	}
 	if !foundFile {
-		return fmt.Errorf("tar archive contained no file")
+		return produced, fmt.Errorf("tar archive contained no file")
 	}
 	if err := tempFile.Chmod(fileMode); err != nil {
-		return err
+		return produced, err
 	}
 	if err := tempFile.Close(); err != nil {
-		return err
+		return produced, err
 	}
 	closed = true
-	return os.Rename(tempPath, localPath)
+	if err := os.Rename(tempPath, localPath); err != nil {
+		return produced, err
+	}
+	return produced, nil
 }
 
 func (c *Client) StreamFromPod(ctx context.Context, namespace, podName, script string, stdout io.Writer) error {
@@ -1151,8 +1387,9 @@ func (c *Client) StreamFromPod(ctx context.Context, namespace, podName, script s
 }
 
 // createTarFromDir writes a tar archive of dir's contents to w.
-// Paths inside the archive are relative to dir.
-func createTarFromDir(dir string, w io.Writer) error {
+// Paths inside the archive are relative to dir. If progress is non-nil the
+// callbacks are invoked as each regular file is archived.
+func createTarFromDir(dir string, w io.Writer, progress *CopyProgress) error {
 	tw := tar.NewWriter(w)
 	defer tw.Close()
 	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -1184,117 +1421,207 @@ func createTarFromDir(dir string, w io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if _, err := io.Copy(tw, f); err != nil {
+		progress.fileStart(rel, info.Size())
+		var src io.Reader = f
+		if progress != nil {
+			src = &countingReader{r: f, progress: progress}
+		}
+		if _, err := io.Copy(tw, src); err != nil {
 			_ = f.Close()
 			return err
 		}
+		progress.fileEnd(rel)
 		return f.Close()
 	})
 }
 
-// extractTarToDir extracts a tar archive from r into dir.
-func extractTarToDir(r io.Reader, dir string) error {
+// extractTarToDir extracts a tar archive from r into dir, reporting per-file
+// progress via the optional callback. It returns whether any bytes were
+// written locally so callers can avoid retrying after partial extraction.
+func extractTarToDir(r io.Reader, dir string, progress *CopyProgress) (produced bool, _ error) {
 	tr := tar.NewReader(r)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
-			return nil
+			return produced, nil
 		}
 		if err != nil {
-			return err
+			return produced, err
 		}
 		target := filepath.Join(dir, hdr.Name)
-		// Guard against zip-slip.
 		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(dir)+string(os.PathSeparator)) && filepath.Clean(target) != filepath.Clean(dir) {
-			return fmt.Errorf("tar entry %q escapes destination", hdr.Name)
+			return produced, fmt.Errorf("tar entry %q escapes destination", hdr.Name)
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, os.FileMode(hdr.Mode)|0o755); err != nil {
-				return err
+				return produced, err
 			}
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
+				return produced, err
 			}
 			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
 			if err != nil {
-				return err
+				return produced, err
 			}
-			if _, err := io.Copy(f, tr); err != nil {
-				f.Close()
-				return err
+			progress.fileStart(hdr.Name, hdr.Size)
+			dst := io.Writer(f)
+			if progress != nil {
+				dst = &countingWriter{w: f, progress: progress}
 			}
-			f.Close()
+			// Flip `produced` on first byte so retries don't restart an
+			// in-progress tar extraction (which would re-send the whole
+			// archive and double-count progress).
+			n, copyErr := io.Copy(dst, tr)
+			if n > 0 {
+				produced = true
+			}
+			if copyErr != nil {
+				_ = f.Close()
+				return produced, copyErr
+			}
+			progress.fileEnd(hdr.Name)
+			if err := f.Close(); err != nil {
+				return produced, err
+			}
 		}
 	}
 }
 
 // CopyDirToPod archives a local directory and extracts it into remoteDir on the pod.
 func (c *Client) CopyDirToPod(ctx context.Context, namespace, pod, container, localDir, remoteDir string) error {
+	return c.CopyDirToPodWithOptions(ctx, namespace, pod, container, localDir, remoteDir, CopyOptions{})
+}
+
+func (c *Client) CopyDirToPodWithOptions(ctx context.Context, namespace, pod, container, localDir, remoteDir string, opts CopyOptions) error {
 	pr, pw := io.Pipe()
 	errCh := make(chan error, 1)
+	// When compression is requested, gzip the tar on the local side (where CPU
+	// is cheap and plentiful) before it reaches the SPDY wire. The pod-side
+	// tar becomes `tar xzf -` to decompress on the fly.
+	var tarSink io.WriteCloser = pw
+	if opts.Compress {
+		gz := gzip.NewWriter(pw)
+		tarSink = &gzipPipeWriter{gz: gz, pw: pw}
+	}
 	go func() {
-		errCh <- createTarFromDir(localDir, pw)
-		pw.Close()
+		err := createTarFromDir(localDir, tarSink, opts.Progress)
+		if opts.Compress {
+			if closeErr := tarSink.Close(); err == nil {
+				err = closeErr
+			}
+		}
+		_ = pw.Close()
+		errCh <- err
 	}()
 	cs, cfg, err := c.clientset()
 	if err != nil {
 		pr.Close()
 		return err
 	}
-	cmd := []string{"sh", "-lc", fmt.Sprintf("mkdir -p %s && tar xf - -C %s", shellQuote(remoteDir), shellQuote(remoteDir))}
+	tarCmd := "tar xf -"
+	if opts.Compress {
+		tarCmd = "tar xzf -"
+	}
+	cmd := []string{"sh", "-lc", fmt.Sprintf("mkdir -p %s && %s -C %s", shellQuote(remoteDir), tarCmd, shellQuote(remoteDir))}
 	if execErr := c.execStream(ctx, cs, cfg, namespace, pod, container, cmd, pr, io.Discard, io.Discard, false); execErr != nil {
 		return execErr
 	}
 	return <-errCh
 }
 
+// gzipPipeWriter is a small adapter so the upload goroutine can Close() the
+// gzip layer (flushing the trailing footer) independently of the underlying
+// pipe writer; the pipe itself is closed in the goroutine epilogue so the
+// exec stream sees EOF only after the gzip trailer has flushed.
+type gzipPipeWriter struct {
+	gz *gzip.Writer
+	pw *io.PipeWriter
+}
+
+func (w *gzipPipeWriter) Write(p []byte) (int, error) { return w.gz.Write(p) }
+func (w *gzipPipeWriter) Close() error                { return w.gz.Close() }
+
 // CopyDirFromPod streams a remote directory as a tar archive and extracts it locally.
 func (c *Client) CopyDirFromPod(ctx context.Context, namespace, pod, container, remoteDir, localDir string) error {
+	return c.CopyDirFromPodWithOptions(ctx, namespace, pod, container, remoteDir, localDir, CopyOptions{})
+}
+
+func (c *Client) CopyDirFromPodWithOptions(ctx context.Context, namespace, pod, container, remoteDir, localDir string, opts CopyOptions) error {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		lastErr = c.copyDirFromPodOnce(ctx, namespace, pod, container, remoteDir, localDir)
-		if lastErr == nil {
+		produced, err := c.copyDirFromPodOnce(ctx, namespace, pod, container, remoteDir, localDir, opts.Progress, opts.Compress)
+		if err == nil {
 			return nil
 		}
-		if !isRetryableCopyStreamError(lastErr) || attempt == 2 {
-			return lastErr
+		lastErr = err
+		// Once files have landed on disk, retrying would restart a partially
+		// completed transfer. Surface the error instead.
+		if produced || !isRetryableCopyStreamError(err) || attempt == 2 {
+			return err
 		}
 		time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
 	}
 	return lastErr
 }
 
-func (c *Client) copyDirFromPodOnce(ctx context.Context, namespace, pod, container, remoteDir, localDir string) error {
+// copyDirFromPodOnce streams a remote tar archive directly into localDir,
+// extracting files as they arrive so intermediate files become visible to the
+// caller during the transfer. When compress is true the remote tar emits a
+// gzipped archive and the local side decompresses on the fly.
+func (c *Client) copyDirFromPodOnce(ctx context.Context, namespace, pod, container, remoteDir, localDir string, progress *CopyProgress, compress bool) (produced bool, _ error) {
 	cs, cfg, err := c.clientset()
 	if err != nil {
-		return err
+		return false, err
 	}
 	parent := filepath.Dir(remoteDir)
 	base := filepath.Base(remoteDir)
-	cmd := []string{"sh", "-lc", fmt.Sprintf("tar cf - -C %s %s", shellQuote(parent), shellQuote(base))}
-	tarFile, err := os.CreateTemp("", "okdev-copy-*.tar")
-	if err != nil {
-		return err
+	tarCmd := "tar cf -"
+	if compress {
+		tarCmd = "tar czf -"
 	}
-	tarPath := tarFile.Name()
-	defer os.Remove(tarPath)
+	cmd := []string{"sh", "-lc", fmt.Sprintf("%s -C %s %s", tarCmd, shellQuote(parent), shellQuote(base))}
 
+	pr, pw := io.Pipe()
 	var errBuf bytes.Buffer
-	if err := c.execStream(ctx, cs, cfg, namespace, pod, container, cmd, nil, tarFile, &errBuf, false); err != nil {
-		_ = tarFile.Close()
-		return err
+	execErrCh := make(chan error, 1)
+	go func() {
+		err := c.execStream(ctx, cs, cfg, namespace, pod, container, cmd, nil, pw, &errBuf, false)
+		_ = pw.CloseWithError(err)
+		execErrCh <- err
+	}()
+
+	var tarSource io.Reader = pr
+	var gzReader *gzip.Reader
+	if compress {
+		gz, gzErr := gzip.NewReader(pr)
+		if gzErr != nil {
+			_ = pr.Close()
+			<-execErrCh
+			return false, fmt.Errorf("decompress remote tar: %w", gzErr)
+		}
+		gzReader = gz
+		tarSource = gz
 	}
-	if _, err := tarFile.Seek(0, io.SeekStart); err != nil {
-		_ = tarFile.Close()
-		return err
+	extractProduced, extractErr := extractTarToDir(tarSource, localDir, progress)
+	if gzReader != nil {
+		_ = gzReader.Close()
 	}
-	if err := extractTarToDir(tarFile, localDir); err != nil {
-		_ = tarFile.Close()
-		return err
+	_ = pr.Close()
+	execErr := <-execErrCh
+
+	if extractErr != nil {
+		return extractProduced, extractErr
 	}
-	return tarFile.Close()
+	if execErr != nil {
+		msg := strings.TrimSpace(errBuf.String())
+		if msg != "" {
+			return extractProduced, fmt.Errorf("%w: %s", execErr, msg)
+		}
+		return extractProduced, execErr
+	}
+	return extractProduced, nil
 }
 
 func isRetryableCopyStreamError(err error) bool {
