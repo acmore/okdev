@@ -1099,6 +1099,59 @@ func syncthingFolderNeedBytes(ctx context.Context, base, key, folderID string) (
 	return payload.NeedBytes, nil
 }
 
+// syncthingFolderScanned checks whether the syncthing folder has completed its
+// initial scan by querying /rest/db/status. Returns true when the folder state
+// is "idle" or "syncing" (i.e. no longer "scanning" or empty). This prevents
+// premature completion checks when the folder index is still empty.
+func syncthingFolderScanned(ctx context.Context, base, key, folderID string) (bool, error) {
+	path := fmt.Sprintf("/rest/db/status?folder=%s", url.QueryEscape(folderID))
+	body, err := syncthingAPIRequestWithContext(ctx, http.MethodGet, base, key, path, nil, "")
+	if err != nil {
+		return false, err
+	}
+	var payload struct {
+		State       string `json:"state"`
+		GlobalFiles int64  `json:"globalFiles"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false, err
+	}
+	// A folder that has never scanned reports state="" or "scanning".
+	// Once scanning completes it transitions to "idle" (or "syncing" if
+	// it immediately starts syncing with a peer).
+	switch payload.State {
+	case "idle", "syncing", "sync-waiting", "sync-preparing":
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+// waitForLocalFolderScan polls the local syncthing until the folder has
+// completed its initial scan. This must be called before trusting completion
+// or needBytes values, since an unscanned folder reports 0 need (empty index).
+func waitForLocalFolderScan(ctx context.Context, base, key, folderID string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		scanned, err := syncthingFolderScanned(ctx, base, key, folderID)
+		if err != nil {
+			slog.Debug("syncthing folder scan check failed", "folder", folderID, "error", err)
+		} else if scanned {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("folder %s did not complete initial scan within %s", folderID, timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 func syncthingPeerConnected(ctx context.Context, base, key, peerID string) (bool, error) {
 	body, err := syncthingAPIRequestWithContext(ctx, http.MethodGet, base, key, "/rest/system/connections", nil, "")
 	if err != nil {
@@ -1257,6 +1310,13 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 		return fmt.Errorf("read remote syncthing device id: %w", err)
 	}
 
+	// Wait for the local folder's initial scan to finish before polling
+	// completion. An unscanned folder has an empty index, so both local and
+	// remote report 0 needBytes — causing a premature "sync complete".
+	if err := waitForLocalFolderScan(ctx, localBase, localKey, folderID, timeout); err != nil {
+		slog.Debug("waitForInitialSync: local folder scan wait failed, proceeding with poll", "error", err)
+	}
+
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(syncthingProgressInterval)
 	defer ticker.Stop()
@@ -1399,6 +1459,13 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 	}
 	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, "", folderID, remotePath, "receiveonly", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
 		return fmt.Errorf("configure remote (phase 1): %w", err)
+	}
+
+	// Wait for the local folder's initial scan to complete before polling
+	// completion. Without this, the local index may be empty and the remote
+	// would report 0 needBytes — causing a premature "sync complete".
+	if err := waitForLocalFolderScan(ctx, localBase, localKey, folderID, initialSyncTimeout); err != nil {
+		return fmt.Errorf("wait for local folder scan (phase 1): %w", err)
 	}
 
 	// Poll until remote is in sync, calling override on every tick.
