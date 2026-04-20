@@ -22,6 +22,7 @@ type cpProgress struct {
 
 	mu       sync.Mutex
 	current  string
+	phase    string
 	files    int64
 	bytes    int64
 	lastLen  int
@@ -62,6 +63,7 @@ func (p *cpProgress) kube() *kube.CopyProgress {
 	return &kube.CopyProgress{
 		OnFileStart: p.onFileStart,
 		OnBytes:     p.onBytes,
+		OnPhase:     p.setPhase,
 	}
 }
 
@@ -69,7 +71,21 @@ func (p *cpProgress) kube() *kube.CopyProgress {
 // Intended for multi-pod aggregation where per-file names from concurrent
 // pods would interleave meaninglessly.
 func (p *cpProgress) kubeBytesOnly() *kube.CopyProgress {
-	return &kube.CopyProgress{OnBytes: p.onBytes}
+	return &kube.CopyProgress{OnBytes: p.onBytes, OnPhase: p.setPhase}
+}
+
+// setPhase updates the human-readable phase shown when no bytes have flowed
+// yet (e.g. "listing remote files"). An empty string clears the phase.
+func (p *cpProgress) setPhase(phase string) {
+	p.mu.Lock()
+	p.phase = phase
+	p.mu.Unlock()
+	// Render once so the transition is visible without waiting for the next
+	// tick; the ticker may be ~150ms away and users perceive long enumerations
+	// as hangs otherwise.
+	if p.interactive {
+		p.render()
+	}
 }
 
 // setPrefix updates the leading prefix used on the status line.
@@ -107,6 +123,7 @@ func (p *cpProgress) run() {
 func (p *cpProgress) render() {
 	p.mu.Lock()
 	current := p.current
+	phase := p.phase
 	files := p.files
 	prefix := p.prefix
 	p.mu.Unlock()
@@ -123,19 +140,27 @@ func (p *cpProgress) render() {
 		line.WriteString(prefix)
 		line.WriteString(" ")
 	}
-	line.WriteString(humanBytes(bytes))
-	if p.total > 0 {
-		fmt.Fprintf(&line, "/%s (%d%%)", humanBytes(p.total), pct(bytes, p.total))
-	}
-	fmt.Fprintf(&line, " · %s/s", humanBytes(int64(rate)))
-	if eta := p.etaString(bytes, rate); eta != "" {
-		fmt.Fprintf(&line, " · ETA %s", eta)
-	}
-	if files > 0 {
-		fmt.Fprintf(&line, " · %d files", files)
-	}
-	if current != "" {
-		fmt.Fprintf(&line, " · %s", truncateRight(current, 40))
+	// While no bytes have flowed and we have a human-readable phase, show the
+	// phase with elapsed time so long enumerations don't look like a hang. As
+	// soon as the first byte lands, the normal progress rendering takes over.
+	if bytes == 0 && phase != "" {
+		fmt.Fprintf(&line, "%s · %s", phase, formatDuration(elapsed))
+	} else {
+		line.WriteString(humanBytes(bytes))
+		if p.total > 0 {
+			fmt.Fprintf(&line, "/%s (%d%%)", humanBytes(p.total), pct(bytes, p.total))
+		}
+		fmt.Fprintf(&line, " · %s", formatDuration(elapsed))
+		fmt.Fprintf(&line, " · %s/s", humanBytes(int64(rate)))
+		if eta := p.etaString(bytes, rate); eta != "" {
+			fmt.Fprintf(&line, " · ETA %s", eta)
+		}
+		if files > 0 {
+			fmt.Fprintf(&line, " · %d files", files)
+		}
+		if current != "" {
+			fmt.Fprintf(&line, " · %s", truncateRight(current, 40))
+		}
 	}
 
 	rendered := line.String()

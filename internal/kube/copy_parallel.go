@@ -136,10 +136,14 @@ func (c *Client) CopyDirFromPodParallelWithOptions(ctx context.Context, namespac
 		return c.CopyDirFromPodWithOptions(ctx, namespace, pod, container, remoteDir, localDir, opts)
 	}
 
+	opts.Progress.phase("listing remote files")
 	entries, err := c.ListFilesUnder(ctx, namespace, pod, container, remoteDir)
 	if err != nil {
+		opts.Progress.phase("")
 		return err
 	}
+	opts.Progress.phase("")
+
 	if len(entries) == 0 {
 		return c.CopyDirFromPodWithOptions(ctx, namespace, pod, container, remoteDir, localDir, opts)
 	}
@@ -232,7 +236,9 @@ func (c *Client) CopyDirToPodParallelWithOptions(ctx context.Context, namespace,
 		return c.CopyDirToPodWithOptions(ctx, namespace, pod, container, localDir, remoteDir, opts)
 	}
 
+	opts.Progress.phase("scanning local files")
 	entries, err := listLocalFiles(localDir)
+	opts.Progress.phase("")
 	if err != nil {
 		return err
 	}

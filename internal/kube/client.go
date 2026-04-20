@@ -1015,6 +1015,11 @@ type CopyProgress struct {
 	OnBytes func(n int)
 	// OnFileEnd is called when the current file finishes.
 	OnFileEnd func(name string)
+	// OnPhase is called when the copy moves between long-running phases (e.g.
+	// enumerating remote files before the first byte lands). An empty phase
+	// signals the renderer to clear any previous phase message. OnPhase may be
+	// nil and callers should use (*CopyProgress).phase to invoke it safely.
+	OnPhase func(phase string)
 }
 
 // CopyOptions holds optional behaviour flags for copy operations.
@@ -1041,6 +1046,13 @@ func (p *CopyProgress) fileEnd(name string) {
 		return
 	}
 	p.OnFileEnd(name)
+}
+
+func (p *CopyProgress) phase(s string) {
+	if p == nil || p.OnPhase == nil {
+		return
+	}
+	p.OnPhase(s)
 }
 
 // countingReader wraps an io.Reader and reports byte counts to a CopyProgress.

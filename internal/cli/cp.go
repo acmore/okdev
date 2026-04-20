@@ -47,6 +47,7 @@ func newCpCmd(opts *Options) *cobra.Command {
 	var fanout int
 	var readyOnly bool
 	var parallel int
+	var quiet bool
 
 	cmd := &cobra.Command{
 		Use:   "cp [session] <src> <dst>",
@@ -103,7 +104,7 @@ func newCpCmd(opts *Options) *cobra.Command {
 
 			effectiveParallel := clampParallel(parallel)
 			if multiPod {
-				return runMultiPodCp(cmd, cc, localPath, remotePath, upload, allPods, podNames, role, labels, exclude, container, fanout, readyOnly, effectiveParallel)
+				return runMultiPodCp(cmd, cc, localPath, remotePath, upload, allPods, podNames, role, labels, exclude, container, fanout, readyOnly, effectiveParallel, quiet)
 			}
 
 			// Single-pod mode.
@@ -117,12 +118,18 @@ func newCpCmd(opts *Options) *cobra.Command {
 			}
 
 			prefix, total := buildSinglePodCpPrefix(cmd.Context(), cc.kube, cc.namespace, target.PodName, targetContainer, localPath, remotePath, upload)
-			announceCpStart(cmd.ErrOrStderr(), upload, localPath, remotePath, target.PodName, total, 1)
-			progress := newCpProgress(cmd.ErrOrStderr(), prefix, total)
-			opts := kube.CopyOptions{Progress: progress.kube()}
-			cpErr := runSinglePodCpWithParallel(cmd.Context(), cc.kube, cc.namespace, target.PodName, targetContainer, localPath, remotePath, upload, effectiveParallel, opts)
-			progress.stop()
-			if cpErr == nil {
+			var copyOpts kube.CopyOptions
+			var progress *cpProgress
+			if !quiet {
+				announceCpStart(cmd.ErrOrStderr(), upload, localPath, remotePath, target.PodName, total, 1)
+				progress = newCpProgress(cmd.ErrOrStderr(), prefix, total)
+				copyOpts.Progress = progress.kube()
+			}
+			cpErr := runSinglePodCpWithParallel(cmd.Context(), cc.kube, cc.namespace, target.PodName, targetContainer, localPath, remotePath, upload, effectiveParallel, copyOpts)
+			if progress != nil {
+				progress.stop()
+			}
+			if cpErr == nil && !quiet {
 				if upload {
 					fmt.Fprintf(cmd.OutOrStdout(), "copied %s -> :%s (%s)\n", localPath, remotePath, progress.summary())
 				} else {
@@ -142,6 +149,7 @@ func newCpCmd(opts *Options) *cobra.Command {
 	cmd.Flags().IntVar(&fanout, "fanout", pdshDefaultFanout, "Maximum concurrent pod transfers")
 	cmd.Flags().BoolVar(&readyOnly, "ready-only", false, "Copy only to/from pods that are already running (skip readiness check)")
 	cmd.Flags().IntVar(&parallel, "parallel", cpDefaultParallel, "Parallel streams per pod for directory copies (1 = sequential)")
+	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Suppress progress reporting and announce/summary lines")
 	return cmd
 }
 
@@ -342,7 +350,7 @@ type cpResult struct {
 	err error
 }
 
-func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath string, upload bool, allPods bool, podNames []string, role string, labels []string, exclude []string, container string, fanout int, readyOnly bool, parallel int) error {
+func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath string, upload bool, allPods bool, podNames []string, role string, labels []string, exclude []string, container string, fanout int, readyOnly bool, parallel int, quiet bool) error {
 	ctx := cmd.Context()
 	labelSel := selectorForSessionRun(cc.sessionName)
 	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
@@ -443,12 +451,18 @@ func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath
 		perPodTotal = remotePathSize(ctx, cc.kube, cc.namespace, pods[0].Name, targetContainer, remotePath)
 	}
 	totalBytes := perPodTotal * int64(podCount)
-	announceCpStart(errOut, upload, localPath, remotePath, "", perPodTotal, podCount)
-	progress := newCpProgress(errOut, fmt.Sprintf("cp 0/%d pods", podCount), totalBytes)
-	defer progress.stop()
+	var progress *cpProgress
+	if !quiet {
+		announceCpStart(errOut, upload, localPath, remotePath, "", perPodTotal, podCount)
+		progress = newCpProgress(errOut, fmt.Sprintf("cp 0/%d pods", podCount), totalBytes)
+		defer progress.stop()
+	}
 
 	var completed int32
 	updatePodCount := func() {
+		if progress == nil {
+			return
+		}
 		done := atomic.LoadInt32(&completed)
 		progress.setPrefix(fmt.Sprintf("cp %d/%d pods", done, podCount))
 	}
@@ -462,7 +476,10 @@ func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath
 			defer func() { <-sem }()
 
 			short := nameMap[pod.Name]
-			copyOpts := kube.CopyOptions{Progress: progress.kubeBytesOnly()}
+			var copyOpts kube.CopyOptions
+			if progress != nil {
+				copyOpts.Progress = progress.kubeBytesOnly()
+			}
 			var cpErr error
 			if upload {
 				cpErr = runSinglePodCpWithParallel(ctx, cc.kube, cc.namespace, pod.Name, targetContainer, localPath, remotePath, true, effectiveParallel, copyOpts)
@@ -502,8 +519,12 @@ func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath
 			}
 		}
 	}
-	progress.stop()
-	fmt.Fprintf(out, "cp summary: %d/%d pods ok · %s\n", podCount-len(failures), podCount, progress.summary())
+	if progress != nil {
+		progress.stop()
+		fmt.Fprintf(out, "cp summary: %d/%d pods ok · %s\n", podCount-len(failures), podCount, progress.summary())
+	} else {
+		fmt.Fprintf(out, "cp summary: %d/%d pods ok\n", podCount-len(failures), podCount)
+	}
 	if len(failures) > 0 {
 		return fmt.Errorf("%d of %d pods failed", len(failures), len(pods))
 	}

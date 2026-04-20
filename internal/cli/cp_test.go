@@ -269,6 +269,15 @@ func TestCpReadinessCheckNoneRunning(t *testing.T) {
 	}
 }
 
+func TestCpCommandExposesQuietAndParallelFlags(t *testing.T) {
+	cmd := newCpCmd(&Options{})
+	for _, name := range []string{"quiet", "parallel"} {
+		if cmd.Flags().Lookup(name) == nil {
+			t.Errorf("expected --%s flag on okdev cp", name)
+		}
+	}
+}
+
 func TestClampParallel(t *testing.T) {
 	tests := []struct {
 		in, want int

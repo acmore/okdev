@@ -119,9 +119,9 @@ func TestExtractTarToDirConcurrentBuckets(t *testing.T) {
 
 	dir := t.TempDir()
 	bucketA := mkTar(map[string]string{
-		"shared/parent/a1.txt":       "A1",
-		"shared/parent/deep/a2.txt":  "A2",
-		"other/top.txt":              "TOP",
+		"shared/parent/a1.txt":      "A1",
+		"shared/parent/deep/a2.txt": "A2",
+		"other/top.txt":             "TOP",
 	})
 	bucketB := mkTar(map[string]string{
 		"shared/parent/b1.txt":      "B1",

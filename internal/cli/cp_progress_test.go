@@ -114,3 +114,65 @@ func TestEtaStringClampsAbsurdEstimates(t *testing.T) {
 		t.Errorf("absurd ETA should be suppressed, got %q", got)
 	}
 }
+
+// TestRenderShowsPhaseBeforeBytes verifies the status line during enumeration
+// presents the phase + elapsed so users don't mistake a long `find` for a
+// hang. The render method only writes when interactive, so we construct a
+// tracker that targets a bytes.Buffer and flip the interactive flag directly.
+func TestRenderShowsPhaseBeforeBytes(t *testing.T) {
+	var buf bytes.Buffer
+	p := &cpProgress{w: &buf, interactive: true, prefix: "← :/data", started: time.Now(), phase: "listing remote files"}
+	p.render()
+	out := buf.String()
+	if !strings.Contains(out, "listing remote files") {
+		t.Fatalf("expected phase in rendered line, got %q", out)
+	}
+	if !strings.Contains(out, "1s") && !strings.Contains(out, "2s") {
+		t.Fatalf("expected elapsed duration in line, got %q", out)
+	}
+	// Once bytes flow, the phase view must step aside for the byte progress.
+	p.onBytes(512)
+	buf.Reset()
+	p.render()
+	out = buf.String()
+	if strings.Contains(out, "listing remote files") {
+		t.Fatalf("phase should be hidden once bytes arrive, got %q", out)
+	}
+	if !strings.Contains(out, "512 B") {
+		t.Fatalf("expected byte count in line, got %q", out)
+	}
+}
+
+// TestCpProgressKubeWiresPhase ensures the kube CopyProgress returned by
+// kube() and kubeBytesOnly() carries the phase setter so the render can react
+// to long enumerations. This is the regression guard for the "frozen looking
+// progress line" bug.
+func TestCpProgressKubeWiresPhase(t *testing.T) {
+	var buf bytes.Buffer
+	p := newCpProgress(&buf, "x", 0)
+	defer p.stop()
+
+	k := p.kube()
+	if k.OnPhase == nil {
+		t.Fatal("kube().OnPhase must be wired")
+	}
+	k.OnPhase("listing remote files")
+	p.mu.Lock()
+	got := p.phase
+	p.mu.Unlock()
+	if got != "listing remote files" {
+		t.Fatalf("phase not propagated, got %q", got)
+	}
+
+	kb := p.kubeBytesOnly()
+	if kb.OnPhase == nil {
+		t.Fatal("kubeBytesOnly().OnPhase must be wired too")
+	}
+	kb.OnPhase("")
+	p.mu.Lock()
+	got = p.phase
+	p.mu.Unlock()
+	if got != "" {
+		t.Fatalf("phase not cleared, got %q", got)
+	}
+}
