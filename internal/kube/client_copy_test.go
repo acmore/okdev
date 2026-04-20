@@ -23,7 +23,7 @@ func TestCreateTarFromDir(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := createTarFromDir(dir, &buf); err != nil {
+	if err := createTarFromDir(dir, &buf, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -63,7 +63,7 @@ func TestExtractTarToDir(t *testing.T) {
 	tw.Close()
 
 	dir := t.TempDir()
-	if err := extractTarToDir(&buf, dir); err != nil {
+	if _, err := extractTarToDir(&buf, dir, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -91,7 +91,7 @@ func TestExtractSingleFileFromTar(t *testing.T) {
 	}
 
 	outPath := filepath.Join(t.TempDir(), "out.txt")
-	if err := extractSingleFileFromTar(bytes.NewReader(buf.Bytes()), outPath); err != nil {
+	if _, err := extractSingleFileFromTar(bytes.NewReader(buf.Bytes()), outPath, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -126,7 +126,7 @@ func TestExtractSingleFileFromTarRejectsMultipleFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := extractSingleFileFromTar(bytes.NewReader(buf.Bytes()), filepath.Join(t.TempDir(), "out.txt"))
+	_, err := extractSingleFileFromTar(bytes.NewReader(buf.Bytes()), filepath.Join(t.TempDir(), "out.txt"), nil)
 	if err == nil || err.Error() != "tar archive contains multiple files" {
 		t.Fatalf("expected multiple files error, got %v", err)
 	}
@@ -147,8 +147,81 @@ func TestExtractSingleFileFromTarRejectsTruncatedArchive(t *testing.T) {
 	}
 
 	truncated := buf.Bytes()[:len(buf.Bytes())-1100]
-	err := extractSingleFileFromTar(bytes.NewReader(truncated), filepath.Join(t.TempDir(), "out.txt"))
+	_, err := extractSingleFileFromTar(bytes.NewReader(truncated), filepath.Join(t.TempDir(), "out.txt"), nil)
 	if err == nil {
 		t.Fatal("expected truncated tar extraction to fail")
+	}
+}
+
+func TestExtractTarToDirReportsProduced(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Name: "a.txt", Mode: 0o644, Size: 3, Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("abc")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	produced, err := extractTarToDir(bytes.NewReader(buf.Bytes()), dir, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !produced {
+		t.Fatal("expected produced=true after writing a file")
+	}
+}
+
+func TestExtractTarToDirEmptyArchiveReportsNoProduced(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Name: "d/", Mode: 0o755, Typeflag: tar.TypeDir}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	produced, err := extractTarToDir(bytes.NewReader(buf.Bytes()), dir, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if produced {
+		t.Fatal("directory-only archive must report produced=false")
+	}
+}
+
+func TestCreateTarFromDirInvokesProgress(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var bytesSeen int64
+	starts := []string{}
+	ends := []string{}
+	progress := &CopyProgress{
+		OnFileStart: func(name string, _ int64) { starts = append(starts, name) },
+		OnBytes:     func(n int) { bytesSeen += int64(n) },
+		OnFileEnd:   func(name string) { ends = append(ends, name) },
+	}
+
+	var buf bytes.Buffer
+	if err := createTarFromDir(dir, &buf, progress); err != nil {
+		t.Fatal(err)
+	}
+	if len(starts) != 1 || starts[0] != "a.txt" {
+		t.Fatalf("unexpected file starts: %v", starts)
+	}
+	if len(ends) != 1 || ends[0] != "a.txt" {
+		t.Fatalf("unexpected file ends: %v", ends)
+	}
+	if bytesSeen != int64(len("hello")) {
+		t.Fatalf("bytes seen = %d, want %d", bytesSeen, len("hello"))
 	}
 }
