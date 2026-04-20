@@ -3,6 +3,7 @@ package kube
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -1025,6 +1026,14 @@ type CopyProgress struct {
 // CopyOptions holds optional behaviour flags for copy operations.
 type CopyOptions struct {
 	Progress *CopyProgress
+	// Compress gzip-compresses the tar stream on the wire. For directory
+	// copies this wires `tar czf -`/`tar xzf -` on the pod side and a
+	// gzip.Reader/gzip.Writer on the local side. It assumes the remote image
+	// ships `gzip` (ubiquitous in both GNU and busybox tar builds). Useful on
+	// high-latency / low-bandwidth links where the exec relay is the
+	// bottleneck; redundant (and a mild CPU cost) on fast links or on
+	// pre-compressed payloads.
+	Compress bool
 }
 
 func (p *CopyProgress) fileStart(name string, size int64) {
@@ -1383,21 +1392,51 @@ func (c *Client) CopyDirToPod(ctx context.Context, namespace, pod, container, lo
 func (c *Client) CopyDirToPodWithOptions(ctx context.Context, namespace, pod, container, localDir, remoteDir string, opts CopyOptions) error {
 	pr, pw := io.Pipe()
 	errCh := make(chan error, 1)
+	// When compression is requested, gzip the tar on the local side (where CPU
+	// is cheap and plentiful) before it reaches the SPDY wire. The pod-side
+	// tar becomes `tar xzf -` to decompress on the fly.
+	var tarSink io.WriteCloser = pw
+	if opts.Compress {
+		gz := gzip.NewWriter(pw)
+		tarSink = &gzipPipeWriter{gz: gz, pw: pw}
+	}
 	go func() {
-		errCh <- createTarFromDir(localDir, pw, opts.Progress)
-		pw.Close()
+		err := createTarFromDir(localDir, tarSink, opts.Progress)
+		if opts.Compress {
+			if closeErr := tarSink.Close(); err == nil {
+				err = closeErr
+			}
+		}
+		_ = pw.Close()
+		errCh <- err
 	}()
 	cs, cfg, err := c.clientset()
 	if err != nil {
 		pr.Close()
 		return err
 	}
-	cmd := []string{"sh", "-lc", fmt.Sprintf("mkdir -p %s && tar xf - -C %s", shellQuote(remoteDir), shellQuote(remoteDir))}
+	tarCmd := "tar xf -"
+	if opts.Compress {
+		tarCmd = "tar xzf -"
+	}
+	cmd := []string{"sh", "-lc", fmt.Sprintf("mkdir -p %s && %s -C %s", shellQuote(remoteDir), tarCmd, shellQuote(remoteDir))}
 	if execErr := c.execStream(ctx, cs, cfg, namespace, pod, container, cmd, pr, io.Discard, io.Discard, false); execErr != nil {
 		return execErr
 	}
 	return <-errCh
 }
+
+// gzipPipeWriter is a small adapter so the upload goroutine can Close() the
+// gzip layer (flushing the trailing footer) independently of the underlying
+// pipe writer; the pipe itself is closed in the goroutine epilogue so the
+// exec stream sees EOF only after the gzip trailer has flushed.
+type gzipPipeWriter struct {
+	gz *gzip.Writer
+	pw *io.PipeWriter
+}
+
+func (w *gzipPipeWriter) Write(p []byte) (int, error) { return w.gz.Write(p) }
+func (w *gzipPipeWriter) Close() error                { return w.gz.Close() }
 
 // CopyDirFromPod streams a remote directory as a tar archive and extracts it locally.
 func (c *Client) CopyDirFromPod(ctx context.Context, namespace, pod, container, remoteDir, localDir string) error {
@@ -1407,7 +1446,7 @@ func (c *Client) CopyDirFromPod(ctx context.Context, namespace, pod, container, 
 func (c *Client) CopyDirFromPodWithOptions(ctx context.Context, namespace, pod, container, remoteDir, localDir string, opts CopyOptions) error {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		produced, err := c.copyDirFromPodOnce(ctx, namespace, pod, container, remoteDir, localDir, opts.Progress)
+		produced, err := c.copyDirFromPodOnce(ctx, namespace, pod, container, remoteDir, localDir, opts.Progress, opts.Compress)
 		if err == nil {
 			return nil
 		}
@@ -1424,15 +1463,20 @@ func (c *Client) CopyDirFromPodWithOptions(ctx context.Context, namespace, pod, 
 
 // copyDirFromPodOnce streams a remote tar archive directly into localDir,
 // extracting files as they arrive so intermediate files become visible to the
-// caller during the transfer.
-func (c *Client) copyDirFromPodOnce(ctx context.Context, namespace, pod, container, remoteDir, localDir string, progress *CopyProgress) (produced bool, _ error) {
+// caller during the transfer. When compress is true the remote tar emits a
+// gzipped archive and the local side decompresses on the fly.
+func (c *Client) copyDirFromPodOnce(ctx context.Context, namespace, pod, container, remoteDir, localDir string, progress *CopyProgress, compress bool) (produced bool, _ error) {
 	cs, cfg, err := c.clientset()
 	if err != nil {
 		return false, err
 	}
 	parent := filepath.Dir(remoteDir)
 	base := filepath.Base(remoteDir)
-	cmd := []string{"sh", "-lc", fmt.Sprintf("tar cf - -C %s %s", shellQuote(parent), shellQuote(base))}
+	tarCmd := "tar cf -"
+	if compress {
+		tarCmd = "tar czf -"
+	}
+	cmd := []string{"sh", "-lc", fmt.Sprintf("%s -C %s %s", tarCmd, shellQuote(parent), shellQuote(base))}
 
 	pr, pw := io.Pipe()
 	var errBuf bytes.Buffer
@@ -1443,7 +1487,22 @@ func (c *Client) copyDirFromPodOnce(ctx context.Context, namespace, pod, contain
 		execErrCh <- err
 	}()
 
-	extractProduced, extractErr := extractTarToDir(pr, localDir, progress)
+	var tarSource io.Reader = pr
+	var gzReader *gzip.Reader
+	if compress {
+		gz, gzErr := gzip.NewReader(pr)
+		if gzErr != nil {
+			_ = pr.Close()
+			<-execErrCh
+			return false, fmt.Errorf("decompress remote tar: %w", gzErr)
+		}
+		gzReader = gz
+		tarSource = gz
+	}
+	extractProduced, extractErr := extractTarToDir(tarSource, localDir, progress)
+	if gzReader != nil {
+		_ = gzReader.Close()
+	}
 	_ = pr.Close()
 	execErr := <-execErrCh
 

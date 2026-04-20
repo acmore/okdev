@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -161,10 +162,10 @@ func (c *Client) CopyDirFromPodParallelWithOptions(ctx context.Context, namespac
 	}
 
 	buckets := bucketFilesByLPT(entries, parallel)
-	return c.runParallelDirFromPod(ctx, namespace, pod, container, remoteDir, localDir, buckets, opts.Progress)
+	return c.runParallelDirFromPod(ctx, namespace, pod, container, remoteDir, localDir, buckets, opts.Progress, opts.Compress)
 }
 
-func (c *Client) runParallelDirFromPod(ctx context.Context, namespace, pod, container, remoteDir, localDir string, buckets [][]RemoteFileEntry, progress *CopyProgress) error {
+func (c *Client) runParallelDirFromPod(ctx context.Context, namespace, pod, container, remoteDir, localDir string, buckets [][]RemoteFileEntry, progress *CopyProgress, compress bool) error {
 	cs, cfg, err := c.clientset()
 	if err != nil {
 		return err
@@ -180,7 +181,7 @@ func (c *Client) runParallelDirFromPod(ctx context.Context, namespace, pod, cont
 		wg.Add(1)
 		go func(files []RemoteFileEntry) {
 			defer wg.Done()
-			if err := c.runBucketDownload(ctx, cs, cfg, namespace, pod, container, remoteDir, localDir, files, progress); err != nil {
+			if err := c.runBucketDownload(ctx, cs, cfg, namespace, pod, container, remoteDir, localDir, files, progress, compress); err != nil {
 				errCh <- err
 				cancel()
 			}
@@ -197,7 +198,7 @@ func (c *Client) runParallelDirFromPod(ctx context.Context, namespace, pod, cont
 	return nil
 }
 
-func (c *Client) runBucketDownload(ctx context.Context, cs *kubernetes.Clientset, cfg *rest.Config, namespace, pod, container, remoteDir, localDir string, files []RemoteFileEntry, progress *CopyProgress) error {
+func (c *Client) runBucketDownload(ctx context.Context, cs *kubernetes.Clientset, cfg *rest.Config, namespace, pod, container, remoteDir, localDir string, files []RemoteFileEntry, progress *CopyProgress, compress bool) error {
 	if len(files) == 0 {
 		return nil
 	}
@@ -214,7 +215,11 @@ func (c *Client) runBucketDownload(ctx context.Context, cs *kubernetes.Clientset
 		fileList.WriteByte('\n')
 	}
 
-	script := fmt.Sprintf("tar cf - -C %s -T -", shellutil.Quote(remoteDir))
+	tarFlag := "cf"
+	if compress {
+		tarFlag = "czf"
+	}
+	script := fmt.Sprintf("tar %s - -C %s -T -", tarFlag, shellutil.Quote(remoteDir))
 	cmd := []string{"sh", "-lc", script}
 
 	pr, pw := io.Pipe()
@@ -226,7 +231,22 @@ func (c *Client) runBucketDownload(ctx context.Context, cs *kubernetes.Clientset
 		execErrCh <- err
 	}()
 
-	_, extractErr := extractTarToDir(pr, localDir, progress)
+	var tarSource io.Reader = pr
+	var gzReader *gzip.Reader
+	if compress {
+		gz, gzErr := gzip.NewReader(pr)
+		if gzErr != nil {
+			_ = pr.Close()
+			<-execErrCh
+			return fmt.Errorf("decompress remote tar: %w", gzErr)
+		}
+		gzReader = gz
+		tarSource = gz
+	}
+	_, extractErr := extractTarToDir(tarSource, localDir, progress)
+	if gzReader != nil {
+		_ = gzReader.Close()
+	}
 	_ = pr.Close()
 	execErr := <-execErrCh
 	if extractErr != nil {
@@ -262,7 +282,7 @@ func (c *Client) CopyDirToPodParallelWithOptions(ctx context.Context, namespace,
 	}
 
 	buckets := bucketFilesByLPT(entries, parallel)
-	return c.runParallelDirToPod(ctx, namespace, pod, container, localDir, remoteDir, buckets, opts.Progress)
+	return c.runParallelDirToPod(ctx, namespace, pod, container, localDir, remoteDir, buckets, opts.Progress, opts.Compress)
 }
 
 // listLocalFiles enumerates regular files under dir with sizes, paths relative
@@ -293,7 +313,7 @@ func listLocalFiles(dir string) ([]RemoteFileEntry, error) {
 	return out, nil
 }
 
-func (c *Client) runParallelDirToPod(ctx context.Context, namespace, pod, container, localDir, remoteDir string, buckets [][]RemoteFileEntry, progress *CopyProgress) error {
+func (c *Client) runParallelDirToPod(ctx context.Context, namespace, pod, container, localDir, remoteDir string, buckets [][]RemoteFileEntry, progress *CopyProgress, compress bool) error {
 	cs, cfg, err := c.clientset()
 	if err != nil {
 		return err
@@ -316,7 +336,7 @@ func (c *Client) runParallelDirToPod(ctx context.Context, namespace, pod, contai
 		wg.Add(1)
 		go func(files []RemoteFileEntry) {
 			defer wg.Done()
-			if err := c.runBucketUpload(ctx, cs, cfg, namespace, pod, container, localDir, remoteDir, files, progress); err != nil {
+			if err := c.runBucketUpload(ctx, cs, cfg, namespace, pod, container, localDir, remoteDir, files, progress, compress); err != nil {
 				errCh <- err
 				cancel()
 			}
@@ -333,7 +353,7 @@ func (c *Client) runParallelDirToPod(ctx context.Context, namespace, pod, contai
 	return nil
 }
 
-func (c *Client) runBucketUpload(ctx context.Context, cs *kubernetes.Clientset, cfg *rest.Config, namespace, pod, container, localDir, remoteDir string, files []RemoteFileEntry, progress *CopyProgress) error {
+func (c *Client) runBucketUpload(ctx context.Context, cs *kubernetes.Clientset, cfg *rest.Config, namespace, pod, container, localDir, remoteDir string, files []RemoteFileEntry, progress *CopyProgress, compress bool) error {
 	if len(files) == 0 {
 		return nil
 	}
@@ -341,11 +361,27 @@ func (c *Client) runBucketUpload(ctx context.Context, cs *kubernetes.Clientset, 
 	pr, pw := io.Pipe()
 	tarErrCh := make(chan error, 1)
 	go func() {
-		tarErrCh <- writeFilesTar(localDir, files, pw, progress)
+		var sink io.Writer = pw
+		var gz *gzip.Writer
+		if compress {
+			gz = gzip.NewWriter(pw)
+			sink = gz
+		}
+		err := writeFilesTar(localDir, files, sink, progress)
+		if gz != nil {
+			if closeErr := gz.Close(); err == nil {
+				err = closeErr
+			}
+		}
 		_ = pw.Close()
+		tarErrCh <- err
 	}()
 
-	cmd := []string{"sh", "-lc", fmt.Sprintf("tar xf - -C %s", shellutil.Quote(remoteDir))}
+	tarCmd := "tar xf -"
+	if compress {
+		tarCmd = "tar xzf -"
+	}
+	cmd := []string{"sh", "-lc", fmt.Sprintf("%s -C %s", tarCmd, shellutil.Quote(remoteDir))}
 	var errBuf bytes.Buffer
 	if err := c.execStream(ctx, cs, cfg, namespace, pod, container, cmd, pr, io.Discard, &errBuf, false); err != nil {
 		msg := strings.TrimSpace(errBuf.String())

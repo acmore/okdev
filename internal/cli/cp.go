@@ -48,6 +48,7 @@ func newCpCmd(opts *Options) *cobra.Command {
 	var readyOnly bool
 	var parallel int
 	var quiet bool
+	var compress bool
 
 	cmd := &cobra.Command{
 		Use:   "cp [session] <src> <dst>",
@@ -104,7 +105,7 @@ func newCpCmd(opts *Options) *cobra.Command {
 
 			effectiveParallel := clampParallel(parallel)
 			if multiPod {
-				return runMultiPodCp(cmd, cc, localPath, remotePath, upload, allPods, podNames, role, labels, exclude, container, fanout, readyOnly, effectiveParallel, quiet)
+				return runMultiPodCp(cmd, cc, localPath, remotePath, upload, allPods, podNames, role, labels, exclude, container, fanout, readyOnly, effectiveParallel, quiet, compress)
 			}
 
 			// Single-pod mode.
@@ -119,6 +120,7 @@ func newCpCmd(opts *Options) *cobra.Command {
 
 			prefix, total := buildSinglePodCpPrefix(cmd.Context(), cc.kube, cc.namespace, target.PodName, targetContainer, localPath, remotePath, upload)
 			var copyOpts kube.CopyOptions
+			copyOpts.Compress = compress
 			var progress *cpProgress
 			if !quiet {
 				announceCpStart(cmd.ErrOrStderr(), upload, localPath, remotePath, target.PodName, total, 1)
@@ -150,6 +152,7 @@ func newCpCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&readyOnly, "ready-only", false, "Copy only to/from pods that are already running (skip readiness check)")
 	cmd.Flags().IntVar(&parallel, "parallel", cpDefaultParallel, "Parallel tar streams per pod for directory copies (default 1; raise only for high-latency/high-bandwidth links where a single stream under-utilizes the pipe)")
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Suppress progress reporting and announce/summary lines")
+	cmd.Flags().BoolVarP(&compress, "compress", "z", false, "Gzip the tar stream on the wire (requires gzip in the pod image; helps on high-latency/low-bandwidth links)")
 	return cmd
 }
 
@@ -355,7 +358,7 @@ type cpResult struct {
 	err error
 }
 
-func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath string, upload bool, allPods bool, podNames []string, role string, labels []string, exclude []string, container string, fanout int, readyOnly bool, parallel int, quiet bool) error {
+func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath string, upload bool, allPods bool, podNames []string, role string, labels []string, exclude []string, container string, fanout int, readyOnly bool, parallel int, quiet bool, compress bool) error {
 	ctx := cmd.Context()
 	labelSel := selectorForSessionRun(cc.sessionName)
 	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
@@ -482,6 +485,7 @@ func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath
 
 			short := nameMap[pod.Name]
 			var copyOpts kube.CopyOptions
+			copyOpts.Compress = compress
 			if progress != nil {
 				copyOpts.Progress = progress.kubeBytesOnly()
 			}

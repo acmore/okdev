@@ -30,6 +30,13 @@ type cpProgress struct {
 	doneCh   chan struct{}
 	stopOnce sync.Once
 
+	// firstByteNanos records the unix-nanos instant the first byte flowed,
+	// lazily set on the first OnBytes call. The transfer rate is measured
+	// from this moment (rather than from progress creation) so pre-transfer
+	// round-trips — IsRemoteDir, du -sb, tar process startup, remote `find`
+	// for the parallel path — don't get amortized into the displayed rate.
+	firstByteNanos int64
+
 	// total is the pre-computed expected byte count (0 if unknown).
 	total int64
 }
@@ -104,6 +111,23 @@ func (p *cpProgress) onFileStart(name string, _ int64) {
 
 func (p *cpProgress) onBytes(n int) {
 	atomic.AddInt64(&p.bytes, int64(n))
+	// Record the first-byte moment exactly once so the rate calculation
+	// excludes pre-transfer latency. A CAS keeps this race-free across the N
+	// parallel worker goroutines that may all be writing bytes simultaneously.
+	if atomic.LoadInt64(&p.firstByteNanos) == 0 {
+		atomic.CompareAndSwapInt64(&p.firstByteNanos, 0, time.Now().UnixNano())
+	}
+}
+
+// transferElapsed returns the wall time spent actually moving bytes, i.e.
+// measured from the first OnBytes callback. Before any bytes have arrived it
+// returns 0 so callers can treat that case as "no rate yet".
+func (p *cpProgress) transferElapsed() time.Duration {
+	start := atomic.LoadInt64(&p.firstByteNanos)
+	if start == 0 {
+		return 0
+	}
+	return time.Since(time.Unix(0, start))
 }
 
 func (p *cpProgress) run() {
@@ -130,9 +154,11 @@ func (p *cpProgress) render() {
 	bytes := atomic.LoadInt64(&p.bytes)
 
 	elapsed := time.Since(p.started)
-	rate := float64(bytes) / elapsed.Seconds()
-	if elapsed.Seconds() <= 0 {
-		rate = 0
+	// Rate uses the transfer-only clock (time since first byte) so slow
+	// pre-transfer setup doesn't drag the displayed throughput down.
+	rate := 0.0
+	if tx := p.transferElapsed(); tx > 0 {
+		rate = float64(bytes) / tx.Seconds()
 	}
 
 	var line strings.Builder
@@ -215,13 +241,15 @@ func formatDuration(d time.Duration) string {
 
 // summary renders a terse one-line summary of what was transferred. It is
 // suitable for printing after stop() on both interactive and non-interactive
-// writers.
+// writers. Total elapsed counts wall time since the command started; rate
+// counts only the transfer window so pre-transfer setup doesn't skew it.
 func (p *cpProgress) summary() string {
-	elapsed := time.Since(p.started)
+	totalElapsed := time.Since(p.started)
+	tx := p.transferElapsed()
 	bytes := atomic.LoadInt64(&p.bytes)
-	rate := float64(bytes) / elapsed.Seconds()
-	if elapsed.Seconds() <= 0 {
-		rate = 0
+	rate := 0.0
+	if tx > 0 {
+		rate = float64(bytes) / tx.Seconds()
 	}
 	p.mu.Lock()
 	files := p.files
@@ -232,7 +260,7 @@ func (p *cpProgress) summary() string {
 	if files > 0 {
 		fmt.Fprintf(&s, " in %d files", files)
 	}
-	fmt.Fprintf(&s, " · %s · %s/s", elapsed.Round(10*time.Millisecond), humanBytes(int64(rate)))
+	fmt.Fprintf(&s, " · %s · %s/s", totalElapsed.Round(10*time.Millisecond), humanBytes(int64(rate)))
 	return s.String()
 }
 

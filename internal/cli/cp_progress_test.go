@@ -115,6 +115,35 @@ func TestEtaStringClampsAbsurdEstimates(t *testing.T) {
 	}
 }
 
+// TestTransferElapsedMeasuresFromFirstByte verifies the rate clock ignores
+// pre-transfer latency (IsRemoteDir, du -sb, enumeration round-trips, tar
+// startup), which was the root cause of wildly understated throughput in the
+// status line. Before the fix, 6 MB transferred in 30s after a 30s setup
+// would display as 100 KB/s rather than the actual 200 KB/s.
+func TestTransferElapsedMeasuresFromFirstByte(t *testing.T) {
+	p := &cpProgress{started: time.Now().Add(-5 * time.Second)}
+	if got := p.transferElapsed(); got != 0 {
+		t.Fatalf("before first byte, transferElapsed should be 0, got %s", got)
+	}
+	p.onBytes(1024)
+	time.Sleep(2 * time.Millisecond) // Ensure the wall clock advances past the CAS-set instant.
+	d1 := p.transferElapsed()
+	if d1 <= 0 {
+		t.Fatalf("after first byte, transferElapsed should be positive, got %s", d1)
+	}
+	// It must be measured from the first OnBytes moment, not from p.started,
+	// so it's strictly less than the pre-seeded started offset of 5s.
+	if d1 >= 5*time.Second {
+		t.Fatalf("transferElapsed(%s) must exclude pre-transfer latency (started was 5s ago)", d1)
+	}
+	// Subsequent onBytes calls must not reset the first-byte instant.
+	time.Sleep(20 * time.Millisecond)
+	p.onBytes(512)
+	if d2 := p.transferElapsed(); d2 < d1 {
+		t.Fatalf("transferElapsed must be monotonic: was %s then %s", d1, d2)
+	}
+}
+
 // TestRenderShowsPhaseBeforeBytes verifies the status line during enumeration
 // presents the phase + elapsed so users don't mistake a long `find` for a
 // hang. The render method only writes when interactive, so we construct a

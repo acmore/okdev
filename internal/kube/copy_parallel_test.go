@@ -3,11 +3,13 @@ package kube
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -188,6 +190,58 @@ func TestListLocalFilesIgnoresNonRegular(t *testing.T) {
 	}
 	if _, hasDir := paths["sub"]; hasDir {
 		t.Fatalf("directory entry should not be reported: %+v", paths)
+	}
+}
+
+// TestWriteFilesTarGzipRoundTrip verifies the compression wire-up: an upload
+// bucket tarred + gzipped on one side must decode cleanly with gzip.NewReader
+// + extractTarToDir on the other. This is the contract each --compress
+// directory copy relies on per worker.
+func TestWriteFilesTarGzipRoundTrip(t *testing.T) {
+	srcDir := t.TempDir()
+	contents := map[string]string{
+		"a.txt":           strings.Repeat("abcd", 1024),
+		"sub/b.bin":       strings.Repeat("z", 2048),
+		"sub/deep/c.json": "{\"ok\":true}",
+	}
+	entries := make([]RemoteFileEntry, 0, len(contents))
+	for rel, data := range contents {
+		full := filepath.Join(srcDir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, RemoteFileEntry{Path: rel, Size: int64(len(data))})
+	}
+
+	var wire bytes.Buffer
+	gz := gzip.NewWriter(&wire)
+	if err := writeFilesTar(srcDir, entries, gz, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	gr, err := gzip.NewReader(&wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gr.Close()
+	dstDir := t.TempDir()
+	if _, err := extractTarToDir(gr, dstDir, nil); err != nil {
+		t.Fatal(err)
+	}
+	for rel, want := range contents {
+		got, err := os.ReadFile(filepath.Join(dstDir, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatalf("missing %s: %v", rel, err)
+		}
+		if string(got) != want {
+			t.Fatalf("%s mismatch after gzip round-trip", rel)
+		}
 	}
 }
 

@@ -271,9 +271,14 @@ func TestCpReadinessCheckNoneRunning(t *testing.T) {
 
 func TestCpCommandExposesQuietAndParallelFlags(t *testing.T) {
 	cmd := newCpCmd(&Options{})
-	for _, name := range []string{"quiet", "parallel"} {
+	for _, name := range []string{"quiet", "parallel", "compress"} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Errorf("expected --%s flag on okdev cp", name)
+		}
+	}
+	for _, short := range []string{"q", "z"} {
+		if cmd.Flags().ShorthandLookup(short) == nil {
+			t.Errorf("expected -%s short flag on okdev cp", short)
 		}
 	}
 }

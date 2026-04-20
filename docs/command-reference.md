@@ -93,6 +93,7 @@
 - Before the transfer begins, an announce line on stderr reports the planned operation with total size when known (e.g. `Downloading :/workspace/data -> ./out (4.32 GB) via sess-master-0`).
 - Directory copies run on a single recursive `tar cf - <dir>` stream by default. Opt into parallelism with `--parallel N` when a single SPDY stream is the actual bottleneck; the parallel path enumerates the tree (remote `find`) and fans the file list out into N balanced tar buckets. Empty directories inside the tree are not preserved by the parallel path, and paths containing literal newlines are unsupported there (fall back to `--parallel 1`).
 - While the parallel path enumerates files on the pod (remote `find`) the progress line shows a phase label (e.g. `listing remote files · 3s`) so long enumerations don't look like a hang; it switches to the normal byte/rate/ETA view as soon as the first byte lands.
+- The transfer rate (`X/s` in the progress line and final summary) is measured from the first byte, not from command start, so pre-transfer round-trips — `IsRemoteDir`, `du -sb`, tar process startup, enumeration — don't artificially deflate the displayed throughput.
 - A throttled single-line progress indicator is rendered to stderr on TTYs showing bytes transferred, total size + percentage (when known), rate, ETA, file count, and current file. On non-TTY output the progress is silent and a final summary line is printed to stdout.
 - `--all`: target all running pods in the session.
 - `--pod`: target specific pods by name (repeatable or comma-separated).
@@ -105,6 +106,7 @@
 
   Raising `--parallel` helps when a single SPDY exec stream under-utilizes the pipe (high-latency, high-bandwidth links where one stream's TCP window is the bottleneck). It can *hurt* when the apiserver, kubelet, or container runtime is the real bottleneck: the sequential path runs one recursive `tar cf - <dir>` with a warm directory walk, while the parallel path pays for a remote `find` enumeration plus N independent per-file stat/open sequences. When in doubt, measure — `--parallel 1` is the default precisely because it's the safest choice for typical trees.
 - `--quiet`, `-q`: suppress the announce, progress bar, and summary lines. Useful for scripts; the copy still runs and errors still print to stderr.
+- `--compress`, `-z`: gzip the tar stream on the wire. The remote side runs `tar czf -` / `tar xzf -`, so the pod image must ship `gzip` (ubiquitous in both GNU and busybox-based containers). Recommended whenever the apiserver exec relay is the bottleneck — high-latency links, small API-server windows, constrained clusters — where even modest compression ratios translate directly into faster wall time. Skip it for already-compressed payloads (images, videos, encrypted blobs) where compression just burns pod CPU without saving bytes.
 - `--all`, `--pod`, `--role`, and `--label` are mutually exclusive.
 
 ### `okdev init [--workload pod|job|pytorchjob|generic] [--template <name>|<path>|<url>] [--set key=value] [--stignore-preset default|python|node|go|rust] [--force]`
