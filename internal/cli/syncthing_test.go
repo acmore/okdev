@@ -248,6 +248,15 @@ func TestSyncthingBootstrapInitialSyncComplete(t *testing.T) {
 	}
 }
 
+func TestTwoPhaseInitialSyncReadyRequiresConnectedPeersForEmptyFolders(t *testing.T) {
+	if twoPhaseInitialSyncReady(100, 0, 0, true, false, false) {
+		t.Fatal("did not expect two-phase initial sync ready while peers are disconnected")
+	}
+	if !twoPhaseInitialSyncReady(100, 0, 0, true, true, true) {
+		t.Fatal("expected two-phase initial sync ready once peers are connected")
+	}
+}
+
 func TestFormatSyncthingMiB(t *testing.T) {
 	if got := formatSyncthingMiB(0); got != "0.0 MiB" {
 		t.Fatalf("unexpected zero format %q", got)

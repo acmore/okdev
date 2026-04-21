@@ -1509,15 +1509,23 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 					// index before declaring complete. Without this,
 					// completion can be 100% just because the remote
 					// hasn't learned about any files yet.
+					indexReceived := true
 					if localGlobalFiles > 0 {
 						remoteReady, remoteStatus, statusErr := syncthingFolderHasLocalFiles(ctx, remoteBase, remoteKey, folderID, localGlobalFiles)
 						if statusErr != nil || !remoteReady {
 							slog.Debug("waitForInitialSync: remote files not materialized yet", "localGlobalFiles", localGlobalFiles, "remoteGlobal", remoteStatus.GlobalFiles, "remoteLocal", remoteStatus.LocalFiles)
-							// Fall through to wait tick.
-						} else {
-							return nil
+							indexReceived = false
 						}
-					} else {
+					}
+					localConnected, localConnErr := syncthingPeerConnected(ctx, localBase, localKey, remoteID)
+					if localConnErr != nil {
+						slog.Debug("waitForInitialSync: local peer connection check failed", "error", localConnErr)
+					}
+					remoteConnected, remoteConnErr := syncthingPeerConnected(ctx, remoteBase, remoteKey, localID)
+					if remoteConnErr != nil {
+						slog.Debug("waitForInitialSync: remote peer connection check failed", "error", remoteConnErr)
+					}
+					if twoPhaseInitialSyncReady(localPct, localNeed, localGlobalFiles, indexReceived, localConnected, remoteConnected) {
 						return nil
 					}
 				}
@@ -1586,6 +1594,16 @@ func formatInitialSyncProgressDetail(progress syncthingInitialSyncProgress) stri
 
 func formatTwoPhaseNeedProgress(label string, needBytes int64) string {
 	return fmt.Sprintf("%s: %s remaining", label, formatSyncthingMiB(needBytes))
+}
+
+func twoPhaseInitialSyncReady(localPct float64, localNeed, localGlobalFiles int64, indexReceived, localConnected, remoteConnected bool) bool {
+	if !syncthingBootstrapInitialSyncComplete(localPct, localNeed) {
+		return false
+	}
+	if localGlobalFiles > 0 && !indexReceived {
+		return false
+	}
+	return localConnected && remoteConnected
 }
 
 // syncthingSyncConfig bundles the user-configurable knobs passed through to
