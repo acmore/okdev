@@ -543,18 +543,62 @@ func checkMeshHealth(ctx context.Context, opts *Options, k *kube.Client, namespa
 		return nil, fmt.Errorf("hub syncthing API not ready: %w", err)
 	}
 
-	results := make([]meshReceiverHealth, len(receivers))
-	var wg sync.WaitGroup
-	for i, recv := range receivers {
-		wg.Add(1)
-		go func(idx int, pod kube.PodSummary) {
-			defer wg.Done()
-			results[idx] = probeMeshReceiver(ctx, opts, k, namespace, pod, hubBase, hubKey, folderID)
-		}(i, recv)
-	}
-	wg.Wait()
+	results := collectMeshReceiverHealth(ctx, receivers, func(ctx context.Context, pod kube.PodSummary) meshReceiverHealth {
+		return probeMeshReceiver(ctx, opts, k, namespace, pod, hubBase, hubKey, folderID)
+	})
 
 	return &meshHealthSummary{HubPod: hubPod, FolderID: folderID, Receivers: results}, nil
+}
+
+type meshReceiverProbeResult struct {
+	idx    int
+	health meshReceiverHealth
+}
+
+func collectMeshReceiverHealth(ctx context.Context, receivers []kube.PodSummary, probe func(context.Context, kube.PodSummary) meshReceiverHealth) []meshReceiverHealth {
+	results := make([]meshReceiverHealth, len(receivers))
+	if len(receivers) == 0 {
+		return results
+	}
+
+	done := make(map[int]struct{}, len(receivers))
+	ch := make(chan meshReceiverProbeResult, len(receivers))
+	for i, recv := range receivers {
+		results[i] = meshReceiverHealth{Pod: recv.Name}
+		go func(idx int, pod kube.PodSummary) {
+			ch <- meshReceiverProbeResult{
+				idx:    idx,
+				health: probe(ctx, pod),
+			}
+		}(i, recv)
+	}
+
+	for len(done) < len(receivers) {
+		select {
+		case res := <-ch:
+			if _, ok := done[res.idx]; ok {
+				continue
+			}
+			if strings.TrimSpace(res.health.Pod) == "" {
+				res.health.Pod = receivers[res.idx].Name
+			}
+			results[res.idx] = res.health
+			done[res.idx] = struct{}{}
+		case <-ctx.Done():
+			for i, recv := range receivers {
+				if _, ok := done[i]; ok {
+					continue
+				}
+				results[i] = meshReceiverHealth{
+					Pod: recv.Name,
+					Err: ctx.Err().Error(),
+				}
+			}
+			return results
+		}
+	}
+
+	return results
 }
 
 func probeMeshReceiver(ctx context.Context, opts *Options, k *kube.Client, namespace string, pod kube.PodSummary, hubBase, hubKey, folderID string) meshReceiverHealth {

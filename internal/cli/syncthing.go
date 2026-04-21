@@ -53,6 +53,28 @@ const (
 
 var syncthingHTTPClient = &http.Client{Timeout: syncthingHTTPClientTimeout}
 
+const (
+	localSyncthingListenAddressTCP  = "tcp://127.0.0.1:0"
+	localSyncthingListenAddressQUIC = "quic://127.0.0.1:0"
+)
+
+var (
+	syncthingEnsureBinaryFn         = syncthing.EnsureBinary
+	resolveTargetRefFn              = resolveTargetRef
+	execInSyncthingContainerFn      = execInSyncthingContainer
+	startSyncthingPortForwardFn     = startSyncthingPortForward
+	readRemoteSyncthingAPIKeyFn     = readRemoteSyncthingAPIKey
+	startAndWaitForLocalSyncthingFn = startAndWaitForLocalSyncthing
+	waitSyncthingAPIFn              = waitSyncthingAPI
+	syncthingDeviceIDFn             = syncthingDeviceID
+	markSyncthingReadyFn            = markSyncthingReady
+	runTwoPhaseInitialSyncFn        = runTwoPhaseInitialSync
+	configureSyncthingPeerFn        = configureSyncthingPeer
+	saveSyncthingConfigHashFn       = saveSyncthingConfigHash
+	stopOwnedLocalSyncthingFn       = stopOwnedLocalSyncthing
+	runSyncHealthLoopFn             = runSyncHealthLoop
+)
+
 func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironment, namespace, sessionName, mode string, pairs []syncengine.Pair, k *kube.Client) error {
 	if len(pairs) != 1 {
 		return fmt.Errorf("syncthing engine currently supports exactly one sync path mapping")
@@ -60,22 +82,22 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 
 	bootstrapCtx, cancelBootstrap, runtimeCtx := syncthingBootstrapAndRuntimeContexts(cmd.Context())
 	defer cancelBootstrap()
-	localBinary, err := syncthing.EnsureBinary(bootstrapCtx, cfg.Spec.Sync.Syncthing.Version, cfg.Spec.Sync.Syncthing.AutoInstallEnabled())
+	localBinary, err := syncthingEnsureBinaryFn(bootstrapCtx, cfg.Spec.Sync.Syncthing.Version, cfg.Spec.Sync.Syncthing.AutoInstallEnabled())
 	if err != nil {
 		return fmt.Errorf("prepare local syncthing binary: %w", err)
 	}
 
-	target, err := resolveTargetRef(bootstrapCtx, opts, cfg, namespace, sessionName, k)
+	target, err := resolveTargetRefFn(bootstrapCtx, opts, cfg, namespace, sessionName, k)
 	if err != nil {
 		return err
 	}
 	pod := target.PodName
-	if _, err := execInSyncthingContainer(bootstrapCtx, k, namespace, pod, "command -v syncthing >/dev/null 2>&1"); err != nil {
-		refreshed, refreshErr := resolveTargetRef(bootstrapCtx, opts, cfg, namespace, sessionName, k)
+	if _, err := execInSyncthingContainerFn(bootstrapCtx, k, namespace, pod, "command -v syncthing >/dev/null 2>&1"); err != nil {
+		refreshed, refreshErr := resolveTargetRefFn(bootstrapCtx, opts, cfg, namespace, sessionName, k)
 		if refreshErr == nil && strings.TrimSpace(refreshed.PodName) != "" && refreshed.PodName != pod {
 			pod = refreshed.PodName
 			target = refreshed
-			if _, retryErr := execInSyncthingContainer(bootstrapCtx, k, namespace, pod, "command -v syncthing >/dev/null 2>&1"); retryErr == nil {
+			if _, retryErr := execInSyncthingContainerFn(bootstrapCtx, k, namespace, pod, "command -v syncthing >/dev/null 2>&1"); retryErr == nil {
 				err = nil
 			} else {
 				err = retryErr
@@ -97,38 +119,43 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	if err := writeLocalSTIgnore(absLocal); err != nil {
 		return err
 	}
-	if _, err := execInSyncthingContainer(bootstrapCtx, k, namespace, pod, fmt.Sprintf("mkdir -p %s", syncengine.ShellEscape(pair.Remote))); err != nil {
+	if _, err := execInSyncthingContainerFn(bootstrapCtx, k, namespace, pod, fmt.Sprintf("mkdir -p %s", syncengine.ShellEscape(pair.Remote))); err != nil {
 		return err
 	}
 	localHome, err := localSyncthingHome(sessionName)
 	if err != nil {
 		return err
 	}
-	cancelPF, localRemoteAPIBase, localRemotePeerAddr, err := startSyncthingPortForward(runtimeCtx, opts, namespace, pod)
+	cancelPF, localRemoteAPIBase, localRemotePeerAddr, err := startSyncthingPortForwardFn(runtimeCtx, opts, namespace, pod)
 	if err != nil {
 		return err
 	}
 	defer cancelPF()
 
-	remoteKey, err := readRemoteSyncthingAPIKey(bootstrapCtx, k, namespace, pod)
+	remoteKey, err := readRemoteSyncthingAPIKeyFn(bootstrapCtx, k, namespace, pod)
 	if err != nil {
 		return err
 	}
 
-	localBase, localKey, localPID, err := startAndWaitForLocalSyncthing(bootstrapCtx, localBinary, localHome)
+	localBase, localKey, localPID, err := startAndWaitForLocalSyncthingFn(bootstrapCtx, localBinary, localHome)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if stopErr := stopOwnedLocalSyncthingFn(localHome, localPID); stopErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to stop local syncthing: %v\n", stopErr)
+		}
+	}()
 	remoteBase := localRemoteAPIBase
-	if err := waitSyncthingAPI(bootstrapCtx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
+	if err := waitSyncthingAPIFn(bootstrapCtx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
 		return fmt.Errorf("remote syncthing not ready: %w", err)
 	}
 
-	localID, err := syncthingDeviceID(bootstrapCtx, localBase, localKey)
+	localID, err := syncthingDeviceIDFn(bootstrapCtx, localBase, localKey)
 	if err != nil {
 		return err
 	}
-	remoteID, err := syncthingDeviceID(bootstrapCtx, remoteBase, remoteKey)
+	remoteID, err := syncthingDeviceIDFn(bootstrapCtx, remoteBase, remoteKey)
 	if err != nil {
 		return err
 	}
@@ -141,30 +168,34 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		compression:    cfg.Spec.Sync.Syncthing.Compression,
 	}
 
+	// Signal detached-parent readiness once the local daemon is up and the
+	// session has enough information for `okdev up` to start its own initial
+	// sync wait loop. The actual two-phase/bootstrap convergence continues
+	// below and is tracked separately by waitForInitialSync.
+	if err := markSyncthingReadyFn(sessionName); err != nil {
+		return fmt.Errorf("mark syncthing ready: %w", err)
+	}
+
 	if mode == "two-phase" {
 		// The bootstrap context has a short timeout (syncthingBootstrapTimeout).
 		// Two-phase initial sync may take much longer, so use a dedicated context.
 		twoPhaseCtx, twoPhaseCancel := context.WithTimeout(runtimeCtx, initialSyncTimeout)
 		defer twoPhaseCancel()
-		if err := runTwoPhaseInitialSync(twoPhaseCtx, cmd.OutOrStdout(), localBase, localKey, localID, remoteBase, remoteKey, remoteID, localRemotePeerAddr, folderID, absLocal, pair.Remote, syncCfg); err != nil {
+		if err := runTwoPhaseInitialSyncFn(twoPhaseCtx, cmd.OutOrStdout(), localBase, localKey, localID, remoteBase, remoteKey, remoteID, localRemotePeerAddr, folderID, absLocal, pair.Remote, syncCfg); err != nil {
 			return fmt.Errorf("two-phase initial sync: %w", err)
 		}
 		mode = "bi"
 	} else {
 		folderTypeLocal, folderTypeRemote := folderTypesForMode(mode)
-		if err := configureSyncthingPeer(bootstrapCtx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression); err != nil {
+		if err := configureSyncthingPeerFn(bootstrapCtx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression); err != nil {
 			return fmt.Errorf("configure local syncthing: %w", err)
 		}
-		if err := configureSyncthingPeer(bootstrapCtx, remoteBase, remoteKey, remoteID, localID, "", folderID, pair.Remote, folderTypeRemote, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression); err != nil {
+		if err := configureSyncthingPeerFn(bootstrapCtx, remoteBase, remoteKey, remoteID, localID, "", folderID, pair.Remote, folderTypeRemote, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression); err != nil {
 			return fmt.Errorf("configure remote syncthing: %w", err)
 		}
 	}
 
-	if err := markSyncthingReady(sessionName); err != nil {
-		return fmt.Errorf("mark syncthing ready: %w", err)
-	}
-
-	if err := saveSyncthingConfigHash(sessionName, syncthingSessionConfigHash(cfg, absLocal, pair.Remote)); err != nil {
+	if err := saveSyncthingConfigHashFn(sessionName, syncthingSessionConfigHash(cfg, absLocal, pair.Remote)); err != nil {
 		return fmt.Errorf("persist syncthing config state: %w", err)
 	}
 
@@ -195,11 +226,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		remoteID:  remoteID,
 		cancelPF:  cancelPF,
 	}
-	runSyncHealthLoop(sigCh, cmd.ErrOrStderr(), checker)
-
-	if err := stopOwnedLocalSyncthing(localHome, localPID); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to stop local syncthing: %v\n", err)
-	}
+	runSyncHealthLoopFn(sigCh, cmd.ErrOrStderr(), checker)
 	return nil
 }
 
@@ -531,6 +558,9 @@ func startLocalSyncthing(binary, home, localGUIAddr string) (localSyncthingProce
 			return localSyncthingProcess{}, fmt.Errorf("generate local syncthing config: %w (%s)", genErr, strings.TrimSpace(string(genOut)))
 		}
 	}
+	if err := prepareLocalSyncthingConfig(home); err != nil {
+		return localSyncthingProcess{}, fmt.Errorf("prepare local syncthing config: %w", err)
+	}
 
 	if err := stopLocalSyncthingForHome(home); err != nil {
 		return localSyncthingProcess{}, err
@@ -579,6 +609,55 @@ func startLocalSyncthing(binary, home, localGUIAddr string) (localSyncthingProce
 		slog.Debug("failed to close syncthing log file", "error", closeErr)
 	}
 	return localSyncthingProcess{PID: cmd.Process.Pid, LogPath: logPath, LogOffset: logOffset}, nil
+}
+
+func prepareLocalSyncthingConfig(home string) error {
+	paths := []string{filepath.Join(home, "config.xml"), filepath.Join(home, "config", "config.xml")}
+	for _, p := range paths {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		updated, changed, err := rewriteLocalSyncthingConfigXML(b)
+		if err != nil {
+			return fmt.Errorf("rewrite %s: %w", p, err)
+		}
+		if !changed {
+			return nil
+		}
+		if err := os.WriteFile(p, updated, 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", p, err)
+		}
+		return nil
+	}
+	return errors.New("local syncthing config.xml not found")
+}
+
+var syncthingOptionsXMLPattern = regexp.MustCompile(`(?s)(<options>)(.*?)(</options>)`)
+var syncthingListenAddressXMLPattern = regexp.MustCompile(`(?s)\s*<listenAddress>.*?</listenAddress>`)
+
+func rewriteLocalSyncthingConfigXML(raw []byte) ([]byte, bool, error) {
+	text := string(raw)
+	match := syncthingOptionsXMLPattern.FindStringSubmatchIndex(text)
+	if match == nil {
+		return nil, false, errors.New("syncthing options block not found")
+	}
+	body := text[match[4]:match[5]]
+	listenEntries := syncthingListenAddressXMLPattern.FindAllStringIndex(body, -1)
+	replacement := "\n        <listenAddress>" + localSyncthingListenAddressTCP + "</listenAddress>\n        <listenAddress>" + localSyncthingListenAddressQUIC + "</listenAddress>"
+
+	var newBody string
+	switch len(listenEntries) {
+	case 0:
+		newBody = body + replacement + "\n    "
+	default:
+		newBody = body[:listenEntries[0][0]] + replacement + body[listenEntries[len(listenEntries)-1][1]:]
+	}
+	if newBody == body {
+		return raw, false, nil
+	}
+	updated := text[:match[4]] + newBody + text[match[5]:]
+	return []byte(updated), true, nil
 }
 
 func newLocalSyncthingServeCommand(binary, home, localGUIAddr string) *exec.Cmd {
