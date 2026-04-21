@@ -681,7 +681,7 @@ func upSetup(state *upState) error {
 			localPath = state.syncPairs[0].Local
 		}
 		warnedLargeSync := false
-		if err := waitForInitialSync(state.ctx, state.opts, state.command.kube, state.command.namespace, target.PodName, state.command.sessionName, localPath, syncStartMode, bootstrapResume, initialSyncTimeout, func(status string) {
+		if err := waitForInitialSyncFn(state.ctx, state.opts, state.command.kube, state.command.namespace, target.PodName, state.command.sessionName, localPath, syncStartMode, bootstrapResume, initialSyncTimeout, func(status string) {
 			state.ui.stepRun("initial sync", status)
 		}, func(progress syncthingInitialSyncProgress) {
 			state.ui.stepRun("initial sync", formatInitialSyncProgressDetail(progress))
@@ -693,6 +693,12 @@ func upSetup(state *upState) error {
 			}
 		}); err != nil {
 			return fmt.Errorf("wait for initial sync: %w", err)
+		}
+		if syncStartMode == "two-phase" {
+			state.ui.stepRun("initial sync", "waiting for syncthing handoff")
+			if err := waitForSyncthingBootstrapCompleteFn(state.ctx, state.command.sessionName); err != nil {
+				return fmt.Errorf("wait for syncthing handoff: %w", err)
+			}
 		}
 		state.ui.stepDone("initial sync", "complete")
 	}

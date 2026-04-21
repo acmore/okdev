@@ -281,6 +281,51 @@ func TestStartDetachedSyncthingSyncIncludesResolvedContext(t *testing.T) {
 	}
 }
 
+func TestStartDetachedSyncthingSyncClearsStaleBootstrapCompleteMarker(t *testing.T) {
+	home := t.TempDir()
+	origHome := os.Getenv("HOME")
+	if err := os.Setenv("HOME", home); err != nil {
+		t.Fatalf("set HOME: %v", err)
+	}
+	defer func() {
+		_ = os.Setenv("HOME", origHome)
+	}()
+
+	origExecutable := osExecutable
+	origExecCommand := execCommand
+	origWait := waitForDetachedSyncthingStartFn
+	t.Cleanup(func() {
+		osExecutable = origExecutable
+		execCommand = origExecCommand
+		waitForDetachedSyncthingStartFn = origWait
+	})
+
+	osExecutable = func() (string, error) {
+		return "/tmp/fake-okdev", nil
+	}
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		return exec.Command("sleep", "5")
+	}
+	waitForDetachedSyncthingStartFn = func(pid int, readyPath string, maxWait time.Duration) error {
+		return nil
+	}
+
+	completePath, err := syncthingBootstrapCompletePath("sess-a")
+	if err != nil {
+		t.Fatalf("syncthingBootstrapCompletePath: %v", err)
+	}
+	if err := os.WriteFile(completePath, []byte("stale\n"), 0o644); err != nil {
+		t.Fatalf("write stale bootstrap marker: %v", err)
+	}
+
+	if _, _, err := startDetachedSyncthingSync(&Options{}, "two-phase", "sess-a", "team-a", "/repo/.okdev.yaml"); err != nil {
+		t.Fatalf("startDetachedSyncthingSync: %v", err)
+	}
+	if _, err := os.Stat(completePath); !os.IsNotExist(err) {
+		t.Fatalf("expected stale bootstrap marker to be removed, got err=%v", err)
+	}
+}
+
 func TestEnsureSyncthingTargetSessionStatePreservesConfigHash(t *testing.T) {
 	home := t.TempDir()
 	origHome := os.Getenv("HOME")
