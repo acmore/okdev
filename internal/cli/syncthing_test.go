@@ -16,6 +16,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/acmore/okdev/internal/config"
+	syncengine "github.com/acmore/okdev/internal/sync"
+	"github.com/acmore/okdev/internal/workload"
+	"github.com/spf13/cobra"
 )
 
 func TestSyncthingObjectArray(t *testing.T) {
@@ -972,6 +977,216 @@ func TestRunTwoPhaseInitialSyncWaitsForPeerConnection(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "waiting for peer connection") {
 		t.Fatalf("expected waiting-for-peer output, got: %s", buf.String())
+	}
+}
+
+func TestRunSyncthingSyncStopsOwnedLocalDaemonWhenTwoPhaseBootstrapFails(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	origEnsureBinary := syncthingEnsureBinaryFn
+	origResolveTargetRef := resolveTargetRefFn
+	origExecInSyncthingContainer := execInSyncthingContainerFn
+	origStartPortForward := startSyncthingPortForwardFn
+	origReadRemoteKey := readRemoteSyncthingAPIKeyFn
+	origStartLocal := startAndWaitForLocalSyncthingFn
+	origWaitAPI := waitSyncthingAPIFn
+	origDeviceID := syncthingDeviceIDFn
+	origRunTwoPhase := runTwoPhaseInitialSyncFn
+	origStopOwned := stopOwnedLocalSyncthingFn
+	t.Cleanup(func() {
+		syncthingEnsureBinaryFn = origEnsureBinary
+		resolveTargetRefFn = origResolveTargetRef
+		execInSyncthingContainerFn = origExecInSyncthingContainer
+		startSyncthingPortForwardFn = origStartPortForward
+		readRemoteSyncthingAPIKeyFn = origReadRemoteKey
+		startAndWaitForLocalSyncthingFn = origStartLocal
+		waitSyncthingAPIFn = origWaitAPI
+		syncthingDeviceIDFn = origDeviceID
+		runTwoPhaseInitialSyncFn = origRunTwoPhase
+		stopOwnedLocalSyncthingFn = origStopOwned
+	})
+
+	localDir := filepath.Join(home, "repo")
+	if err := os.MkdirAll(localDir, 0o755); err != nil {
+		t.Fatalf("mkdir local dir: %v", err)
+	}
+
+	syncthingEnsureBinaryFn = func(context.Context, string, bool) (string, error) {
+		return "/tmp/syncthing", nil
+	}
+	resolveTargetRefFn = func(context.Context, *Options, *config.DevEnvironment, string, string, targetResolverClient) (workload.TargetRef, error) {
+		return workload.TargetRef{PodName: "pod-0"}, nil
+	}
+	execInSyncthingContainerFn = func(context.Context, interface {
+		ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+	}, string, string, string) ([]byte, error) {
+		return nil, nil
+	}
+	startSyncthingPortForwardFn = func(context.Context, *Options, string, string) (context.CancelFunc, string, string, error) {
+		return func() {}, "http://remote", "tcp://127.0.0.1:22000", nil
+	}
+	readRemoteSyncthingAPIKeyFn = func(context.Context, interface {
+		ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+	}, string, string) (string, error) {
+		return "remote-key", nil
+	}
+	startAndWaitForLocalSyncthingFn = func(context.Context, string, string) (string, string, int, error) {
+		return "http://local", "local-key", 4321, nil
+	}
+	waitSyncthingAPIFn = func(context.Context, string, string, time.Duration) error {
+		return nil
+	}
+	syncthingDeviceIDFn = func(_ context.Context, base, _ string) (string, error) {
+		if base == "http://local" {
+			return "LOCAL", nil
+		}
+		return "REMOTE", nil
+	}
+	runTwoPhaseInitialSyncFn = func(context.Context, io.Writer, string, string, string, string, string, string, string, string, string, string, syncthingSyncConfig) error {
+		return errors.New("bootstrap timeout")
+	}
+
+	var (
+		stopCalls int
+		stopHome  string
+		stopPID   int
+	)
+	stopOwnedLocalSyncthingFn = func(home string, pid int) error {
+		stopCalls++
+		stopHome = home
+		stopPID = pid
+		return nil
+	}
+
+	cfg := &config.DevEnvironment{}
+	cfg.SetDefaults()
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	err := runSyncthingSync(cmd, &Options{}, cfg, "default", "sess-cleanup", "two-phase", []syncengine.Pair{{
+		Local:  localDir,
+		Remote: "/workspace",
+	}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "two-phase initial sync") {
+		t.Fatalf("expected two-phase initial sync error, got %v", err)
+	}
+	if stopCalls != 1 {
+		t.Fatalf("expected local syncthing cleanup after bootstrap failure, got %d calls", stopCalls)
+	}
+	if stopPID != 4321 {
+		t.Fatalf("unexpected stopped pid: got %d want %d", stopPID, 4321)
+	}
+	wantHome, err := localSyncthingHome("sess-cleanup")
+	if err != nil {
+		t.Fatalf("localSyncthingHome: %v", err)
+	}
+	if stopHome != wantHome {
+		t.Fatalf("unexpected stopped home: got %q want %q", stopHome, wantHome)
+	}
+}
+
+func TestRunSyncthingSyncMarksReadyBeforeTwoPhaseBootstrap(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	origEnsureBinary := syncthingEnsureBinaryFn
+	origResolveTargetRef := resolveTargetRefFn
+	origExecInSyncthingContainer := execInSyncthingContainerFn
+	origStartPortForward := startSyncthingPortForwardFn
+	origReadRemoteKey := readRemoteSyncthingAPIKeyFn
+	origStartLocal := startAndWaitForLocalSyncthingFn
+	origWaitAPI := waitSyncthingAPIFn
+	origDeviceID := syncthingDeviceIDFn
+	origMarkReady := markSyncthingReadyFn
+	origRunTwoPhase := runTwoPhaseInitialSyncFn
+	origSaveConfigHash := saveSyncthingConfigHashFn
+	origStopOwned := stopOwnedLocalSyncthingFn
+	origRunHealthLoop := runSyncHealthLoopFn
+	t.Cleanup(func() {
+		syncthingEnsureBinaryFn = origEnsureBinary
+		resolveTargetRefFn = origResolveTargetRef
+		execInSyncthingContainerFn = origExecInSyncthingContainer
+		startSyncthingPortForwardFn = origStartPortForward
+		readRemoteSyncthingAPIKeyFn = origReadRemoteKey
+		startAndWaitForLocalSyncthingFn = origStartLocal
+		waitSyncthingAPIFn = origWaitAPI
+		syncthingDeviceIDFn = origDeviceID
+		markSyncthingReadyFn = origMarkReady
+		runTwoPhaseInitialSyncFn = origRunTwoPhase
+		saveSyncthingConfigHashFn = origSaveConfigHash
+		stopOwnedLocalSyncthingFn = origStopOwned
+		runSyncHealthLoopFn = origRunHealthLoop
+	})
+
+	localDir := filepath.Join(home, "repo")
+	if err := os.MkdirAll(localDir, 0o755); err != nil {
+		t.Fatalf("mkdir local dir: %v", err)
+	}
+
+	syncthingEnsureBinaryFn = func(context.Context, string, bool) (string, error) {
+		return "/tmp/syncthing", nil
+	}
+	resolveTargetRefFn = func(context.Context, *Options, *config.DevEnvironment, string, string, targetResolverClient) (workload.TargetRef, error) {
+		return workload.TargetRef{PodName: "pod-0"}, nil
+	}
+	execInSyncthingContainerFn = func(context.Context, interface {
+		ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+	}, string, string, string) ([]byte, error) {
+		return nil, nil
+	}
+	startSyncthingPortForwardFn = func(context.Context, *Options, string, string) (context.CancelFunc, string, string, error) {
+		return func() {}, "http://remote", "tcp://127.0.0.1:22000", nil
+	}
+	readRemoteSyncthingAPIKeyFn = func(context.Context, interface {
+		ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+	}, string, string) (string, error) {
+		return "remote-key", nil
+	}
+	startAndWaitForLocalSyncthingFn = func(context.Context, string, string) (string, string, int, error) {
+		return "http://local", "local-key", 4321, nil
+	}
+	waitSyncthingAPIFn = func(context.Context, string, string, time.Duration) error {
+		return nil
+	}
+	syncthingDeviceIDFn = func(_ context.Context, base, _ string) (string, error) {
+		if base == "http://local" {
+			return "LOCAL", nil
+		}
+		return "REMOTE", nil
+	}
+
+	var calls []string
+	markSyncthingReadyFn = func(string) error {
+		calls = append(calls, "mark-ready")
+		return nil
+	}
+	runTwoPhaseInitialSyncFn = func(context.Context, io.Writer, string, string, string, string, string, string, string, string, string, string, syncthingSyncConfig) error {
+		calls = append(calls, "two-phase")
+		return nil
+	}
+	saveSyncthingConfigHashFn = func(string, string) error { return nil }
+	stopOwnedLocalSyncthingFn = func(string, int) error { return nil }
+	runSyncHealthLoopFn = func(<-chan os.Signal, io.Writer, syncHealthChecker) {}
+
+	cfg := &config.DevEnvironment{}
+	cfg.SetDefaults()
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	if err := runSyncthingSync(cmd, &Options{}, cfg, "default", "sess-ready", "two-phase", []syncengine.Pair{{
+		Local:  localDir,
+		Remote: "/workspace",
+	}}, nil); err != nil {
+		t.Fatalf("runSyncthingSync: %v", err)
+	}
+
+	if got, want := calls, []string{"mark-ready", "two-phase"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("unexpected call order: got %v want %v", got, want)
 	}
 }
 
@@ -2062,6 +2277,46 @@ func TestReadLocalSyncthingEndpointMissing(t *testing.T) {
 	_, _, err := readLocalSyncthingEndpoint(home)
 	if err == nil {
 		t.Fatal("expected error for missing config")
+	}
+}
+
+func TestPrepareLocalSyncthingConfigUsesSessionSafeListenAddresses(t *testing.T) {
+	home := t.TempDir()
+	configXML := `<?xml version="1.0" encoding="UTF-8"?>
+<configuration version="37">
+    <gui enabled="true" tls="false">
+        <address>127.0.0.1:8384</address>
+        <apikey>test-key-123</apikey>
+    </gui>
+    <options>
+        <listenAddress>default</listenAddress>
+        <globalAnnounceEnabled>true</globalAnnounceEnabled>
+    </options>
+</configuration>`
+	path := filepath.Join(home, "config.xml")
+	if err := os.WriteFile(path, []byte(configXML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := prepareLocalSyncthingConfig(home); err != nil {
+		t.Fatalf("prepareLocalSyncthingConfig: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Contains(text, "<listenAddress>default</listenAddress>") {
+		t.Fatalf("expected default listen address to be replaced, got:\n%s", text)
+	}
+	for _, want := range []string{
+		"<listenAddress>tcp://127.0.0.1:0</listenAddress>",
+		"<listenAddress>quic://127.0.0.1:0</listenAddress>",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in config, got:\n%s", want, text)
+		}
 	}
 }
 
