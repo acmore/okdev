@@ -59,20 +59,23 @@ const (
 )
 
 var (
-	syncthingEnsureBinaryFn         = syncthing.EnsureBinary
-	resolveTargetRefFn              = resolveTargetRef
-	execInSyncthingContainerFn      = execInSyncthingContainer
-	startSyncthingPortForwardFn     = startSyncthingPortForward
-	readRemoteSyncthingAPIKeyFn     = readRemoteSyncthingAPIKey
-	startAndWaitForLocalSyncthingFn = startAndWaitForLocalSyncthing
-	waitSyncthingAPIFn              = waitSyncthingAPI
-	syncthingDeviceIDFn             = syncthingDeviceID
-	markSyncthingReadyFn            = markSyncthingReady
-	runTwoPhaseInitialSyncFn        = runTwoPhaseInitialSync
-	configureSyncthingPeerFn        = configureSyncthingPeer
-	saveSyncthingConfigHashFn       = saveSyncthingConfigHash
-	stopOwnedLocalSyncthingFn       = stopOwnedLocalSyncthing
-	runSyncHealthLoopFn             = runSyncHealthLoop
+	syncthingEnsureBinaryFn             = syncthing.EnsureBinary
+	resolveTargetRefFn                  = resolveTargetRef
+	execInSyncthingContainerFn          = execInSyncthingContainer
+	startSyncthingPortForwardFn         = startSyncthingPortForward
+	readRemoteSyncthingAPIKeyFn         = readRemoteSyncthingAPIKey
+	startAndWaitForLocalSyncthingFn     = startAndWaitForLocalSyncthing
+	waitSyncthingAPIFn                  = waitSyncthingAPI
+	syncthingDeviceIDFn                 = syncthingDeviceID
+	markSyncthingReadyFn                = markSyncthingReady
+	markSyncthingBootstrapCompleteFn    = markSyncthingBootstrapComplete
+	runTwoPhaseInitialSyncFn            = runTwoPhaseInitialSync
+	configureSyncthingPeerFn            = configureSyncthingPeer
+	saveSyncthingConfigHashFn           = saveSyncthingConfigHash
+	stopOwnedLocalSyncthingFn           = stopOwnedLocalSyncthing
+	runSyncHealthLoopFn                 = runSyncHealthLoop
+	waitForInitialSyncFn                = waitForInitialSync
+	waitForSyncthingBootstrapCompleteFn = waitForSyncthingBootstrapComplete
 )
 
 func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironment, namespace, sessionName, mode string, pairs []syncengine.Pair, k *kube.Client) error {
@@ -183,6 +186,9 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		defer twoPhaseCancel()
 		if err := runTwoPhaseInitialSyncFn(twoPhaseCtx, cmd.OutOrStdout(), localBase, localKey, localID, remoteBase, remoteKey, remoteID, localRemotePeerAddr, folderID, absLocal, pair.Remote, syncCfg); err != nil {
 			return fmt.Errorf("two-phase initial sync: %w", err)
+		}
+		if err := markSyncthingBootstrapCompleteFn(sessionName); err != nil {
+			return fmt.Errorf("mark syncthing bootstrap complete: %w", err)
 		}
 		mode = "bi"
 	} else {
@@ -499,6 +505,40 @@ func markSyncthingReady(sessionName string) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(time.Now().UTC().Format(time.RFC3339Nano)+"\n"), 0o644)
+}
+
+func markSyncthingBootstrapComplete(sessionName string) error {
+	path, err := syncthingBootstrapCompletePath(sessionName)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(time.Now().UTC().Format(time.RFC3339Nano)+"\n"), 0o644)
+}
+
+func waitForSyncthingBootstrapComplete(ctx context.Context, sessionName string) error {
+	path, err := syncthingBootstrapCompletePath(sessionName)
+	if err != nil {
+		return err
+	}
+	pidPath, err := syncthingPIDPath(sessionName)
+	if err != nil {
+		return err
+	}
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if syncthingReady(path) {
+			return nil
+		}
+		if pid, ok := readSyncthingPID(pidPath); ok && !processAlive(pid) {
+			return errors.New("syncthing background process exited before bootstrap handoff")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func writeSTIgnore(localPath string, excludes []string) error {
@@ -1509,15 +1549,23 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 					// index before declaring complete. Without this,
 					// completion can be 100% just because the remote
 					// hasn't learned about any files yet.
+					indexReceived := true
 					if localGlobalFiles > 0 {
 						remoteReady, remoteStatus, statusErr := syncthingFolderHasLocalFiles(ctx, remoteBase, remoteKey, folderID, localGlobalFiles)
 						if statusErr != nil || !remoteReady {
 							slog.Debug("waitForInitialSync: remote files not materialized yet", "localGlobalFiles", localGlobalFiles, "remoteGlobal", remoteStatus.GlobalFiles, "remoteLocal", remoteStatus.LocalFiles)
-							// Fall through to wait tick.
-						} else {
-							return nil
+							indexReceived = false
 						}
-					} else {
+					}
+					localConnected, localConnErr := syncthingPeerConnected(ctx, localBase, localKey, remoteID)
+					if localConnErr != nil {
+						slog.Debug("waitForInitialSync: local peer connection check failed", "error", localConnErr)
+					}
+					remoteConnected, remoteConnErr := syncthingPeerConnected(ctx, remoteBase, remoteKey, localID)
+					if remoteConnErr != nil {
+						slog.Debug("waitForInitialSync: remote peer connection check failed", "error", remoteConnErr)
+					}
+					if twoPhaseInitialSyncReady(localPct, localNeed, localGlobalFiles, indexReceived, localConnected, remoteConnected) {
 						return nil
 					}
 				}
@@ -1586,6 +1634,16 @@ func formatInitialSyncProgressDetail(progress syncthingInitialSyncProgress) stri
 
 func formatTwoPhaseNeedProgress(label string, needBytes int64) string {
 	return fmt.Sprintf("%s: %s remaining", label, formatSyncthingMiB(needBytes))
+}
+
+func twoPhaseInitialSyncReady(localPct float64, localNeed, localGlobalFiles int64, indexReceived, localConnected, remoteConnected bool) bool {
+	if !syncthingBootstrapInitialSyncComplete(localPct, localNeed) {
+		return false
+	}
+	if localGlobalFiles > 0 && !indexReceived {
+		return false
+	}
+	return localConnected && remoteConnected
 }
 
 // syncthingSyncConfig bundles the user-configurable knobs passed through to
