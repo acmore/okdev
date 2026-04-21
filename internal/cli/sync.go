@@ -292,7 +292,11 @@ func repairMeshIfNeeded(cmd *cobra.Command, cc *commandContext, hubPod string) e
 	}
 
 	folderID := "okdev-" + cc.sessionName
-	workspaceMountPath := cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath)
+	pairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
+	if err != nil {
+		return fmt.Errorf("parse sync paths: %w", err)
+	}
+	folderPath := meshFolderPath(pairs, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Checking mesh health for %d receiver(s) …\n", count)
 	health, err := checkMeshHealth(ctx, cc.opts, cc.kube, cc.namespace, cc.sessionName, labels, hubPod, folderID)
@@ -308,7 +312,7 @@ func repairMeshIfNeeded(cmd *cobra.Command, cc *commandContext, hubPod string) e
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Mesh: %d broken receiver(s): %s\n", len(broken), strings.Join(broken, ", "))
-	return doMeshRepair(cmd, ctx, cc, labels, hubPod, folderID, workspaceMountPath)
+	return doMeshRepair(cmd, ctx, cc, labels, hubPod, folderID, folderPath)
 }
 
 func forceRepairMesh(cmd *cobra.Command, cc *commandContext, hubPod string) error {
@@ -323,15 +327,19 @@ func forceRepairMesh(cmd *cobra.Command, cc *commandContext, hubPod string) erro
 	}
 
 	folderID := "okdev-" + cc.sessionName
-	workspaceMountPath := cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath)
+	pairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
+	if err != nil {
+		return fmt.Errorf("parse sync paths: %w", err)
+	}
+	folderPath := meshFolderPath(pairs, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Force resetting mesh for %d receiver(s) …\n", count)
-	return doMeshRepair(cmd, ctx, cc, labels, hubPod, folderID, workspaceMountPath)
+	return doMeshRepair(cmd, ctx, cc, labels, hubPod, folderID, folderPath)
 }
 
-func doMeshRepair(cmd *cobra.Command, ctx context.Context, cc *commandContext, labels map[string]string, hubPod, folderID, workspaceMountPath string) error {
+func doMeshRepair(cmd *cobra.Command, ctx context.Context, cc *commandContext, labels map[string]string, hubPod, folderID, folderPath string) error {
 	fmt.Fprintln(cmd.OutOrStdout(), "Repairing mesh sync …")
-	result, meshErr := repairMeshReceivers(ctx, cc.opts, cc.kube, cc.namespace, cc.sessionName, labels, hubPod, folderID, workspaceMountPath, func(status string) {
+	result, meshErr := repairMeshReceivers(ctx, cc.opts, cc.kube, cc.namespace, cc.sessionName, labels, hubPod, folderID, folderPath, func(status string) {
 		fmt.Fprintf(cmd.OutOrStdout(), "  mesh: %s\n", status)
 	})
 	if meshErr != nil {
