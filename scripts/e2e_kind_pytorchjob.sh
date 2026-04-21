@@ -816,6 +816,7 @@ MESH_HOME="$MESH_WORKDIR/home"
 MESH_CFG="$MESH_WORKDIR/.okdev/okdev.yaml"
 MESH_SYNC="$MESH_WORKDIR/workspace"
 MESH_MANIFEST="$MESH_WORKDIR/.okdev/pytorchjob.yaml"
+MESH_REMOTE_ROOT="/workspace/a"
 
 mkdir -p "$MESH_HOME" "$MESH_SYNC" "$MESH_HOME/.kube"
 cp "$KUBECONFIG_PATH" "$MESH_HOME/.kube/config"
@@ -825,6 +826,33 @@ mesh_cleanup() {
 }
 # We already have the EXIT trap for the PVC test; add mesh cleanup.
 trap 'mesh_cleanup; cleanup' EXIT
+
+dump_mesh_diagnostics() {
+  local pod="$1"
+  local role="$2"
+  echo "--- mesh diagnostic dump (pod=$pod role=$role) ---"
+  echo "--- $role pytorch: ls -la $MESH_REMOTE_ROOT ---"
+  kubectl -n "$NAMESPACE" exec "$pod" -c pytorch -- ls -la "$MESH_REMOTE_ROOT" 2>&1 || true
+  echo "--- $role pytorch: ls -la /workspace ---"
+  kubectl -n "$NAMESPACE" exec "$pod" -c pytorch -- ls -la /workspace 2>&1 || true
+  echo "--- $role sidecar: ls -la $MESH_REMOTE_ROOT ---"
+  kubectl -n "$NAMESPACE" exec "$pod" -c okdev-sidecar -- ls -la "$MESH_REMOTE_ROOT" 2>&1 || true
+  echo "--- $role sidecar: ls -la /workspace ---"
+  kubectl -n "$NAMESPACE" exec "$pod" -c okdev-sidecar -- ls -la /workspace 2>&1 || true
+  echo "--- $role sidecar: stat /workspace/a and parents ---"
+  kubectl -n "$NAMESPACE" exec "$pod" -c okdev-sidecar -- sh -c 'for p in /workspace /workspace/a /workspace/a/mesh-hello.txt; do echo "$p:"; stat "$p" 2>&1 || true; done' 2>&1 || true
+  echo "--- $role sidecar: config.xml folders ---"
+  kubectl -n "$NAMESPACE" exec "$pod" -c okdev-sidecar -- sh -c 'cat /var/syncthing/config.xml 2>/dev/null || cat /var/syncthing/config/config.xml 2>/dev/null || true' 2>&1 | grep -E '<folder |<device |path=|<ignoreDelete' || true
+  echo "--- $role sidecar container logs (tail 300) ---"
+  kubectl -n "$NAMESPACE" logs "$pod" -c okdev-sidecar --tail=300 2>&1 || true
+  echo "--- $role sidecar previous container logs (tail 300) ---"
+  kubectl -n "$NAMESPACE" logs "$pod" -c okdev-sidecar --previous --tail=300 2>&1 || true
+  echo "--- local mesh session sync log ---"
+  cat "$MESH_HOME/.okdev/sessions/$MESH_SESSION/syncthing/local.log" 2>/dev/null || true
+  echo "--- mesh status --details ---"
+  HOME="$MESH_HOME" "$OKDEV_BIN" --config "$MESH_CFG" --session "$MESH_SESSION" status --details 2>&1 || true
+  echo "--- end mesh diagnostic dump ---"
+}
 
 echo "Scaffolding mesh PyTorchJob config"
 cd "$MESH_WORKDIR"
@@ -836,7 +864,7 @@ HOME="$MESH_HOME" "$OKDEV_BIN" init \
   --sidecar-image "$SIDECAR_IMAGE" \
   --ssh-user root \
   --sync-local "$MESH_SYNC" \
-  --sync-remote /workspace
+  --sync-remote "$MESH_REMOTE_ROOT"
 
 # Patch manifest: container name, image, command (same as PVC test).
 replace_all_in_file "$MESH_MANIFEST" 'name: dev' 'name: pytorch'
@@ -893,6 +921,26 @@ if [[ "$MESH_STATUS" != *"topology: hub-and-spoke"* ]]; then
   echo "ERROR: expected mesh topology in status output" >&2
   exit 1
 fi
+if [[ -e "$MESH_SYNC/a" ]]; then
+  echo "ERROR: expected explicit sync remote $MESH_REMOTE_ROOT to avoid creating local $MESH_SYNC/a" >&2
+  exit 1
+fi
+
+echo "Waiting for mesh receivers to report healthy before verifying synced files"
+MESH_HEALTH_STATUS=""
+for i in $(seq 1 15); do
+  MESH_HEALTH_STATUS=$(HOME="$MESH_HOME" "$OKDEV_BIN" --config "$MESH_CFG" --session "$MESH_SESSION" status --details)
+  if [[ "$MESH_HEALTH_STATUS" == *"2/2 receiver(s) healthy"* ]]; then
+    echo "Mesh health fully converged on attempt $i"
+    break
+  fi
+  if [[ "$i" -eq 15 ]]; then
+    echo "ERROR: expected mesh status to show 2/2 healthy receivers before file verification" >&2
+    echo "$MESH_HEALTH_STATUS" >&2
+    exit 1
+  fi
+  sleep 3
+done
 echo "Mesh status verified"
 
 echo "Verifying workspace synced to master via syncthing"
@@ -900,12 +948,22 @@ MESH_WORKLOAD=$(HOME="$MESH_HOME" session_workload_name "$NAMESPACE" "$MESH_SESS
 MESH_MASTER=$(kubectl -n "$NAMESPACE" get pods \
   -l "training.kubeflow.org/job-name=$MESH_WORKLOAD,training.kubeflow.org/replica-type=master" \
   -o jsonpath='{.items[0].metadata.name}')
-MASTER_CONTENT=$(kubectl -n "$NAMESPACE" exec "$MESH_MASTER" -c pytorch -- cat /workspace/mesh-hello.txt 2>/dev/null || true)
-if [[ "$MASTER_CONTENT" != "mesh-hello" ]]; then
+MASTER_CONTENT=""
+MASTER_SYNC_OK=false
+for attempt in $(seq 1 30); do
+  MASTER_CONTENT=$(kubectl -n "$NAMESPACE" exec "$MESH_MASTER" -c pytorch -- cat "$MESH_REMOTE_ROOT/mesh-hello.txt" 2>/dev/null || true)
+  if [[ "$MASTER_CONTENT" == "mesh-hello" ]]; then
+    MASTER_SYNC_OK=true
+    echo "Master workspace verified on attempt $attempt"
+    break
+  fi
+  sleep 2
+done
+if [[ "$MASTER_SYNC_OK" != "true" ]]; then
   echo "ERROR: expected mesh-hello.txt on master, got '$MASTER_CONTENT'" >&2
+  dump_mesh_diagnostics "$MESH_MASTER" "master" >&2 || true
   exit 1
 fi
-echo "Master workspace verified"
 
 echo "Verifying workspace synced to workers via mesh (no PVC)"
 MESH_WORKERS=$(kubectl -n "$NAMESPACE" get pods \
@@ -915,13 +973,14 @@ MESH_WORKER_OK=true
 for WPOD in $MESH_WORKERS; do
   WORKER_CONTENT=""
   for attempt in $(seq 1 30); do
-    WORKER_CONTENT=$(kubectl -n "$NAMESPACE" exec "$WPOD" -c pytorch -- cat /workspace/mesh-hello.txt 2>/dev/null || true)
+    WORKER_CONTENT=$(kubectl -n "$NAMESPACE" exec "$WPOD" -c pytorch -- cat "$MESH_REMOTE_ROOT/mesh-hello.txt" 2>/dev/null || true)
     if [[ "$WORKER_CONTENT" == "mesh-hello" ]]; then
       echo "Worker $WPOD workspace verified on attempt $attempt"
       break
     fi
     if [[ "$attempt" -eq 30 ]]; then
       echo "ERROR: expected mesh-hello.txt on worker $WPOD, got '$WORKER_CONTENT'" >&2
+      dump_mesh_diagnostics "$WPOD" "worker" >&2 || true
       MESH_WORKER_OK=false
     fi
     sleep 2
@@ -1057,7 +1116,7 @@ echo "post-mesh-reset" >"$MESH_SYNC/post-mesh-reset.txt"
 
 POST_MESH_RESET_OK=false
 for i in $(seq 1 30); do
-  MASTER_CONTENT=$(kubectl -n "$NAMESPACE" exec "$MESH_MASTER" -c pytorch -- cat /workspace/post-mesh-reset.txt 2>/dev/null || true)
+  MASTER_CONTENT=$(kubectl -n "$NAMESPACE" exec "$MESH_MASTER" -c pytorch -- cat "$MESH_REMOTE_ROOT/post-mesh-reset.txt" 2>/dev/null || true)
   if [[ "$MASTER_CONTENT" == "post-mesh-reset" ]]; then
     POST_MESH_RESET_OK=true
     echo "Post --reset --mesh file on master verified on attempt $i"
@@ -1073,7 +1132,7 @@ fi
 for WPOD in $MESH_WORKERS; do
   WORKER_MESH_OK=false
   for attempt in $(seq 1 30); do
-    WORKER_CONTENT=$(kubectl -n "$NAMESPACE" exec "$WPOD" -c pytorch -- cat /workspace/post-mesh-reset.txt 2>/dev/null || true)
+    WORKER_CONTENT=$(kubectl -n "$NAMESPACE" exec "$WPOD" -c pytorch -- cat "$MESH_REMOTE_ROOT/post-mesh-reset.txt" 2>/dev/null || true)
     if [[ "$WORKER_CONTENT" == "post-mesh-reset" ]]; then
       WORKER_MESH_OK=true
       echo "Post --reset --mesh file on worker $WPOD verified on attempt $attempt"

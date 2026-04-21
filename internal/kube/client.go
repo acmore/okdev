@@ -3,6 +3,7 @@ package kube
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -1055,27 +1056,24 @@ func (c *Client) copyFromPodInContainerOnce(ctx context.Context, namespace, podN
 	}
 	parent := filepath.Dir(remotePath)
 	base := filepath.Base(remotePath)
-	cmd := []string{"sh", "-lc", fmt.Sprintf("tar cf - -C %s %s", shellQuote(parent), shellQuote(base))}
-	tarFile, err := os.CreateTemp("", "okdev-copy-*.tar")
+	cmd := []string{"sh", "-lc", fmt.Sprintf("tar czf - -C %s %s", shellQuote(parent), shellQuote(base))}
+	pr, pw := io.Pipe()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- c.execStream(ctx, cs, cfg, namespace, podName, container, cmd, nil, pw, io.Discard, false)
+		pw.Close()
+	}()
+	gr, err := gzip.NewReader(pr)
 	if err != nil {
+		pr.Close()
 		return err
 	}
-	tarPath := tarFile.Name()
-	defer os.Remove(tarPath)
-	var errBuf bytes.Buffer
-	if err := c.execStream(ctx, cs, cfg, namespace, podName, container, cmd, nil, tarFile, &errBuf, false); err != nil {
-		_ = tarFile.Close()
+	defer gr.Close()
+	if err := extractSingleFileFromTar(gr, localPath); err != nil {
+		pr.Close()
 		return err
 	}
-	if _, err := tarFile.Seek(0, io.SeekStart); err != nil {
-		_ = tarFile.Close()
-		return err
-	}
-	if err := extractSingleFileFromTar(tarFile, localPath); err != nil {
-		_ = tarFile.Close()
-		return err
-	}
-	return tarFile.Close()
+	return <-errCh
 }
 
 func createTempDownloadFile(localPath string) (*os.File, error) {
@@ -1273,28 +1271,24 @@ func (c *Client) copyDirFromPodOnce(ctx context.Context, namespace, pod, contain
 	}
 	parent := filepath.Dir(remoteDir)
 	base := filepath.Base(remoteDir)
-	cmd := []string{"sh", "-lc", fmt.Sprintf("tar cf - -C %s %s", shellQuote(parent), shellQuote(base))}
-	tarFile, err := os.CreateTemp("", "okdev-copy-*.tar")
+	cmd := []string{"sh", "-lc", fmt.Sprintf("tar czf - -C %s %s", shellQuote(parent), shellQuote(base))}
+	pr, pw := io.Pipe()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- c.execStream(ctx, cs, cfg, namespace, pod, container, cmd, nil, pw, io.Discard, false)
+		pw.Close()
+	}()
+	gr, err := gzip.NewReader(pr)
 	if err != nil {
+		pr.Close()
 		return err
 	}
-	tarPath := tarFile.Name()
-	defer os.Remove(tarPath)
-
-	var errBuf bytes.Buffer
-	if err := c.execStream(ctx, cs, cfg, namespace, pod, container, cmd, nil, tarFile, &errBuf, false); err != nil {
-		_ = tarFile.Close()
+	defer gr.Close()
+	if err := extractTarToDir(gr, localDir); err != nil {
+		pr.Close()
 		return err
 	}
-	if _, err := tarFile.Seek(0, io.SeekStart); err != nil {
-		_ = tarFile.Close()
-		return err
-	}
-	if err := extractTarToDir(tarFile, localDir); err != nil {
-		_ = tarFile.Close()
-		return err
-	}
-	return tarFile.Close()
+	return <-errCh
 }
 
 func isRetryableCopyStreamError(err error) bool {
