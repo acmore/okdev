@@ -89,6 +89,7 @@
 - **Multi-pod upload** (`--all`, `--pod`, `--role`, `--label`): fans out the same local source to all matched pods in parallel.
 - **Multi-pod download**: downloads from each matched pod into `<dest>/<short-pod-name>/` subdirectories.
 - Files are streamed via `cat` pipes. Directories are tar-streamed automatically.
+- On a TTY, an in-place progress line shows transferred bytes, transfer rate, and elapsed time (after a few seconds). For multi-pod copies the line aggregates across pods (e.g. `Copying to 8 pods · 3/8 done · 5 in flight · 1.2 GiB · 28.0 MiB/s · 00:42`) and surfaces a noticeably slow pod inline. Progress is suppressed on non-TTY writers (pipes, redirects, CI), so machine-readable output is unaffected.
 - `--all`: target all running pods in the session.
 - `--pod`: target specific pods by name (repeatable or comma-separated).
 - `--role`: target pods by `okdev.io/workload-role` label (case-insensitive).
