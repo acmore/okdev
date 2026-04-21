@@ -1199,6 +1199,108 @@ func TestRunSyncthingSyncMarksReadyBeforeTwoPhaseBootstrap(t *testing.T) {
 	}
 }
 
+func TestRunSyncthingSyncMarksBootstrapCompleteBeforeHealthLoop(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	origEnsureBinary := syncthingEnsureBinaryFn
+	origResolveTargetRef := resolveTargetRefFn
+	origExecInSyncthingContainer := execInSyncthingContainerFn
+	origStartPortForward := startSyncthingPortForwardFn
+	origReadRemoteKey := readRemoteSyncthingAPIKeyFn
+	origStartLocal := startAndWaitForLocalSyncthingFn
+	origWaitAPI := waitSyncthingAPIFn
+	origDeviceID := syncthingDeviceIDFn
+	origRunTwoPhase := runTwoPhaseInitialSyncFn
+	origSaveConfigHash := saveSyncthingConfigHashFn
+	origStopOwned := stopOwnedLocalSyncthingFn
+	origRunHealthLoop := runSyncHealthLoopFn
+	t.Cleanup(func() {
+		syncthingEnsureBinaryFn = origEnsureBinary
+		resolveTargetRefFn = origResolveTargetRef
+		execInSyncthingContainerFn = origExecInSyncthingContainer
+		startSyncthingPortForwardFn = origStartPortForward
+		readRemoteSyncthingAPIKeyFn = origReadRemoteKey
+		startAndWaitForLocalSyncthingFn = origStartLocal
+		waitSyncthingAPIFn = origWaitAPI
+		syncthingDeviceIDFn = origDeviceID
+		runTwoPhaseInitialSyncFn = origRunTwoPhase
+		saveSyncthingConfigHashFn = origSaveConfigHash
+		stopOwnedLocalSyncthingFn = origStopOwned
+		runSyncHealthLoopFn = origRunHealthLoop
+	})
+
+	localDir := filepath.Join(home, "repo")
+	if err := os.MkdirAll(localDir, 0o755); err != nil {
+		t.Fatalf("mkdir local dir: %v", err)
+	}
+
+	syncthingEnsureBinaryFn = func(context.Context, string, bool) (string, error) {
+		return "/tmp/syncthing", nil
+	}
+	resolveTargetRefFn = func(context.Context, *Options, *config.DevEnvironment, string, string, targetResolverClient) (workload.TargetRef, error) {
+		return workload.TargetRef{PodName: "pod-0"}, nil
+	}
+	execInSyncthingContainerFn = func(context.Context, interface {
+		ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+	}, string, string, string) ([]byte, error) {
+		return nil, nil
+	}
+	startSyncthingPortForwardFn = func(context.Context, *Options, string, string) (context.CancelFunc, string, string, error) {
+		return func() {}, "http://remote", "tcp://127.0.0.1:22000", nil
+	}
+	readRemoteSyncthingAPIKeyFn = func(context.Context, interface {
+		ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+	}, string, string) (string, error) {
+		return "remote-key", nil
+	}
+	startAndWaitForLocalSyncthingFn = func(context.Context, string, string) (string, string, int, error) {
+		return "http://local", "local-key", 4321, nil
+	}
+	waitSyncthingAPIFn = func(context.Context, string, string, time.Duration) error {
+		return nil
+	}
+	syncthingDeviceIDFn = func(_ context.Context, base, _ string) (string, error) {
+		if base == "http://local" {
+			return "LOCAL", nil
+		}
+		return "REMOTE", nil
+	}
+
+	completePath, err := syncthingBootstrapCompletePath("sess-handoff")
+	if err != nil {
+		t.Fatalf("syncthingBootstrapCompletePath: %v", err)
+	}
+
+	runTwoPhaseInitialSyncFn = func(context.Context, io.Writer, string, string, string, string, string, string, string, string, string, string, syncthingSyncConfig) error {
+		if _, err := os.Stat(completePath); !os.IsNotExist(err) {
+			t.Fatalf("bootstrap completion marker should not exist before two-phase finishes, got err=%v", err)
+		}
+		return nil
+	}
+	saveSyncthingConfigHashFn = func(string, string) error { return nil }
+	stopOwnedLocalSyncthingFn = func(string, int) error { return nil }
+	runSyncHealthLoopFn = func(<-chan os.Signal, io.Writer, syncHealthChecker) {
+		if _, err := os.Stat(completePath); err != nil {
+			t.Fatalf("expected bootstrap completion marker before health loop, got %v", err)
+		}
+	}
+
+	cfg := &config.DevEnvironment{}
+	cfg.SetDefaults()
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	if err := runSyncthingSync(cmd, &Options{}, cfg, "default", "sess-handoff", "two-phase", []syncengine.Pair{{
+		Local:  localDir,
+		Remote: "/workspace",
+	}}, nil); err != nil {
+		t.Fatalf("runSyncthingSync: %v", err)
+	}
+}
+
 func TestApplyManagedSyncthingGlobalDefaults(t *testing.T) {
 	cfg := map[string]any{
 		"options": map[string]any{
