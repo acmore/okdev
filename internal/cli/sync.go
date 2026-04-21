@@ -378,6 +378,10 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 	if err != nil {
 		return "", false, err
 	}
+	bootstrapCompletePath, err := syncthingBootstrapCompletePath(sessionName)
+	if err != nil {
+		return "", false, err
+	}
 	if pid, ok := readSyncthingPID(pidPath); ok {
 		if processAlive(pid) && processLooksLikeSyncthingSync(pid) {
 			return logPath, false, nil
@@ -387,6 +391,9 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 		}
 	}
 	if err := os.Remove(readyPath); err != nil && !os.IsNotExist(err) {
+		return "", false, err
+	}
+	if err := os.Remove(bootstrapCompletePath); err != nil && !os.IsNotExist(err) {
 		return "", false, err
 	}
 	logFile, err := logx.OpenRotatingLog(logPath)
@@ -530,6 +537,14 @@ func syncthingReadyPath(sessionName string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "sync.ready"), nil
+}
+
+func syncthingBootstrapCompletePath(sessionName string) (string, error) {
+	dir, err := localSyncthingHome(sessionName)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "sync.bootstrap-complete"), nil
 }
 
 func syncthingReady(path string) bool {
