@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -126,5 +127,50 @@ func TestManagedSSHForwardArgs(t *testing.T) {
 	}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("unexpected args:\n got: %#v\nwant: %#v", args, want)
+	}
+}
+
+func TestStartManagedSSHForwardWithForwardsRemovesStaleSocketAfterFailedCheck(t *testing.T) {
+	home := t.TempDir()
+	origHome := os.Getenv("HOME")
+	if err := os.Setenv("HOME", home); err != nil {
+		t.Fatalf("set HOME: %v", err)
+	}
+	defer func() {
+		_ = os.Setenv("HOME", origHome)
+	}()
+
+	origExecCommand := execCommand
+	t.Cleanup(func() {
+		execCommand = origExecCommand
+	})
+
+	socketPath := filepath.Join(home, ".okdev", "ssh", "okdev-test.sock")
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
+		t.Fatalf("mkdir socket dir: %v", err)
+	}
+	if err := os.WriteFile(socketPath, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("write stale socket file: %v", err)
+	}
+
+	var calls [][]string
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		calls = append(calls, append([]string{name}, args...))
+		if len(args) >= 4 && args[2] == "-O" && args[3] == "check" {
+			return exec.Command("sh", "-c", "exit 1")
+		}
+		cmd := exec.Command("sh", "-c", `[ ! -e "$SOCKET_PATH" ]`)
+		cmd.Env = append(os.Environ(), "SOCKET_PATH="+socketPath)
+		return cmd
+	}
+
+	if err := startManagedSSHForwardWithForwards("okdev-test", nil, config.SSHSpec{}); err != nil {
+		t.Fatalf("startManagedSSHForwardWithForwards: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected check and start calls, got %d", len(calls))
+	}
+	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
+		t.Fatalf("expected stale socket to be removed, got err=%v", err)
 	}
 }

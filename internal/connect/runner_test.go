@@ -23,6 +23,16 @@ func (f *fakeExecClient) ExecInteractive(ctx context.Context, namespace, pod str
 	return err
 }
 
+type fakeExecContainerClient struct {
+	fakeExecClient
+	containerCalls int
+}
+
+func (f *fakeExecContainerClient) ExecInteractiveInContainer(ctx context.Context, namespace, pod, container string, tty bool, command []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) error {
+	f.containerCalls++
+	return f.ExecInteractive(ctx, namespace, pod, tty, command, stdin, stdout, stderr)
+}
+
 func TestRunWithRetrySucceedsAfterTransient(t *testing.T) {
 	fc := &fakeExecClient{errs: []error{errors.New("EOF"), nil}}
 	var out bytes.Buffer
@@ -71,5 +81,41 @@ func TestRunWithRetryNoRetryOnNonTransient(t *testing.T) {
 	}
 	if fc.calls != 1 {
 		t.Fatalf("expected no retry, got calls=%d", fc.calls)
+	}
+}
+
+func TestRunOnContainerRetriesTransientContainerExec(t *testing.T) {
+	fc := &fakeExecContainerClient{
+		fakeExecClient: fakeExecClient{errs: []error{errors.New("EOF"), nil}},
+	}
+	var out bytes.Buffer
+	err := runOnContainerWithRetry(context.Background(), fc, "ns", "pod", "dev", []string{"sh"}, true, &out, &out, &out, RetryPolicy{
+		MaxAttempts:    3,
+		InitialBackoff: 1 * time.Millisecond,
+		MaxBackoff:     2 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fc.containerCalls < 2 {
+		t.Fatalf("expected container exec retry, got calls=%d", fc.containerCalls)
+	}
+}
+
+func TestRunOnContainerDoesNotRetryNonTransientContainerExec(t *testing.T) {
+	fc := &fakeExecContainerClient{
+		fakeExecClient: fakeExecClient{errs: []error{errors.New("permission denied")}},
+	}
+	var out bytes.Buffer
+	err := runOnContainerWithRetry(context.Background(), fc, "ns", "pod", "dev", []string{"sh"}, true, &out, &out, &out, RetryPolicy{
+		MaxAttempts:    3,
+		InitialBackoff: 1 * time.Millisecond,
+		MaxBackoff:     2 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if fc.containerCalls != 1 {
+		t.Fatalf("expected no retry for non-transient container error, got calls=%d", fc.containerCalls)
 	}
 }
