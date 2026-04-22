@@ -257,6 +257,18 @@ func TestTwoPhaseInitialSyncReadyRequiresConnectedPeersForEmptyFolders(t *testin
 	}
 }
 
+func TestExpectedRemoteMaterializationFilesShrinksAfterIgnoreChange(t *testing.T) {
+	if got := expectedRemoteMaterializationFiles(12, 0); got != 0 {
+		t.Fatalf("expected ignore change to drop expected files to 0, got %d", got)
+	}
+	if got := expectedRemoteMaterializationFiles(12, 5); got != 5 {
+		t.Fatalf("expected lower current file count to win, got %d", got)
+	}
+	if got := expectedRemoteMaterializationFiles(12, 20); got != 12 {
+		t.Fatalf("expected baseline file count to cap upward drift, got %d", got)
+	}
+}
+
 func TestFormatSyncthingMiB(t *testing.T) {
 	if got := formatSyncthingMiB(0); got != "0.0 MiB" {
 		t.Fatalf("unexpected zero format %q", got)

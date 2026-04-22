@@ -1265,6 +1265,13 @@ func syncthingFolderHasLocalFiles(ctx context.Context, base, key, folderID strin
 	return status.GlobalFiles >= expectedFiles && status.LocalFiles >= expectedFiles, status, nil
 }
 
+func expectedRemoteMaterializationFiles(initialLocalGlobalFiles, currentLocalGlobalFiles int64) int64 {
+	if currentLocalGlobalFiles < initialLocalGlobalFiles {
+		return currentLocalGlobalFiles
+	}
+	return initialLocalGlobalFiles
+}
+
 // syncthingFolderScanned checks whether the syncthing folder has completed its
 // initial scan by querying /rest/db/status. Returns true when the folder state
 // is "idle" or "syncing" (i.e. no longer "scanning" or empty). This prevents
@@ -1550,10 +1557,16 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 					// completion can be 100% just because the remote
 					// hasn't learned about any files yet.
 					indexReceived := true
-					if localGlobalFiles > 0 {
-						remoteReady, remoteStatus, statusErr := syncthingFolderHasLocalFiles(ctx, remoteBase, remoteKey, folderID, localGlobalFiles)
+					expectedFiles := localGlobalFiles
+					if currentLocalStatus, currentLocalErr := syncthingFolderStatusInfoForFolder(ctx, localBase, localKey, folderID); currentLocalErr != nil {
+						slog.Debug("waitForInitialSync: local folder status poll failed", "error", currentLocalErr)
+					} else {
+						expectedFiles = expectedRemoteMaterializationFiles(localGlobalFiles, currentLocalStatus.GlobalFiles)
+					}
+					if expectedFiles > 0 {
+						remoteReady, remoteStatus, statusErr := syncthingFolderHasLocalFiles(ctx, remoteBase, remoteKey, folderID, expectedFiles)
 						if statusErr != nil || !remoteReady {
-							slog.Debug("waitForInitialSync: remote files not materialized yet", "localGlobalFiles", localGlobalFiles, "remoteGlobal", remoteStatus.GlobalFiles, "remoteLocal", remoteStatus.LocalFiles)
+							slog.Debug("waitForInitialSync: remote files not materialized yet", "expectedFiles", expectedFiles, "remoteGlobal", remoteStatus.GlobalFiles, "remoteLocal", remoteStatus.LocalFiles)
 							indexReceived = false
 						}
 					}
@@ -1704,13 +1717,19 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 				// local has files but remote's globalFiles is 0, the index
 				// exchange hasn't completed yet — needBytes=0 is misleading.
 				indexReceived := true
-				if localGlobalFiles > 0 {
-					remoteReady, remoteStatus, statusErr := syncthingFolderHasLocalFiles(ctx, remoteBase, remoteKey, folderID, localGlobalFiles)
+				expectedFiles := localGlobalFiles
+				if currentLocalStatus, currentLocalErr := syncthingFolderStatusInfoForFolder(ctx, localBase, localKey, folderID); currentLocalErr != nil {
+					slog.Debug("syncthing local folder status poll failed", "error", currentLocalErr)
+				} else {
+					expectedFiles = expectedRemoteMaterializationFiles(localGlobalFiles, currentLocalStatus.GlobalFiles)
+				}
+				if expectedFiles > 0 {
+					remoteReady, remoteStatus, statusErr := syncthingFolderHasLocalFiles(ctx, remoteBase, remoteKey, folderID, expectedFiles)
 					if statusErr != nil {
 						slog.Debug("syncthing remote folder status poll failed", "error", statusErr)
 						indexReceived = false
 					} else if !remoteReady {
-						slog.Debug("syncthing remote files not materialized yet", "localGlobalFiles", localGlobalFiles, "remoteGlobal", remoteStatus.GlobalFiles, "remoteLocal", remoteStatus.LocalFiles)
+						slog.Debug("syncthing remote files not materialized yet", "expectedFiles", expectedFiles, "remoteGlobal", remoteStatus.GlobalFiles, "remoteLocal", remoteStatus.LocalFiles)
 						indexReceived = false
 					}
 				}
