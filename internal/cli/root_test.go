@@ -7,6 +7,12 @@ func TestNewRootCmdRegistersExpectedCommandsAndFlags(t *testing.T) {
 	if cmd.Use != "okdev" {
 		t.Fatalf("unexpected root use %q", cmd.Use)
 	}
+	if !cmd.SilenceUsage {
+		t.Fatal("expected root command to suppress usage for runtime errors")
+	}
+	if !cmd.SilenceErrors {
+		t.Fatal("expected root command to suppress cobra error printing")
+	}
 	for _, name := range []string{
 		"version", "init", "validate", "up", "down", "status", "list", "use",
 		"target", "agent", "exec", "logs", "ssh", "ssh-proxy", "ports", "sync", "prune", "migrate", "completion",
