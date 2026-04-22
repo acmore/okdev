@@ -241,8 +241,12 @@ func TestRunMultiExecPartialFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for partial failure")
 	}
-	if !strings.Contains(stderr.String(), "worker-1") {
-		t.Fatalf("expected failure summary mentioning worker-1, got %q", stderr.String())
+	got := stderr.String()
+	if !strings.Contains(got, "\nFAILED:\n") {
+		t.Fatalf("expected blank line before multiline failure header, got %q", got)
+	}
+	if !strings.Contains(got, "worker-1 (exit code 1)") {
+		t.Fatalf("expected failure summary mentioning worker-1 on its own line, got %q", got)
 	}
 }
 
