@@ -314,7 +314,7 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 			short := nameMap[f.pod]
 			parts = append(parts, fmt.Sprintf("%s (%v)", short, f.err))
 		}
-		fmt.Fprintf(stderr, "FAILED: %s\n", strings.Join(parts, ", "))
+		fmt.Fprintf(stderr, "FAILED:\n%s\n", strings.Join(parts, "\n"))
 		return fmt.Errorf("%d of %d pods failed", len(failures), len(pods))
 	}
 	return nil
