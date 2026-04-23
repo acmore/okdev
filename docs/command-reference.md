@@ -31,6 +31,7 @@
 - `okdev logs [session] [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
 - `okdev ssh [session] [--setup-key] [--user root] [--cmd "..."] [--no-tmux] [--forward-agent|--no-forward-agent]`
 - `okdev ports`
+- `okdev port-forward [session] <local:remote>... [--pod <name> | --role <role>] [--container <name>] [--ready-only]`
 - `okdev sync [--mode up|down|bi] [--foreground] [--reset] [--dry-run]`
 - `okdev prune [--ttl-hours 72] [--all-namespaces] [--all-users] [--include-pvc] [--dry-run]`
 - `okdev migrate [--template <name>] [--set key=value] [--dry-run] [--yes]`
@@ -201,6 +202,17 @@
 - Advanced/recovery command. Rebuilds managed SSH `LocalForward` / `RemoteForward` state from `spec.ports` after disconnects or local port changes.
 - No-op when managed forwards are already healthy and config is unchanged.
 - `--dry-run`: previews the SSH alias and port-forward actions without updating SSH config or starting/stopping managed forwards.
+
+### `okdev port-forward [session] <local:remote>...`
+
+- Runs direct foreground Kubernetes port-forwarding to one selected session pod.
+- Uses the current session target pod by default.
+- `--pod` selects one explicit pod by name.
+- `--role` selects one pod by workload role. Ambiguity is an error.
+- `--container` overrides the resolved target container context.
+- `--ready-only`: restricts selection to already-running pods when selectors are used.
+- Only local `LOCAL:REMOTE` forwards are supported.
+- The command stays attached until interrupted.
 
 ### `okdev sync [--mode up|down|bi] [--foreground] [--reset] [--dry-run]`
 
