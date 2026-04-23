@@ -12,6 +12,7 @@ import (
 
 	"github.com/acmore/okdev/internal/connect"
 	"github.com/acmore/okdev/internal/kube"
+	"github.com/acmore/okdev/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -21,6 +22,7 @@ func newExecJobsCmd(opts *Options) *cobra.Command {
 	var labels []string
 	var exclude []string
 	var container string
+	var jobID string
 	var fanout int
 	var readyOnly bool
 
@@ -51,7 +53,7 @@ func newExecJobsCmd(opts *Options) *cobra.Command {
 			if effectiveFanout <= 0 {
 				effectiveFanout = pdshDefaultFanout
 			}
-			return runExecJobs(cmd.Context(), cc.kube, cc.namespace, pods, targetContainer, effectiveFanout, cmd.OutOrStdout(), strings.EqualFold(opts.Output, "json"))
+			return runExecJobs(cmd.Context(), cc.kube, cc.namespace, pods, targetContainer, jobID, effectiveFanout, cmd.OutOrStdout(), strings.EqualFold(opts.Output, "json"))
 		},
 	}
 	cmd.Flags().StringSliceVar(&podNames, "pod", nil, "Target specific pods by name (repeatable/comma-separated)")
@@ -59,6 +61,7 @@ func newExecJobsCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringSliceVar(&labels, "label", nil, "Target pods by label key=value (repeatable)")
 	cmd.Flags().StringSliceVar(&exclude, "exclude", nil, "Exclude specific pods (repeatable/comma-separated)")
 	cmd.Flags().StringVar(&container, "container", "", "Override target container")
+	cmd.Flags().StringVar(&jobID, "job-id", "", "Filter to a specific detached exec job id")
 	cmd.Flags().IntVar(&fanout, "fanout", pdshDefaultFanout, "Maximum concurrent pod queries")
 	cmd.Flags().BoolVar(&readyOnly, "ready-only", false, "Query only pods that are already running (skip readiness check)")
 	return cmd
@@ -125,8 +128,8 @@ type podDetachJobsResult struct {
 	err  error
 }
 
-func runExecJobs(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, fanout int, out io.Writer, jsonOutput bool) error {
-	rows, err := collectDetachJobs(ctx, client, namespace, pods, container, fanout)
+func runExecJobs(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, jobID string, fanout int, out io.Writer, jsonOutput bool) error {
+	rows, err := collectDetachJobs(ctx, client, namespace, pods, container, jobID, fanout)
 	if err != nil {
 		return err
 	}
@@ -137,18 +140,27 @@ func runExecJobs(ctx context.Context, client connect.ExecClient, namespace strin
 		fmt.Fprintln(out, "No detached exec jobs found")
 		return nil
 	}
+	table := make([][]string, 0, len(rows))
 	for _, row := range rows {
 		exit := "-"
 		if row.ExitCode != nil {
 			exit = fmt.Sprintf("%d", *row.ExitCode)
 		}
-		fmt.Fprintf(out, "pod=%s container=%s job_id=%s pid=%d state=%s exit=%s log=%s meta=%s\n",
-			row.Pod, row.Container, row.JobID, row.PID, row.State, exit, row.LogPath, row.MetaPath)
+		table = append(table, []string{
+			row.Pod,
+			row.Container,
+			row.JobID,
+			fmt.Sprintf("%d", row.PID),
+			row.State,
+			exit,
+			row.LogPath,
+		})
 	}
+	output.PrintTable(out, []string{"POD", "CONTAINER", "JOB ID", "PID", "STATE", "EXIT", "LOG"}, table)
 	return nil
 }
 
-func collectDetachJobs(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, fanout int) ([]execJobView, error) {
+func collectDetachJobs(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, jobID string, fanout int) ([]execJobView, error) {
 	results := make(chan podDetachJobsResult, len(pods))
 	sem := make(chan struct{}, fanout)
 	for _, pod := range pods {
@@ -173,6 +185,9 @@ func collectDetachJobs(ctx context.Context, client connect.ExecClient, namespace
 			return nil, fmt.Errorf("list detached exec jobs on pod %s: %w", r.pod, r.err)
 		}
 		for _, job := range r.jobs {
+			if strings.TrimSpace(jobID) != "" && job.JobID != jobID {
+				continue
+			}
 			containerLabel := job.Container
 			if strings.TrimSpace(containerLabel) == "" {
 				containerLabel = container

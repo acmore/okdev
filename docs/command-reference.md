@@ -87,12 +87,13 @@
 
 - Lists detached `okdev exec --detach` jobs across the session's running pods.
 - Reads job metadata from `/tmp/okdev-exec/*.json` in the target container.
-- Shows pod, container, job id, pid, current state, exit code when available, log path, and metadata path.
+- Shows pod, container, job id, pid, current state, exit code when available, and log path in table form for text output.
 - `--pod`: target specific pods by name (repeatable or comma-separated).
 - `--role`: target pods by `okdev.io/workload-role` label (case-insensitive).
 - `--label`: target pods by arbitrary label `key=value` (repeatable, AND logic).
 - `--exclude`: exclude specific pods from the selected set (repeatable or comma-separated). Cannot be used with `--pod`.
 - `--container`: override which container to inspect (default: session target container).
+- `--job-id`: filter to a specific detached exec job id.
 - `--fanout N`: maximum concurrent pod queries (default 16).
 - `--ready-only`: inspect only pods that are already running.
 
