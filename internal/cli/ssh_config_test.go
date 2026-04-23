@@ -132,13 +132,7 @@ func TestManagedSSHForwardArgs(t *testing.T) {
 
 func TestStartManagedSSHForwardWithForwardsRemovesStaleSocketAfterFailedCheck(t *testing.T) {
 	home := t.TempDir()
-	origHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", home); err != nil {
-		t.Fatalf("set HOME: %v", err)
-	}
-	defer func() {
-		_ = os.Setenv("HOME", origHome)
-	}()
+	t.Setenv("HOME", home)
 
 	origExecCommand := execCommand
 	t.Cleanup(func() {

@@ -89,7 +89,7 @@ func TestRunOnContainerRetriesTransientContainerExec(t *testing.T) {
 		fakeExecClient: fakeExecClient{errs: []error{errors.New("EOF"), nil}},
 	}
 	var out bytes.Buffer
-	err := runOnContainerWithRetry(context.Background(), fc, "ns", "pod", "dev", []string{"sh"}, true, &out, &out, &out, RetryPolicy{
+	err := RunOnContainerWithRetry(context.Background(), fc, "ns", "pod", "dev", []string{"sh"}, true, &out, &out, &out, RetryPolicy{
 		MaxAttempts:    3,
 		InitialBackoff: 1 * time.Millisecond,
 		MaxBackoff:     2 * time.Millisecond,
@@ -107,7 +107,7 @@ func TestRunOnContainerDoesNotRetryNonTransientContainerExec(t *testing.T) {
 		fakeExecClient: fakeExecClient{errs: []error{errors.New("permission denied")}},
 	}
 	var out bytes.Buffer
-	err := runOnContainerWithRetry(context.Background(), fc, "ns", "pod", "dev", []string{"sh"}, true, &out, &out, &out, RetryPolicy{
+	err := RunOnContainerWithRetry(context.Background(), fc, "ns", "pod", "dev", []string{"sh"}, true, &out, &out, &out, RetryPolicy{
 		MaxAttempts:    3,
 		InitialBackoff: 1 * time.Millisecond,
 		MaxBackoff:     2 * time.Millisecond,

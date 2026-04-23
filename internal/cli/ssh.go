@@ -920,6 +920,8 @@ func startManagedSSHForwardWithForwards(hostAlias string, forwards []config.Port
 		return nil
 	}
 	args := managedSSHForwardArgs(hostAlias, configPath, socketPath, forwards, sshSpec)
+	// `-O check` failed, so any existing socket file is from a dead master and
+	// would otherwise prevent `ssh -M` from binding a new one.
 	if err := removeStaleSSHControlSocket(socketPath); err != nil {
 		return err
 	}
