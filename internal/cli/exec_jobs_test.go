@@ -3,8 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
-	"testing"
 	"strings"
+	"testing"
 
 	"github.com/acmore/okdev/internal/kube"
 )

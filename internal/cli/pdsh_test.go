@@ -84,13 +84,14 @@ func TestExcludePods(t *testing.T) {
 
 func TestDetachCommand(t *testing.T) {
 	spec := detachJobSpec{
-		JobID:     "job-123",
-		Pod:       "okdev-sess-worker-0",
-		Container: "dev",
-		Command:   "python train.py --epochs 100",
-		StartedAt: "2026-04-23T03:00:00Z",
-		LogPath:   "/tmp/okdev-exec/job-123.log",
-		MetaPath:  "/tmp/okdev-exec/job-123.json",
+		JobID:      "job-123",
+		Pod:        "okdev-sess-worker-0",
+		Container:  "dev",
+		Command:    "python train.py --epochs 100",
+		StartedAt:  "2026-04-23T03:00:00Z",
+		LogPath:    "/tmp/okdev-exec/job-123.log",
+		MetaPath:   "/tmp/okdev-exec/job-123.json",
+		ScriptPath: "/tmp/okdev-exec/job-123.sh",
 	}
 	got := detachCommand(spec)
 	if len(got) != 3 {
@@ -102,7 +103,10 @@ func TestDetachCommand(t *testing.T) {
 	script := got[2]
 	for _, want := range []string{
 		"mkdir -p '/tmp/okdev-exec'",
-		"nohup sh -c",
+		"wrapper_path='/tmp/okdev-exec/job-123.sh'",
+		"cat >\"$wrapper_path\" <<'OKDEV_DETACH_WRAPPER'",
+		"chmod 700 \"$wrapper_path\"",
+		"nohup sh \"$wrapper_path\" >\"$log_path\" 2>&1 &",
 		"python train.py --epochs 100",
 		"meta_path='/tmp/okdev-exec/job-123.json'",
 		"rc=$?",
@@ -118,19 +122,20 @@ func TestDetachCommand(t *testing.T) {
 
 func TestDetachCommandWithQuotes(t *testing.T) {
 	spec := detachJobSpec{
-		JobID:     "job-quoted",
-		Pod:       "worker-0",
-		Container: "dev",
-		Command:   "echo 'hello world'",
-		StartedAt: "2026-04-23T03:00:00Z",
-		LogPath:   "/tmp/okdev-exec/job-quoted.log",
-		MetaPath:  "/tmp/okdev-exec/job-quoted.json",
+		JobID:      "job-quoted",
+		Pod:        "worker-0",
+		Container:  "dev",
+		Command:    "echo 'hello world'",
+		StartedAt:  "2026-04-23T03:00:00Z",
+		LogPath:    "/tmp/okdev-exec/job-quoted.log",
+		MetaPath:   "/tmp/okdev-exec/job-quoted.json",
+		ScriptPath: "/tmp/okdev-exec/job-quoted.sh",
 	}
 	got := detachCommand(spec)
 	if len(got) != 3 {
 		t.Fatalf("expected shell command triplet, got %v", got)
 	}
-	if !strings.Contains(got[2], "nohup sh -c") || !strings.Contains(got[2], "echo '\\''hello world'\\''") {
+	if !strings.Contains(got[2], "nohup sh \"$wrapper_path\"") || !strings.Contains(got[2], "echo 'hello world'") {
 		t.Fatalf("expected quoted user command to survive detach wrapper, got %q", got[2])
 	}
 }

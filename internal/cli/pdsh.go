@@ -417,13 +417,14 @@ func parseExecExitCode(msg string) (int, bool) {
 }
 
 type detachJobSpec struct {
-	JobID     string
-	Pod       string
-	Container string
-	Command   string
-	StartedAt string
-	LogPath   string
-	MetaPath  string
+	JobID      string
+	Pod        string
+	Container  string
+	Command    string
+	StartedAt  string
+	LogPath    string
+	MetaPath   string
+	ScriptPath string
 }
 
 type detachMetadata struct {
@@ -490,11 +491,14 @@ func detachCommand(spec detachJobSpec) []string {
 		"set -eu\n"+
 			"log_path=%s\n"+
 			"meta_path=%s\n"+
+			"wrapper_path=%s\n"+
 			"meta_tmp=\"${meta_path}.tmp\"\n"+
 			"launch_json=%s\n"+
 			"meta_json=%s\n"+
 			"mkdir -p %s\n"+
-			"nohup sh -c %s >\"$log_path\" 2>&1 &\n"+
+			"cat >\"$wrapper_path\" <<'OKDEV_DETACH_WRAPPER'\n%s\nOKDEV_DETACH_WRAPPER\n"+
+			"chmod 700 \"$wrapper_path\"\n"+
+			"nohup sh \"$wrapper_path\" >\"$log_path\" 2>&1 &\n"+
 			"pid=$!\n"+
 			"if [ -z \"$pid\" ] || [ \"$pid\" -le 0 ]; then\n"+
 			"  echo 'failed to capture detached pid' >&2\n"+
@@ -505,10 +509,11 @@ func detachCommand(spec detachJobSpec) []string {
 			"printf '%%s\\n' \"$launch_json\" | sed \"s/%s/$pid/g\"\n",
 		shellutil.Quote(spec.LogPath),
 		shellutil.Quote(spec.MetaPath),
+		shellutil.Quote(spec.ScriptPath),
 		shellutil.Quote(launchTemplate),
 		shellutil.Quote(metadataTemplate),
 		shellutil.Quote(detachMetadataDir),
-		shellutil.Quote(detachCompletionScript(spec.Command, spec.MetaPath, completionTemplate)),
+		detachCompletionScript(spec.Command, spec.MetaPath, completionTemplate),
 		detachPIDPlaceholder,
 		detachPIDPlaceholder,
 	)
@@ -558,14 +563,16 @@ func newDetachJobSpec(pod, container, cmd string) detachJobSpec {
 	startedAt := time.Now().UTC().Format(time.RFC3339)
 	logPath := filepath.Join(detachMetadataDir, jobID+".log")
 	metaPath := filepath.Join(detachMetadataDir, jobID+".json")
+	scriptPath := filepath.Join(detachMetadataDir, jobID+".sh")
 	return detachJobSpec{
-		JobID:     jobID,
-		Pod:       pod,
-		Container: container,
-		Command:   cmd,
-		StartedAt: startedAt,
-		LogPath:   logPath,
-		MetaPath:  metaPath,
+		JobID:      jobID,
+		Pod:        pod,
+		Container:  container,
+		Command:    cmd,
+		StartedAt:  startedAt,
+		LogPath:    logPath,
+		MetaPath:   metaPath,
+		ScriptPath: scriptPath,
 	}
 }
 
