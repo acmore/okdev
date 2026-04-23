@@ -30,6 +30,12 @@ func Run(ctx context.Context, client ExecClient, namespace, pod string, command 
 }
 
 func RunWithRetry(ctx context.Context, client ExecClient, namespace, pod string, command []string, tty bool, stdin io.Reader, stdout io.Writer, stderr io.Writer, policy RetryPolicy) error {
+	return runExecWithRetry(ctx, stderr, policy, func() error {
+		return client.ExecInteractive(ctx, namespace, pod, tty, command, stdin, stdout, stderr)
+	})
+}
+
+func runExecWithRetry(ctx context.Context, stderr io.Writer, policy RetryPolicy, execFn func() error) error {
 	if policy.MaxAttempts <= 0 {
 		policy.MaxAttempts = 1
 	}
@@ -46,7 +52,7 @@ func RunWithRetry(ctx context.Context, client ExecClient, namespace, pod string,
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		err := client.ExecInteractive(ctx, namespace, pod, tty, command, stdin, stdout, stderr)
+		err := execFn()
 		if err == nil {
 			return nil
 		}
@@ -82,17 +88,27 @@ type ExecContainerClient interface {
 	ExecInteractiveInContainer(ctx context.Context, namespace, pod, container string, tty bool, command []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) error
 }
 
-// RunOnContainer executes a command in a specific container within a pod.
-// If container is empty, it falls back to the default ExecInteractive behavior.
+// RunOnContainer executes a command in a specific container within a pod using
+// DefaultRetryPolicy. Transient connect errors are retried the same way as
+// RunWithRetry; non-transient errors (including non-zero command exit codes)
+// surface immediately. If container is empty, it falls back to the
+// pod-level ExecInteractive path.
 func RunOnContainer(ctx context.Context, client ExecClient, namespace, pod, container string, command []string, tty bool, stdin io.Reader, stdout io.Writer, stderr io.Writer) error {
+	return RunOnContainerWithRetry(ctx, client, namespace, pod, container, command, tty, stdin, stdout, stderr, DefaultRetryPolicy)
+}
+
+// RunOnContainerWithRetry is the explicit-policy variant of RunOnContainer.
+func RunOnContainerWithRetry(ctx context.Context, client ExecClient, namespace, pod, container string, command []string, tty bool, stdin io.Reader, stdout io.Writer, stderr io.Writer, policy RetryPolicy) error {
 	if container == "" {
-		return Run(ctx, client, namespace, pod, command, tty, stdin, stdout, stderr)
+		return RunWithRetry(ctx, client, namespace, pod, command, tty, stdin, stdout, stderr, policy)
 	}
 	ec, ok := client.(ExecContainerClient)
 	if !ok {
-		return Run(ctx, client, namespace, pod, command, tty, stdin, stdout, stderr)
+		return RunWithRetry(ctx, client, namespace, pod, command, tty, stdin, stdout, stderr, policy)
 	}
-	return ec.ExecInteractiveInContainer(ctx, namespace, pod, container, tty, command, stdin, stdout, stderr)
+	return runExecWithRetry(ctx, stderr, policy, func() error {
+		return ec.ExecInteractiveInContainer(ctx, namespace, pod, container, tty, command, stdin, stdout, stderr)
+	})
 }
 
 func isRetryableError(err error) bool {

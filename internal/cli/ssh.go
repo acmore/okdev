@@ -899,7 +899,7 @@ func startManagedSSHForward(hostAlias string, sshSpec config.SSHSpec) error {
 	if err != nil {
 		return err
 	}
-	check := exec.Command("ssh", "-F", configPath, "-S", socketPath, "-O", "check", hostAlias)
+	check := execCommand("ssh", "-F", configPath, "-S", socketPath, "-O", "check", hostAlias)
 	if err := check.Run(); err == nil {
 		return nil
 	}
@@ -915,14 +915,26 @@ func startManagedSSHForwardWithForwards(hostAlias string, forwards []config.Port
 	if err != nil {
 		return err
 	}
-	check := exec.Command("ssh", "-F", configPath, "-S", socketPath, "-O", "check", hostAlias)
+	check := execCommand("ssh", "-F", configPath, "-S", socketPath, "-O", "check", hostAlias)
 	if err := check.Run(); err == nil {
 		return nil
 	}
 	args := managedSSHForwardArgs(hostAlias, configPath, socketPath, forwards, sshSpec)
-	cmd := exec.Command(args[0], args[1:]...)
+	// `-O check` failed, so any existing socket file is from a dead master and
+	// would otherwise prevent `ssh -M` from binding a new one.
+	if err := removeStaleSSHControlSocket(socketPath); err != nil {
+		return err
+	}
+	cmd := execCommand(args[0], args[1:]...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("start managed ssh forward: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func removeStaleSSHControlSocket(socketPath string) error {
+	if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove stale ssh control socket %q: %w", socketPath, err)
 	}
 	return nil
 }
@@ -965,7 +977,7 @@ func stopManagedSSHForward(hostAlias string) error {
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command("ssh", "-F", configPath, "-S", socketPath, "-O", "exit", hostAlias)
+	cmd := execCommand("ssh", "-F", configPath, "-S", socketPath, "-O", "exit", hostAlias)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		msg := strings.ToLower(strings.TrimSpace(string(out)))
 		if strings.Contains(msg, "no such file") || strings.Contains(msg, "control socket connect") || strings.Contains(msg, "master running") {
