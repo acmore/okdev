@@ -473,7 +473,7 @@ echo "$EXEC_JOBS_JSON"
 
 LONG_DETACH_PARSED=$(
   OKDEV_JOBS_JSON="$EXEC_JOBS_JSON" python3 - <<'PY'
-import json, os, sys
+import json, os, shlex, sys
 payload = json.loads(os.environ["OKDEV_JOBS_JSON"])
 jobs = payload.get("jobs", [])
 errs = payload.get("errors", [])
@@ -484,9 +484,9 @@ if not jobs:
     print("ERROR: exec-jobs returned no jobs", file=sys.stderr)
     sys.exit(1)
 for row in jobs:
-    # Only consider the sleep 30 jobs we just launched. `command` in the
-    # metadata is the literal string we passed to `exec --detach`.
-    if "sleep 30" not in (row.get("command") or ""):
+    # exec-jobs stores the shell-quoted command string. Match by parsed
+    # argv so both `sleep 30` and `'sleep' '30'` forms are accepted.
+    if shlex.split(row.get("command") or "") != ["sleep", "30"]:
         continue
     print(f"{row['pod']}\t{row['jobId']}\t{row['pid']}\t{row['state']}")
 PY
@@ -536,10 +536,10 @@ for _ in $(seq 1 45); do
   EXEC_JOBS_NOW=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec-jobs --output json)
   STILL_RUNNING=$(
     OKDEV_JOBS_JSON="$EXEC_JOBS_NOW" python3 - <<'PY'
-import json, os
+import json, os, shlex
 payload = json.loads(os.environ["OKDEV_JOBS_JSON"])
 print(sum(1 for j in payload.get("jobs", [])
-          if "sleep 30" in (j.get("command") or "") and j.get("state") == "running"))
+          if shlex.split(j.get("command") or "") == ["sleep", "30"] and j.get("state") == "running"))
 PY
   )
   if [[ "$STILL_RUNNING" == "0" ]]; then
@@ -553,10 +553,10 @@ EXEC_JOBS_DONE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exe
 echo "$EXEC_JOBS_DONE"
 MISMATCH=$(
   OKDEV_JOBS_JSON="$EXEC_JOBS_DONE" python3 - <<'PY'
-import json, os, sys
+import json, os, shlex, sys
 payload = json.loads(os.environ["OKDEV_JOBS_JSON"])
 for row in payload.get("jobs", []):
-    if "sleep 30" not in (row.get("command") or ""):
+    if shlex.split(row.get("command") or "") != ["sleep", "30"]:
         continue
     if row.get("state") != "exited" or row.get("exitCode") != 0:
         sys.stdout.write(f"{row.get('pod')}/{row.get('jobId')} state={row.get('state')} exit={row.get('exitCode')}\n")
@@ -579,10 +579,10 @@ FAIL_JOBS_JSON=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exe
 echo "$FAIL_JOBS_JSON"
 FAIL_CHECK=$(
   OKDEV_JOBS_JSON="$FAIL_JOBS_JSON" python3 - <<'PY'
-import json, os, sys
+import json, os, shlex, sys
 payload = json.loads(os.environ["OKDEV_JOBS_JSON"])
 for row in payload.get("jobs", []):
-    if row.get("command") == "sh -lc 'exit 7'" or "exit 7" in (row.get("command") or ""):
+    if shlex.split(row.get("command") or "") == ["sh", "-lc", "exit 7"]:
         if row.get("state") == "exited" and row.get("exitCode") == 7:
             print("ok")
             sys.exit(0)
