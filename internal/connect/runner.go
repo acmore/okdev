@@ -111,7 +111,20 @@ func RunOnContainerWithRetry(ctx context.Context, client ExecClient, namespace, 
 	})
 }
 
-func isRetryableError(err error) bool {
+// IsTransientExecError reports whether err looks like a transport/network-level
+// failure from a kube exec stream (broken pipe, EOF mid-stream, connection
+// reset, etc.) rather than a non-zero command exit. It is the single source of
+// truth for both the retry path in this package and failure classification in
+// callers (e.g. multi-pod exec). Context cancellation and deadline-exceeded
+// errors return false; callers that care about those should check them
+// explicitly with errors.Is.
+//
+// The patterns are deliberately narrow substrings unique to transport failures.
+// Bare "timeout" is intentionally excluded because remote command stderr (and
+// wrapped error context) commonly contains the word in non-transport senses
+// (e.g. "request timeout from upstream", "nslookup: timed out"); use
+// "i/o timeout", "tls handshake timeout", or "client.timeout exceeded" instead.
+func IsTransientExecError(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -121,13 +134,18 @@ func isRetryableError(err error) bool {
 	msg := strings.ToLower(err.Error())
 	patterns := []string{
 		"eof",
-		"connection reset",
 		"broken pipe",
-		"timeout",
-		"i/o timeout",
-		"stream error",
+		"connection reset",
 		"connection refused",
+		"connection closed",
+		"closed by remote host",
+		"i/o timeout",
+		"tls handshake timeout",
+		"client.timeout exceeded",
+		"stream error",
 		"transport is closing",
+		"error reading from error stream",
+		"use of closed network connection",
 	}
 	for _, p := range patterns {
 		if strings.Contains(msg, p) {
@@ -135,4 +153,8 @@ func isRetryableError(err error) bool {
 		}
 	}
 	return false
+}
+
+func isRetryableError(err error) bool {
+	return IsTransientExecError(err)
 }
