@@ -2,10 +2,12 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/shellutil"
 	"github.com/spf13/cobra"
+	k8sexec "k8s.io/client-go/util/exec"
 )
 
 func newExecCmd(opts *Options) *cobra.Command {
@@ -305,19 +308,104 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 		}
 	}
 	if len(failures) > 0 {
-		nameMap := make(map[string]string, len(podNames))
-		for i, n := range podNames {
-			nameMap[n] = shortNames[i]
-		}
 		parts := make([]string, 0, len(failures))
 		for _, f := range failures {
-			short := nameMap[f.pod]
-			parts = append(parts, fmt.Sprintf("%s (%v)", short, f.err))
+			parts = append(parts, formatPodExecFailureSummary(f.pod, container, f.err))
 		}
 		fmt.Fprintf(stderr, "\nFAILED:\n%s\n", strings.Join(parts, "\n"))
 		return fmt.Errorf("%d of %d pods failed", len(failures), len(pods))
 	}
 	return nil
+}
+
+func formatPodExecFailureSummary(podName, container string, err error) string {
+	containerLabel := container
+	if strings.TrimSpace(containerLabel) == "" {
+		containerLabel = "<default>"
+	}
+	kind, exitCode := classifyPodExecFailure(err)
+	parts := []string{
+		fmt.Sprintf("pod=%s", podName),
+		fmt.Sprintf("container=%s", containerLabel),
+		fmt.Sprintf("kind=%s", kind),
+	}
+	if exitCode >= 0 {
+		parts = append(parts, fmt.Sprintf("exit=%d", exitCode))
+	}
+	if extra := failureMessageDetail(err, kind, exitCode); extra != "" {
+		parts = append(parts, fmt.Sprintf("error=%q", extra))
+	}
+	return strings.Join(parts, " ")
+}
+
+// failureMessageDetail returns a one-line excerpt of err suitable for the
+// failure summary, or empty string when err adds no signal beyond kind/exit.
+// For remote-exit failures we suppress the boilerplate "command terminated
+// with exit code N" message but keep any wrapping context.
+func failureMessageDetail(err error, kind string, exitCode int) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.Join(strings.Fields(err.Error()), " ")
+	if msg == "" {
+		return ""
+	}
+	if kind != "remote-exit" {
+		return msg
+	}
+	boilerplate := []string{
+		fmt.Sprintf("command terminated with exit code %d", exitCode),
+		fmt.Sprintf("exit code %d", exitCode),
+		fmt.Sprintf("exit status %d", exitCode),
+	}
+	for _, b := range boilerplate {
+		if strings.EqualFold(msg, b) {
+			return ""
+		}
+	}
+	return msg
+}
+
+func classifyPodExecFailure(err error) (kind string, exitCode int) {
+	if err == nil {
+		return "unknown", -1
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout", -1
+	}
+	var exitErr k8sexec.ExitError
+	if errors.As(err, &exitErr) {
+		return "remote-exit", exitErr.ExitStatus()
+	}
+	if code, ok := parseExecExitCode(strings.ToLower(err.Error())); ok {
+		return "remote-exit", code
+	}
+	if connect.IsTransientExecError(err) {
+		return "transport", -1
+	}
+	return "command-error", -1
+}
+
+func parseExecExitCode(msg string) (int, bool) {
+	for _, marker := range []string{"exit code ", "exit status "} {
+		idx := strings.LastIndex(msg, marker)
+		if idx < 0 {
+			continue
+		}
+		value := strings.TrimSpace(msg[idx+len(marker):])
+		end := 0
+		for end < len(value) && value[end] >= '0' && value[end] <= '9' {
+			end++
+		}
+		if end == 0 {
+			continue
+		}
+		code, err := strconv.Atoi(value[:end])
+		if err == nil {
+			return code, true
+		}
+	}
+	return 0, false
 }
 
 func detachCommand(cmd string) []string {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/acmore/okdev/internal/kube"
+	k8sexec "k8s.io/client-go/util/exec"
 )
 
 func TestFilterPodsByRole(t *testing.T) {
@@ -229,7 +230,7 @@ func TestRunMultiExecPartialFailure(t *testing.T) {
 			"okdev-sess-worker-0": "ok\n",
 		},
 		errs: map[string]error{
-			"okdev-sess-worker-1": errors.New("exit code 1"),
+			"okdev-sess-worker-1": k8sexec.CodeExitError{Err: errors.New("command terminated with exit code 1"), Code: 1},
 		},
 	}
 	pods := []kube.PodSummary{
@@ -245,8 +246,34 @@ func TestRunMultiExecPartialFailure(t *testing.T) {
 	if !strings.Contains(got, "\nFAILED:\n") {
 		t.Fatalf("expected blank line before multiline failure header, got %q", got)
 	}
-	if !strings.Contains(got, "worker-1 (exit code 1)") {
-		t.Fatalf("expected failure summary mentioning worker-1 on its own line, got %q", got)
+	if !strings.Contains(got, "pod=okdev-sess-worker-1 container=dev kind=remote-exit exit=1") {
+		t.Fatalf("expected classified failure summary for worker-1, got %q", got)
+	}
+}
+
+func TestRunMultiExecClassifiesTimeoutAndTransportFailures(t *testing.T) {
+	client := &fakePdshExecClient{
+		outputs: map[string]string{},
+		errs: map[string]error{
+			"okdev-sess-worker-0": context.DeadlineExceeded,
+			"okdev-sess-worker-1": errors.New("stream error: INTERNAL_ERROR"),
+		},
+	}
+	pods := []kube.PodSummary{
+		{Name: "okdev-sess-worker-0", Phase: "Running"},
+		{Name: "okdev-sess-worker-1", Phase: "Running"},
+	}
+	var stdout, stderr bytes.Buffer
+	err := runMultiExec(context.Background(), client, "default", pods, "serving", []string{"sh", "-lc", "echo ok"}, "", 0, false, pdshDefaultFanout, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for classified failures")
+	}
+	got := stderr.String()
+	if !strings.Contains(got, "pod=okdev-sess-worker-0 container=serving kind=timeout") {
+		t.Fatalf("expected timeout classification, got %q", got)
+	}
+	if !strings.Contains(got, "pod=okdev-sess-worker-1 container=serving kind=transport") {
+		t.Fatalf("expected transport classification, got %q", got)
 	}
 }
 
