@@ -102,8 +102,12 @@ func TestDetachCommand(t *testing.T) {
 	script := got[2]
 	for _, want := range []string{
 		"mkdir -p '/tmp/okdev-exec'",
-		"nohup sh -c 'python train.py --epochs 100' >\"$log_path\" 2>&1 &",
+		"nohup sh -c",
+		"python train.py --epochs 100",
 		"meta_path='/tmp/okdev-exec/job-123.json'",
+		"rc=$?",
+		"state\":\"running\"",
+		"state\":\"exited\"",
 		"printf '%s\\n' \"$launch_json\"",
 	} {
 		if !strings.Contains(script, want) {
@@ -126,7 +130,7 @@ func TestDetachCommandWithQuotes(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("expected shell command triplet, got %v", got)
 	}
-	if !strings.Contains(got[2], "nohup sh -c 'echo '\\''hello world'\\''' >\"$log_path\" 2>&1 &") {
+	if !strings.Contains(got[2], "nohup sh -c") || !strings.Contains(got[2], "echo '\\''hello world'\\''") {
 		t.Fatalf("expected quoted user command to survive detach wrapper, got %q", got[2])
 	}
 }

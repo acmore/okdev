@@ -25,6 +25,7 @@ import (
 
 const detachMetadataDir = "/tmp/okdev-exec"
 const detachPIDPlaceholder = "__OKDEV_DETACH_PID__"
+const detachExitPlaceholder = "__OKDEV_DETACH_EXIT__"
 
 func newExecCmd(opts *Options) *cobra.Command {
 	var shell string
@@ -435,6 +436,8 @@ type detachMetadata struct {
 	StdoutPath string `json:"stdoutPath"`
 	StderrPath string `json:"stderrPath"`
 	MetaPath   string `json:"metaPath"`
+	State      string `json:"state"`
+	ExitCode   *int   `json:"exitCode,omitempty"`
 }
 
 type detachLaunchInfo struct {
@@ -467,6 +470,21 @@ func detachCommand(spec detachJobSpec) []string {
 		StdoutPath: spec.LogPath,
 		StderrPath: spec.LogPath,
 		MetaPath:   spec.MetaPath,
+		State:      "running",
+	})
+	exitCodeZero := 0
+	completionTemplate := mustDetachJSONTemplateWithExit(detachMetadata{
+		JobID:      spec.JobID,
+		Pod:        spec.Pod,
+		Container:  spec.Container,
+		PID:        0,
+		Command:    spec.Command,
+		StartedAt:  spec.StartedAt,
+		StdoutPath: spec.LogPath,
+		StderrPath: spec.LogPath,
+		MetaPath:   spec.MetaPath,
+		State:      "exited",
+		ExitCode:   &exitCodeZero,
 	})
 	script := fmt.Sprintf(
 		"set -eu\n"+
@@ -490,11 +508,30 @@ func detachCommand(spec detachJobSpec) []string {
 		shellutil.Quote(launchTemplate),
 		shellutil.Quote(metadataTemplate),
 		shellutil.Quote(detachMetadataDir),
-		shellutil.Quote(spec.Command),
+		shellutil.Quote(detachCompletionScript(spec.Command, spec.MetaPath, completionTemplate)),
 		detachPIDPlaceholder,
 		detachPIDPlaceholder,
 	)
 	return []string{"sh", "-c", script}
+}
+
+func detachCompletionScript(command, metaPath, completionTemplate string) string {
+	return fmt.Sprintf(
+		"set -eu\n"+
+			"completion_json=%s\n"+
+			"meta_path=%s\n"+
+			"%s\n"+
+			"rc=$?\n"+
+			"meta_tmp=\"${meta_path}.tmp\"\n"+
+			"printf '%%s\\n' \"$completion_json\" | sed \"s/%s/$$/g; s/%s/$rc/g\" >\"$meta_tmp\"\n"+
+			"mv \"$meta_tmp\" \"$meta_path\"\n"+
+			"exit $rc\n",
+		shellutil.Quote(completionTemplate),
+		shellutil.Quote(metaPath),
+		command,
+		detachPIDPlaceholder,
+		detachExitPlaceholder,
+	)
 }
 
 func mustDetachJSONTemplate(v any) string {
@@ -503,6 +540,16 @@ func mustDetachJSONTemplate(v any) string {
 		panic(err)
 	}
 	out := strings.Replace(string(data), `"pid":0`, `"pid":`+detachPIDPlaceholder, 1)
+	return out
+}
+
+func mustDetachJSONTemplateWithExit(v detachMetadata) string {
+	data, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	out := strings.Replace(string(data), `"pid":0`, `"pid":`+detachPIDPlaceholder, 1)
+	out = strings.Replace(out, `"exitCode":0`, `"exitCode":`+detachExitPlaceholder, 1)
 	return out
 }
 

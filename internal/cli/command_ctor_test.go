@@ -37,6 +37,9 @@ func TestCommandConstructorsExposeExpectedMetadata(t *testing.T) {
 	if cmd := newExecCmd(&Options{}); cmd.Use != "exec [session]" || cmd.Flags().Lookup("cmd") != nil || cmd.Flags().Lookup("shell") == nil || cmd.Flags().Lookup("no-tty") == nil || cmd.Flags().Lookup("all") != nil || cmd.Flags().Lookup("pod") == nil || cmd.Flags().Lookup("role") == nil || cmd.Flags().Lookup("label") == nil || cmd.Flags().Lookup("exclude") == nil || cmd.Flags().Lookup("container") == nil || cmd.Flags().Lookup("detach") == nil || cmd.Flags().Lookup("timeout") == nil || cmd.Flags().Lookup("log-dir") == nil || cmd.Flags().Lookup("no-prefix") == nil || cmd.Flags().Lookup("fanout") == nil {
 		t.Fatalf("unexpected exec command shape")
 	}
+	if cmd := newExecJobsCmd(&Options{}); cmd.Use != "exec-jobs [session]" || cmd.Flags().Lookup("pod") == nil || cmd.Flags().Lookup("role") == nil || cmd.Flags().Lookup("label") == nil || cmd.Flags().Lookup("exclude") == nil || cmd.Flags().Lookup("container") == nil || cmd.Flags().Lookup("fanout") == nil {
+		t.Fatalf("unexpected exec-jobs command shape")
+	}
 	if cmd := newPortsCmd(&Options{}); cmd.Use != "ports" || cmd.Short == "" || cmd.Flags().Lookup("dry-run") == nil {
 		t.Fatalf("unexpected ports command shape")
 	}
