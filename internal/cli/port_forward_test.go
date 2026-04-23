@@ -98,3 +98,21 @@ func TestRunPortForwardUsesDirectKubePortForward(t *testing.T) {
 		t.Fatalf("expected startup message, got %q", out.String())
 	}
 }
+
+func TestPortForwardCommandRejectsPodAndRoleTogether(t *testing.T) {
+	cmd := newPortForwardCmd(&Options{})
+	cmd.SetArgs([]string{"--pod", "a", "--role", "worker", "8080:8080"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("expected mutual exclusion error, got %v", err)
+	}
+}
+
+func TestPortForwardCommandRejectsMissingMappings(t *testing.T) {
+	cmd := newPortForwardCmd(&Options{})
+	cmd.SetArgs(nil)
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "requires at least one") {
+		t.Fatalf("expected missing mapping error, got %v", err)
+	}
+}
