@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -34,6 +35,18 @@ func newTrackingExecClient(delay time.Duration) *trackingExecClient {
 		finished: make(map[string]time.Time),
 		outputs:  make(map[string]string),
 		errs:     make(map[string]error),
+	}
+}
+
+func seedDetachLaunchOutputs(client *trackingExecClient, pods []kube.PodSummary) {
+	for i, pod := range pods {
+		payload, _ := json.Marshal(detachLaunchInfo{
+			JobID:    fmt.Sprintf("job-%d", i),
+			PID:      40000 + i,
+			LogPath:  fmt.Sprintf("/tmp/okdev-exec/job-%d.log", i),
+			MetaPath: fmt.Sprintf("/tmp/okdev-exec/job-%d.json", i),
+		})
+		client.outputs[pod.Name] = string(payload) + "\n"
 	}
 }
 
@@ -160,6 +173,7 @@ func TestRunDetachExecFanoutLimitsParallelism(t *testing.T) {
 	}
 
 	client := newTrackingExecClient(30 * time.Millisecond)
+	seedDetachLaunchOutputs(client, pods)
 
 	var stdout bytes.Buffer
 	err := runDetachExec(context.Background(), client, "default", pods, "dev",
@@ -310,7 +324,10 @@ func TestMultiExecPipelinePartialFailureWithDetach(t *testing.T) {
 	}
 
 	client := &fakePdshExecClient{
-		outputs: map[string]string{},
+		outputs: map[string]string{
+			"okdev-sess-worker-0": "{\"jobId\":\"job-0\",\"pid\":40000,\"logPath\":\"/tmp/okdev-exec/job-0.log\",\"metaPath\":\"/tmp/okdev-exec/job-0.json\"}\n",
+			"okdev-sess-worker-2": "{\"jobId\":\"job-2\",\"pid\":40002,\"logPath\":\"/tmp/okdev-exec/job-2.log\",\"metaPath\":\"/tmp/okdev-exec/job-2.json\"}\n",
+		},
 		errs: map[string]error{
 			"okdev-sess-worker-1": errors.New("container not ready"),
 		},
