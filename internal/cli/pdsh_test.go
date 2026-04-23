@@ -113,10 +113,43 @@ func TestDetachCommand(t *testing.T) {
 		"state\":\"running\"",
 		"state\":\"exited\"",
 		"printf '%s\\n' \"$launch_json\"",
+		// Launcher must block until the wrapper publishes its initial
+		// metadata so a caller-followed `okdev exec-jobs` always sees the
+		// new job.
+		"while [ ! -e \"$meta_path\" ]",
+		// Wrapper owns the completion write through an EXIT trap so a
+		// fast-exiting user command cannot have its 'exited' record
+		// clobbered by a later 'running' write from the launcher.
+		"trap 'rc=$?",
+		"' EXIT",
+		// The user command must run via `(exec CMD) &` so $! captures the
+		// pid of the user command itself (via execve), not the wrapper
+		// shell. This is the pid we report to the caller and the one that
+		// responds to `kill <pid>`.
+		"(exec python train.py --epochs 100) &",
+		"user_pid=$!",
+		"wait \"$user_pid\"",
+		// OKDEV_JOB_ID is exported so exec-jobs can reconcile liveness via
+		// /proc/<pid>/environ without relying on unique cmdlines.
+		"export OKDEV_JOB_ID='job-123'",
+		// Launcher reports the user command's pid, which it reads back from
+		// the wrapper-written metadata rather than using $! (which is the
+		// wrapper's pid).
+		"sed -n 's/.*\"pid\":\\([0-9][0-9]*\\).*/\\1/p' \"$meta_path\"",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("expected detach script to contain %q, got %q", want, script)
 		}
+	}
+	// The launcher must NOT write metadata itself; only the wrapper does.
+	// Any "$meta_json" reference would indicate a regression of the race.
+	if strings.Contains(script, "$meta_json") {
+		t.Fatalf("launcher should not write metadata directly; saw $meta_json reference in %q", script)
+	}
+	// The wrapper must not `set -e` around the user command, otherwise a
+	// non-zero exit would skip the completion write.
+	if strings.Contains(script, "set -eu\npython train.py") || strings.Contains(script, "set -e\npython train.py") {
+		t.Fatalf("wrapper should not run user command under set -e; got %q", script)
 	}
 }
 
@@ -135,7 +168,7 @@ func TestDetachCommandWithQuotes(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("expected shell command triplet, got %v", got)
 	}
-	if !strings.Contains(got[2], "nohup sh \"$wrapper_path\"") || !strings.Contains(got[2], "echo 'hello world'") {
+	if !strings.Contains(got[2], "nohup sh \"$wrapper_path\"") || !strings.Contains(got[2], "(exec echo 'hello world') &") {
 		t.Fatalf("expected quoted user command to survive detach wrapper, got %q", got[2])
 	}
 }

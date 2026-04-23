@@ -162,50 +162,9 @@ func validateMultiPodFlags(podNames []string, role string, labels []string, excl
 
 func runMultiPodExec(cmd *cobra.Command, cc *commandContext, commandArgs []string, podNames []string, role string, labels []string, exclude []string, container string, detach bool, timeout time.Duration, logDir string, noPrefix bool, fanout int, readyOnly bool) error {
 	ctx := cmd.Context()
-	labelSel := selectorForSessionRun(cc.sessionName)
-	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
+	pods, err := selectSessionPods(ctx, cc, podNames, role, labels, exclude, readyOnly)
 	if err != nil {
-		return fmt.Errorf("list session pods: %w", err)
-	}
-
-	// Apply user-specified filters before the readiness check so the
-	// running-vs-total comparison only considers targeted pods.
-	allPods := sessionPods
-	switch {
-	case len(podNames) > 0:
-		allPods = filterPodsByName(allPods, podNames)
-	case role != "":
-		allPods = filterPodsByRole(allPods, role)
-	case len(labels) > 0:
-		allPods = filterPodsByLabels(allPods, labels)
-	}
-	if len(exclude) > 0 {
-		allPods = excludePods(allPods, exclude)
-	}
-
-	pods := filterRunningPods(allPods)
-
-	if len(allPods) == 0 {
-		return fmt.Errorf("no pods match the specified filters in session %q", cc.sessionName)
-	}
-
-	if len(pods) == 0 {
-		return fmt.Errorf("no running pods in session %q (0/%d pods ready)", cc.sessionName, len(allPods))
-	}
-
-	if len(pods) < len(allPods) && !readyOnly {
-		notReady := make([]string, 0, len(allPods)-len(pods))
-		runningSet := make(map[string]bool, len(pods))
-		for _, p := range pods {
-			runningSet[p.Name] = true
-		}
-		for _, p := range allPods {
-			if !runningSet[p.Name] {
-				notReady = append(notReady, fmt.Sprintf("%s (%s)", p.Name, p.Phase))
-			}
-		}
-		return fmt.Errorf("%d/%d pods are not running: %s\nUse --ready-only to run on the %d ready pods",
-			len(notReady), len(allPods), strings.Join(notReady, ", "), len(pods))
+		return err
 	}
 
 	targetContainer := container
@@ -229,6 +188,56 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, commandArgs []strin
 	}
 
 	return runMultiExec(ctx, cc.kube, cc.namespace, pods, targetContainer, commandArgs, logDir, timeout, noPrefix, effectiveFanout, cmd.OutOrStdout(), cmd.ErrOrStderr())
+}
+
+// selectSessionPods lists the session's pods, applies user filters, and
+// enforces the running-vs-targeted readiness check shared by exec and
+// exec-jobs. The returned slice is the set of running pods that satisfy the
+// filters; readyOnly skips the failure when some targeted pods are not yet
+// running.
+func selectSessionPods(ctx context.Context, cc *commandContext, podNames []string, role string, labels []string, exclude []string, readyOnly bool) ([]kube.PodSummary, error) {
+	labelSel := selectorForSessionRun(cc.sessionName)
+	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
+	if err != nil {
+		return nil, fmt.Errorf("list session pods: %w", err)
+	}
+
+	// Apply user-specified filters before the readiness check so the
+	// running-vs-total comparison only considers targeted pods.
+	allPods := sessionPods
+	switch {
+	case len(podNames) > 0:
+		allPods = filterPodsByName(allPods, podNames)
+	case role != "":
+		allPods = filterPodsByRole(allPods, role)
+	case len(labels) > 0:
+		allPods = filterPodsByLabels(allPods, labels)
+	}
+	if len(exclude) > 0 {
+		allPods = excludePods(allPods, exclude)
+	}
+	if len(allPods) == 0 {
+		return nil, fmt.Errorf("no pods match the specified filters in session %q", cc.sessionName)
+	}
+	pods := filterRunningPods(allPods)
+	if len(pods) == 0 {
+		return nil, fmt.Errorf("no running pods in session %q (0/%d pods ready)", cc.sessionName, len(allPods))
+	}
+	if len(pods) < len(allPods) && !readyOnly {
+		notReady := make([]string, 0, len(allPods)-len(pods))
+		runningSet := make(map[string]bool, len(pods))
+		for _, p := range pods {
+			runningSet[p.Name] = true
+		}
+		for _, p := range allPods {
+			if !runningSet[p.Name] {
+				notReady = append(notReady, fmt.Sprintf("%s (%s)", p.Name, p.Phase))
+			}
+		}
+		return nil, fmt.Errorf("%d/%d pods are not running: %s\nUse --ready-only to run on the %d ready pods",
+			len(notReady), len(allPods), strings.Join(notReady, ", "), len(pods))
+	}
+	return pods, nil
 }
 
 func commandArgsShellString(args []string) string {
@@ -461,7 +470,7 @@ func detachCommand(spec detachJobSpec) []string {
 		LogPath:  spec.LogPath,
 		MetaPath: spec.MetaPath,
 	})
-	metadataTemplate := mustDetachJSONTemplate(detachMetadata{
+	runningTemplate := mustDetachJSONTemplate(detachMetadata{
 		JobID:      spec.JobID,
 		Pod:        spec.Pod,
 		Container:  spec.Container,
@@ -487,53 +496,94 @@ func detachCommand(spec detachJobSpec) []string {
 		State:      "exited",
 		ExitCode:   &exitCodeZero,
 	})
+	wrapper := detachWrapperScript(spec.JobID, spec.Command, spec.MetaPath, runningTemplate, completionTemplate)
 	script := fmt.Sprintf(
 		"set -eu\n"+
 			"log_path=%s\n"+
 			"meta_path=%s\n"+
 			"wrapper_path=%s\n"+
-			"meta_tmp=\"${meta_path}.tmp\"\n"+
 			"launch_json=%s\n"+
-			"meta_json=%s\n"+
 			"mkdir -p %s\n"+
 			"cat >\"$wrapper_path\" <<'OKDEV_DETACH_WRAPPER'\n%s\nOKDEV_DETACH_WRAPPER\n"+
 			"chmod 700 \"$wrapper_path\"\n"+
 			"nohup sh \"$wrapper_path\" >\"$log_path\" 2>&1 &\n"+
-			"pid=$!\n"+
-			"if [ -z \"$pid\" ] || [ \"$pid\" -le 0 ]; then\n"+
-			"  echo 'failed to capture detached pid' >&2\n"+
+			"wrapper_pid=$!\n"+
+			"if [ -z \"$wrapper_pid\" ] || [ \"$wrapper_pid\" -le 0 ]; then\n"+
+			"  echo 'failed to capture wrapper pid' >&2\n"+
 			"  exit 1\n"+
 			"fi\n"+
-			"printf '%%s\\n' \"$meta_json\" | sed \"s/%s/$pid/g\" >\"$meta_tmp\"\n"+
-			"mv \"$meta_tmp\" \"$meta_path\"\n"+
+			// Wait for the wrapper to publish its initial metadata before we
+			// hand the user a launch record. This avoids a race where the
+			// caller sees a pid but a follow-up `okdev exec-jobs` finds no
+			// metadata yet, and ensures the wrapper (not the launcher) owns
+			// every state transition for $meta_path so a fast-exiting command
+			// cannot have its 'exited' record clobbered by a later 'running'.
+			"i=0\n"+
+			"while [ ! -e \"$meta_path\" ] && [ \"$i\" -lt 50 ]; do\n"+
+			"  sleep 0.1 2>/dev/null || sleep 1\n"+
+			"  i=$((i+1))\n"+
+			"done\n"+
+			"if [ ! -e \"$meta_path\" ]; then\n"+
+			"  echo 'detached job did not publish metadata in time' >&2\n"+
+			"  exit 1\n"+
+			"fi\n"+
+			// Report the user command's pid (not the wrapper shell's) so
+			// `kill <pid>` targets the right process. The wrapper writes the
+			// real pid into the metadata before we unblock above.
+			"pid=$(sed -n 's/.*\"pid\":\\([0-9][0-9]*\\).*/\\1/p' \"$meta_path\" | head -n1)\n"+
+			"if [ -z \"$pid\" ]; then\n"+
+			"  echo 'detached job metadata missing pid' >&2\n"+
+			"  exit 1\n"+
+			"fi\n"+
 			"printf '%%s\\n' \"$launch_json\" | sed \"s/%s/$pid/g\"\n",
 		shellutil.Quote(spec.LogPath),
 		shellutil.Quote(spec.MetaPath),
 		shellutil.Quote(spec.ScriptPath),
 		shellutil.Quote(launchTemplate),
-		shellutil.Quote(metadataTemplate),
 		shellutil.Quote(detachMetadataDir),
-		detachCompletionScript(spec.Command, spec.MetaPath, completionTemplate),
-		detachPIDPlaceholder,
+		wrapper,
 		detachPIDPlaceholder,
 	)
 	return []string{"sh", "-c", script}
 }
 
-func detachCompletionScript(command, metaPath, completionTemplate string) string {
+// detachWrapperScript builds the body of the wrapper script that runs in the
+// background on the target container. The wrapper is the sole writer of the
+// per-job metadata file, which eliminates the race between the launcher's
+// "running" write and the wrapper's "exited" write.
+//
+// The user command is launched via `(exec CMD) &` so the backgrounded
+// subshell immediately execs into CMD, making $! the pid of CMD itself (not
+// a wrapper shell). This is what we record as the job's pid so a caller can
+// `kill <pid>` or inspect /proc/<pid> and get the process they expect. We
+// export OKDEV_JOB_ID first so exec-jobs can reconcile liveness via
+// /proc/<pid>/environ, which is robust against PID reuse.
+//
+// We deliberately do NOT `set -e` around the user command so that a
+// non-zero exit still falls through to the EXIT trap that records the real
+// exit code.
+func detachWrapperScript(jobID, command, metaPath, runningTemplate, completionTemplate string) string {
 	return fmt.Sprintf(
-		"set -eu\n"+
-			"completion_json=%s\n"+
-			"meta_path=%s\n"+
-			"%s\n"+
-			"rc=$?\n"+
+		"meta_path=%s\n"+
 			"meta_tmp=\"${meta_path}.tmp\"\n"+
-			"printf '%%s\\n' \"$completion_json\" | sed \"s/%s/$$/g; s/%s/$rc/g\" >\"$meta_tmp\"\n"+
-			"mv \"$meta_tmp\" \"$meta_path\"\n"+
-			"exit $rc\n",
-		shellutil.Quote(completionTemplate),
+			"running_json=%s\n"+
+			"exit_json=%s\n"+
+			"export OKDEV_JOB_ID=%s\n"+
+			"(exec %s) &\n"+
+			"user_pid=$!\n"+
+			"if [ -z \"$user_pid\" ] || [ \"$user_pid\" -le 0 ]; then\n"+
+			"  exit 1\n"+
+			"fi\n"+
+			"printf '%%s\\n' \"$running_json\" | sed \"s/%s/$user_pid/g\" >\"$meta_tmp\" || exit 1\n"+
+			"mv \"$meta_tmp\" \"$meta_path\" || exit 1\n"+
+			"trap 'rc=$?; printf \"%%s\\n\" \"$exit_json\" | sed \"s/%s/$user_pid/g; s/%s/$rc/g\" >\"$meta_tmp\" 2>/dev/null && mv \"$meta_tmp\" \"$meta_path\" 2>/dev/null; exit $rc' EXIT\n"+
+			"wait \"$user_pid\"\n",
 		shellutil.Quote(metaPath),
+		shellutil.Quote(runningTemplate),
+		shellutil.Quote(completionTemplate),
+		shellutil.Quote(jobID),
 		command,
+		detachPIDPlaceholder,
 		detachPIDPlaceholder,
 		detachExitPlaceholder,
 	)
@@ -586,16 +636,11 @@ func newDetachJobID() string {
 
 func parseDetachLaunchOutput(raw string) (detachLaunchInfo, error) {
 	lines := strings.Split(raw, "\n")
-	foundJSON := false
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := strings.TrimSpace(lines[i])
-		if line == "" {
+		if line == "" || !strings.HasPrefix(line, "{") {
 			continue
 		}
-		if !strings.HasPrefix(line, "{") {
-			continue
-		}
-		foundJSON = true
 		var info detachLaunchInfo
 		if err := json.Unmarshal([]byte(line), &info); err != nil {
 			return detachLaunchInfo{}, fmt.Errorf("parse detach launch metadata: %w", err)
@@ -604,9 +649,6 @@ func parseDetachLaunchOutput(raw string) (detachLaunchInfo, error) {
 			return detachLaunchInfo{}, errors.New("missing detach launch metadata")
 		}
 		return info, nil
-	}
-	if foundJSON {
-		return detachLaunchInfo{}, errors.New("missing detach launch metadata")
 	}
 	return detachLaunchInfo{}, errors.New("missing detach launch metadata")
 }
