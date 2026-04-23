@@ -1265,6 +1265,82 @@ func syncthingFolderHasLocalFiles(ctx context.Context, base, key, folderID strin
 	return status.GlobalFiles >= expectedFiles && status.LocalFiles >= expectedFiles, status, nil
 }
 
+// remoteIndexExpectation describes the criteria for considering the remote
+// folder's index up-to-date with the local folder's current state.
+type remoteIndexExpectation struct {
+	// expectedFiles is the local folder's current globalFiles count. We
+	// gate on the live count (not a baseline snapshot) so both shrinks
+	// (.stignore additions) and growth (.stignore loosened, new files
+	// arriving mid-sync) are tracked.
+	expectedFiles int64
+	// requireExactMatch demands the remote report exactly expectedFiles
+	// when the local count has shrunk from a positive baseline. Without
+	// this, a stale remote index that hasn't yet applied the deletions
+	// would trivially satisfy a `remote >= shrunk` gate (e.g. expected=5
+	// after .stignore but remote still reports the pre-shrink 12).
+	requireExactMatch bool
+}
+
+// remoteIndexExpectationForLocal builds the expectation for one readiness
+// check using the baseline file count captured at the start of sync and the
+// current count observed this tick.
+func remoteIndexExpectationForLocal(initialLocalGlobalFiles, currentLocalGlobalFiles int64) remoteIndexExpectation {
+	return remoteIndexExpectation{
+		expectedFiles:     currentLocalGlobalFiles,
+		requireExactMatch: currentLocalGlobalFiles < initialLocalGlobalFiles && initialLocalGlobalFiles > 0,
+	}
+}
+
+// needsRemotePoll reports whether the caller must query the remote folder
+// status to evaluate this expectation. When the expectation is "0 files and
+// no shrink to verify", the remote check is trivially satisfied.
+func (e remoteIndexExpectation) needsRemotePoll() bool {
+	return e.expectedFiles > 0 || e.requireExactMatch
+}
+
+// satisfiedBy reports whether the given remote folder status meets the
+// expectation.
+func (e remoteIndexExpectation) satisfiedBy(remote syncthingFolderStatusInfo) bool {
+	if e.requireExactMatch {
+		return remote.GlobalFiles == e.expectedFiles && remote.LocalFiles == e.expectedFiles
+	}
+	if e.expectedFiles == 0 {
+		return true
+	}
+	return remote.GlobalFiles >= e.expectedFiles && remote.LocalFiles >= e.expectedFiles
+}
+
+// evaluateRemoteIndexReceived polls the local folder status to compute an
+// up-to-date expectation, then polls the remote folder to determine whether
+// it has materialized the local's current index.
+//
+// If the local status poll fails we conservatively report
+// indexReceived=false rather than falling back to a stale baseline — a
+// transient failure is cheap (one polling tick) and the alternative risks
+// declaring sync complete based on a count we no longer trust. A remote
+// poll failure likewise returns false so the caller keeps polling.
+func evaluateRemoteIndexReceived(
+	ctx context.Context,
+	localBase, localKey, remoteBase, remoteKey, folderID string,
+	initialLocalGlobalFiles int64,
+) (indexReceived bool, expectation remoteIndexExpectation, remote syncthingFolderStatusInfo) {
+	currentLocalStatus, err := syncthingFolderStatusInfoForFolder(ctx, localBase, localKey, folderID)
+	if err != nil {
+		slog.Debug("local folder status poll failed", "folder", folderID, "error", err)
+		return false, remoteIndexExpectation{expectedFiles: initialLocalGlobalFiles}, syncthingFolderStatusInfo{}
+	}
+	expectation = remoteIndexExpectationForLocal(initialLocalGlobalFiles, currentLocalStatus.GlobalFiles)
+	if !expectation.needsRemotePoll() {
+		return true, expectation, syncthingFolderStatusInfo{}
+	}
+	remoteStatus, err := syncthingFolderStatusInfoForFolder(ctx, remoteBase, remoteKey, folderID)
+	if err != nil {
+		slog.Debug("remote folder status poll failed", "folder", folderID, "error", err)
+		return false, expectation, syncthingFolderStatusInfo{}
+	}
+	return expectation.satisfiedBy(remoteStatus), expectation, remoteStatus
+}
+
 // syncthingFolderScanned checks whether the syncthing folder has completed its
 // initial scan by querying /rest/db/status. Returns true when the folder state
 // is "idle" or "syncing" (i.e. no longer "scanning" or empty). This prevents
@@ -1549,13 +1625,13 @@ func waitForInitialSync(ctx context.Context, opts *Options, k interface {
 					// index before declaring complete. Without this,
 					// completion can be 100% just because the remote
 					// hasn't learned about any files yet.
-					indexReceived := true
-					if localGlobalFiles > 0 {
-						remoteReady, remoteStatus, statusErr := syncthingFolderHasLocalFiles(ctx, remoteBase, remoteKey, folderID, localGlobalFiles)
-						if statusErr != nil || !remoteReady {
-							slog.Debug("waitForInitialSync: remote files not materialized yet", "localGlobalFiles", localGlobalFiles, "remoteGlobal", remoteStatus.GlobalFiles, "remoteLocal", remoteStatus.LocalFiles)
-							indexReceived = false
-						}
+					indexReceived, expectation, remoteStatus := evaluateRemoteIndexReceived(ctx, localBase, localKey, remoteBase, remoteKey, folderID, localGlobalFiles)
+					if !indexReceived {
+						slog.Debug("waitForInitialSync: remote files not materialized yet",
+							"expectedFiles", expectation.expectedFiles,
+							"requireExactMatch", expectation.requireExactMatch,
+							"remoteGlobal", remoteStatus.GlobalFiles,
+							"remoteLocal", remoteStatus.LocalFiles)
 					}
 					localConnected, localConnErr := syncthingPeerConnected(ctx, localBase, localKey, remoteID)
 					if localConnErr != nil {
@@ -1703,16 +1779,13 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 				// Verify the remote has received the local's index. If
 				// local has files but remote's globalFiles is 0, the index
 				// exchange hasn't completed yet — needBytes=0 is misleading.
-				indexReceived := true
-				if localGlobalFiles > 0 {
-					remoteReady, remoteStatus, statusErr := syncthingFolderHasLocalFiles(ctx, remoteBase, remoteKey, folderID, localGlobalFiles)
-					if statusErr != nil {
-						slog.Debug("syncthing remote folder status poll failed", "error", statusErr)
-						indexReceived = false
-					} else if !remoteReady {
-						slog.Debug("syncthing remote files not materialized yet", "localGlobalFiles", localGlobalFiles, "remoteGlobal", remoteStatus.GlobalFiles, "remoteLocal", remoteStatus.LocalFiles)
-						indexReceived = false
-					}
+				indexReceived, expectation, remoteStatus := evaluateRemoteIndexReceived(ctx, localBase, localKey, remoteBase, remoteKey, folderID, localGlobalFiles)
+				if !indexReceived {
+					slog.Debug("syncthing remote files not materialized yet",
+						"expectedFiles", expectation.expectedFiles,
+						"requireExactMatch", expectation.requireExactMatch,
+						"remoteGlobal", remoteStatus.GlobalFiles,
+						"remoteLocal", remoteStatus.LocalFiles)
 				}
 				if indexReceived {
 					localConnected, localErr := syncthingPeerConnected(ctx, localBase, localKey, remoteID)
