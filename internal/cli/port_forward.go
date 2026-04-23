@@ -15,7 +15,6 @@ import (
 func newPortForwardCmd(opts *Options) *cobra.Command {
 	var podName string
 	var role string
-	var container string
 	var readyOnly bool
 
 	cmd := &cobra.Command{
@@ -44,41 +43,40 @@ func newPortForwardCmd(opts *Options) *cobra.Command {
 				return err
 			}
 
-			var target workload.TargetRef
-			if strings.TrimSpace(podName) == "" && strings.TrimSpace(role) == "" {
-				target, err = resolveTargetRef(cmd.Context(), cc.opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
-				if err != nil {
-					return err
-				}
-			} else {
-				var podNames []string
-				if strings.TrimSpace(podName) != "" {
-					podNames = []string{podName}
-				}
-				pods, err := selectSessionPods(cmd.Context(), cc, podNames, role, nil, nil, readyOnly)
-				if err != nil {
-					return err
-				}
-				pod, err := selectSinglePortForwardPod(pods, "", "")
-				if err != nil {
-					return err
-				}
-				target = workload.TargetRef{
-					PodName:   pod.Name,
-					Container: resolveTargetContainer(cc.cfg),
-				}
-			}
-			if strings.TrimSpace(container) != "" {
-				target.Container = container
+			target, err := resolvePortForwardTarget(cmd.Context(), cc, podName, role, readyOnly)
+			if err != nil {
+				return err
 			}
 			return runPortForward(cmd.Context(), cc.kube, cc.namespace, target, mappings, cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().StringVar(&podName, "pod", "", "Target a specific pod by name")
 	cmd.Flags().StringVar(&role, "role", "", "Target a pod by workload role")
-	cmd.Flags().StringVar(&container, "container", "", "Override target container")
 	cmd.Flags().BoolVar(&readyOnly, "ready-only", false, "Use only already-running pods")
 	return cmd
+}
+
+func resolvePortForwardTarget(ctx context.Context, cc *commandContext, podName, role string, readyOnly bool) (workload.TargetRef, error) {
+	var podNames []string
+	switch {
+	case strings.TrimSpace(podName) != "":
+		podNames = []string{podName}
+	case strings.TrimSpace(role) == "":
+		pinned, err := resolveTargetRef(ctx, cc.opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
+		if err != nil {
+			return workload.TargetRef{}, err
+		}
+		podNames = []string{pinned.PodName}
+	}
+	pods, err := selectSessionPods(ctx, cc, podNames, role, nil, nil, readyOnly)
+	if err != nil {
+		return workload.TargetRef{}, err
+	}
+	pod, err := selectSinglePortForwardPod(pods)
+	if err != nil {
+		return workload.TargetRef{}, err
+	}
+	return workload.TargetRef{PodName: pod.Name}, nil
 }
 
 func parsePortForwardMappings(args []string) ([]string, error) {
@@ -104,22 +102,19 @@ func parsePortForwardMappings(args []string) ([]string, error) {
 	return out, nil
 }
 
-func selectSinglePortForwardPod(pods []kube.PodSummary, podName, role string) (kube.PodSummary, error) {
-	candidates := pods
-	switch {
-	case strings.TrimSpace(podName) != "":
-		candidates = filterPodsByName(candidates, []string{podName})
-	case strings.TrimSpace(role) != "":
-		candidates = filterPodsByRole(candidates, role)
+func selectSinglePortForwardPod(pods []kube.PodSummary) (kube.PodSummary, error) {
+	if len(pods) != 1 {
+		return kube.PodSummary{}, fmt.Errorf("port-forward requires exactly one pod, got %d", len(pods))
 	}
-	if len(candidates) != 1 {
-		return kube.PodSummary{}, fmt.Errorf("port-forward requires exactly one pod, got %d", len(candidates))
-	}
-	return candidates[0], nil
+	return pods[0], nil
 }
 
+// splitPortForwardArgs separates an optional leading session name from the
+// LOCAL:REMOTE mapping args. The first arg is only treated as a session name
+// when it lacks a colon AND at least one more arg follows; otherwise it is
+// left in the mapping list so the parser surfaces a clear error.
 func splitPortForwardArgs(args []string) ([]string, []string) {
-	if len(args) > 0 && !strings.Contains(args[0], ":") {
+	if len(args) >= 2 && !strings.Contains(args[0], ":") {
 		return args[:1], args[1:]
 	}
 	return nil, args
@@ -130,6 +125,6 @@ type portForwardRunner interface {
 }
 
 func runPortForward(ctx context.Context, client portForwardRunner, namespace string, target workload.TargetRef, forwards []string, out io.Writer) error {
-	fmt.Fprintf(out, "Forwarding session target pod=%s container=%s %s\n", target.PodName, target.Container, strings.Join(forwards, ", "))
+	fmt.Fprintf(out, "Forwarding to pod=%s %s\n", target.PodName, strings.Join(forwards, ", "))
 	return client.PortForward(ctx, namespace, target.PodName, forwards, out, io.Discard)
 }
