@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -82,28 +83,51 @@ func TestExcludePods(t *testing.T) {
 }
 
 func TestDetachCommand(t *testing.T) {
-	got := detachCommand("python train.py --epochs 100")
-	expected := []string{"sh", "-c", "nohup sh -c 'python train.py --epochs 100' >/dev/null 2>&1 &"}
-	if len(got) != len(expected) {
-		t.Fatalf("expected %d args, got %d: %v", len(expected), len(got), got)
+	spec := detachJobSpec{
+		JobID:     "job-123",
+		Pod:       "okdev-sess-worker-0",
+		Container: "dev",
+		Command:   "python train.py --epochs 100",
+		StartedAt: "2026-04-23T03:00:00Z",
+		LogPath:   "/tmp/okdev-exec/job-123.log",
+		MetaPath:  "/tmp/okdev-exec/job-123.json",
 	}
-	for i := range got {
-		if got[i] != expected[i] {
-			t.Fatalf("arg %d: expected %q, got %q", i, expected[i], got[i])
+	got := detachCommand(spec)
+	if len(got) != 3 {
+		t.Fatalf("expected shell command triplet, got %v", got)
+	}
+	if got[0] != "sh" || got[1] != "-c" {
+		t.Fatalf("unexpected launcher prefix: %v", got)
+	}
+	script := got[2]
+	for _, want := range []string{
+		"mkdir -p '/tmp/okdev-exec'",
+		"nohup sh -c 'python train.py --epochs 100' >\"$log_path\" 2>&1 &",
+		"meta_path='/tmp/okdev-exec/job-123.json'",
+		"printf '%s\\n' \"$launch_json\"",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("expected detach script to contain %q, got %q", want, script)
 		}
 	}
 }
 
 func TestDetachCommandWithQuotes(t *testing.T) {
-	got := detachCommand("echo 'hello world'")
-	expected := []string{"sh", "-c", "nohup sh -c 'echo '\\''hello world'\\''' >/dev/null 2>&1 &"}
-	if len(got) != len(expected) {
-		t.Fatalf("expected %d args, got %d: %v", len(expected), len(got), got)
+	spec := detachJobSpec{
+		JobID:     "job-quoted",
+		Pod:       "worker-0",
+		Container: "dev",
+		Command:   "echo 'hello world'",
+		StartedAt: "2026-04-23T03:00:00Z",
+		LogPath:   "/tmp/okdev-exec/job-quoted.log",
+		MetaPath:  "/tmp/okdev-exec/job-quoted.json",
 	}
-	for i := range got {
-		if got[i] != expected[i] {
-			t.Fatalf("arg %d: expected %q, got %q", i, expected[i], got[i])
-		}
+	got := detachCommand(spec)
+	if len(got) != 3 {
+		t.Fatalf("expected shell command triplet, got %v", got)
+	}
+	if !strings.Contains(got[2], "nohup sh -c 'echo '\\''hello world'\\''' >\"$log_path\" 2>&1 &") {
+		t.Fatalf("expected quoted user command to survive detach wrapper, got %q", got[2])
 	}
 }
 
@@ -160,9 +184,24 @@ func (s *slowExecClient) ExecInteractiveInContainer(ctx context.Context, namespa
 }
 
 func TestRunDetachExec(t *testing.T) {
+	launch, _ := json.Marshal(detachLaunchInfo{
+		JobID:    "job-worker-0",
+		PID:      48217,
+		LogPath:  "/tmp/okdev-exec/job-worker-0.log",
+		MetaPath: "/tmp/okdev-exec/job-worker-0.json",
+	})
+	launch2, _ := json.Marshal(detachLaunchInfo{
+		JobID:    "job-worker-1",
+		PID:      49102,
+		LogPath:  "/tmp/okdev-exec/job-worker-1.log",
+		MetaPath: "/tmp/okdev-exec/job-worker-1.json",
+	})
 	client := &fakePdshExecClient{
-		outputs: map[string]string{},
-		errs:    map[string]error{},
+		outputs: map[string]string{
+			"okdev-sess-worker-0": string(launch) + "\n",
+			"okdev-sess-worker-1": string(launch2) + "\n",
+		},
+		errs: map[string]error{},
 	}
 	pods := []kube.PodSummary{
 		{Name: "okdev-sess-worker-0", Phase: "Running"},
@@ -173,14 +212,28 @@ func TestRunDetachExec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "worker-0] detached") || !strings.Contains(stdout.String(), "worker-1] detached") {
-		t.Fatalf("expected detach confirmation, got %q", stdout.String())
+	got := stdout.String()
+	for _, want := range []string{
+		"worker-0] detached job_id=job-worker-0 pid=48217 log=/tmp/okdev-exec/job-worker-0.log meta=/tmp/okdev-exec/job-worker-0.json",
+		"worker-1] detached job_id=job-worker-1 pid=49102 log=/tmp/okdev-exec/job-worker-1.log meta=/tmp/okdev-exec/job-worker-1.json",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected detach metadata output %q, got %q", want, got)
+		}
 	}
 }
 
 func TestRunDetachExecWithError(t *testing.T) {
+	launch, _ := json.Marshal(detachLaunchInfo{
+		JobID:    "job-worker-0",
+		PID:      48217,
+		LogPath:  "/tmp/okdev-exec/job-worker-0.log",
+		MetaPath: "/tmp/okdev-exec/job-worker-0.json",
+	})
 	client := &fakePdshExecClient{
-		outputs: map[string]string{},
+		outputs: map[string]string{
+			"okdev-sess-worker-0": string(launch) + "\n",
+		},
 		errs: map[string]error{
 			"okdev-sess-worker-1": errors.New("pod not ready"),
 		},
@@ -194,11 +247,31 @@ func TestRunDetachExecWithError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for partial failure")
 	}
-	if !strings.Contains(stdout.String(), "worker-0] detached") {
+	if !strings.Contains(stdout.String(), "worker-0] detached job_id=job-worker-0 pid=48217") {
 		t.Fatalf("expected detach for worker-0, got %q", stdout.String())
 	}
 	if !strings.Contains(stdout.String(), "worker-1] error:") {
 		t.Fatalf("expected error for worker-1, got %q", stdout.String())
+	}
+}
+
+func TestRunDetachExecRequiresLaunchMetadata(t *testing.T) {
+	client := &fakePdshExecClient{
+		outputs: map[string]string{
+			"okdev-sess-worker-0": "detached\n",
+		},
+		errs: map[string]error{},
+	}
+	pods := []kube.PodSummary{
+		{Name: "okdev-sess-worker-0", Phase: "Running"},
+	}
+	var stdout bytes.Buffer
+	err := runDetachExec(context.Background(), client, "default", pods, "dev", "python train.py", pdshDefaultFanout, &stdout)
+	if err == nil {
+		t.Fatal("expected metadata parse error")
+	}
+	if !strings.Contains(stdout.String(), "worker-0] error: missing detach launch metadata") {
+		t.Fatalf("expected metadata parse error to be surfaced, got %q", stdout.String())
 	}
 }
 

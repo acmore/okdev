@@ -1,7 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +22,9 @@ import (
 	"github.com/spf13/cobra"
 	k8sexec "k8s.io/client-go/util/exec"
 )
+
+const detachMetadataDir = "/tmp/okdev-exec"
+const detachPIDPlaceholder = "__OKDEV_DETACH_PID__"
 
 func newExecCmd(opts *Options) *cobra.Command {
 	var shell string
@@ -408,9 +415,146 @@ func parseExecExitCode(msg string) (int, bool) {
 	return 0, false
 }
 
-func detachCommand(cmd string) []string {
-	quoted := shellutil.Quote(cmd)
-	return []string{"sh", "-c", "nohup sh -c " + quoted + " >/dev/null 2>&1 &"}
+type detachJobSpec struct {
+	JobID     string
+	Pod       string
+	Container string
+	Command   string
+	StartedAt string
+	LogPath   string
+	MetaPath  string
+}
+
+type detachMetadata struct {
+	JobID      string `json:"jobId"`
+	Pod        string `json:"pod"`
+	Container  string `json:"container"`
+	PID        int    `json:"pid"`
+	Command    string `json:"command"`
+	StartedAt  string `json:"startedAt"`
+	StdoutPath string `json:"stdoutPath"`
+	StderrPath string `json:"stderrPath"`
+	MetaPath   string `json:"metaPath"`
+}
+
+type detachLaunchInfo struct {
+	JobID    string `json:"jobId"`
+	PID      int    `json:"pid"`
+	LogPath  string `json:"logPath"`
+	MetaPath string `json:"metaPath"`
+}
+
+type podDetachResult struct {
+	pod  string
+	info detachLaunchInfo
+	err  error
+}
+
+func detachCommand(spec detachJobSpec) []string {
+	launchTemplate := mustDetachJSONTemplate(detachLaunchInfo{
+		JobID:    spec.JobID,
+		PID:      0,
+		LogPath:  spec.LogPath,
+		MetaPath: spec.MetaPath,
+	})
+	metadataTemplate := mustDetachJSONTemplate(detachMetadata{
+		JobID:      spec.JobID,
+		Pod:        spec.Pod,
+		Container:  spec.Container,
+		PID:        0,
+		Command:    spec.Command,
+		StartedAt:  spec.StartedAt,
+		StdoutPath: spec.LogPath,
+		StderrPath: spec.LogPath,
+		MetaPath:   spec.MetaPath,
+	})
+	script := fmt.Sprintf(
+		"set -eu\n"+
+			"log_path=%s\n"+
+			"meta_path=%s\n"+
+			"meta_tmp=\"${meta_path}.tmp\"\n"+
+			"launch_json=%s\n"+
+			"meta_json=%s\n"+
+			"mkdir -p %s\n"+
+			"nohup sh -c %s >\"$log_path\" 2>&1 &\n"+
+			"pid=$!\n"+
+			"if [ -z \"$pid\" ] || [ \"$pid\" -le 0 ]; then\n"+
+			"  echo 'failed to capture detached pid' >&2\n"+
+			"  exit 1\n"+
+			"fi\n"+
+			"printf '%%s\\n' \"$meta_json\" | sed \"s/%s/$pid/g\" >\"$meta_tmp\"\n"+
+			"mv \"$meta_tmp\" \"$meta_path\"\n"+
+			"printf '%%s\\n' \"$launch_json\" | sed \"s/%s/$pid/g\"\n",
+		shellutil.Quote(spec.LogPath),
+		shellutil.Quote(spec.MetaPath),
+		shellutil.Quote(launchTemplate),
+		shellutil.Quote(metadataTemplate),
+		shellutil.Quote(detachMetadataDir),
+		shellutil.Quote(spec.Command),
+		detachPIDPlaceholder,
+		detachPIDPlaceholder,
+	)
+	return []string{"sh", "-c", script}
+}
+
+func mustDetachJSONTemplate(v any) string {
+	data, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	out := strings.Replace(string(data), `"pid":0`, `"pid":`+detachPIDPlaceholder, 1)
+	return out
+}
+
+func newDetachJobSpec(pod, container, cmd string) detachJobSpec {
+	jobID := newDetachJobID()
+	startedAt := time.Now().UTC().Format(time.RFC3339)
+	logPath := filepath.Join(detachMetadataDir, jobID+".log")
+	metaPath := filepath.Join(detachMetadataDir, jobID+".json")
+	return detachJobSpec{
+		JobID:     jobID,
+		Pod:       pod,
+		Container: container,
+		Command:   cmd,
+		StartedAt: startedAt,
+		LogPath:   logPath,
+		MetaPath:  metaPath,
+	}
+}
+
+func newDetachJobID() string {
+	var suffix [4]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return time.Now().UTC().Format("20060102T150405Z")
+	}
+	return time.Now().UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(suffix[:])
+}
+
+func parseDetachLaunchOutput(raw string) (detachLaunchInfo, error) {
+	lines := strings.Split(raw, "\n")
+	foundJSON := false
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "{") {
+			continue
+		}
+		foundJSON = true
+		var info detachLaunchInfo
+		if err := json.Unmarshal([]byte(line), &info); err != nil {
+			return detachLaunchInfo{}, fmt.Errorf("parse detach launch metadata: %w", err)
+		}
+		if info.JobID == "" || info.PID <= 0 || info.LogPath == "" || info.MetaPath == "" {
+			return detachLaunchInfo{}, errors.New("missing detach launch metadata")
+		}
+		return info, nil
+	}
+	if foundJSON {
+		return detachLaunchInfo{}, errors.New("missing detach launch metadata")
+	}
+	return detachLaunchInfo{}, errors.New("missing detach launch metadata")
 }
 
 func runDetachExec(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, cmdStr string, fanout int, out io.Writer) error {
@@ -421,9 +565,8 @@ func runDetachExec(ctx context.Context, client connect.ExecClient, namespace str
 	shortNames := shortPodNames(podNames)
 	colorEnabled := isInteractiveWriter(out)
 	displayPrefixes := formatPodPrefixes(shortNames, colorEnabled)
-	command := detachCommand(cmdStr)
 
-	results := make(chan podExecResult, len(pods))
+	results := make(chan podDetachResult, len(pods))
 	sem := make(chan struct{}, fanout)
 
 	var wg sync.WaitGroup
@@ -433,8 +576,23 @@ func runDetachExec(ctx context.Context, client connect.ExecClient, namespace str
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			err := connect.RunOnContainer(ctx, client, namespace, pod.Name, container, command, false, nil, io.Discard, io.Discard)
-			results <- podExecResult{pod: pod.Name, err: err}
+			spec := newDetachJobSpec(pod.Name, container, cmdStr)
+			command := detachCommand(spec)
+			var remoteStdout, remoteStderr bytes.Buffer
+			err := connect.RunOnContainer(ctx, client, namespace, pod.Name, container, command, false, nil, &remoteStdout, &remoteStderr)
+			if err != nil {
+				results <- podDetachResult{pod: pod.Name, err: err}
+				return
+			}
+			info, parseErr := parseDetachLaunchOutput(remoteStdout.String())
+			if parseErr != nil {
+				if detail := strings.TrimSpace(remoteStderr.String()); detail != "" {
+					parseErr = fmt.Errorf("%w: %s", parseErr, detail)
+				}
+				results <- podDetachResult{pod: pod.Name, err: parseErr}
+				return
+			}
+			results <- podDetachResult{pod: pod.Name, info: info}
 		}(pod, shortNames[i])
 	}
 
@@ -457,7 +615,7 @@ func runDetachExec(ctx context.Context, client connect.ExecClient, namespace str
 			fmt.Fprintf(out, "%s error: %v\n", prefix, r.err)
 			failCount++
 		} else {
-			fmt.Fprintf(out, "%s detached\n", prefix)
+			fmt.Fprintf(out, "%s detached job_id=%s pid=%d log=%s meta=%s\n", prefix, r.info.JobID, r.info.PID, r.info.LogPath, r.info.MetaPath)
 		}
 	}
 	if failCount > 0 {

@@ -74,7 +74,9 @@
 - `--label`: target pods by arbitrary label `key=value` (repeatable, AND logic).
 - `--exclude`: exclude specific pods from the selected set (repeatable or comma-separated). Cannot be used with `--pod`.
 - `--container`: override which container to exec into (default: session target container). Works in both modes.
-- `--detach`: wrap the command in `nohup` and return immediately. Prints per-pod confirmation.
+- `--detach`: launches the command in the background and returns immediately. Prints per-pod launch details including job id, pid, log path, and metadata path.
+- Detached jobs store combined stdout/stderr and JSON metadata under `/tmp/okdev-exec/` in the target container.
+- When using `--detach`, pass the command you want okdev to launch directly. Do not add an extra `nohup ... &` inside the command string.
 - `--timeout`: per-pod command timeout (e.g., `30s`, `5m`). Pods exceeding the timeout are cancelled and reported as failed.
 - `--log-dir`: write per-pod output to `<dir>/<short-name>.log`. Streaming to stdout still happens.
 - `--no-prefix`: suppress the pod name prefix in output. Useful when targeting a single pod or piping.
