@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -82,28 +83,93 @@ func TestExcludePods(t *testing.T) {
 }
 
 func TestDetachCommand(t *testing.T) {
-	got := detachCommand("python train.py --epochs 100")
-	expected := []string{"sh", "-c", "nohup sh -c 'python train.py --epochs 100' >/dev/null 2>&1 &"}
-	if len(got) != len(expected) {
-		t.Fatalf("expected %d args, got %d: %v", len(expected), len(got), got)
+	spec := detachJobSpec{
+		JobID:      "job-123",
+		Pod:        "okdev-sess-worker-0",
+		Container:  "dev",
+		Command:    "python train.py --epochs 100",
+		StartedAt:  "2026-04-23T03:00:00Z",
+		LogPath:    "/tmp/okdev-exec/job-123.log",
+		MetaPath:   "/tmp/okdev-exec/job-123.json",
+		ScriptPath: "/tmp/okdev-exec/job-123.sh",
 	}
-	for i := range got {
-		if got[i] != expected[i] {
-			t.Fatalf("arg %d: expected %q, got %q", i, expected[i], got[i])
+	got := detachCommand(spec)
+	if len(got) != 3 {
+		t.Fatalf("expected shell command triplet, got %v", got)
+	}
+	if got[0] != "sh" || got[1] != "-c" {
+		t.Fatalf("unexpected launcher prefix: %v", got)
+	}
+	script := got[2]
+	for _, want := range []string{
+		"mkdir -p '/tmp/okdev-exec'",
+		"wrapper_path='/tmp/okdev-exec/job-123.sh'",
+		"cat >\"$wrapper_path\" <<'OKDEV_DETACH_WRAPPER'",
+		"chmod 700 \"$wrapper_path\"",
+		"nohup sh \"$wrapper_path\" >\"$log_path\" 2>&1 &",
+		"python train.py --epochs 100",
+		"meta_path='/tmp/okdev-exec/job-123.json'",
+		"rc=$?",
+		"state\":\"running\"",
+		"state\":\"exited\"",
+		"printf '%s\\n' \"$launch_json\"",
+		// Launcher must block until the wrapper publishes its initial
+		// metadata so a caller-followed `okdev exec-jobs` always sees the
+		// new job.
+		"while [ ! -e \"$meta_path\" ]",
+		// Wrapper owns the completion write through an EXIT trap so a
+		// fast-exiting user command cannot have its 'exited' record
+		// clobbered by a later 'running' write from the launcher.
+		"trap 'rc=$?",
+		"' EXIT",
+		// The user command must run via `(exec CMD) &` so $! captures the
+		// pid of the user command itself (via execve), not the wrapper
+		// shell. This is the pid we report to the caller and the one that
+		// responds to `kill <pid>`.
+		"(exec python train.py --epochs 100) &",
+		"user_pid=$!",
+		"wait \"$user_pid\"",
+		// OKDEV_JOB_ID is exported so exec-jobs can reconcile liveness via
+		// /proc/<pid>/environ without relying on unique cmdlines.
+		"export OKDEV_JOB_ID='job-123'",
+		// Launcher reports the user command's pid, which it reads back from
+		// the wrapper-written metadata rather than using $! (which is the
+		// wrapper's pid).
+		"sed -n 's/.*\"pid\":\\([0-9][0-9]*\\).*/\\1/p' \"$meta_path\"",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("expected detach script to contain %q, got %q", want, script)
 		}
+	}
+	// The launcher must NOT write metadata itself; only the wrapper does.
+	// Any "$meta_json" reference would indicate a regression of the race.
+	if strings.Contains(script, "$meta_json") {
+		t.Fatalf("launcher should not write metadata directly; saw $meta_json reference in %q", script)
+	}
+	// The wrapper must not `set -e` around the user command, otherwise a
+	// non-zero exit would skip the completion write.
+	if strings.Contains(script, "set -eu\npython train.py") || strings.Contains(script, "set -e\npython train.py") {
+		t.Fatalf("wrapper should not run user command under set -e; got %q", script)
 	}
 }
 
 func TestDetachCommandWithQuotes(t *testing.T) {
-	got := detachCommand("echo 'hello world'")
-	expected := []string{"sh", "-c", "nohup sh -c 'echo '\\''hello world'\\''' >/dev/null 2>&1 &"}
-	if len(got) != len(expected) {
-		t.Fatalf("expected %d args, got %d: %v", len(expected), len(got), got)
+	spec := detachJobSpec{
+		JobID:      "job-quoted",
+		Pod:        "worker-0",
+		Container:  "dev",
+		Command:    "echo 'hello world'",
+		StartedAt:  "2026-04-23T03:00:00Z",
+		LogPath:    "/tmp/okdev-exec/job-quoted.log",
+		MetaPath:   "/tmp/okdev-exec/job-quoted.json",
+		ScriptPath: "/tmp/okdev-exec/job-quoted.sh",
 	}
-	for i := range got {
-		if got[i] != expected[i] {
-			t.Fatalf("arg %d: expected %q, got %q", i, expected[i], got[i])
-		}
+	got := detachCommand(spec)
+	if len(got) != 3 {
+		t.Fatalf("expected shell command triplet, got %v", got)
+	}
+	if !strings.Contains(got[2], "nohup sh \"$wrapper_path\"") || !strings.Contains(got[2], "(exec echo 'hello world') &") {
+		t.Fatalf("expected quoted user command to survive detach wrapper, got %q", got[2])
 	}
 }
 
@@ -160,9 +226,24 @@ func (s *slowExecClient) ExecInteractiveInContainer(ctx context.Context, namespa
 }
 
 func TestRunDetachExec(t *testing.T) {
+	launch, _ := json.Marshal(detachLaunchInfo{
+		JobID:    "job-worker-0",
+		PID:      48217,
+		LogPath:  "/tmp/okdev-exec/job-worker-0.log",
+		MetaPath: "/tmp/okdev-exec/job-worker-0.json",
+	})
+	launch2, _ := json.Marshal(detachLaunchInfo{
+		JobID:    "job-worker-1",
+		PID:      49102,
+		LogPath:  "/tmp/okdev-exec/job-worker-1.log",
+		MetaPath: "/tmp/okdev-exec/job-worker-1.json",
+	})
 	client := &fakePdshExecClient{
-		outputs: map[string]string{},
-		errs:    map[string]error{},
+		outputs: map[string]string{
+			"okdev-sess-worker-0": string(launch) + "\n",
+			"okdev-sess-worker-1": string(launch2) + "\n",
+		},
+		errs: map[string]error{},
 	}
 	pods := []kube.PodSummary{
 		{Name: "okdev-sess-worker-0", Phase: "Running"},
@@ -173,14 +254,28 @@ func TestRunDetachExec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "worker-0] detached") || !strings.Contains(stdout.String(), "worker-1] detached") {
-		t.Fatalf("expected detach confirmation, got %q", stdout.String())
+	got := stdout.String()
+	for _, want := range []string{
+		"worker-0] detached job_id=job-worker-0 pid=48217 log=/tmp/okdev-exec/job-worker-0.log meta=/tmp/okdev-exec/job-worker-0.json",
+		"worker-1] detached job_id=job-worker-1 pid=49102 log=/tmp/okdev-exec/job-worker-1.log meta=/tmp/okdev-exec/job-worker-1.json",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected detach metadata output %q, got %q", want, got)
+		}
 	}
 }
 
 func TestRunDetachExecWithError(t *testing.T) {
+	launch, _ := json.Marshal(detachLaunchInfo{
+		JobID:    "job-worker-0",
+		PID:      48217,
+		LogPath:  "/tmp/okdev-exec/job-worker-0.log",
+		MetaPath: "/tmp/okdev-exec/job-worker-0.json",
+	})
 	client := &fakePdshExecClient{
-		outputs: map[string]string{},
+		outputs: map[string]string{
+			"okdev-sess-worker-0": string(launch) + "\n",
+		},
 		errs: map[string]error{
 			"okdev-sess-worker-1": errors.New("pod not ready"),
 		},
@@ -194,11 +289,31 @@ func TestRunDetachExecWithError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for partial failure")
 	}
-	if !strings.Contains(stdout.String(), "worker-0] detached") {
+	if !strings.Contains(stdout.String(), "worker-0] detached job_id=job-worker-0 pid=48217") {
 		t.Fatalf("expected detach for worker-0, got %q", stdout.String())
 	}
 	if !strings.Contains(stdout.String(), "worker-1] error:") {
 		t.Fatalf("expected error for worker-1, got %q", stdout.String())
+	}
+}
+
+func TestRunDetachExecRequiresLaunchMetadata(t *testing.T) {
+	client := &fakePdshExecClient{
+		outputs: map[string]string{
+			"okdev-sess-worker-0": "detached\n",
+		},
+		errs: map[string]error{},
+	}
+	pods := []kube.PodSummary{
+		{Name: "okdev-sess-worker-0", Phase: "Running"},
+	}
+	var stdout bytes.Buffer
+	err := runDetachExec(context.Background(), client, "default", pods, "dev", "python train.py", pdshDefaultFanout, &stdout)
+	if err == nil {
+		t.Fatal("expected metadata parse error")
+	}
+	if !strings.Contains(stdout.String(), "worker-0] error: missing detach launch metadata") {
+		t.Fatalf("expected metadata parse error to be surfaced, got %q", stdout.String())
 	}
 }
 
