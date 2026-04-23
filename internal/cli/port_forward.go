@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/acmore/okdev/internal/kube"
 	"github.com/spf13/cobra"
 )
 
@@ -49,4 +50,18 @@ func parsePortForwardMappings(args []string) ([]string, error) {
 		out = append(out, fmt.Sprintf("%d:%d", local, remote))
 	}
 	return out, nil
+}
+
+func selectSinglePortForwardPod(pods []kube.PodSummary, podName, role string) (kube.PodSummary, error) {
+	candidates := pods
+	switch {
+	case strings.TrimSpace(podName) != "":
+		candidates = filterPodsByName(candidates, []string{podName})
+	case strings.TrimSpace(role) != "":
+		candidates = filterPodsByRole(candidates, role)
+	}
+	if len(candidates) != 1 {
+		return kube.PodSummary{}, fmt.Errorf("port-forward requires exactly one pod, got %d", len(candidates))
+	}
+	return candidates[0], nil
 }
