@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 
 	"github.com/acmore/okdev/internal/kube"
+	"github.com/acmore/okdev/internal/workload"
 	"github.com/spf13/cobra"
 )
 
@@ -64,4 +67,13 @@ func selectSinglePortForwardPod(pods []kube.PodSummary, podName, role string) (k
 		return kube.PodSummary{}, fmt.Errorf("port-forward requires exactly one pod, got %d", len(candidates))
 	}
 	return candidates[0], nil
+}
+
+type portForwardRunner interface {
+	PortForward(context.Context, string, string, []string, io.Writer, io.Writer) error
+}
+
+func runPortForward(ctx context.Context, client portForwardRunner, namespace string, target workload.TargetRef, forwards []string, out io.Writer) error {
+	fmt.Fprintf(out, "Forwarding session target pod=%s container=%s %s\n", target.PodName, target.Container, strings.Join(forwards, ", "))
+	return client.PortForward(ctx, namespace, target.PodName, forwards, out, io.Discard)
 }

@@ -1,11 +1,16 @@
 package cli
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/acmore/okdev/internal/kube"
+	"github.com/acmore/okdev/internal/workload"
 )
 
 func TestParsePortForwardMappings(t *testing.T) {
@@ -58,5 +63,38 @@ func TestSelectSinglePortForwardPodByPodName(t *testing.T) {
 	}
 	if got.Name != "worker-1" {
 		t.Fatalf("expected worker-1, got %q", got.Name)
+	}
+}
+
+type fakePortForwardClient struct {
+	forwardedNamespace string
+	forwardedPod       string
+	forwardedMappings  []string
+}
+
+func (f *fakePortForwardClient) PortForward(ctx context.Context, namespace, pod string, forwards []string, stdout io.Writer, stderr io.Writer) error {
+	f.forwardedNamespace = namespace
+	f.forwardedPod = pod
+	f.forwardedMappings = append([]string(nil), forwards...)
+	return context.Canceled
+}
+
+func TestRunPortForwardUsesDirectKubePortForward(t *testing.T) {
+	client := &fakePortForwardClient{}
+	target := workload.TargetRef{PodName: "okdev-sess-master-0", Container: "dev"}
+	var out bytes.Buffer
+	err := runPortForward(context.Background(), client, "demo", target, []string{"8080:8080"}, &out)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context-canceled passthrough, got %v", err)
+	}
+	if client.forwardedNamespace != "demo" || client.forwardedPod != "okdev-sess-master-0" {
+		t.Fatalf("unexpected forwarded target: ns=%q pod=%q", client.forwardedNamespace, client.forwardedPod)
+	}
+	wantMappings := []string{"8080:8080"}
+	if !reflect.DeepEqual(wantMappings, client.forwardedMappings) {
+		t.Fatalf("unexpected mappings: got=%v want=%v", client.forwardedMappings, wantMappings)
+	}
+	if !strings.Contains(out.String(), "Forwarding session target pod=okdev-sess-master-0") {
+		t.Fatalf("expected startup message, got %q", out.String())
 	}
 }
