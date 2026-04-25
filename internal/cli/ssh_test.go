@@ -42,3 +42,22 @@ func TestResolveLocalSSHAgentSocket(t *testing.T) {
 		t.Fatal("expected non-socket SSH_AUTH_SOCK error")
 	}
 }
+
+func TestBuildSSHSessionEnv(t *testing.T) {
+	t.Setenv("TMUX", "")
+	if got := buildSSHSessionEnv(false); got != nil {
+		t.Fatalf("expected nil env outside tmux, got %#v", got)
+	}
+
+	t.Setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+	if got := buildSSHSessionEnv(false); got["OKDEV_NESTED_TMUX"] != "1" {
+		t.Fatalf("expected nested tmux marker, got %#v", got)
+	}
+
+	if got := buildSSHSessionEnv(true); got["OKDEV_NO_TMUX"] != "1" {
+		t.Fatalf("expected no-tmux marker, got %#v", got)
+	}
+	if got := buildSSHSessionEnv(true); got["OKDEV_NESTED_TMUX"] != "" {
+		t.Fatalf("did not expect nested marker when tmux is disabled, got %#v", got)
+	}
+}

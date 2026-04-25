@@ -169,9 +169,7 @@ func newSSHCmd(opts *Options) *cobra.Command {
 					KeepAliveTimeout:  time.Duration(cc.cfg.Spec.SSH.KeepAliveTimeout) * time.Second,
 					KeepAliveCountMax: cc.cfg.Spec.SSH.KeepAliveCountMax,
 				}
-				if noTmux {
-					tm.Env = map[string]string{"OKDEV_NO_TMUX": "1"}
-				}
+				tm.Env = buildSSHSessionEnv(noTmux)
 				tmRef.Store(tm)
 				tm.SetReconnectTargetProvider(func(_ context.Context) (string, int, error) {
 					pfMu.Lock()
@@ -821,6 +819,21 @@ func shouldReconnectShell(err error, connected bool) bool {
 		strings.Contains(msg, "closed by remote host") ||
 		strings.Contains(msg, "connection closed") ||
 		strings.Contains(msg, "i/o timeout")
+}
+
+func buildSSHSessionEnv(noTmux bool) map[string]string {
+	env := map[string]string{}
+	if noTmux {
+		env["OKDEV_NO_TMUX"] = "1"
+		return env
+	}
+	if strings.TrimSpace(os.Getenv("TMUX")) != "" {
+		env["OKDEV_NESTED_TMUX"] = "1"
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
 }
 
 type sshSessionProber interface {

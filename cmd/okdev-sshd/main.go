@@ -181,7 +181,7 @@ func terminalBootstrapScript() string {
 
 func devTmuxBootstrapScript() string {
 	return strings.Join([]string{
-		`if command -v tmux >/dev/null 2>&1; then if [ -n "${SSH_AUTH_SOCK:-}" ]; then tmux set-environment -g SSH_AUTH_SOCK "$SSH_AUTH_SOCK" >/dev/null 2>&1 || true; else tmux set-environment -gu SSH_AUTH_SOCK >/dev/null 2>&1 || true; fi; if [ -f /var/okdev/dev.tmux.conf ]; then exec tmux -f /var/okdev/dev.tmux.conf new-session -A -s okdev; fi; exec tmux new-session -A -s okdev; fi`,
+		`if command -v tmux >/dev/null 2>&1; then if [ -f /var/okdev/dev.tmux.conf ]; then tmux source-file /var/okdev/dev.tmux.conf >/dev/null 2>&1 || true; fi; if ! tmux has-session -t okdev >/dev/null 2>&1; then if [ -f /var/okdev/dev.tmux.conf ]; then tmux -f /var/okdev/dev.tmux.conf new-session -d -s okdev >/dev/null 2>&1 || tmux new-session -d -s okdev >/dev/null 2>&1; else tmux new-session -d -s okdev >/dev/null 2>&1; fi; fi; if [ -n "${SSH_AUTH_SOCK:-}" ]; then tmux set-environment -g SSH_AUTH_SOCK "$SSH_AUTH_SOCK" >/dev/null 2>&1 || true; else tmux set-environment -gu SSH_AUTH_SOCK >/dev/null 2>&1 || true; fi; if [ "${OKDEV_NESTED_TMUX:-0}" = "1" ]; then tmux set -g mouse off >/dev/null 2>&1 || true; tmux set -g set-clipboard off >/dev/null 2>&1 || true; else tmux set -g mouse on >/dev/null 2>&1 || true; tmux set -g set-clipboard on >/dev/null 2>&1 || true; fi; exec tmux attach-session -t okdev; fi`,
 		`echo 'warning: tmux not available in dev container; continuing without tmux' >&2`,
 	}, "; ")
 }
