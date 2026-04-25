@@ -28,8 +28,10 @@ func newRootCmdWithOptions() (*cobra.Command, *Options) {
 	opts := &Options{}
 
 	cmd := &cobra.Command{
-		Use:   "okdev",
-		Short: "Kubernetes-native developer environments",
+		Use:           "okdev",
+		Short:         "Kubernetes-native developer environments",
+		SilenceUsage:  true,
+		SilenceErrors: true,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			logx.Configure(opts.Verbose)
 		},
@@ -54,6 +56,8 @@ func newRootCmdWithOptions() (*cobra.Command, *Options) {
 	cmd.AddCommand(newTargetCmd(opts))
 	cmd.AddCommand(newAgentCmd(opts))
 	cmd.AddCommand(newExecCmd(opts))
+	cmd.AddCommand(newExecJobsCmd(opts))
+	cmd.AddCommand(newPortForwardCmd(opts))
 	cmd.AddCommand(newCpCmd(opts))
 	cmd.AddCommand(newLogsCmd(opts))
 	cmd.AddCommand(newSSHCmd(opts))

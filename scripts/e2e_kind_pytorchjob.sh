@@ -446,6 +446,160 @@ if ! kubectl -n "$NAMESPACE" exec "$DETACH_MARKER_MASTER" -c pytorch -- test -f 
 fi
 echo "exec --detach verified"
 
+# ---------------------------------------------------------------------------
+# exec-jobs: verify the detached-job listing, pid-is-user-command guarantee,
+# and completion-metadata write after the job exits. We discover jobs via
+# `exec-jobs --output json` (exec --detach itself only prints a text line).
+# ---------------------------------------------------------------------------
+EXEC_JOBS_DIR=/tmp/okdev-exec
+echo "Cleaning prior detached-job metadata on all pods"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- \
+  sh -lc "rm -f $EXEC_JOBS_DIR/*.json $EXEC_JOBS_DIR/*.sh $EXEC_JOBS_DIR/*.log $EXEC_JOBS_DIR/*.tmp 2>/dev/null; true" \
+  >/dev/null
+
+echo "Testing exec-jobs lists a running detached job on every pod"
+# A 30s sleep gives us a wide window to observe the running state and to
+# verify the reported pid corresponds to the user command itself. Launching
+# `sleep` directly (no `sh -c` wrapper) means the pid we capture is
+# unambiguously the sleep process, independent of any shell tail-exec
+# optimizations.
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --detach --no-tty -- sleep 30
+
+# Give wrappers a moment to publish metadata on every pod.
+sleep 1
+
+EXEC_JOBS_JSON=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec-jobs --output json)
+echo "$EXEC_JOBS_JSON"
+
+LONG_DETACH_PARSED=$(
+  OKDEV_JOBS_JSON="$EXEC_JOBS_JSON" python3 - <<'PY'
+import json, os, shlex, sys
+payload = json.loads(os.environ["OKDEV_JOBS_JSON"])
+jobs = payload.get("jobs", [])
+errs = payload.get("errors", [])
+if errs:
+    print(f"ERROR: exec-jobs reported per-pod errors: {errs}", file=sys.stderr)
+    sys.exit(1)
+if not jobs:
+    print("ERROR: exec-jobs returned no jobs", file=sys.stderr)
+    sys.exit(1)
+for row in jobs:
+    # exec-jobs stores the shell-quoted command string. Match by parsed
+    # argv so both `sleep 30` and `'sleep' '30'` forms are accepted.
+    if shlex.split(row.get("command") or "") != ["sleep", "30"]:
+        continue
+    print(f"{row['pod']}\t{row['jobId']}\t{row['pid']}\t{row['state']}")
+PY
+)
+if [[ -z "$LONG_DETACH_PARSED" ]]; then
+  echo "ERROR: could not find sleep 30 jobs via exec-jobs --output json" >&2
+  echo "$EXEC_JOBS_JSON" >&2
+  exit 1
+fi
+
+LONG_DETACH_ROW_COUNT=$(wc -l <<<"$LONG_DETACH_PARSED" | tr -d '[:space:]')
+if [[ "$LONG_DETACH_ROW_COUNT" -lt 3 ]]; then
+  echo "ERROR: expected at least 3 detached sleep jobs, got $LONG_DETACH_ROW_COUNT" >&2
+  echo "$LONG_DETACH_PARSED" >&2
+  exit 1
+fi
+
+while IFS=$'\t' read -r L_POD L_JOB L_PID L_STATE; do
+  [[ -z "$L_POD" ]] && continue
+  echo "Verifying exec-jobs row for pod=$L_POD job=$L_JOB pid=$L_PID state=$L_STATE"
+  if [[ "$L_STATE" != "running" ]]; then
+    echo "ERROR: expected state=running for freshly launched job, got state=$L_STATE" >&2
+    exit 1
+  fi
+  # Pid correctness: /proc/<pid>/cmdline must be the user's `sleep 30`, NOT a
+  # wrapper shell. The NUL-delimited cmdline is "sleep\x0030\x00".
+  CMDLINE=$(kubectl -n "$NAMESPACE" exec "$L_POD" -c pytorch -- sh -lc "tr '\0' ' ' </proc/$L_PID/cmdline 2>/dev/null" || true)
+  if ! grep -qE '^sleep 30[[:space:]]*$' <<<"$CMDLINE"; then
+    echo "ERROR: pid $L_PID on pod $L_POD is not the user command (cmdline=<$CMDLINE>); expected 'sleep 30'" >&2
+    exit 1
+  fi
+  # Liveness reconciliation relies on OKDEV_JOB_ID being exported to the
+  # user process. If this breaks, exec-jobs would spuriously mark the job
+  # orphaned.
+  ENVIRON=$(kubectl -n "$NAMESPACE" exec "$L_POD" -c pytorch -- sh -lc "tr '\0' '\n' </proc/$L_PID/environ 2>/dev/null" || true)
+  if ! grep -qx "OKDEV_JOB_ID=$L_JOB" <<<"$ENVIRON"; then
+    echo "ERROR: OKDEV_JOB_ID=$L_JOB not set in /proc/$L_PID/environ on pod $L_POD" >&2
+    echo "$ENVIRON" >&2
+    exit 1
+  fi
+done <<<"$LONG_DETACH_PARSED"
+echo "exec-jobs running-state + pid correctness verified"
+
+echo "Waiting for detached sleep jobs to finish..."
+# Poll exec-jobs instead of a fixed sleep so slower CI is not flaky.
+for _ in $(seq 1 45); do
+  EXEC_JOBS_NOW=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec-jobs --output json)
+  STILL_RUNNING=$(
+    OKDEV_JOBS_JSON="$EXEC_JOBS_NOW" python3 - <<'PY'
+import json, os, shlex
+payload = json.loads(os.environ["OKDEV_JOBS_JSON"])
+print(sum(1 for j in payload.get("jobs", [])
+          if shlex.split(j.get("command") or "") == ["sleep", "30"] and j.get("state") == "running"))
+PY
+  )
+  if [[ "$STILL_RUNNING" == "0" ]]; then
+    break
+  fi
+  sleep 1
+done
+
+echo "Testing exec-jobs reports completion metadata"
+EXEC_JOBS_DONE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec-jobs --output json)
+echo "$EXEC_JOBS_DONE"
+MISMATCH=$(
+  OKDEV_JOBS_JSON="$EXEC_JOBS_DONE" python3 - <<'PY'
+import json, os, shlex, sys
+payload = json.loads(os.environ["OKDEV_JOBS_JSON"])
+for row in payload.get("jobs", []):
+    if shlex.split(row.get("command") or "") != ["sleep", "30"]:
+        continue
+    if row.get("state") != "exited" or row.get("exitCode") != 0:
+        sys.stdout.write(f"{row.get('pod')}/{row.get('jobId')} state={row.get('state')} exit={row.get('exitCode')}\n")
+PY
+)
+if [[ -n "$MISMATCH" ]]; then
+  # A 'running' or missing exited/0 row here would indicate the metadata race
+  # we fixed (launcher clobbering the wrapper's completion write).
+  echo "ERROR: exec-jobs did not record exited/0 for every sleep 30 job:" >&2
+  echo "$MISMATCH" >&2
+  exit 1
+fi
+echo "exec-jobs completion metadata verified"
+
+echo "Testing exec-jobs captures non-zero exit codes"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --detach --no-tty --role master -- sh -lc 'exit 7' >/dev/null
+# Give the EXIT trap a moment to write completion metadata.
+sleep 2
+FAIL_JOBS_JSON=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec-jobs --role master --output json)
+echo "$FAIL_JOBS_JSON"
+FAIL_CHECK=$(
+  OKDEV_JOBS_JSON="$FAIL_JOBS_JSON" python3 - <<'PY'
+import json, os, shlex, sys
+payload = json.loads(os.environ["OKDEV_JOBS_JSON"])
+for row in payload.get("jobs", []):
+    if shlex.split(row.get("command") or "") == ["sh", "-lc", "exit 7"]:
+        if row.get("state") == "exited" and row.get("exitCode") == 7:
+            print("ok")
+            sys.exit(0)
+sys.exit(1)
+PY
+)
+if [[ "$FAIL_CHECK" != "ok" ]]; then
+  echo "ERROR: exec-jobs did not record exit=7 for failing detached command" >&2
+  exit 1
+fi
+echo "exec-jobs non-zero exit capture verified"
+
+# Clean up metadata so this block does not leak state into the rest of the run.
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- \
+  sh -lc "rm -f $EXEC_JOBS_DIR/*.json $EXEC_JOBS_DIR/*.sh $EXEC_JOBS_DIR/*.log $EXEC_JOBS_DIR/*.tmp 2>/dev/null; true" \
+  >/dev/null
+
 echo "Multi-pod exec (pdsh) tests completed"
 
 # ---------------------------------------------------------------------------

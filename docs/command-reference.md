@@ -31,6 +31,7 @@
 - `okdev logs [session] [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
 - `okdev ssh [session] [--setup-key] [--user root] [--cmd "..."] [--no-tmux] [--forward-agent|--no-forward-agent]`
 - `okdev ports`
+- `okdev port-forward [session] <local:remote>... [--pod <name> | --role <role>] [--ready-only]`
 - `okdev sync [--mode up|down|bi] [--foreground] [--reset] [--dry-run]`
 - `okdev prune [--ttl-hours 72] [--all-namespaces] [--all-users] [--include-pvc] [--dry-run]`
 - `okdev migrate [--template <name>] [--set key=value] [--dry-run] [--yes]`
@@ -69,17 +70,37 @@
 - Opens a shell or runs a command in one or more session pods.
 - Without `-- command...`, opens an interactive shell on the pinned target pod.
 - With `-- command...`, runs the command across all running pods by default, with output prefixed by short pod name.
+- The `-- command...` path is non-interactive fanout execution, not a terminal session. TTY-dependent programs such as `watch`, `top`, `htop`, or full-screen TUIs are not expected to work there; use `okdev ssh` or `okdev exec` without `-- command...` to open an interactive shell first.
 - `--pod`: target specific pods by name (repeatable or comma-separated).
 - `--role`: target pods by `okdev.io/workload-role` label (case-insensitive).
 - `--label`: target pods by arbitrary label `key=value` (repeatable, AND logic).
 - `--exclude`: exclude specific pods from the selected set (repeatable or comma-separated). Cannot be used with `--pod`.
 - `--container`: override which container to exec into (default: session target container). Works in both modes.
-- `--detach`: wrap the command in `nohup` and return immediately. Prints per-pod confirmation.
+- `--detach`: launches the command in the background and returns immediately. Prints per-pod launch details including job id, pid, log path, and metadata path.
+- Detached jobs store combined stdout/stderr and JSON metadata under `/tmp/okdev-exec/` in the target container. For large outputs (training logs, profiles, dumps), prefer `--log-dir` on the caller or redirect inside your command to a session volume; `/tmp` is typically a small tmpfs and heavy writers can fill it.
+- The `pid` returned from `--detach` is the pid of your command itself (okdev re-parents the launcher so `$!` is your program's pid after `execve`). `kill <pid>` or `okdev exec --pod <pod> -- kill <pid>` therefore targets your command, not a wrapper shell.
+- When using `--detach`, pass the command you want okdev to launch directly. Do not add an extra `nohup ... &` inside the command string.
 - `--timeout`: per-pod command timeout (e.g., `30s`, `5m`). Pods exceeding the timeout are cancelled and reported as failed.
 - `--log-dir`: write per-pod output to `<dir>/<short-name>.log`. Streaming to stdout still happens.
 - `--no-prefix`: suppress the pod name prefix in output. Useful when targeting a single pod or piping.
 - `--fanout N`: maximum concurrent pod executions (default 16).
 - `--pod`, `--role`, and `--label` are mutually exclusive.
+
+### `okdev exec-jobs [session]`
+
+- Lists detached `okdev exec --detach` jobs across the session's running pods.
+- Reads job metadata from `/tmp/okdev-exec/*.json` in the target container.
+- Shows pod, container, job id, pid, current state, exit code when available, and log path in table form for text output.
+- State values: `running` (wrapper alive and user command in flight), `exited` (user command finished; `EXIT` column holds the captured status), and `orphaned` (metadata still says `running` but the pid has exited or been recycled - typically the wrapper was `SIGKILL`ed or the container was restarted before the completion metadata could be written).
+- When any pod fails to list its jobs, the command still prints the jobs it was able to collect from the healthy pods and reports the failures in a `FAILED:` footer (or an `errors` array in `--json` output); exit status is non-zero so scripts can detect partial failures.
+- `--pod`: target specific pods by name (repeatable or comma-separated).
+- `--role`: target pods by `okdev.io/workload-role` label (case-insensitive).
+- `--label`: target pods by arbitrary label `key=value` (repeatable, AND logic).
+- `--exclude`: exclude specific pods from the selected set (repeatable or comma-separated). Cannot be used with `--pod`.
+- `--container`: override which container to inspect (default: session target container).
+- `--job-id`: filter to a specific detached exec job id.
+- `--fanout N`: maximum concurrent pod queries (default 16).
+- `--ready-only`: inspect only pods that are already running.
 
 ### `okdev cp [session] <src> <dst>`
 
@@ -183,6 +204,16 @@
 - Advanced/recovery command. Rebuilds managed SSH `LocalForward` / `RemoteForward` state from `spec.ports` after disconnects or local port changes.
 - No-op when managed forwards are already healthy and config is unchanged.
 - `--dry-run`: previews the SSH alias and port-forward actions without updating SSH config or starting/stopping managed forwards.
+
+### `okdev port-forward [session] <local:remote>...`
+
+- Runs direct foreground Kubernetes port-forwarding to one selected session pod.
+- Uses the current session target pod by default.
+- `--pod` selects one explicit pod by name.
+- `--role` selects one pod by workload role. Ambiguity is an error.
+- `--ready-only`: restricts selection to already-running pods.
+- Only `LOCAL:REMOTE` mappings are supported (kubectl-style `:REMOTE` or bare `PORT` are rejected).
+- The command stays attached until interrupted.
 
 ### `okdev sync [--mode up|down|bi] [--foreground] [--reset] [--dry-run]`
 

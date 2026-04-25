@@ -257,6 +257,318 @@ func TestTwoPhaseInitialSyncReadyRequiresConnectedPeersForEmptyFolders(t *testin
 	}
 }
 
+func TestRemoteIndexExpectationForLocal(t *testing.T) {
+	t.Run("steady state requires current count", func(t *testing.T) {
+		exp := remoteIndexExpectationForLocal(12, 12)
+		if exp.expectedFiles != 12 || exp.requireExactMatch {
+			t.Fatalf("unexpected expectation %+v", exp)
+		}
+		if !exp.needsRemotePoll() {
+			t.Fatal("expected remote poll required when files are present")
+		}
+		if !exp.satisfiedBy(syncthingFolderStatusInfo{GlobalFiles: 12, LocalFiles: 12}) {
+			t.Fatal("expected matching remote counts to satisfy steady-state expectation")
+		}
+		if exp.satisfiedBy(syncthingFolderStatusInfo{GlobalFiles: 11, LocalFiles: 12}) {
+			t.Fatal("expected lagging remote global to fail expectation")
+		}
+	})
+
+	t.Run("growth uses current count, not baseline", func(t *testing.T) {
+		exp := remoteIndexExpectationForLocal(12, 20)
+		if exp.expectedFiles != 20 {
+			t.Fatalf("expected expectation to track grown count, got %+v", exp)
+		}
+		if exp.requireExactMatch {
+			t.Fatalf("growth must not require exact match (remote may be ahead transiently), got %+v", exp)
+		}
+		if exp.satisfiedBy(syncthingFolderStatusInfo{GlobalFiles: 12, LocalFiles: 12}) {
+			t.Fatal("expected stale remote at old baseline to fail when local has grown")
+		}
+		if !exp.satisfiedBy(syncthingFolderStatusInfo{GlobalFiles: 20, LocalFiles: 20}) {
+			t.Fatal("expected remote caught up to grown count to satisfy expectation")
+		}
+		if !exp.satisfiedBy(syncthingFolderStatusInfo{GlobalFiles: 25, LocalFiles: 25}) {
+			t.Fatal("expected remote ahead of local to satisfy expectation in growth case")
+		}
+	})
+
+	t.Run("growth from empty baseline requires remote catch-up", func(t *testing.T) {
+		exp := remoteIndexExpectationForLocal(0, 8)
+		if exp.expectedFiles != 8 || exp.requireExactMatch {
+			t.Fatalf("unexpected expectation %+v", exp)
+		}
+		if !exp.needsRemotePoll() {
+			t.Fatal("expected remote poll required when local has grown from zero baseline")
+		}
+		if exp.satisfiedBy(syncthingFolderStatusInfo{GlobalFiles: 0, LocalFiles: 0}) {
+			t.Fatal("expected empty remote to fail when local has grown")
+		}
+		if !exp.satisfiedBy(syncthingFolderStatusInfo{GlobalFiles: 8, LocalFiles: 8}) {
+			t.Fatal("expected matched remote to satisfy expectation")
+		}
+	})
+
+	t.Run("partial shrink requires exact match", func(t *testing.T) {
+		exp := remoteIndexExpectationForLocal(12, 5)
+		if exp.expectedFiles != 5 || !exp.requireExactMatch {
+			t.Fatalf("expected exact-match requirement on partial shrink, got %+v", exp)
+		}
+		if exp.satisfiedBy(syncthingFolderStatusInfo{GlobalFiles: 12, LocalFiles: 12}) {
+			t.Fatal("expected stale remote (still at pre-shrink baseline) to fail exact-match gate")
+		}
+		if exp.satisfiedBy(syncthingFolderStatusInfo{GlobalFiles: 7, LocalFiles: 5}) {
+			t.Fatal("expected partially-applied remote shrink to fail exact-match gate")
+		}
+		if !exp.satisfiedBy(syncthingFolderStatusInfo{GlobalFiles: 5, LocalFiles: 5}) {
+			t.Fatal("expected fully converged remote to satisfy exact-match gate")
+		}
+	})
+
+	t.Run("shrink to zero from positive baseline requires exact convergence", func(t *testing.T) {
+		exp := remoteIndexExpectationForLocal(12, 0)
+		if exp.expectedFiles != 0 || !exp.requireExactMatch {
+			t.Fatalf("expected exact-match requirement when local drops to zero, got %+v", exp)
+		}
+		if !exp.needsRemotePoll() {
+			t.Fatal("expected remote poll required to verify convergence")
+		}
+		if exp.satisfiedBy(syncthingFolderStatusInfo{GlobalFiles: 12, LocalFiles: 12}) {
+			t.Fatal("expected stale remote index to fail convergence requirement")
+		}
+		if exp.satisfiedBy(syncthingFolderStatusInfo{GlobalFiles: 0, LocalFiles: 1}) {
+			t.Fatal("expected remote local-files lag to fail convergence requirement")
+		}
+		if !exp.satisfiedBy(syncthingFolderStatusInfo{GlobalFiles: 0, LocalFiles: 0}) {
+			t.Fatal("expected fully converged remote to satisfy convergence requirement")
+		}
+	})
+
+	t.Run("baseline zero with no growth skips remote poll", func(t *testing.T) {
+		exp := remoteIndexExpectationForLocal(0, 0)
+		if exp.expectedFiles != 0 || exp.requireExactMatch {
+			t.Fatalf("unexpected expectation %+v", exp)
+		}
+		if exp.needsRemotePoll() {
+			t.Fatal("expected no remote poll when both baseline and current are zero")
+		}
+		if !exp.satisfiedBy(syncthingFolderStatusInfo{}) {
+			t.Fatal("expected empty-baseline expectation to be trivially satisfied")
+		}
+	})
+}
+
+// fakeFolderStatusServer simulates a syncthing /rest/db/status endpoint
+// whose reported counts can be reconfigured between calls. It serves both
+// the "local" and "remote" halves of an evaluateRemoteIndexReceived call.
+type fakeFolderStatusServer struct {
+	mu                sync.Mutex
+	localGlobalFiles  int64
+	remoteGlobalFiles int64
+	remoteLocalFiles  int64
+	localCalls        int
+	remoteCalls       int
+}
+
+func (s *fakeFolderStatusServer) handler(role string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rest/db/status" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		var global, local int64
+		if role == "local" {
+			s.localCalls++
+			global = s.localGlobalFiles
+			local = s.localGlobalFiles
+		} else {
+			s.remoteCalls++
+			global = s.remoteGlobalFiles
+			local = s.remoteLocalFiles
+		}
+		_, _ = fmt.Fprintf(w, `{"state":"idle","globalFiles":%d,"localFiles":%d,"needBytes":0}`, global, local)
+	})
+}
+
+func TestEvaluateRemoteIndexReceivedHandlesShrink(t *testing.T) {
+	state := &fakeFolderStatusServer{}
+	localSrv := httptest.NewServer(state.handler("local"))
+	defer localSrv.Close()
+	remoteSrv := httptest.NewServer(state.handler("remote"))
+	defer remoteSrv.Close()
+
+	t.Run("blocks readiness when remote still has pre-shrink index", func(t *testing.T) {
+		state.mu.Lock()
+		state.localGlobalFiles = 0
+		state.remoteGlobalFiles = 12
+		state.remoteLocalFiles = 12
+		state.mu.Unlock()
+
+		ok, exp, remote := evaluateRemoteIndexReceived(context.Background(), localSrv.URL, "k", remoteSrv.URL, "k", "okdev-test", 12)
+		if ok {
+			t.Fatalf("expected stale remote index to block readiness, got expectation=%+v remote=%+v", exp, remote)
+		}
+		if !exp.requireExactMatch {
+			t.Fatalf("expected exact-match requirement when local shrunk, got %+v", exp)
+		}
+	})
+
+	t.Run("returns ready once remote drops to zero", func(t *testing.T) {
+		state.mu.Lock()
+		state.localGlobalFiles = 0
+		state.remoteGlobalFiles = 0
+		state.remoteLocalFiles = 0
+		state.mu.Unlock()
+
+		ok, exp, _ := evaluateRemoteIndexReceived(context.Background(), localSrv.URL, "k", remoteSrv.URL, "k", "okdev-test", 12)
+		if !ok {
+			t.Fatalf("expected converged remote to be ready, got expectation=%+v", exp)
+		}
+	})
+
+	t.Run("partial shrink blocks while remote still reports pre-shrink count", func(t *testing.T) {
+		state.mu.Lock()
+		state.localGlobalFiles = 5
+		state.remoteGlobalFiles = 12
+		state.remoteLocalFiles = 12
+		state.mu.Unlock()
+
+		ok, _, _ := evaluateRemoteIndexReceived(context.Background(), localSrv.URL, "k", remoteSrv.URL, "k", "okdev-test", 12)
+		if ok {
+			t.Fatal("expected partial shrink to block readiness while remote index is stale")
+		}
+	})
+
+	t.Run("partial shrink unblocks once remote matches reduced count", func(t *testing.T) {
+		state.mu.Lock()
+		state.localGlobalFiles = 5
+		state.remoteGlobalFiles = 5
+		state.remoteLocalFiles = 5
+		state.mu.Unlock()
+
+		ok, exp, _ := evaluateRemoteIndexReceived(context.Background(), localSrv.URL, "k", remoteSrv.URL, "k", "okdev-test", 12)
+		if !ok {
+			t.Fatalf("expected matching remote count to be ready after partial shrink, got %+v", exp)
+		}
+		if exp.expectedFiles != 5 || !exp.requireExactMatch {
+			t.Fatalf("expected expectation to follow current count with exact-match, got %+v", exp)
+		}
+	})
+}
+
+func TestEvaluateRemoteIndexReceivedHandlesGrowth(t *testing.T) {
+	state := &fakeFolderStatusServer{}
+	localSrv := httptest.NewServer(state.handler("local"))
+	defer localSrv.Close()
+	remoteSrv := httptest.NewServer(state.handler("remote"))
+	defer remoteSrv.Close()
+
+	t.Run("blocks readiness when remote still at pre-growth baseline", func(t *testing.T) {
+		state.mu.Lock()
+		state.localGlobalFiles = 20
+		state.remoteGlobalFiles = 12
+		state.remoteLocalFiles = 12
+		state.mu.Unlock()
+
+		ok, exp, _ := evaluateRemoteIndexReceived(context.Background(), localSrv.URL, "k", remoteSrv.URL, "k", "okdev-test", 12)
+		if ok {
+			t.Fatalf("expected remote at stale baseline to block readiness after local growth, got %+v", exp)
+		}
+		if exp.expectedFiles != 20 {
+			t.Fatalf("expected expectation to use current count after growth, got %+v", exp)
+		}
+	})
+
+	t.Run("ready once remote catches up to grown local count", func(t *testing.T) {
+		state.mu.Lock()
+		state.localGlobalFiles = 20
+		state.remoteGlobalFiles = 20
+		state.remoteLocalFiles = 20
+		state.mu.Unlock()
+
+		ok, _, _ := evaluateRemoteIndexReceived(context.Background(), localSrv.URL, "k", remoteSrv.URL, "k", "okdev-test", 12)
+		if !ok {
+			t.Fatal("expected remote caught up to grown local count to be ready")
+		}
+	})
+
+	t.Run("growth from empty baseline waits for remote", func(t *testing.T) {
+		state.mu.Lock()
+		state.localGlobalFiles = 8
+		state.remoteGlobalFiles = 0
+		state.remoteLocalFiles = 0
+		state.mu.Unlock()
+
+		ok, exp, _ := evaluateRemoteIndexReceived(context.Background(), localSrv.URL, "k", remoteSrv.URL, "k", "okdev-test", 0)
+		if ok {
+			t.Fatalf("expected empty remote to block readiness when local grew from zero baseline, got %+v", exp)
+		}
+		if exp.expectedFiles != 8 {
+			t.Fatalf("expected expectation to follow current count from zero baseline, got %+v", exp)
+		}
+	})
+}
+
+func TestEvaluateRemoteIndexReceivedSkipsRemoteWhenBothCountsZero(t *testing.T) {
+	var localCalls, remoteCalls int
+	var mu sync.Mutex
+	localSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		localCalls++
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"state":"idle","globalFiles":0,"localFiles":0,"needBytes":0}`))
+	}))
+	defer localSrv.Close()
+	remoteSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		remoteCalls++
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"state":"idle","globalFiles":99,"localFiles":99,"needBytes":0}`))
+	}))
+	defer remoteSrv.Close()
+
+	ok, exp, _ := evaluateRemoteIndexReceived(context.Background(), localSrv.URL, "k", remoteSrv.URL, "k", "okdev-test", 0)
+	if !ok {
+		t.Fatalf("expected baseline-zero expectation to be trivially ready, got %+v", exp)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if localCalls != 1 {
+		t.Fatalf("expected exactly one local poll, got %d", localCalls)
+	}
+	if remoteCalls != 0 {
+		t.Fatalf("expected remote poll to be skipped, got %d", remoteCalls)
+	}
+}
+
+func TestEvaluateRemoteIndexReceivedBlocksOnLocalPollError(t *testing.T) {
+	var remoteCalls int
+	var mu sync.Mutex
+	localSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer localSrv.Close()
+	remoteSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		remoteCalls++
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"state":"idle","globalFiles":12,"localFiles":12,"needBytes":0}`))
+	}))
+	defer remoteSrv.Close()
+
+	ok, exp, _ := evaluateRemoteIndexReceived(context.Background(), localSrv.URL, "k", remoteSrv.URL, "k", "okdev-test", 12)
+	if ok {
+		t.Fatalf("expected local poll failure to block readiness rather than fall back to stale baseline, got %+v", exp)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if remoteCalls != 0 {
+		t.Fatalf("expected remote poll to be skipped after local poll failure, got %d", remoteCalls)
+	}
+}
+
 func TestFormatSyncthingMiB(t *testing.T) {
 	if got := formatSyncthingMiB(0); got != "0.0 MiB" {
 		t.Fatalf("unexpected zero format %q", got)
