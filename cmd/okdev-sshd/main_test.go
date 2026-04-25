@@ -157,7 +157,17 @@ func TestBuildInteractiveLoginScriptWithoutWorkspaceOrTmux(t *testing.T) {
 
 func TestDevTmuxBootstrapScriptIncludesFallbackWarning(t *testing.T) {
 	script := devTmuxBootstrapScript()
-	for _, want := range []string{"tmux", "warning: tmux not available", "set-environment -g SSH_AUTH_SOCK"} {
+	for _, want := range []string{
+		"tmux",
+		"warning: tmux not available",
+		"set-environment -g SSH_AUTH_SOCK",
+		"has-session -t okdev",
+		"attach-session -t okdev",
+		"source-file /var/okdev/dev.tmux.conf",
+		`"${OKDEV_NESTED_TMUX:-0}" = "1"`,
+		"set -g mouse off",
+		"set -g mouse on",
+	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("expected tmux bootstrap script to contain %q: %s", want, script)
 		}
