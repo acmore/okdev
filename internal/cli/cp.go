@@ -194,7 +194,11 @@ func runSinglePodCpWithProgress(ctx context.Context, client *kube.Client, namesp
 		}
 		return client.CopyDirFromPodWithProgress(ctx, namespace, pod, container, remotePath, localPath, kp)
 	}
-	return client.CopyFromPodInContainerWithProgress(ctx, namespace, pod, container, remotePath, localPath, kp)
+	targetPath, err := resolveDownloadTargetPath(localPath, "", remotePath, false, 1)
+	if err != nil {
+		return err
+	}
+	return client.CopyFromPodInContainerWithProgress(ctx, namespace, pod, container, remotePath, targetPath, kp)
 }
 
 func multiPodDownloadPath(localPath, shortName, remotePath string, remoteIsDir bool) string {
@@ -210,6 +214,25 @@ func downloadTargetPath(localPath, shortName, remotePath string, remoteIsDir boo
 		return localPath
 	}
 	return multiPodDownloadPath(localPath, shortName, remotePath, remoteIsDir)
+}
+
+func resolveDownloadTargetPath(localPath, shortName, remotePath string, remoteIsDir bool, podCount int) (string, error) {
+	targetPath := downloadTargetPath(localPath, shortName, remotePath, remoteIsDir, podCount)
+	if remoteIsDir || podCount != 1 {
+		return targetPath, nil
+	}
+
+	info, err := os.Stat(targetPath)
+	switch {
+	case err == nil && info.IsDir():
+		return filepath.Join(targetPath, filepath.Base(remotePath)), nil
+	case err == nil:
+		return targetPath, nil
+	case os.IsNotExist(err):
+		return targetPath, nil
+	default:
+		return "", err
+	}
 }
 
 func downloadSuccessDestination(localPath, shortName string, podCount int) string {
@@ -346,7 +369,11 @@ func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath
 					results <- cpResult{pod: pod.Name, err: err}
 					return
 				}
-				podLocalPath := downloadTargetPath(localPath, short, remotePath, isRemoteDir, podCount)
+				podLocalPath, err := resolveDownloadTargetPath(localPath, short, remotePath, isRemoteDir, podCount)
+				if err != nil {
+					results <- cpResult{pod: pod.Name, err: err}
+					return
+				}
 				cpErr = runSinglePodCpWithProgress(ctx, cc.kube, cc.namespace, pod.Name, targetContainer, podLocalPath, remotePath, false, io.Discard, prog)
 			}
 			results <- cpResult{pod: pod.Name, err: cpErr}

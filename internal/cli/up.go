@@ -328,11 +328,17 @@ func prepareReconcileApply(state *upState) (workloadApplyOutcome, error) {
 	case workloadApplyReapplied:
 		return workloadApplyReapplied, nil
 	}
+	if state.ui != nil {
+		state.ui.stepRun("reconcile", "deleting existing workload")
+	}
 	if err := state.runtime.Delete(state.ctx, state.command.kube, state.command.namespace, true); err != nil {
 		return workloadApplyCreated, fmt.Errorf("delete existing workload for reconcile: %w", err)
 	}
 	if err := waitForReconcileDeletion(state); err != nil {
 		return workloadApplyCreated, err
+	}
+	if state.ui != nil {
+		state.ui.stepDone("reconcile", "old workload deleted")
 	}
 	return workloadApplyRecreated, nil
 }
@@ -363,12 +369,15 @@ func waitForReconcileDeletion(state *upState) error {
 	defer ticker.Stop()
 
 	for {
-		ready, err := reconcileDeletionComplete(ctx, k, state.command.namespace, state.command.sessionName, state.labels, state.runtime)
+		ready, detail, err := reconcileDeletionComplete(ctx, k, state.command.namespace, state.command.sessionName, state.labels, state.runtime)
 		if err != nil {
 			return fmt.Errorf("wait for reconcile deletion: %w", err)
 		}
 		if ready {
 			return nil
+		}
+		if state.ui != nil && strings.TrimSpace(detail) != "" {
+			state.ui.stepRun("reconcile", detail)
 		}
 		select {
 		case <-ctx.Done():
@@ -378,18 +387,18 @@ func waitForReconcileDeletion(state *upState) error {
 	}
 }
 
-func reconcileDeletionComplete(ctx context.Context, k reconcileWaitClient, namespace, sessionName string, labels map[string]string, rt workload.Runtime) (bool, error) {
+func reconcileDeletionComplete(ctx context.Context, k reconcileWaitClient, namespace, sessionName string, labels map[string]string, rt workload.Runtime) (bool, string, error) {
 	if provider, ok := rt.(workload.RefProvider); ok {
 		apiVersion, kind, name, err := provider.WorkloadRef()
 		if err != nil {
-			return false, err
+			return false, "", err
 		}
 		exists, err := k.ResourceExists(ctx, namespace, apiVersion, kind, name)
 		if err != nil {
-			return false, err
+			return false, "", err
 		}
 		if exists {
-			return false, nil
+			return false, fmt.Sprintf("waiting for workload %s/%s/%s to be deleted", apiVersion, kind, name), nil
 		}
 	}
 
@@ -399,9 +408,19 @@ func reconcileDeletionComplete(ctx context.Context, k reconcileWaitClient, names
 	}
 	pods, err := k.ListPods(ctx, namespace, false, selector)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
-	return len(pods) == 0, nil
+	if len(pods) == 0 {
+		return true, "", nil
+	}
+	return false, fmt.Sprintf("waiting for %d old session %s to terminate", len(pods), pluralize(len(pods), "pod", "pods")), nil
+}
+
+func pluralize(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
 }
 
 func reconcileStrategyForWorkload(state *upState) workloadApplyOutcome {
