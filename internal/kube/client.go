@@ -77,6 +77,16 @@ type PodSummary struct {
 	PodIP       string
 }
 
+type ResourceSummary struct {
+	Namespace   string
+	Name        string
+	Kind        string
+	APIVersion  string
+	CreatedAt   time.Time
+	Labels      map[string]string
+	Annotations map[string]string
+}
+
 type PodReadinessProgress struct {
 	Phase           corev1.PodPhase
 	ReadyContainers int
@@ -563,6 +573,71 @@ func (c *Client) ResourceExists(ctx context.Context, namespace string, apiVersio
 	return err == nil, err
 }
 
+func (c *Client) ListResources(ctx context.Context, namespace string, allNamespaces bool, apiVersion string, kind string, labelSelector string) ([]ResourceSummary, error) {
+	cs, dc, mapper, _, err := c.clients()
+	if err != nil {
+		return nil, err
+	}
+	listOptions := metav1.ListOptions{LabelSelector: labelSelector}
+
+	switch {
+	case strings.EqualFold(strings.TrimSpace(apiVersion), "batch/v1") && strings.EqualFold(strings.TrimSpace(kind), "job"):
+		ns := namespace
+		if allNamespaces {
+			ns = ""
+		}
+		list, err := cs.BatchV1().Jobs(ns).List(ctx, listOptions)
+		if err != nil {
+			return nil, err
+		}
+		items := make([]ResourceSummary, 0, len(list.Items))
+		for _, item := range list.Items {
+			items = append(items, ResourceSummary{
+				Namespace:   item.Namespace,
+				Name:        item.Name,
+				Kind:        "Job",
+				APIVersion:  "batch/v1",
+				CreatedAt:   item.CreationTimestamp.Time,
+				Labels:      cloneStringMap(item.Labels),
+				Annotations: cloneStringMap(item.Annotations),
+			})
+		}
+		return items, nil
+	}
+
+	gv, err := schema.ParseGroupVersion(apiVersion)
+	if err != nil {
+		return nil, fmt.Errorf("parse apiVersion %q: %w", apiVersion, err)
+	}
+	mapping, err := mapper.RESTMapping(schema.GroupKind{Group: gv.Group, Kind: kind}, gv.Version)
+	if err != nil {
+		return nil, fmt.Errorf("resolve rest mapping for %s/%s: %w", apiVersion, kind, err)
+	}
+	var resource dynamic.ResourceInterface
+	if mapping.Scope.Name() == meta.RESTScopeNameNamespace && !allNamespaces {
+		resource = dc.Resource(mapping.Resource).Namespace(namespace)
+	} else {
+		resource = dc.Resource(mapping.Resource)
+	}
+	list, err := resource.List(ctx, listOptions)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]ResourceSummary, 0, len(list.Items))
+	for _, item := range list.Items {
+		items = append(items, ResourceSummary{
+			Namespace:   item.GetNamespace(),
+			Name:        item.GetName(),
+			Kind:        kind,
+			APIVersion:  apiVersion,
+			CreatedAt:   item.GetCreationTimestamp().Time,
+			Labels:      cloneStringMap(item.GetLabels()),
+			Annotations: cloneStringMap(item.GetAnnotations()),
+		})
+	}
+	return items, nil
+}
+
 func (c *Client) GetResourceAnnotation(ctx context.Context, namespace, apiVersion, kind, name, key string) (string, bool, error) {
 	if strings.TrimSpace(name) == "" {
 		return "", false, fmt.Errorf("resource name is required")
@@ -1008,6 +1083,24 @@ func (c *Client) CopyToPod(ctx context.Context, namespace, localPath, podName, r
 }
 
 func (c *Client) CopyToPodInContainer(ctx context.Context, namespace, localPath, podName, container, remotePath string) error {
+	return c.CopyToPodInContainerWithProgress(ctx, namespace, localPath, podName, container, remotePath, CopyProgress{})
+}
+
+// CopyProgress carries optional callbacks invoked as data flows through a
+// Copy* operation. All fields are nil-safe.
+type CopyProgress struct {
+	// OnBytes is invoked with the number of bytes transferred since the last
+	// call. For uploads this counts bytes read from the local source; for
+	// downloads it counts post-decompression bytes the local side receives.
+	OnBytes func(int64)
+	// OnFile is invoked once per regular file packed into a directory upload
+	// archive. It is not invoked for downloads or single-file copies.
+	OnFile func()
+}
+
+// CopyToPodInContainerWithProgress copies a single local file to remotePath
+// in the given pod/container. It optionally reports progress via prog.
+func (c *Client) CopyToPodInContainerWithProgress(ctx context.Context, namespace, localPath, podName, container, remotePath string, prog CopyProgress) error {
 	cs, cfg, err := c.clientset()
 	if err != nil {
 		return err
@@ -1017,8 +1110,24 @@ func (c *Client) CopyToPodInContainer(ctx context.Context, namespace, localPath,
 		return err
 	}
 	defer f.Close()
+	src := io.Reader(f)
+	if prog.OnBytes != nil {
+		src = io.TeeReader(f, byteCounterWriter(prog.OnBytes))
+	}
 	cmd := []string{"sh", "-lc", fmt.Sprintf("cat > %s", shellQuote(remotePath))}
-	return c.execStream(ctx, cs, cfg, namespace, podName, container, cmd, f, io.Discard, io.Discard, false)
+	return c.execStream(ctx, cs, cfg, namespace, podName, container, cmd, src, io.Discard, io.Discard, false)
+}
+
+// byteCounterWriter is a writer that just reports byte counts via the
+// supplied callback. It is intended for use as the destination of an
+// io.TeeReader so callers can observe traffic without changing semantics.
+type byteCounterWriter func(int64)
+
+func (f byteCounterWriter) Write(p []byte) (int, error) {
+	if len(p) > 0 && f != nil {
+		f(int64(len(p)))
+	}
+	return len(p), nil
 }
 
 func (c *Client) ExtractTarToPod(ctx context.Context, namespace, podName, remoteDir string, tarStream io.Reader) error {
@@ -1035,9 +1144,16 @@ func (c *Client) CopyFromPod(ctx context.Context, namespace, podName, remotePath
 }
 
 func (c *Client) CopyFromPodInContainer(ctx context.Context, namespace, podName, container, remotePath, localPath string) error {
+	return c.CopyFromPodInContainerWithProgress(ctx, namespace, podName, container, remotePath, localPath, CopyProgress{})
+}
+
+// CopyFromPodInContainerWithProgress streams a single remote file to
+// localPath. Bytes reported via prog.OnBytes are post-decompression
+// (i.e., the actual file size received locally), not wire bytes.
+func (c *Client) CopyFromPodInContainerWithProgress(ctx context.Context, namespace, podName, container, remotePath, localPath string, prog CopyProgress) error {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		lastErr = c.copyFromPodInContainerOnce(ctx, namespace, podName, container, remotePath, localPath)
+		lastErr = c.copyFromPodInContainerOnce(ctx, namespace, podName, container, remotePath, localPath, prog)
 		if lastErr == nil {
 			return nil
 		}
@@ -1049,7 +1165,7 @@ func (c *Client) CopyFromPodInContainer(ctx context.Context, namespace, podName,
 	return lastErr
 }
 
-func (c *Client) copyFromPodInContainerOnce(ctx context.Context, namespace, podName, container, remotePath, localPath string) error {
+func (c *Client) copyFromPodInContainerOnce(ctx context.Context, namespace, podName, container, remotePath, localPath string, prog CopyProgress) error {
 	cs, cfg, err := c.clientset()
 	if err != nil {
 		return err
@@ -1069,7 +1185,11 @@ func (c *Client) copyFromPodInContainerOnce(ctx context.Context, namespace, podN
 		return err
 	}
 	defer gr.Close()
-	if err := extractSingleFileFromTar(gr, localPath); err != nil {
+	src := io.Reader(gr)
+	if prog.OnBytes != nil {
+		src = io.TeeReader(gr, byteCounterWriter(prog.OnBytes))
+	}
+	if err := extractSingleFileFromTar(src, localPath); err != nil {
 		pr.Close()
 		return err
 	}
@@ -1151,6 +1271,12 @@ func (c *Client) StreamFromPod(ctx context.Context, namespace, podName, script s
 // createTarFromDir writes a tar archive of dir's contents to w.
 // Paths inside the archive are relative to dir.
 func createTarFromDir(dir string, w io.Writer) error {
+	return createTarFromDirWithProgress(dir, w, nil)
+}
+
+// createTarFromDirWithProgress is like createTarFromDir but invokes onFile
+// (when non-nil) each time a regular file is added to the archive.
+func createTarFromDirWithProgress(dir string, w io.Writer, onFile func()) error {
 	tw := tar.NewWriter(w)
 	defer tw.Close()
 	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -1185,6 +1311,9 @@ func createTarFromDir(dir string, w io.Writer) error {
 		if _, err := io.Copy(tw, f); err != nil {
 			_ = f.Close()
 			return err
+		}
+		if onFile != nil {
+			onFile()
 		}
 		return f.Close()
 	})
@@ -1230,10 +1359,21 @@ func extractTarToDir(r io.Reader, dir string) error {
 
 // CopyDirToPod archives a local directory and extracts it into remoteDir on the pod.
 func (c *Client) CopyDirToPod(ctx context.Context, namespace, pod, container, localDir, remoteDir string) error {
+	return c.CopyDirToPodWithProgress(ctx, namespace, pod, container, localDir, remoteDir, CopyProgress{})
+}
+
+// CopyDirToPodWithProgress archives a local directory and extracts it into
+// remoteDir on the pod. prog.OnBytes counts uncompressed tar bytes sent;
+// prog.OnFile fires once per regular file packed into the archive.
+func (c *Client) CopyDirToPodWithProgress(ctx context.Context, namespace, pod, container, localDir, remoteDir string, prog CopyProgress) error {
 	pr, pw := io.Pipe()
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- createTarFromDir(localDir, pw)
+		var dest io.Writer = pw
+		if prog.OnBytes != nil {
+			dest = io.MultiWriter(pw, byteCounterWriter(prog.OnBytes))
+		}
+		errCh <- createTarFromDirWithProgress(localDir, dest, prog.OnFile)
 		pw.Close()
 	}()
 	cs, cfg, err := c.clientset()
@@ -1250,9 +1390,16 @@ func (c *Client) CopyDirToPod(ctx context.Context, namespace, pod, container, lo
 
 // CopyDirFromPod streams a remote directory as a tar archive and extracts it locally.
 func (c *Client) CopyDirFromPod(ctx context.Context, namespace, pod, container, remoteDir, localDir string) error {
+	return c.CopyDirFromPodWithProgress(ctx, namespace, pod, container, remoteDir, localDir, CopyProgress{})
+}
+
+// CopyDirFromPodWithProgress streams a remote directory as a tar archive
+// and extracts it locally. prog.OnBytes counts post-decompression bytes
+// (the amount actually extracted into the local destination).
+func (c *Client) CopyDirFromPodWithProgress(ctx context.Context, namespace, pod, container, remoteDir, localDir string, prog CopyProgress) error {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		lastErr = c.copyDirFromPodOnce(ctx, namespace, pod, container, remoteDir, localDir)
+		lastErr = c.copyDirFromPodOnce(ctx, namespace, pod, container, remoteDir, localDir, prog)
 		if lastErr == nil {
 			return nil
 		}
@@ -1264,7 +1411,7 @@ func (c *Client) CopyDirFromPod(ctx context.Context, namespace, pod, container, 
 	return lastErr
 }
 
-func (c *Client) copyDirFromPodOnce(ctx context.Context, namespace, pod, container, remoteDir, localDir string) error {
+func (c *Client) copyDirFromPodOnce(ctx context.Context, namespace, pod, container, remoteDir, localDir string, prog CopyProgress) error {
 	cs, cfg, err := c.clientset()
 	if err != nil {
 		return err
@@ -1284,7 +1431,11 @@ func (c *Client) copyDirFromPodOnce(ctx context.Context, namespace, pod, contain
 		return err
 	}
 	defer gr.Close()
-	if err := extractTarToDir(gr, localDir); err != nil {
+	src := io.Reader(gr)
+	if prog.OnBytes != nil {
+		src = io.TeeReader(gr, byteCounterWriter(prog.OnBytes))
+	}
+	if err := extractTarToDir(src, localDir); err != nil {
 		pr.Close()
 		return err
 	}

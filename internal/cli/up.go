@@ -308,7 +308,7 @@ func upReconcile(state *upState, applyWorkload bool) error {
 			switch action {
 			case driftActionReuse:
 				state.ui.stepDone(state.runtime.Kind(), "reused existing workload")
-				return nil
+				return persistSessionState(state)
 			case driftActionReapply:
 				outcome = workloadApplyReapplied
 			case driftActionRecreate:
@@ -320,7 +320,7 @@ func upReconcile(state *upState, applyWorkload bool) error {
 		return err
 	}
 	state.ui.stepDone(state.runtime.Kind(), workloadApplyStatus(outcome))
-	return nil
+	return persistSessionState(state)
 }
 
 func prepareReconcileApply(state *upState) (workloadApplyOutcome, error) {
@@ -328,11 +328,17 @@ func prepareReconcileApply(state *upState) (workloadApplyOutcome, error) {
 	case workloadApplyReapplied:
 		return workloadApplyReapplied, nil
 	}
+	if state.ui != nil {
+		state.ui.stepRun("reconcile", "deleting existing workload")
+	}
 	if err := state.runtime.Delete(state.ctx, state.command.kube, state.command.namespace, true); err != nil {
 		return workloadApplyCreated, fmt.Errorf("delete existing workload for reconcile: %w", err)
 	}
 	if err := waitForReconcileDeletion(state); err != nil {
 		return workloadApplyCreated, err
+	}
+	if state.ui != nil {
+		state.ui.stepDone("reconcile", "old workload deleted")
 	}
 	return workloadApplyRecreated, nil
 }
@@ -363,12 +369,15 @@ func waitForReconcileDeletion(state *upState) error {
 	defer ticker.Stop()
 
 	for {
-		ready, err := reconcileDeletionComplete(ctx, k, state.command.namespace, state.command.sessionName, state.labels, state.runtime)
+		ready, detail, err := reconcileDeletionComplete(ctx, k, state.command.namespace, state.command.sessionName, state.labels, state.runtime)
 		if err != nil {
 			return fmt.Errorf("wait for reconcile deletion: %w", err)
 		}
 		if ready {
 			return nil
+		}
+		if state.ui != nil && strings.TrimSpace(detail) != "" {
+			state.ui.stepRun("reconcile", detail)
 		}
 		select {
 		case <-ctx.Done():
@@ -378,18 +387,18 @@ func waitForReconcileDeletion(state *upState) error {
 	}
 }
 
-func reconcileDeletionComplete(ctx context.Context, k reconcileWaitClient, namespace, sessionName string, labels map[string]string, rt workload.Runtime) (bool, error) {
+func reconcileDeletionComplete(ctx context.Context, k reconcileWaitClient, namespace, sessionName string, labels map[string]string, rt workload.Runtime) (bool, string, error) {
 	if provider, ok := rt.(workload.RefProvider); ok {
 		apiVersion, kind, name, err := provider.WorkloadRef()
 		if err != nil {
-			return false, err
+			return false, "", err
 		}
 		exists, err := k.ResourceExists(ctx, namespace, apiVersion, kind, name)
 		if err != nil {
-			return false, err
+			return false, "", err
 		}
 		if exists {
-			return false, nil
+			return false, fmt.Sprintf("waiting for workload %s/%s/%s to be deleted", apiVersion, kind, name), nil
 		}
 	}
 
@@ -399,9 +408,19 @@ func reconcileDeletionComplete(ctx context.Context, k reconcileWaitClient, names
 	}
 	pods, err := k.ListPods(ctx, namespace, false, selector)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
-	return len(pods) == 0, nil
+	if len(pods) == 0 {
+		return true, "", nil
+	}
+	return false, fmt.Sprintf("waiting for %d old session %s to terminate", len(pods), pluralize(len(pods), "pod", "pods")), nil
+}
+
+func pluralize(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
 }
 
 func reconcileStrategyForWorkload(state *upState) workloadApplyOutcome {
@@ -817,43 +836,62 @@ func upSetup(state *upState) error {
 			}
 		}
 	}
+	state.ui.printWarnings()
+	state.ui.printReadyCard(state.command.sessionName, state.command.namespace, target.PodName, sshSummary, syncSummary, state.command.cfg.Spec.Ports, state.syncPairs, syncModeSymbol)
+	upgrade.NewChecker().CheckAndRemind(version.Version, state.cmd.ErrOrStderr())
+	return nil
+}
+
+// persistSessionState writes the active-session pointer and session.Info
+// snapshot as soon as the workload has been reconciled. This must happen
+// before we wait for pods so status/list commands (and a re-run of `up`)
+// can discover the session while controller-backed pods are still pending.
+func persistSessionState(state *upState) error {
+	if state == nil || state.command == nil {
+		return nil
+	}
 	if err := session.SaveActiveSession(state.command.sessionName); err != nil {
 		return err
+	}
+	if state.ui != nil {
+		state.ui.stepDone("active session", state.command.sessionName)
+	}
+	if err := session.ClearShutdownRequest(state.command.sessionName); err != nil {
+		if state.ui != nil {
+			state.ui.warnf("failed to clear prior shutdown request: %v", err)
+		}
 	}
 	apiVersion, kind, workloadName := "", "", state.workloadName
 	if provider, ok := state.runtime.(workload.RefProvider); ok {
 		if refAPIVersion, refKind, refName, refErr := provider.WorkloadRef(); refErr == nil {
 			apiVersion, kind, workloadName = refAPIVersion, refKind, refName
-		} else {
+		} else if state.ui != nil {
 			state.ui.warnf("failed to resolve workload ref for session metadata: %v", refErr)
 		}
 	}
 	repoRoot, repoErr := session.RepoRoot()
 	if repoErr != nil {
-		state.ui.warnf("failed to resolve repo root for session metadata: %v", repoErr)
-	} else if infoErr := session.SaveInfo(session.Info{
+		if state.ui != nil {
+			state.ui.warnf("failed to resolve repo root for session metadata: %v", repoErr)
+		}
+		return nil
+	}
+	infoErr := session.SaveInfo(session.Info{
 		Name:               state.command.sessionName,
 		RepoRoot:           repoRoot,
 		ConfigPath:         state.command.cfgPath,
 		Namespace:          state.command.namespace,
 		KubeContext:        state.opts.Context,
-		Owner:              state.command.opts.Owner,
+		Owner:              currentOwner(state.command.opts),
 		WorkloadType:       state.command.cfg.Spec.Workload.Type,
 		RunID:              state.runID,
 		WorkloadAPIVersion: apiVersion,
 		WorkloadKind:       kind,
 		WorkloadName:       workloadName,
-	}); infoErr != nil {
+	})
+	if infoErr != nil && state.ui != nil {
 		state.ui.warnf("failed to persist session metadata: %v", infoErr)
 	}
-	state.ui.stepDone("active session", state.command.sessionName)
-	if err := session.ClearShutdownRequest(state.command.sessionName); err != nil {
-		state.ui.warnf("failed to clear prior shutdown request: %v", err)
-	}
-
-	state.ui.printWarnings()
-	state.ui.printReadyCard(state.command.sessionName, state.command.namespace, target.PodName, sshSummary, syncSummary, state.command.cfg.Spec.Ports, state.syncPairs, syncModeSymbol)
-	upgrade.NewChecker().CheckAndRemind(version.Version, state.cmd.ErrOrStderr())
 	return nil
 }
 

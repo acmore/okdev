@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/acmore/okdev/internal/output"
+	"github.com/acmore/okdev/internal/session"
 	"github.com/spf13/cobra"
 )
 
@@ -52,11 +54,42 @@ func newStatusCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if len(pods) == 0 {
+			views := buildSessionViews(pods)
+			if all {
+				controllerResources, controllerErr := listLiveControllerResources(ctx, cc.kube, cc.namespace, false, label)
+				if controllerErr != nil {
+					return controllerErr
+				}
+				views = mergeSessionViews(views, buildControllerSessionViews(controllerResources))
+				savedViews, savedErr := savedSessionViews(ctx, cc.kube, cc.namespace, false, allUsers, opts)
+				if savedErr != nil {
+					return savedErr
+				}
+				views = mergeSessionViews(views, savedViews)
+			}
+			if len(views) == 0 && !all {
+				controllerResources, controllerErr := listLiveControllerResources(ctx, cc.kube, cc.namespace, false, "okdev.io/managed=true,okdev.io/session="+cc.sessionName)
+				if controllerErr != nil {
+					return controllerErr
+				}
+				controllerViews := buildControllerSessionViews(controllerResources)
+				if len(controllerViews) > 0 {
+					views = controllerViews
+				}
+			}
+			if len(views) == 0 && !all {
+				fallback, ok, fallbackErr := fallbackStatusView(ctx, cc)
+				if fallbackErr != nil {
+					return fallbackErr
+				}
+				if ok {
+					views = []sessionView{fallback}
+				}
+			}
+			if len(views) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "No matching sessions found")
 				return nil
 			}
-			views := buildSessionViews(pods)
 			if details {
 				if all || len(views) != 1 {
 					return fmt.Errorf("--details requires a single session")
@@ -142,4 +175,15 @@ func newStatusCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&allUsers, "all-users", false, "Show sessions for all owners")
 	cmd.Flags().BoolVar(&details, "details", false, "Show detailed diagnostics for a single session")
 	return cmd
+}
+
+func fallbackStatusView(ctx context.Context, cc *commandContext) (sessionView, bool, error) {
+	if cc == nil || cc.kube == nil || cc.sessionName == "" {
+		return sessionView{}, false, nil
+	}
+	info, err := session.LoadInfo(cc.sessionName)
+	if err != nil {
+		return sessionView{}, false, err
+	}
+	return buildSavedSessionView(ctx, cc.kube, cc.namespace, info)
 }

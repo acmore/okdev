@@ -15,10 +15,13 @@ import (
 )
 
 type fakeSessionAccessReader struct {
-	pod     *kube.PodSummary
-	pods    []kube.PodSummary
-	getErr  error
-	listErr error
+	pod            *kube.PodSummary
+	pods           []kube.PodSummary
+	resources      []kube.ResourceSummary
+	getErr         error
+	listErr        error
+	resourceExists bool
+	resourceErr    error
 }
 
 func (f fakeSessionAccessReader) GetPodSummary(_ context.Context, _, _ string) (*kube.PodSummary, error) {
@@ -39,6 +42,20 @@ func (f fakeSessionAccessReader) ListPods(_ context.Context, _ string, _ bool, _
 		return nil, nil
 	}
 	return []kube.PodSummary{*f.pod}, nil
+}
+
+func (f fakeSessionAccessReader) ListResources(_ context.Context, _ string, _ bool, _, _, _ string) ([]kube.ResourceSummary, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.resources, nil
+}
+
+func (f fakeSessionAccessReader) ResourceExists(_ context.Context, _, _, _, _ string) (bool, error) {
+	if f.resourceErr != nil {
+		return false, f.resourceErr
+	}
+	return f.resourceExists, nil
 }
 
 func TestEnsureSessionAccessRequiresExistingSessionWhenRequested(t *testing.T) {
@@ -254,5 +271,83 @@ func TestResolveSessionNameWithReaderInfersSessionMatchingCurrentConfig(t *testi
 	}
 	if got != "older-match" {
 		t.Fatalf("expected config-matching inferred session, got %q", got)
+	}
+}
+
+func TestResolveSessionNameWithReaderInfersSavedControllerBackedSessionWhenNoPodsExistYet(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repoRoot, err := session.RepoRoot()
+	if err != nil {
+		t.Fatalf("RepoRoot: %v", err)
+	}
+
+	currentConfig := filepath.Join(repoRoot, "Mooncake", ".okdev.yaml")
+	if err := session.SaveInfo(session.Info{
+		Name:               "pending-job",
+		RepoRoot:           repoRoot,
+		ConfigPath:         currentConfig,
+		Namespace:          "default",
+		Owner:              "alice",
+		WorkloadType:       "job",
+		WorkloadAPIVersion: "batch/v1",
+		WorkloadKind:       "Job",
+		WorkloadName:       "trainer",
+	}); err != nil {
+		t.Fatalf("SaveInfo: %v", err)
+	}
+
+	cfg := &config.DevEnvironment{}
+	cfg.Metadata.Name = "demo"
+	got, err := resolveSessionNameWithReader(&Options{
+		ConfigPath: currentConfig,
+		Owner:      "alice",
+	}, cfg, "default", true, fakeSessionAccessReader{
+		pods:           []kube.PodSummary{},
+		resourceExists: true,
+	})
+	if err != nil {
+		t.Fatalf("resolveSessionNameWithReader: %v", err)
+	}
+	if got != "pending-job" {
+		t.Fatalf("expected saved controller-backed session, got %q", got)
+	}
+}
+
+func TestResolveSessionNameWithReaderInfersLiveControllerBackedSessionWhenNoPodsExistYet(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repoRoot, err := session.RepoRoot()
+	if err != nil {
+		t.Fatalf("RepoRoot: %v", err)
+	}
+
+	currentConfig := filepath.Join(repoRoot, "Mooncake", ".okdev.yaml")
+	cfg := &config.DevEnvironment{}
+	cfg.Metadata.Name = "demo"
+	got, err := resolveSessionNameWithReader(&Options{
+		ConfigPath: currentConfig,
+		Owner:      "alice",
+	}, cfg, "default", true, fakeSessionAccessReader{
+		pods: []kube.PodSummary{},
+		resources: []kube.ResourceSummary{{
+			Namespace:  "default",
+			Name:       "trainer",
+			Kind:       "Job",
+			APIVersion: "batch/v1",
+			CreatedAt:  time.Now(),
+			Labels: map[string]string{
+				"okdev.io/managed":       "true",
+				"okdev.io/session":       "pending-job",
+				"okdev.io/owner":         "alice",
+				"okdev.io/repo":          filepath.Base(repoRoot),
+				"okdev.io/name":          "demo",
+				"okdev.io/workload-type": "job",
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("resolveSessionNameWithReader: %v", err)
+	}
+	if got != "pending-job" {
+		t.Fatalf("expected live controller-backed session, got %q", got)
 	}
 }

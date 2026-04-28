@@ -23,6 +23,7 @@ import (
 	"github.com/acmore/okdev/internal/workload"
 	"golang.org/x/term"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	meta "k8s.io/apimachinery/pkg/api/meta"
 )
 
 var invalidOwnerChars = regexp.MustCompile(`[^a-z0-9._-]`)
@@ -280,6 +281,22 @@ func (s *transientStatus) clear() {
 	fmt.Fprint(s.w, "\r\033[K")
 }
 
+// printAbove writes a persistent line above the in-place status, clearing the
+// current spinner line first so the printed output is not garbled by the
+// concurrent spinner re-render. The spinner picks up where it left off on the
+// next render tick.
+func (s *transientStatus) printAbove(line string) {
+	if !s.enabled {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !strings.HasSuffix(line, "\n") {
+		line += "\n"
+	}
+	fmt.Fprintf(s.w, "\r\033[K%s", line)
+}
+
 func (s *transientStatus) stop() {
 	if !s.enabled {
 		return
@@ -357,7 +374,15 @@ func resolveSessionNameWithReader(opts *Options, cfg *config.DevEnvironment, nam
 			if exists {
 				return resolvedActive, nil
 			}
-			if clearErr := session.ClearActiveSession(); clearErr != nil {
+			workloadExists, workloadErr := sessionWorkloadExists(reader, namespace, resolvedActive)
+			if workloadErr == nil && workloadExists {
+				return resolvedActive, nil
+			}
+			if workloadErr != nil {
+				// Don't pin the user to a possibly-dead session on a transient
+				// API failure; fall through to inference instead.
+				slog.Debug("failed to verify active session workload", "session", resolvedActive, "namespace", namespace, "error", workloadErr)
+			} else if clearErr := session.ClearActiveSession(); clearErr != nil {
 				slog.Debug("failed to clear stale active session", "session", resolvedActive, "error", clearErr)
 			}
 		} else {
@@ -424,6 +449,133 @@ func sessionPodExists(k sessionAccessReader, namespace, sessionName string) (boo
 	return false, err
 }
 
+func sessionWorkloadExists(k sessionAccessReader, namespace, sessionName string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), sessionExistsTimeout)
+	defer cancel()
+	// Live controllers (by label) are the authoritative check; try them first
+	// so a missing/corrupt saved Info file doesn't block discovery.
+	exists, err := liveControllerWorkloadExists(ctx, k, namespace, sessionName)
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		return true, nil
+	}
+	info, loadErr := session.LoadInfo(sessionName)
+	if loadErr != nil {
+		slog.Debug("failed to load saved session info while verifying workload", "session", sessionName, "error", loadErr)
+		return false, nil
+	}
+	return sessionInfoWorkloadExists(ctx, k, namespace, info)
+}
+
+func listLiveControllerResources(ctx context.Context, k sessionAccessReader, namespace string, allNamespaces bool, labelSelector string) ([]kube.ResourceSummary, error) {
+	out := make([]kube.ResourceSummary, 0)
+	for _, w := range workload.ControllerWorkloads() {
+		items, err := k.ListResources(ctx, namespace, allNamespaces, w.APIVersion, w.Kind, labelSelector)
+		if err != nil {
+			if meta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
+				continue
+			}
+			return nil, err
+		}
+		out = append(out, items...)
+	}
+	return out, nil
+}
+
+func liveControllerWorkloadExists(ctx context.Context, k sessionAccessReader, namespace, sessionName string) (bool, error) {
+	items, err := listLiveControllerResources(ctx, k, namespace, false, "okdev.io/managed=true,okdev.io/session="+sessionName)
+	if err != nil {
+		return false, err
+	}
+	return len(items) > 0, nil
+}
+
+func sessionInfoWorkloadExists(ctx context.Context, k sessionAccessReader, namespace string, info session.Info) (bool, error) {
+	if strings.TrimSpace(info.WorkloadAPIVersion) == "" ||
+		strings.TrimSpace(info.WorkloadKind) == "" ||
+		strings.TrimSpace(info.WorkloadName) == "" {
+		return false, nil
+	}
+	workloadNamespace := strings.TrimSpace(info.Namespace)
+	if workloadNamespace == "" {
+		workloadNamespace = namespace
+	}
+	exists, err := k.ResourceExists(ctx, workloadNamespace, info.WorkloadAPIVersion, info.WorkloadKind, info.WorkloadName)
+	if err != nil {
+		if meta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return exists, nil
+}
+
+func buildSavedSessionView(ctx context.Context, k sessionAccessReader, namespace string, info session.Info) (sessionView, bool, error) {
+	if strings.TrimSpace(info.Name) == "" {
+		return sessionView{}, false, nil
+	}
+	exists, err := sessionInfoWorkloadExists(ctx, k, namespace, info)
+	if err != nil || !exists {
+		return sessionView{}, false, err
+	}
+	workloadNamespace := strings.TrimSpace(info.Namespace)
+	if workloadNamespace == "" {
+		workloadNamespace = namespace
+	}
+	workloadType := strings.TrimSpace(info.WorkloadType)
+	if workloadType == "" {
+		workloadType = strings.ToLower(strings.TrimSpace(info.WorkloadKind))
+	}
+	createdAt := info.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = info.LastUsedAt
+	}
+	return sessionView{
+		Namespace:    workloadNamespace,
+		Session:      info.Name,
+		Owner:        info.Owner,
+		WorkloadType: workloadType,
+		Phase:        "Pending",
+		Ready:        "0/0",
+		Reason:       "waiting for workload pods",
+		CreatedAt:    createdAt,
+		PodCount:     0,
+	}, true, nil
+}
+
+func savedSessionViews(ctx context.Context, k sessionAccessReader, namespace string, allNamespaces, allUsers bool, opts *Options) ([]sessionView, error) {
+	infos, err := session.ListInfos()
+	if err != nil {
+		return nil, err
+	}
+	owner := currentOwner(opts)
+	views := make([]sessionView, 0, len(infos))
+	for _, info := range infos {
+		if strings.TrimSpace(info.Owner) == "" {
+			info.Owner = owner
+		}
+		if !allUsers && strings.TrimSpace(info.Owner) != owner {
+			continue
+		}
+		if !allNamespaces && strings.TrimSpace(info.Namespace) != "" && strings.TrimSpace(info.Namespace) != namespace {
+			continue
+		}
+		view, ok, err := buildSavedSessionView(ctx, k, namespace, info)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			views = append(views, view)
+		}
+	}
+	sort.Slice(views, func(i, j int) bool {
+		return views[i].CreatedAt.After(views[j].CreatedAt)
+	})
+	return views, nil
+}
+
 func inferExistingSessionForRepo(opts *Options, cfg *config.DevEnvironment, namespace string, reader sessionAccessReader) (string, error) {
 	root, err := session.RepoRoot()
 	if err != nil || strings.TrimSpace(root) == "" {
@@ -447,10 +599,71 @@ func inferExistingSessionForRepo(opts *Options, cfg *config.DevEnvironment, name
 	if err != nil {
 		return "", err
 	}
+	currentConfigPath := normalizeConfigPath(opts.ConfigPath)
 	if len(pods) == 0 {
+		items, err := listLiveControllerResources(ctx, reader, namespace, false, strings.Join(label, ","))
+		if err != nil {
+			return "", err
+		}
+		if len(items) > 0 {
+			sort.Slice(items, func(i, j int) bool {
+				iMatch := sessionMatchesConfigPath(strings.TrimSpace(items[i].Labels["okdev.io/session"]), currentConfigPath)
+				jMatch := sessionMatchesConfigPath(strings.TrimSpace(items[j].Labels["okdev.io/session"]), currentConfigPath)
+				if iMatch != jMatch {
+					return iMatch
+				}
+				return items[i].CreatedAt.After(items[j].CreatedAt)
+			})
+			for _, item := range items {
+				if sn := strings.TrimSpace(item.Labels["okdev.io/session"]); sn != "" {
+					return sn, nil
+				}
+			}
+		}
+		infos, err := session.ListInfos()
+		if err != nil {
+			return "", err
+		}
+		candidates := make([]session.Info, 0, len(infos))
+		for _, info := range infos {
+			if strings.TrimSpace(info.RepoRoot) != root {
+				continue
+			}
+			if owner := strings.TrimSpace(info.Owner); owner != "" && owner != currentOwner(opts) {
+				continue
+			}
+			if strings.TrimSpace(info.Namespace) != "" && strings.TrimSpace(info.Namespace) != namespace {
+				continue
+			}
+			candidates = append(candidates, info)
+		}
+		sort.Slice(candidates, func(i, j int) bool {
+			iMatch := sessionMatchesConfigPath(candidates[i].Name, currentConfigPath)
+			jMatch := sessionMatchesConfigPath(candidates[j].Name, currentConfigPath)
+			if iMatch != jMatch {
+				return iMatch
+			}
+			iTime := candidates[i].LastUsedAt
+			if iTime.IsZero() {
+				iTime = candidates[i].CreatedAt
+			}
+			jTime := candidates[j].LastUsedAt
+			if jTime.IsZero() {
+				jTime = candidates[j].CreatedAt
+			}
+			return iTime.After(jTime)
+		})
+		for _, info := range candidates {
+			exists, err := sessionInfoWorkloadExists(ctx, reader, namespace, info)
+			if err != nil {
+				return "", err
+			}
+			if exists {
+				return info.Name, nil
+			}
+		}
 		return "", nil
 	}
-	currentConfigPath := normalizeConfigPath(opts.ConfigPath)
 	sort.Slice(pods, func(i, j int) bool {
 		iMatch := sessionMatchesConfigPath(sessionNameFromPodSummary(pods[i]), currentConfigPath)
 		jMatch := sessionMatchesConfigPath(sessionNameFromPodSummary(pods[j]), currentConfigPath)
@@ -624,6 +837,8 @@ func ensureExistingSessionOwnership(opts *Options, k *kube.Client, namespace, se
 type sessionAccessReader interface {
 	GetPodSummary(context.Context, string, string) (*kube.PodSummary, error)
 	ListPods(context.Context, string, bool, string) ([]kube.PodSummary, error)
+	ListResources(context.Context, string, bool, string, string, string) ([]kube.ResourceSummary, error)
+	ResourceExists(context.Context, string, string, string, string) (bool, error)
 }
 
 func ensureSessionAccess(opts *Options, k sessionAccessReader, namespace, sessionName string, requireExisting bool) error {
