@@ -286,7 +286,6 @@ func TestNewStatusCmdAllIncludesLivePendingControllerWorkloadWhenNoPodsExistYet(
 		t.Fatalf("unexpected live pending status row: %#v", rows[0])
 	}
 }
-
 func TestNewListCmdOutputsJSON(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

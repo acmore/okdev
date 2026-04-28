@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/acmore/okdev/internal/output"
 	"github.com/acmore/okdev/internal/session"
@@ -178,7 +179,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 }
 
 func fallbackStatusView(ctx context.Context, cc *commandContext) (sessionView, bool, error) {
-	if cc == nil || cc.kube == nil || cc.sessionName == "" {
+	if cc == nil || cc.kube == nil || strings.TrimSpace(cc.sessionName) == "" {
 		return sessionView{}, false, nil
 	}
 	info, err := session.LoadInfo(cc.sessionName)
