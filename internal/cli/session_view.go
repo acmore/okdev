@@ -72,6 +72,35 @@ func buildSessionViews(pods []kube.PodSummary) []sessionView {
 	return views
 }
 
+func buildControllerSessionViews(resources []kube.ResourceSummary) []sessionView {
+	views := make([]sessionView, 0, len(resources))
+	for _, resource := range resources {
+		sessionName := strings.TrimSpace(resource.Labels["okdev.io/session"])
+		if sessionName == "" {
+			continue
+		}
+		workloadType := strings.TrimSpace(resource.Labels["okdev.io/workload-type"])
+		if workloadType == "" {
+			workloadType = strings.ToLower(strings.TrimSpace(resource.Kind))
+		}
+		views = append(views, sessionView{
+			Namespace:    resource.Namespace,
+			Session:      sessionName,
+			Owner:        resource.Labels["okdev.io/owner"],
+			WorkloadType: workloadType,
+			Phase:        "Pending",
+			Ready:        "0/0",
+			Reason:       "waiting for workload pods",
+			CreatedAt:    resource.CreatedAt,
+			PodCount:     0,
+		})
+	}
+	sort.Slice(views, func(i, j int) bool {
+		return views[i].CreatedAt.After(views[j].CreatedAt)
+	})
+	return views
+}
+
 func selectTargetPod(pods []kube.PodSummary) (kube.PodSummary, bool) {
 	if len(pods) == 0 {
 		return kube.PodSummary{}, false

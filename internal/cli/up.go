@@ -308,7 +308,7 @@ func upReconcile(state *upState, applyWorkload bool) error {
 			switch action {
 			case driftActionReuse:
 				state.ui.stepDone(state.runtime.Kind(), "reused existing workload")
-				return nil
+				return persistSessionState(state)
 			case driftActionReapply:
 				outcome = workloadApplyReapplied
 			case driftActionRecreate:
@@ -320,7 +320,7 @@ func upReconcile(state *upState, applyWorkload bool) error {
 		return err
 	}
 	state.ui.stepDone(state.runtime.Kind(), workloadApplyStatus(outcome))
-	return nil
+	return persistSessionState(state)
 }
 
 func prepareReconcileApply(state *upState) (workloadApplyOutcome, error) {
@@ -836,43 +836,62 @@ func upSetup(state *upState) error {
 			}
 		}
 	}
+	state.ui.printWarnings()
+	state.ui.printReadyCard(state.command.sessionName, state.command.namespace, target.PodName, sshSummary, syncSummary, state.command.cfg.Spec.Ports, state.syncPairs, syncModeSymbol)
+	upgrade.NewChecker().CheckAndRemind(version.Version, state.cmd.ErrOrStderr())
+	return nil
+}
+
+// persistSessionState writes the active-session pointer and session.Info
+// snapshot as soon as the workload has been reconciled. This must happen
+// before we wait for pods so status/list commands (and a re-run of `up`)
+// can discover the session while controller-backed pods are still pending.
+func persistSessionState(state *upState) error {
+	if state == nil || state.command == nil {
+		return nil
+	}
 	if err := session.SaveActiveSession(state.command.sessionName); err != nil {
 		return err
+	}
+	if state.ui != nil {
+		state.ui.stepDone("active session", state.command.sessionName)
+	}
+	if err := session.ClearShutdownRequest(state.command.sessionName); err != nil {
+		if state.ui != nil {
+			state.ui.warnf("failed to clear prior shutdown request: %v", err)
+		}
 	}
 	apiVersion, kind, workloadName := "", "", state.workloadName
 	if provider, ok := state.runtime.(workload.RefProvider); ok {
 		if refAPIVersion, refKind, refName, refErr := provider.WorkloadRef(); refErr == nil {
 			apiVersion, kind, workloadName = refAPIVersion, refKind, refName
-		} else {
+		} else if state.ui != nil {
 			state.ui.warnf("failed to resolve workload ref for session metadata: %v", refErr)
 		}
 	}
 	repoRoot, repoErr := session.RepoRoot()
 	if repoErr != nil {
-		state.ui.warnf("failed to resolve repo root for session metadata: %v", repoErr)
-	} else if infoErr := session.SaveInfo(session.Info{
+		if state.ui != nil {
+			state.ui.warnf("failed to resolve repo root for session metadata: %v", repoErr)
+		}
+		return nil
+	}
+	infoErr := session.SaveInfo(session.Info{
 		Name:               state.command.sessionName,
 		RepoRoot:           repoRoot,
 		ConfigPath:         state.command.cfgPath,
 		Namespace:          state.command.namespace,
 		KubeContext:        state.opts.Context,
-		Owner:              state.command.opts.Owner,
+		Owner:              currentOwner(state.command.opts),
 		WorkloadType:       state.command.cfg.Spec.Workload.Type,
 		RunID:              state.runID,
 		WorkloadAPIVersion: apiVersion,
 		WorkloadKind:       kind,
 		WorkloadName:       workloadName,
-	}); infoErr != nil {
+	})
+	if infoErr != nil && state.ui != nil {
 		state.ui.warnf("failed to persist session metadata: %v", infoErr)
 	}
-	state.ui.stepDone("active session", state.command.sessionName)
-	if err := session.ClearShutdownRequest(state.command.sessionName); err != nil {
-		state.ui.warnf("failed to clear prior shutdown request: %v", err)
-	}
-
-	state.ui.printWarnings()
-	state.ui.printReadyCard(state.command.sessionName, state.command.namespace, target.PodName, sshSummary, syncSummary, state.command.cfg.Spec.Ports, state.syncPairs, syncModeSymbol)
-	upgrade.NewChecker().CheckAndRemind(version.Version, state.cmd.ErrOrStderr())
 	return nil
 }
 

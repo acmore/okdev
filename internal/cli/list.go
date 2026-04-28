@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 
@@ -64,6 +65,16 @@ func newListCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			views := buildSessionViews(pods)
+			controllerResources, err := listLiveControllerResources(ctx, cc.kube, cc.namespace, effectiveAllNamespaces, label)
+			if err != nil {
+				return err
+			}
+			views = mergeSessionViews(views, buildControllerSessionViews(controllerResources))
+			savedViews, err := savedSessionViews(ctx, cc.kube, cc.namespace, effectiveAllNamespaces, allUsers, opts)
+			if err != nil {
+				return err
+			}
+			views = mergeSessionViews(views, savedViews)
 			if opts.Output == "json" {
 				type listRow struct {
 					Namespace string `json:"namespace"`
@@ -117,6 +128,36 @@ func newListCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&allNamespaces, "all-namespaces", false, "List sessions across all namespaces")
 	cmd.Flags().BoolVar(&allUsers, "all-users", false, "List sessions for all owners")
 	return cmd
+}
+
+func mergeSessionViews(primary, secondary []sessionView) []sessionView {
+	if len(secondary) == 0 {
+		return primary
+	}
+	// Dedup on namespace+session only: owner may be missing from one source
+	// (e.g., a controller resource without the owner label) which would
+	// otherwise cause the same session to appear twice.
+	key := func(v sessionView) string {
+		return strings.TrimSpace(v.Namespace) + "\x00" + strings.TrimSpace(v.Session)
+	}
+	merged := make([]sessionView, 0, len(primary)+len(secondary))
+	seen := make(map[string]struct{}, len(primary)+len(secondary))
+	for _, view := range primary {
+		seen[key(view)] = struct{}{}
+		merged = append(merged, view)
+	}
+	for _, view := range secondary {
+		k := key(view)
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		merged = append(merged, view)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		return merged[i].CreatedAt.After(merged[j].CreatedAt)
+	})
+	return merged
 }
 
 func sessionNameFromPodSummary(p kube.PodSummary) string {

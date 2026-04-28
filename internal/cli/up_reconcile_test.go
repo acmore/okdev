@@ -1,12 +1,19 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
 	"github.com/acmore/okdev/internal/workload"
@@ -485,6 +492,132 @@ func TestPrepareReconcileApplyWaitsForDeletionBarrier(t *testing.T) {
 	}
 	if k.listCalls < 2 {
 		t.Fatalf("expected deletion barrier to poll pods, got %d list calls", k.listCalls)
+	}
+}
+
+func TestUpReconcilePersistsSessionStateBeforeWait(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/namespaces/demo/pods":
+			_, _ = io.WriteString(w, `{"kind":"PodList","apiVersion":"v1","items":[]}`)
+		case "/apis/batch/v1/namespaces/demo/jobs/trainer":
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KUBECONFIG", writeCLITLSTestKubeconfig(t, server))
+
+	opts := &Options{Context: "dev", Owner: "alice"}
+	var out bytes.Buffer
+	state := &upState{
+		ctx:    context.Background(),
+		opts:   opts,
+		ui:     newUpUI(&out, io.Discard),
+		labels: map[string]string{"okdev.io/session": "sess-a"},
+		runtime: &fakeRefRuntime{
+			kind:       workload.TypeJob,
+			apiVersion: "batch/v1",
+			name:       "trainer",
+		},
+		workloadName: "trainer",
+		runID:        "abcd1234",
+		command: &commandContext{
+			opts:        opts,
+			cfg:         &config.DevEnvironment{Spec: config.DevEnvSpec{Workload: config.WorkloadSpec{Type: workload.TypeJob}}},
+			cfgPath:     "/tmp/.okdev.yaml",
+			namespace:   "demo",
+			sessionName: "sess-a",
+			kube:        newKubeClient(opts),
+		},
+	}
+
+	if err := upReconcile(state, true); err != nil {
+		t.Fatalf("upReconcile: %v", err)
+	}
+
+	active, err := session.LoadActiveSession()
+	if err != nil {
+		t.Fatalf("LoadActiveSession: %v", err)
+	}
+	if active != "sess-a" {
+		t.Fatalf("expected active session to be persisted, got %q", active)
+	}
+
+	info, err := session.LoadInfo("sess-a")
+	if err != nil {
+		t.Fatalf("LoadInfo: %v", err)
+	}
+	if info.WorkloadAPIVersion != "batch/v1" || info.WorkloadKind != workload.TypeJob || info.WorkloadName != "trainer" {
+		t.Fatalf("expected workload ref to be persisted, got %#v", info)
+	}
+	if info.RunID != "abcd1234" || info.WorkloadType != workload.TypeJob || info.Owner != "alice" {
+		t.Fatalf("expected session metadata to be persisted, got %#v", info)
+	}
+}
+
+func TestUpReconcileDoesNotFailWhenSessionInfoCannotBePersisted(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/namespaces/demo/pods":
+			_, _ = io.WriteString(w, `{"kind":"PodList","apiVersion":"v1","items":[]}`)
+		case "/apis/batch/v1/namespaces/demo/jobs/trainer":
+			http.NotFound(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("KUBECONFIG", writeCLITLSTestKubeconfig(t, server))
+	if err := os.MkdirAll(filepath.Join(home, ".okdev"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".okdev", "sessions"), []byte("blocked\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	opts := &Options{Context: "dev", Owner: "alice"}
+	var out bytes.Buffer
+	state := &upState{
+		ctx:    context.Background(),
+		opts:   opts,
+		ui:     newUpUI(&out, io.Discard),
+		labels: map[string]string{"okdev.io/session": "sess-a"},
+		runtime: &fakeRefRuntime{
+			kind:       workload.TypeJob,
+			apiVersion: "batch/v1",
+			name:       "trainer",
+		},
+		workloadName: "trainer",
+		runID:        "abcd1234",
+		command: &commandContext{
+			opts:        opts,
+			cfg:         &config.DevEnvironment{Spec: config.DevEnvSpec{Workload: config.WorkloadSpec{Type: workload.TypeJob}}},
+			cfgPath:     "/tmp/.okdev.yaml",
+			namespace:   "demo",
+			sessionName: "sess-a",
+			kube:        newKubeClient(opts),
+		},
+	}
+
+	if err := upReconcile(state, true); err != nil {
+		t.Fatalf("upReconcile: %v", err)
+	}
+
+	active, err := session.LoadActiveSession()
+	if err != nil {
+		t.Fatalf("LoadActiveSession: %v", err)
+	}
+	if active != "sess-a" {
+		t.Fatalf("expected active session to be persisted, got %q", active)
 	}
 }
 
