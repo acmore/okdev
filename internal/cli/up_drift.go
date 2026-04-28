@@ -236,11 +236,17 @@ func handleChangedWorkloadDrift(state *upState, diff string, isPod bool, interac
 	}
 
 	if requiresRecreate {
+		if state.ui != nil {
+			state.ui.stepRun("reconcile", "deleting existing workload")
+		}
 		if delErr := state.runtime.Delete(state.ctx, state.command.kube, state.command.namespace, true); delErr != nil {
 			return driftActionReuse, fmt.Errorf("delete existing workload for recreate: %w", delErr)
 		}
 		if waitErr := waitForReconcileDeletion(state); waitErr != nil {
 			return driftActionReuse, waitErr
+		}
+		if state.ui != nil {
+			state.ui.stepDone("reconcile", "old workload deleted")
 		}
 		return driftActionRecreate, nil
 	}

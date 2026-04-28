@@ -15,12 +15,14 @@ import (
 
 type fakeWorkloadExistenceChecker struct {
 	exists     bool
+	existsSeq  []bool
 	err        error
 	apiVersion string
 	kind       string
 	name       string
 	podsSeq    [][]kube.PodSummary
 	listCalls  int
+	existCalls int
 }
 
 func TestResolveRunWorkloadIdentityReusesExistingSavedWorkload(t *testing.T) {
@@ -124,6 +126,14 @@ func (f *fakeWorkloadExistenceChecker) ResourceExists(_ context.Context, _ strin
 	f.apiVersion = apiVersion
 	f.kind = kind
 	f.name = name
+	if len(f.existsSeq) > 0 {
+		idx := f.existCalls
+		if idx >= len(f.existsSeq) {
+			idx = len(f.existsSeq) - 1
+		}
+		f.existCalls++
+		return f.existsSeq[idx], f.err
+	}
 	return f.exists, f.err
 }
 

@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"strings"
 
 	"github.com/acmore/okdev/internal/output"
+	"github.com/acmore/okdev/internal/session"
 	"github.com/spf13/cobra"
 )
 
@@ -52,11 +55,20 @@ func newStatusCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if len(pods) == 0 {
+			views := buildSessionViews(pods)
+			if len(views) == 0 && !all {
+				fallback, ok, fallbackErr := fallbackStatusView(ctx, cc)
+				if fallbackErr != nil {
+					return fallbackErr
+				}
+				if ok {
+					views = []sessionView{fallback}
+				}
+			}
+			if len(views) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "No matching sessions found")
 				return nil
 			}
-			views := buildSessionViews(pods)
 			if details {
 				if all || len(views) != 1 {
 					return fmt.Errorf("--details requires a single session")
@@ -142,4 +154,53 @@ func newStatusCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&allUsers, "all-users", false, "Show sessions for all owners")
 	cmd.Flags().BoolVar(&details, "details", false, "Show detailed diagnostics for a single session")
 	return cmd
+}
+
+func fallbackStatusView(ctx context.Context, cc *commandContext) (sessionView, bool, error) {
+	if cc == nil || cc.kube == nil || strings.TrimSpace(cc.sessionName) == "" {
+		return sessionView{}, false, nil
+	}
+	info, err := session.LoadInfo(cc.sessionName)
+	if err != nil {
+		return sessionView{}, false, err
+	}
+	if strings.TrimSpace(info.Name) == "" ||
+		strings.TrimSpace(info.WorkloadAPIVersion) == "" ||
+		strings.TrimSpace(info.WorkloadKind) == "" ||
+		strings.TrimSpace(info.WorkloadName) == "" {
+		return sessionView{}, false, nil
+	}
+
+	namespace := strings.TrimSpace(info.Namespace)
+	if namespace == "" {
+		namespace = cc.namespace
+	}
+	exists, err := cc.kube.ResourceExists(ctx, namespace, info.WorkloadAPIVersion, info.WorkloadKind, info.WorkloadName)
+	if err != nil {
+		return sessionView{}, false, err
+	}
+	if !exists {
+		return sessionView{}, false, nil
+	}
+
+	workloadType := strings.TrimSpace(info.WorkloadType)
+	if workloadType == "" {
+		workloadType = strings.ToLower(strings.TrimSpace(info.WorkloadKind))
+	}
+	createdAt := info.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = info.LastUsedAt
+	}
+
+	return sessionView{
+		Namespace:    namespace,
+		Session:      info.Name,
+		Owner:        info.Owner,
+		WorkloadType: workloadType,
+		Phase:        "Pending",
+		Ready:        "0/0",
+		Reason:       "waiting for workload pods",
+		CreatedAt:    createdAt,
+		PodCount:     0,
+	}, true, nil
 }

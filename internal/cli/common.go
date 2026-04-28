@@ -280,6 +280,22 @@ func (s *transientStatus) clear() {
 	fmt.Fprint(s.w, "\r\033[K")
 }
 
+// printAbove writes a persistent line above the in-place status, clearing the
+// current spinner line first so the printed output is not garbled by the
+// concurrent spinner re-render. The spinner picks up where it left off on the
+// next render tick.
+func (s *transientStatus) printAbove(line string) {
+	if !s.enabled {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !strings.HasSuffix(line, "\n") {
+		line += "\n"
+	}
+	fmt.Fprintf(s.w, "\r\033[K%s", line)
+}
+
 func (s *transientStatus) stop() {
 	if !s.enabled {
 		return

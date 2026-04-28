@@ -6,8 +6,10 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/acmore/okdev/internal/config"
+	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/workload"
 	"github.com/spf13/cobra"
 )
@@ -207,6 +209,64 @@ func TestHandleChangedWorkloadDriftPromptsRecreateForImmutableController(t *test
 	}
 	if !strings.Contains(got, "Recreate workload? [y/N]: ") {
 		t.Fatalf("expected recreate prompt, got %q", got)
+	}
+}
+
+func TestHandleChangedWorkloadDriftShowsWaitStatusDuringRecreate(t *testing.T) {
+	var out bytes.Buffer
+	ui := &upUI{
+		out:         &out,
+		errOut:      &out,
+		interactive: false,
+	}
+
+	k := &fakeWorkloadExistenceChecker{
+		existsSeq: []bool{true, true, false, false},
+		podsSeq: [][]kube.PodSummary{
+			{{Name: "trainer-old-0"}},
+			{{Name: "trainer-old-0"}},
+			{},
+		},
+	}
+
+	state := &upState{
+		ctx:           context.Background(),
+		cmd:           testCommandWithIO(strings.NewReader("y\n"), &out, &out),
+		ui:            ui,
+		reconcileKube: k,
+		runtime: &fakeRefRuntime{
+			kind:       workload.TypeJob,
+			apiVersion: "batch/v1",
+			name:       "trainer",
+		},
+		command: &commandContext{
+			namespace:   "default",
+			sessionName: "sess",
+			kube:        &kube.Client{},
+		},
+		flags: upOptions{
+			waitTimeout: 3 * time.Second,
+		},
+	}
+
+	action, err := handleChangedWorkloadDrift(state, "diff-body", false, true)
+	if err != nil {
+		t.Fatalf("handleChangedWorkloadDrift: %v", err)
+	}
+	if action != driftActionRecreate {
+		t.Fatalf("expected recreate action, got %v", action)
+	}
+
+	got := out.String()
+	for _, want := range []string{
+		"Recreate workload? [y/N]: ",
+		"… reconcile: deleting existing workload",
+		"… reconcile: waiting for workload batch/v1/job/trainer to be deleted",
+		"… reconcile: waiting for 1 old session pod to terminate",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected output to contain %q, got %q", want, got)
+		}
 	}
 }
 

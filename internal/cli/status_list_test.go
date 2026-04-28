@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/acmore/okdev/internal/session"
 )
 
 func TestNewStatusCmdOutputsJSON(t *testing.T) {
@@ -44,6 +46,57 @@ func TestNewStatusCmdOutputsJSON(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0]["session"] != "sess-a" || rows[0]["phase"] != "Running" {
 		t.Fatalf("unexpected status rows: %#v", rows)
+	}
+}
+
+func TestNewStatusCmdFallsBackToSavedWorkloadWhenNoPodsExistYet(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/namespaces/demo/pods":
+			_, _ = io.WriteString(w, `{"kind":"PodList","apiVersion":"v1","items":[]}`)
+		case "/apis/batch/v1/namespaces/demo/jobs/trainer":
+			_, _ = io.WriteString(w, `{"kind":"Job","apiVersion":"batch/v1","metadata":{"namespace":"demo","name":"trainer"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("HOME", t.TempDir())
+	if err := session.SaveInfo(session.Info{
+		Name:               "sess-a",
+		Namespace:          "demo",
+		Owner:              "alice",
+		WorkloadType:       "job",
+		WorkloadAPIVersion: "batch/v1",
+		WorkloadKind:       "Job",
+		WorkloadName:       "trainer",
+	}); err != nil {
+		t.Fatalf("SaveInfo: %v", err)
+	}
+
+	t.Setenv("KUBECONFIG", writeCLITLSTestKubeconfig(t, server))
+	cfgPath := writeCLIConfig(t, "demo")
+	opts := &Options{ConfigPath: cfgPath, Context: "dev", Output: "json", Session: "sess-a", Owner: "alice"}
+	cmd := newStatusCmd(opts)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status execute: %v", err)
+	}
+
+	var rows []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+		t.Fatalf("json unmarshal: %v\n%s", err, out.String())
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 fallback status row, got %#v", rows)
+	}
+	if rows[0]["session"] != "sess-a" || rows[0]["workload"] != "job" || rows[0]["phase"] != "Pending" {
+		t.Fatalf("unexpected fallback row: %#v", rows[0])
 	}
 }
 
