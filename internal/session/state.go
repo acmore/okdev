@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,6 +75,14 @@ func stateRootDir() (string, error) {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
 	return filepath.Join(home, stateDirName), nil
+}
+
+func sessionsRootDir() (string, error) {
+	root, err := stateRootDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, sessionsDirName), nil
 }
 
 func SessionDir(name string) (string, error) {
@@ -364,6 +373,38 @@ func LoadInfo(name string) (Info, error) {
 		return Info{}, fmt.Errorf("decode session info: %w", err)
 	}
 	return info, nil
+}
+
+func ListInfos() ([]Info, error) {
+	root, err := sessionsRootDir()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read sessions directory: %w", err)
+	}
+	infos := make([]Info, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		info, err := LoadInfo(entry.Name())
+		if err != nil {
+			// Skip unreadable/corrupt session directories so one bad file
+			// doesn't hide every other session from callers.
+			slog.Debug("skipping unreadable session info", "session", entry.Name(), "error", err)
+			continue
+		}
+		if strings.TrimSpace(info.Name) == "" {
+			continue
+		}
+		infos = append(infos, info)
+	}
+	return infos, nil
 }
 
 func ShutdownRequestPath(name string) (string, error) {

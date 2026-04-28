@@ -77,6 +77,16 @@ type PodSummary struct {
 	PodIP       string
 }
 
+type ResourceSummary struct {
+	Namespace   string
+	Name        string
+	Kind        string
+	APIVersion  string
+	CreatedAt   time.Time
+	Labels      map[string]string
+	Annotations map[string]string
+}
+
 type PodReadinessProgress struct {
 	Phase           corev1.PodPhase
 	ReadyContainers int
@@ -561,6 +571,71 @@ func (c *Client) ResourceExists(ctx context.Context, namespace string, apiVersio
 		return false, nil
 	}
 	return err == nil, err
+}
+
+func (c *Client) ListResources(ctx context.Context, namespace string, allNamespaces bool, apiVersion string, kind string, labelSelector string) ([]ResourceSummary, error) {
+	cs, dc, mapper, _, err := c.clients()
+	if err != nil {
+		return nil, err
+	}
+	listOptions := metav1.ListOptions{LabelSelector: labelSelector}
+
+	switch {
+	case strings.EqualFold(strings.TrimSpace(apiVersion), "batch/v1") && strings.EqualFold(strings.TrimSpace(kind), "job"):
+		ns := namespace
+		if allNamespaces {
+			ns = ""
+		}
+		list, err := cs.BatchV1().Jobs(ns).List(ctx, listOptions)
+		if err != nil {
+			return nil, err
+		}
+		items := make([]ResourceSummary, 0, len(list.Items))
+		for _, item := range list.Items {
+			items = append(items, ResourceSummary{
+				Namespace:   item.Namespace,
+				Name:        item.Name,
+				Kind:        "Job",
+				APIVersion:  "batch/v1",
+				CreatedAt:   item.CreationTimestamp.Time,
+				Labels:      cloneStringMap(item.Labels),
+				Annotations: cloneStringMap(item.Annotations),
+			})
+		}
+		return items, nil
+	}
+
+	gv, err := schema.ParseGroupVersion(apiVersion)
+	if err != nil {
+		return nil, fmt.Errorf("parse apiVersion %q: %w", apiVersion, err)
+	}
+	mapping, err := mapper.RESTMapping(schema.GroupKind{Group: gv.Group, Kind: kind}, gv.Version)
+	if err != nil {
+		return nil, fmt.Errorf("resolve rest mapping for %s/%s: %w", apiVersion, kind, err)
+	}
+	var resource dynamic.ResourceInterface
+	if mapping.Scope.Name() == meta.RESTScopeNameNamespace && !allNamespaces {
+		resource = dc.Resource(mapping.Resource).Namespace(namespace)
+	} else {
+		resource = dc.Resource(mapping.Resource)
+	}
+	list, err := resource.List(ctx, listOptions)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]ResourceSummary, 0, len(list.Items))
+	for _, item := range list.Items {
+		items = append(items, ResourceSummary{
+			Namespace:   item.GetNamespace(),
+			Name:        item.GetName(),
+			Kind:        kind,
+			APIVersion:  apiVersion,
+			CreatedAt:   item.GetCreationTimestamp().Time,
+			Labels:      cloneStringMap(item.GetLabels()),
+			Annotations: cloneStringMap(item.GetAnnotations()),
+		})
+	}
+	return items, nil
 }
 
 func (c *Client) GetResourceAnnotation(ctx context.Context, namespace, apiVersion, kind, name, key string) (string, bool, error) {

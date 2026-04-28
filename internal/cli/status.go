@@ -56,6 +56,28 @@ func newStatusCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			views := buildSessionViews(pods)
+			if all {
+				controllerResources, controllerErr := listLiveControllerResources(ctx, cc.kube, cc.namespace, false, label)
+				if controllerErr != nil {
+					return controllerErr
+				}
+				views = mergeSessionViews(views, buildControllerSessionViews(controllerResources))
+				savedViews, savedErr := savedSessionViews(ctx, cc.kube, cc.namespace, false, allUsers, opts)
+				if savedErr != nil {
+					return savedErr
+				}
+				views = mergeSessionViews(views, savedViews)
+			}
+			if len(views) == 0 && !all {
+				controllerResources, controllerErr := listLiveControllerResources(ctx, cc.kube, cc.namespace, false, "okdev.io/managed=true,okdev.io/session="+cc.sessionName)
+				if controllerErr != nil {
+					return controllerErr
+				}
+				controllerViews := buildControllerSessionViews(controllerResources)
+				if len(controllerViews) > 0 {
+					views = controllerViews
+				}
+			}
 			if len(views) == 0 && !all {
 				fallback, ok, fallbackErr := fallbackStatusView(ctx, cc)
 				if fallbackErr != nil {
@@ -164,43 +186,5 @@ func fallbackStatusView(ctx context.Context, cc *commandContext) (sessionView, b
 	if err != nil {
 		return sessionView{}, false, err
 	}
-	if strings.TrimSpace(info.Name) == "" ||
-		strings.TrimSpace(info.WorkloadAPIVersion) == "" ||
-		strings.TrimSpace(info.WorkloadKind) == "" ||
-		strings.TrimSpace(info.WorkloadName) == "" {
-		return sessionView{}, false, nil
-	}
-
-	namespace := strings.TrimSpace(info.Namespace)
-	if namespace == "" {
-		namespace = cc.namespace
-	}
-	exists, err := cc.kube.ResourceExists(ctx, namespace, info.WorkloadAPIVersion, info.WorkloadKind, info.WorkloadName)
-	if err != nil {
-		return sessionView{}, false, err
-	}
-	if !exists {
-		return sessionView{}, false, nil
-	}
-
-	workloadType := strings.TrimSpace(info.WorkloadType)
-	if workloadType == "" {
-		workloadType = strings.ToLower(strings.TrimSpace(info.WorkloadKind))
-	}
-	createdAt := info.CreatedAt
-	if createdAt.IsZero() {
-		createdAt = info.LastUsedAt
-	}
-
-	return sessionView{
-		Namespace:    namespace,
-		Session:      info.Name,
-		Owner:        info.Owner,
-		WorkloadType: workloadType,
-		Phase:        "Pending",
-		Ready:        "0/0",
-		Reason:       "waiting for workload pods",
-		CreatedAt:    createdAt,
-		PodCount:     0,
-	}, true, nil
+	return buildSavedSessionView(ctx, cc.kube, cc.namespace, info)
 }
