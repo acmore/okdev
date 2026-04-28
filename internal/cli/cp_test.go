@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -152,6 +153,41 @@ func TestDownloadTargetPath(t *testing.T) {
 				t.Fatalf("download target path = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestResolveDownloadTargetPathSinglePodFileIntoExistingDirectory(t *testing.T) {
+	localDir := t.TempDir()
+	got, err := resolveDownloadTargetPath(localDir, "master-0", "/remote/result.txt", false, 1)
+	if err != nil {
+		t.Fatalf("resolve download target path: %v", err)
+	}
+	want := filepath.Join(localDir, "result.txt")
+	if got != want {
+		t.Fatalf("resolved path = %q, want %q", got, want)
+	}
+}
+
+func TestResolveDownloadTargetPathSinglePodFileIntoDotDirectory(t *testing.T) {
+	cwd := t.TempDir()
+	oldwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(cwd); err != nil {
+		t.Fatalf("chdir temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldwd)
+	})
+
+	got, err := resolveDownloadTargetPath(".", "master-0", "/remote/result.txt", false, 1)
+	if err != nil {
+		t.Fatalf("resolve download target path: %v", err)
+	}
+	want := filepath.Join(".", "result.txt")
+	if got != want {
+		t.Fatalf("resolved path = %q, want %q", got, want)
 	}
 }
 
