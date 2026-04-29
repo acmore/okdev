@@ -150,9 +150,10 @@
 ### `okdev migrate [--template <name>] [--set key=value] [--dry-run] [--yes]`
 
 - Without `--template`, migrates older config schema fields to the current schema.
-- With `--template`, re-renders the selected template, overlays existing config values so local edits win, and writes the merged config.
+- With `--template`, re-renders the selected template, overlays existing config values so local edits win, writes the merged config, and regenerates any template-declared companion files. Unlike the config, companion files are fully overwritten from the re-rendered template; local edits to those files will be lost (the `.bak` backup is your recovery path).
 - Existing `spec.template.vars` seed template variables during migration; `--set` overrides stored values.
-- `--dry-run` prints the merged config without writing. `--yes` skips confirmation when writing.
+- Unless `--no-backup` is set, `okdev migrate --template` writes `.bak` backups for the config and any rewritten companion files before overwriting them.
+- `--dry-run` prints the merged config and lists the companion files that would be rewritten, without writing. `--yes` skips confirmation when writing.
 
 ### `okdev up [--wait-timeout 10m] [--dry-run]`
 
