@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 
 	"github.com/acmore/okdev/internal/config"
+	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
+	corev1 "k8s.io/api/core/v1"
 	sigs_yaml "sigs.k8s.io/yaml"
 )
 
@@ -107,6 +110,12 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 type migrateTemplateResult struct {
 	merged  string
 	summary string
+	files   []migrateRenderedFile
+}
+
+type migrateRenderedFile struct {
+	path    string
+	content string
 }
 
 func runMigrateTemplate(cmd *cobra.Command, cfgPath, templateRef string, setFlags []string, yes, dryRun, noBackup bool) error {
@@ -121,6 +130,12 @@ func runMigrateTemplate(cmd *cobra.Command, cfgPath, templateRef string, setFlag
 	if dryRun {
 		fmt.Fprintln(w, "\n--- dry-run output ---")
 		fmt.Fprint(w, result.merged)
+		if len(result.files) > 0 {
+			fmt.Fprintln(w, "\nWould rewrite companion files:")
+			for _, file := range result.files {
+				fmt.Fprintf(w, "- %s\n", file.path)
+			}
+		}
 		return nil
 	}
 	if !yes {
@@ -138,20 +153,52 @@ func runMigrateTemplate(cmd *cobra.Command, cfgPath, templateRef string, setFlag
 	if err != nil {
 		return fmt.Errorf("read config %q: %w", cfgPath, err)
 	}
+
+	// Write all backups first so even a partial write failure still leaves a
+	// recoverable snapshot of every file we intend to modify.
 	if !noBackup {
 		bakPath := cfgPath + ".bak"
 		if err := os.WriteFile(bakPath, raw, 0o644); err != nil {
 			return fmt.Errorf("write backup %q: %w", bakPath, err)
 		}
+		for _, file := range result.files {
+			existing, err := os.ReadFile(file.path)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return fmt.Errorf("read existing companion file %q: %w", file.path, err)
+			}
+			bakPath := file.path + ".bak"
+			if err := os.WriteFile(bakPath, existing, 0o644); err != nil {
+				return fmt.Errorf("write backup %q: %w", bakPath, err)
+			}
+		}
 	}
+
 	if err := os.WriteFile(cfgPath, []byte(result.merged), 0o644); err != nil {
 		return fmt.Errorf("write migrated config %q: %w", cfgPath, err)
+	}
+	for _, file := range result.files {
+		if err := os.MkdirAll(filepath.Dir(file.path), 0o755); err != nil {
+			return fmt.Errorf("create parent directory for %q: %w", file.path, err)
+		}
+		if err := os.WriteFile(file.path, []byte(file.content), 0o644); err != nil {
+			return fmt.Errorf("write migrated companion file %q: %w", file.path, err)
+		}
 	}
 	fmt.Fprintf(w, "Wrote migrated config to %s", cfgPath)
 	if !noBackup {
 		fmt.Fprintf(w, " (backup: %s.bak)", cfgPath)
 	}
 	fmt.Fprintln(w)
+	for _, file := range result.files {
+		fmt.Fprintf(w, "Rewrote companion file %s", file.path)
+		if !noBackup {
+			fmt.Fprintf(w, " (backup: %s.bak)", file.path)
+		}
+		fmt.Fprintln(w)
+	}
 	return nil
 }
 
@@ -199,9 +246,7 @@ func mergeTemplateConfigWithPrompt(cfgPath, templateRef string, setFlags []strin
 		return nil, err
 	}
 
-	vars := config.NewTemplateVars()
-	vars.Name = existingCfg.Metadata.Name
-	vars.Namespace = existingCfg.Spec.Namespace
+	vars := templateVarsForMigrate(&existingCfg, cfgPath)
 	rendered, err := config.RenderTemplateWithVars(context.Background(), templateRef, vars, customVars, projectDir)
 	if err != nil {
 		return nil, err
@@ -240,11 +285,18 @@ func mergeTemplateConfigWithPrompt(cfgPath, templateRef string, setFlags []strin
 	if err := validationCfg.Validate(); err != nil {
 		return nil, fmt.Errorf("merged config is invalid: %w", err)
 	}
+	files, err := renderMigrateTemplateFiles(cfgPath, templateRef, meta, vars, customVars, projectDir)
+	if err != nil {
+		return nil, err
+	}
 	summary := "Template migration summary: added template fields and preserved existing values."
 	if preserved > 0 {
 		summary = fmt.Sprintf("Template migration summary: preserved %d existing value(s); added missing template fields.\nNote: spec.template.vars records the new variable values, but preserved config fields retain their prior values.", preserved)
 	}
-	return &migrateTemplateResult{merged: string(out), summary: summary}, nil
+	if len(files) > 0 {
+		summary = fmt.Sprintf("%s\nWill regenerate %d companion file(s); any local edits to those files will be overwritten.", summary, len(files))
+	}
+	return &migrateTemplateResult{merged: string(out), summary: summary, files: files}, nil
 }
 
 func warnMigrateUnknownSets(w io.Writer, templateRef string, setFlags []string, projectDir string) {
@@ -289,4 +341,144 @@ func mergeMaps(base, overlay map[string]any, path string) (map[string]any, int) 
 		out[key] = overlayVal
 	}
 	return out, preserved
+}
+
+func renderMigrateTemplateFiles(cfgPath, templateRef string, meta *config.TemplateMeta, vars *config.TemplateVars, customVars map[string]any, projectDir string) ([]migrateRenderedFile, error) {
+	if meta == nil || len(meta.Files) == 0 {
+		return nil, nil
+	}
+	files := make([]migrateRenderedFile, 0, len(meta.Files))
+	for _, file := range meta.Files {
+		pathTemplate := strings.TrimSpace(file.Path)
+		assetRef := strings.TrimSpace(file.Template)
+		if pathTemplate == "" {
+			return nil, fmt.Errorf("template file path is required")
+		}
+		if assetRef == "" {
+			return nil, fmt.Errorf("template file %q requires template", pathTemplate)
+		}
+		renderedPath, err := config.RenderTemplateContent("template-file-path", pathTemplate, vars, customVars)
+		if err != nil {
+			return nil, fmt.Errorf("render template file path %q: %w", pathTemplate, err)
+		}
+		if strings.TrimSpace(renderedPath) == "" {
+			return nil, fmt.Errorf("template file path %q rendered empty", pathTemplate)
+		}
+		target := resolveInitScaffoldFilePath(cfgPath, renderedPath)
+		raw, err := config.ResolveTemplateAssetFromDir(context.Background(), templateRef, assetRef, projectDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve template file %q: %w", assetRef, err)
+		}
+		rendered, err := config.RenderTemplateContent(filepath.Base(assetRef), raw, vars, customVars)
+		if err != nil {
+			return nil, fmt.Errorf("render template file %q: %w", assetRef, err)
+		}
+		files = append(files, migrateRenderedFile{path: target, content: rendered})
+	}
+	return files, nil
+}
+
+func templateVarsForMigrate(cfg *config.DevEnvironment, cfgPath string) *config.TemplateVars {
+	vars := config.NewTemplateVars()
+	if cfg == nil {
+		return vars
+	}
+
+	if name := strings.TrimSpace(cfg.Metadata.Name); name != "" {
+		vars.Name = name
+	}
+	if namespace := strings.TrimSpace(cfg.Spec.Namespace); namespace != "" {
+		vars.Namespace = namespace
+	}
+	if kubeContext := strings.TrimSpace(cfg.Spec.KubeContext); kubeContext != "" {
+		vars.KubeContext = kubeContext
+	}
+	if workloadType := strings.TrimSpace(cfg.Spec.Workload.Type); workloadType != "" {
+		vars.WorkloadType = workloadType
+	}
+	if manifestPath := strings.TrimSpace(cfg.Spec.Workload.ManifestPath); manifestPath != "" {
+		vars.ManifestPath = manifestPath
+	}
+	if attachContainer := strings.TrimSpace(cfg.Spec.Workload.Attach.Container); attachContainer != "" {
+		vars.AttachContainer = attachContainer
+	}
+	if sshUser := strings.TrimSpace(cfg.Spec.SSH.User); sshUser != "" {
+		vars.SSHUser = sshUser
+	}
+	if sidecarImage := strings.TrimSpace(cfg.Spec.Sidecar.Image); sidecarImage != "" {
+		vars.SidecarImage = sidecarImage
+	}
+	vars.TTLHours = cfg.Spec.Session.TTLHours
+
+	if len(cfg.Spec.Workload.Inject) > 0 {
+		vars.InjectPaths = make([]string, 0, len(cfg.Spec.Workload.Inject))
+		for _, inject := range cfg.Spec.Workload.Inject {
+			if path := strings.TrimSpace(inject.Path); path != "" {
+				vars.InjectPaths = append(vars.InjectPaths, path)
+			}
+		}
+	}
+	if len(cfg.Spec.Ports) > 0 {
+		vars.Ports = make([]config.PortVar, 0, len(cfg.Spec.Ports))
+		for _, port := range cfg.Spec.Ports {
+			vars.Ports = append(vars.Ports, config.PortVar{
+				Name:   port.Name,
+				Local:  port.Local,
+				Remote: port.Remote,
+			})
+		}
+	}
+
+	defaultRemote := cfg.EffectiveWorkspaceMountPath(cfgPath)
+	if pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, defaultRemote); err == nil && len(pairs) > 0 {
+		if local := strings.TrimSpace(pairs[0].Local); local != "" {
+			vars.SyncLocal = local
+		}
+		if remote := strings.TrimSpace(pairs[0].Remote); remote != "" {
+			vars.SyncRemote = remote
+		}
+	}
+
+	devContainer := findTemplateContainer(cfg.Spec.PodTemplate.Spec.Containers, "dev")
+	if devContainer != nil {
+		if image := strings.TrimSpace(devContainer.Image); image != "" {
+			vars.DevImage = image
+		}
+		setTemplateResourceStrings(&vars.DevCPURequest, &vars.DevMemoryRequest, devContainer.Resources.Requests)
+		setTemplateResourceStrings(&vars.DevCPULimit, &vars.DevMemoryLimit, devContainer.Resources.Limits)
+	}
+	setTemplateResourceStrings(&vars.SidecarCPU, &vars.SidecarMemory, cfg.Spec.Sidecar.Resources.Requests)
+	if strings.TrimSpace(vars.SidecarCPU) == "" || strings.TrimSpace(vars.SidecarMemory) == "" {
+		setTemplateResourceStrings(&vars.SidecarCPU, &vars.SidecarMemory, cfg.Spec.Sidecar.Resources.Limits)
+	}
+
+	return vars
+}
+
+func findTemplateContainer(containers []corev1.Container, name string) *corev1.Container {
+	for i := range containers {
+		if strings.TrimSpace(containers[i].Name) == name {
+			return &containers[i]
+		}
+	}
+	if len(containers) == 0 {
+		return nil
+	}
+	return &containers[0]
+}
+
+func setTemplateResourceStrings(cpuOut, memoryOut *string, resources corev1.ResourceList) {
+	if resources == nil {
+		return
+	}
+	if cpuOut != nil && strings.TrimSpace(*cpuOut) == "" {
+		if quantity, ok := resources[corev1.ResourceCPU]; ok {
+			*cpuOut = quantity.String()
+		}
+	}
+	if memoryOut != nil && strings.TrimSpace(*memoryOut) == "" {
+		if quantity, ok := resources[corev1.ResourceMemory]; ok {
+			*memoryOut = quantity.String()
+		}
+	}
 }
