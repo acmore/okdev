@@ -48,7 +48,7 @@ spec:
       baseImage: pytorch/pytorch:latest
 ```
 
-`okdev migrate --template <name>` uses `spec.template.vars` as defaults, applies any `--set key=value` overrides, re-renders the template, and preserves existing config values over template defaults.
+`okdev migrate --template <name>` uses `spec.template.vars` as defaults, applies any `--set key=value` overrides, re-renders the template, preserves existing config values over template defaults, and regenerates any companion files declared in template frontmatter `files`.
 
 ---
 
