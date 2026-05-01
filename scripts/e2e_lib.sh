@@ -126,15 +126,53 @@ session_managed_pod_selector() {
   printf 'okdev.io/managed=true,okdev.io/session=%s' "$session_name"
 }
 
-session_attachable_pod_name() {
+session_selected_pods_json() {
   local namespace="$1"
   local session_name="$2"
   kubectl -n "$namespace" get pods -l "$(session_managed_pod_selector "$session_name")" -o json |
-    python3 -c 'import json, sys
+    python3 -c 'import datetime, json, sys
+def parse_timestamp(value):
+    value = str(value or "").strip()
+    if not value:
+        return 0.0
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    try:
+        return datetime.datetime.fromisoformat(value).timestamp()
+    except ValueError:
+        return 0.0
+def is_ready(item):
+    statuses = item.get("status", {}).get("containerStatuses") or []
+    return bool(statuses) and all(bool(status.get("ready")) for status in statuses)
+def score(item):
+    metadata = item.get("metadata", {}) or {}
+    annotations = metadata.get("annotations", {}) or {}
+    status = item.get("status", {}) or {}
+    total = 0
+    if metadata.get("deletionTimestamp"):
+        total -= 16
+    if str(annotations.get("okdev.io/last-attach", "")).strip():
+        total += 8
+    if str(status.get("phase", "")).strip().lower() == "running":
+        total += 4
+    if is_ready(item):
+        total += 2
+    return total
 data = json.load(sys.stdin)
 items = data.get("items", [])
-attachable = [item for item in items if item.get("metadata", {}).get("labels", {}).get("okdev.io/attachable", "").strip().lower() == "true"]
-selected = attachable or items
+attachable = [item for item in items if str(item.get("metadata", {}).get("labels", {}).get("okdev.io/attachable", "")).strip().lower() == "true"]
+selected = list(attachable or items)
+selected.sort(key=lambda item: (-score(item), -parse_timestamp(item.get("metadata", {}).get("creationTimestamp")), item.get("metadata", {}).get("name", "")))
+json.dump(selected, sys.stdout)'
+}
+
+session_attachable_pod_name() {
+  local namespace="$1"
+  local session_name="$2"
+  session_selected_pods_json "$namespace" "$session_name" |
+    python3 -c 'import json, sys
+data = json.load(sys.stdin)
+selected = data
 if selected:
     print(selected[0].get("metadata", {}).get("name", ""))'
 }
@@ -142,24 +180,20 @@ if selected:
 session_attachable_pod_names() {
   local namespace="$1"
   local session_name="$2"
-  kubectl -n "$namespace" get pods -l "$(session_managed_pod_selector "$session_name")" -o json |
+  session_selected_pods_json "$namespace" "$session_name" |
     python3 -c 'import json, sys
 data = json.load(sys.stdin)
-items = data.get("items", [])
-attachable = [item for item in items if item.get("metadata", {}).get("labels", {}).get("okdev.io/attachable", "").strip().lower() == "true"]
-selected = attachable or items
+selected = data
 print(" ".join(item.get("metadata", {}).get("name", "") for item in selected if item.get("metadata", {}).get("name")))' 
 }
 
 session_workload_name() {
   local namespace="$1"
   local session_name="$2"
-  kubectl -n "$namespace" get pods -l "$(session_managed_pod_selector "$session_name")" -o json |
+  session_selected_pods_json "$namespace" "$session_name" |
     python3 -c 'import json, sys
 data = json.load(sys.stdin)
-items = data.get("items", [])
-attachable = [item for item in items if item.get("metadata", {}).get("labels", {}).get("okdev.io/attachable", "").strip().lower() == "true"]
-selected = attachable or items
+selected = data
 for item in selected:
     metadata = item.get("metadata", {})
     labels = metadata.get("labels", {})
