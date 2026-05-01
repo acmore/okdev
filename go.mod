@@ -7,7 +7,6 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/gliderlabs/ssh v0.3.8
 	github.com/pkg/sftp v1.13.10
-	github.com/posthog/posthog-go v1.11.3
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	golang.org/x/crypto v0.50.0
