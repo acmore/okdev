@@ -155,6 +155,7 @@ type SSHSpec struct {
 	PrivateKeyPath    string `yaml:"privateKeyPath"`
 	AutoDetectPorts   *bool  `yaml:"autoDetectPorts"`
 	ForwardAgent      *bool  `yaml:"forwardAgent"`
+	InterPod          *bool  `yaml:"interPod"`
 	PersistentSession *bool  `yaml:"persistentSession"`
 	KeepAliveInterval int    `yaml:"keepAliveIntervalSeconds"`
 	KeepAliveTimeout  int    `yaml:"keepAliveTimeoutSeconds"`
@@ -283,6 +284,9 @@ func (d *DevEnvironment) Validate() error {
 		if inject.Attachable != nil && *inject.Attachable && inject.Sidecar != nil && !*inject.Sidecar {
 			return fmt.Errorf("spec.workload.inject[%d]: attachable=true requires sidecar=true", i)
 		}
+		if d.Spec.SSH.InterPodEnabled() && inject.Sidecar != nil && !*inject.Sidecar {
+			return fmt.Errorf("spec.ssh.interPod requires sidecar=true for spec.workload.inject[%d].path=%q", i, strings.TrimSpace(inject.Path))
+		}
 	}
 	if d.Spec.Workload.Type == "job" {
 		for i, inject := range d.Spec.Workload.Inject {
@@ -348,6 +352,13 @@ func (s SSHSpec) ForwardAgentEnabled() bool {
 		return false
 	}
 	return *s.ForwardAgent
+}
+
+func (s SSHSpec) InterPodEnabled() bool {
+	if s.InterPod == nil {
+		return false
+	}
+	return *s.InterPod
 }
 
 func (s SyncthingSpec) AutoInstallEnabled() bool {

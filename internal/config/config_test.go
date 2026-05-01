@@ -183,6 +183,18 @@ func TestSSHSpecForwardAgentEnabled(t *testing.T) {
 	}
 }
 
+func TestSSHSpecInterPodEnabled(t *testing.T) {
+	var s SSHSpec
+	if s.InterPodEnabled() {
+		t.Fatal("expected nil interPod to default false")
+	}
+	v := true
+	s.InterPod = &v
+	if !s.InterPodEnabled() {
+		t.Fatal("expected explicit interPod=true to be enabled")
+	}
+}
+
 func TestSetDefaultsPersistentSessionExplicit(t *testing.T) {
 	cfg := validConfig()
 	v := true
@@ -198,6 +210,24 @@ func TestValidateRejectsInvalidEngine(t *testing.T) {
 	cfg.Spec.Sync.Engine = "native"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error")
+	}
+}
+
+func TestValidateRejectsInterPodSSHWithoutSidecarsOnAllInjectedPods(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Workload.Type = "pytorchjob"
+	cfg.Spec.Workload.ManifestPath = "manifests/pytorchjob.yaml"
+	enabled := true
+	disabled := false
+	cfg.Spec.SSH.InterPod = &enabled
+	cfg.Spec.Workload.Inject = []WorkloadInjectSpec{
+		{Path: "spec.pytorchReplicaSpecs.Master.template"},
+		{Path: "spec.pytorchReplicaSpecs.Worker.template", Sidecar: &disabled},
+	}
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "spec.ssh.interPod requires sidecar=true") {
+		t.Fatalf("expected interPod sidecar validation error, got %v", err)
 	}
 }
 
