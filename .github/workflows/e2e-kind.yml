@@ -2,6 +2,8 @@ name: E2E Kind
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
   workflow_dispatch:
