@@ -64,7 +64,7 @@ cd "$WORKDIR"
 MANIFEST_PATH="$WORKDIR/.okdev/pytorchjob.yaml"
 replace_all_in_file "$MANIFEST_PATH" 'name: dev' 'name: pytorch'
 replace_all_in_file "$MANIFEST_PATH" 'image: # TODO: replace with your image' 'image: ubuntu:22.04'
-replace_all_in_file "$MANIFEST_PATH" 'command: ["sleep", "infinity"]' 'command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]'
+replace_all_in_file "$MANIFEST_PATH" 'command: ["sleep", "infinity"]' 'command: ["sh", "-lc", "apt-get update -qq && apt-get install -y -qq openssh-client >/dev/null 2>&1; trap : TERM INT; while true; do sleep 3600; done"]'
 replace_all_in_file "$CFG_PATH" 'container: dev' 'container: pytorch'
 
 python3 - <<'PY' "$CFG_PATH"
@@ -115,6 +115,18 @@ if [[ "$WORKER_CONTAINERS" != *"okdev-sidecar"* ]]; then
   exit 1
 fi
 echo "worker sidecar override verified"
+
+echo "Waiting for ssh client to be available in master pod"
+for i in $(seq 1 30); do
+  if "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --cmd 'which ssh' >/dev/null 2>&1; then
+    break
+  fi
+  if [[ "$i" -eq 30 ]]; then
+    echo "ERROR: ssh client not available in master pod after 60s" >&2
+    exit 1
+  fi
+  sleep 2
+done
 
 echo "Verifying inter-pod SSH from master to worker"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --setup-key --cmd 'echo pytorchjob-ssh-ok' >/dev/null
