@@ -231,6 +231,32 @@ func TestValidateAllowsInterPodSSHToOverrideDisabledSidecars(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsRelativeShellPath(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.SSH.Shell = "bash"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected validation error for relative shell path")
+	}
+}
+
+func TestValidateAcceptsAbsoluteShellPath(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.SSH.Shell = "/bin/zsh"
+	cfg.SetDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+}
+
+func TestValidateAcceptsEmptyShellPath(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.SSH.Shell = ""
+	cfg.SetDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+}
+
 func TestValidateRejectsNegativeSyncthingRescanInterval(t *testing.T) {
 	cfg := validConfig()
 	cfg.Spec.Sync.Syncthing.RescanIntervalSeconds = -1
