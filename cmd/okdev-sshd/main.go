@@ -78,12 +78,35 @@ func newServer(addr, shell string, keys []ssh.PublicKey) *ssh.Server {
 }
 
 func detectShell() string {
-	for _, sh := range []string{"/bin/bash", "/bin/sh"} {
+	if env := strings.TrimSpace(os.Getenv("OKDEV_SHELL")); env != "" {
+		if _, err := os.Stat(env); err == nil {
+			return env
+		}
+	}
+	for _, sh := range []string{"/bin/bash", "/bin/zsh", "/bin/sh"} {
 		if _, err := os.Stat(sh); err == nil {
 			return sh
 		}
 	}
 	return "/bin/sh"
+}
+
+func resolveInteractiveShell(serverShell string) string {
+	if env := strings.TrimSpace(os.Getenv("OKDEV_SHELL")); env != "" {
+		if _, err := os.Stat(env); err == nil {
+			return env
+		}
+	}
+	for _, sh := range []string{"/bin/bash", "/bin/zsh", "/bin/sh"} {
+		if _, err := os.Stat(sh); err == nil {
+			return sh
+		}
+	}
+	return serverShell
+}
+
+func isZshShell(shell string) bool {
+	return strings.HasSuffix(shell, "/zsh")
 }
 
 func loadAuthorizedKeys(path string) ([]ssh.PublicKey, error) {
@@ -135,10 +158,11 @@ func sessionHandler(shell string) ssh.Handler {
 func buildCmd(s ssh.Session, shell string, extraEnv []string) *exec.Cmd {
 	var cmd *exec.Cmd
 	if len(s.RawCommand()) == 0 {
-		if script := interactiveLoginScript(s, shell); script != "" {
+		interactiveShell := resolveInteractiveShell(shell)
+		if script := interactiveLoginScript(s, interactiveShell); script != "" {
 			cmd = exec.Command(shell, "-lc", script)
 		} else {
-			cmd = exec.Command(shell, "-l")
+			cmd = exec.Command(interactiveShell, "-l")
 		}
 	} else {
 		cmd = exec.Command(shell, "-lc", s.RawCommand())
@@ -147,10 +171,10 @@ func buildCmd(s ssh.Session, shell string, extraEnv []string) *exec.Cmd {
 	return cmd
 }
 
-func interactiveLoginScript(s ssh.Session, shell string) string {
+func interactiveLoginScript(s ssh.Session, interactiveShell string) string {
 	return buildInteractiveLoginScript(
 		sessionEnvMap(s),
-		shell,
+		interactiveShell,
 		strings.TrimSpace(os.Getenv("OKDEV_WORKSPACE")),
 		strings.TrimSpace(os.Getenv("OKDEV_TMUX")),
 	)
@@ -165,6 +189,10 @@ func buildInteractiveLoginScript(sessionEnv map[string]string, shell, workspace,
 		parts = append(parts, fmt.Sprintf("if [ -x %s ]; then %s 2>&1 || echo 'warning: postAttach script failed' >&2; fi", postAttach, postAttach))
 	}
 
+	if zshScript := zshBootstrapScript(workspace, shell); zshScript != "" {
+		parts = append(parts, zshScript)
+	}
+
 	parts = append(parts, terminalBootstrapScript())
 
 	if tmuxFlag == "1" && sessionEnv["OKDEV_NO_TMUX"] != "1" {
@@ -173,6 +201,14 @@ func buildInteractiveLoginScript(sessionEnv map[string]string, shell, workspace,
 
 	parts = append(parts, "exec "+shellQuote(shell)+" -l")
 	return strings.Join(parts, "; ")
+}
+
+func zshBootstrapScript(workspace, shell string) string {
+	if !isZshShell(shell) || workspace == "" {
+		return ""
+	}
+	zshrc := shellQuote(strings.TrimRight(workspace, "/") + "/.okdev/zshrc")
+	return fmt.Sprintf("if [ -f %s ] && [ ! -e ~/.zshrc ]; then printf '%%s\\n' 'if [ -f %s ]; then' '  source %s' 'fi' > ~/.zshrc; fi", zshrc, zshrc, zshrc)
 }
 
 func terminalBootstrapScript() string {
