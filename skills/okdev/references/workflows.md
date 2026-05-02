@@ -55,7 +55,7 @@ Use:
 
 - `okdev ssh` for the managed interactive shell
 - `ssh okdev-<session>` for plain SSH
-- `okdev exec` for non-interactive or multi-pod command execution
+- `okdev exec` for multi-pod parallel command execution (pdsh-style fanout with `--role`, `--label`, `--pod` targeting, `--detach` for background runs, and `--fanout` concurrency control)
 
 If attachable pods are involved, explain that interactive targeting follows attachable-pod selection rules rather than arbitrary pod choice.
 
@@ -67,6 +67,15 @@ Default guidance:
 - `okdev status --details` shows whether sync is active
 - `okdev sync --foreground` is useful when the user needs live troubleshooting
 - `okdev sync --reset` is the standard repair path for stale local sync state
+
+## File Transfer
+
+Use:
+
+- `okdev cp ./local/path :/remote/path` for uploading files to a session pod
+- `okdev cp :/remote/path ./local/path` for downloading files from a session pod
+- `--all` or `--role` to fan out copies across multiple pods
+- downloads from multiple pods are written into per-pod subdirectories
 
 ## Teardown
 

@@ -52,11 +52,13 @@ For PyTorchJob questions, keep these points in mind:
 
 ## Inter-Pod SSH
 
-When `spec.ssh.interPod: true` is enabled:
+When a multi-pod session includes inter-pod SSH:
 
 - `okdev up` configures session-scoped inter-pod SSH setup
-- the participating session pods receive SSH host entries for the session pods
-- questions about inter-pod SSH should be answered in terms of `okdev` config and session behavior, not generic ad hoc SSH setup
+- the participating session pods receive SSH host entries for the other session pods
+- questions about inter-pod SSH should be answered in terms of `okdev` session behavior, not generic ad hoc SSH setup
+
+There is no user-facing config field to toggle inter-pod SSH. The behavior is determined by the workload type and session setup. Consult `docs/command-reference.md` and `docs/config-manifest.md` for the current details.
 
 If a user asks whether multi-pod inter-pod SSH should work, verify whether:
 

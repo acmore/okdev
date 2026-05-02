@@ -20,7 +20,7 @@ Primary docs:
 
 Use this skill when the request involves:
 
-- `okdev init`, `up`, `status`, `ssh`, `exec`, `sync`, `ports`, `down`, `prune`
+- `okdev init`, `up`, `status`, `ssh`, `exec`, `cp`, `sync`, `ports`, `down`, `prune`
 - config discovery or `.okdev.yaml` / `.okdev/okdev.yaml`
 - sync behavior, session reuse, port forwards, or SSH access
 - manifest-backed workloads such as `job`, `generic`, or `pytorchjob`
