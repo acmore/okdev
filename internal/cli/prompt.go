@@ -26,6 +26,7 @@ type InitOverrides struct {
 	SyncLocal     string
 	SyncRemote    string
 	SSHUser       string
+	Shell         string
 }
 
 // applyOverrides applies non-empty flag values to template vars.
@@ -65,6 +66,9 @@ func applyOverrides(vars *config.TemplateVars, o InitOverrides) {
 	}
 	if o.SSHUser != "" {
 		vars.SSHUser = o.SSHUser
+	}
+	if o.Shell != "" {
+		vars.Shell = o.Shell
 	}
 }
 
