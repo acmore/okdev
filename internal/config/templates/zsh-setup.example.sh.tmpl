@@ -1,0 +1,27 @@
+#!/bin/sh
+# Example: install zsh and optional frameworks/plugins.
+# Review, pin versions, and invoke this from lifecycle.postCreate or
+# .okdev/post-create.sh if desired.
+#
+# Install zsh if not present:
+#   if ! command -v zsh >/dev/null 2>&1; then
+#     if command -v apt-get >/dev/null 2>&1; then
+#       apt-get update && apt-get install -y zsh
+#     elif command -v apk >/dev/null 2>&1; then
+#       apk add --no-cache zsh
+#     elif command -v yum >/dev/null 2>&1; then
+#       yum install -y zsh
+#     fi
+#   fi
+#
+# Install oh-my-zsh:
+#   if [ ! -d "$HOME/.oh-my-zsh" ]; then
+#     sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+#   fi
+#
+# Install plugins:
+#   ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
+#   [ -d "$ZSH_CUSTOM/plugins/zsh-autosuggestions" ] || \
+#     git clone https://github.com/zsh-users/zsh-autosuggestions "$ZSH_CUSTOM/plugins/zsh-autosuggestions"
+#   [ -d "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting" ] || \
+#     git clone https://github.com/zsh-users/zsh-syntax-highlighting "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting"
