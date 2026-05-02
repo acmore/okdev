@@ -36,6 +36,7 @@ func TestBuildInterPodSSHConfigIncludesSessionPods(t *testing.T) {
 	for _, want := range []string{
 		"Host trainer-master-0",
 		"HostName 10.0.0.11",
+		"Port 2222",
 		"Host trainer-worker-0",
 		"HostName 10.0.0.12",
 		"IdentityFile ~/.ssh/okdev_interpod_ed25519",
