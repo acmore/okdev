@@ -37,6 +37,9 @@ spec:
 {{- end }}
   ssh:
     user: {{ .SSHUser }}
+{{- if .Shell }}
+    shell: {{ .Shell }}
+{{- end }}
     keepAliveIntervalSeconds: 30
     keepAliveTimeoutSeconds: 90
   sidecar:

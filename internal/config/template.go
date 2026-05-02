@@ -23,7 +23,7 @@ type templateHTTPDoer interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
-//go:embed templates/*.yaml.tmpl templates/manifests/*.yaml.tmpl
+//go:embed templates/*.yaml.tmpl templates/*.tmpl templates/*.sh.tmpl templates/manifests/*.yaml.tmpl
 var embeddedTemplates embed.FS
 
 // builtinNames maps template names to their embedded file paths.
@@ -95,6 +95,7 @@ type TemplateVars struct {
 	SyncLocal        string
 	SyncRemote       string
 	SSHUser          string
+	Shell            string
 	Ports            []PortVar
 	WorkloadType     string
 	ManifestPath     string

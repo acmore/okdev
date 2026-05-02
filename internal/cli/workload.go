@@ -28,7 +28,7 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName, workloadNa
 		manifestResolvedPath = workload.ResolveManifestPath(cfgPath, cfg.Spec.Workload.ManifestPath)
 	}
 
-	snap := config.BuildWorkloadSnapshot(cfg, workspaceMountPath, targetContainer, tmux, preStop, manifestPath, manifestResolvedPath)
+	snap := config.BuildWorkloadSnapshot(cfg, workspaceMountPath, targetContainer, tmux, cfg.Spec.SSH.Shell, preStop, manifestPath, manifestResolvedPath)
 	snapJSON, _ := snap.JSON()
 	snapHash, _ := snap.SHA256()
 
@@ -37,7 +37,7 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName, workloadNa
 		rt := workload.NewPodRuntime(
 			sessionName, labels, annotations, podSpec,
 			volumes, workspaceMountPath, cfg.Spec.Sidecar.Image, cfg.Spec.Sidecar.Resources,
-			tmux, preStop, targetContainer,
+			tmux, cfg.Spec.SSH.Shell, preStop, targetContainer,
 		)
 		rt.WorkloadNameOverride = workloadName
 		rt.LastAppliedSpecJSON = snapJSON
@@ -53,6 +53,7 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName, workloadNa
 			SidecarImage:         cfg.Spec.Sidecar.Image,
 			SidecarResources:     cfg.Spec.Sidecar.Resources,
 			Tmux:                 tmux,
+			Shell:                cfg.Spec.SSH.Shell,
 			PreStop:              preStop,
 			TargetContainer:      targetContainer,
 			Volumes:              volumes,

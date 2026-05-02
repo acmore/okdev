@@ -1,0 +1,4 @@
+if [ -n "${ZSH_VERSION:-}" ]; then
+  autoload -Uz colors && colors
+  PROMPT='%F{cyan}%n@%m%f:%F{blue}%~%f %# '
+fi

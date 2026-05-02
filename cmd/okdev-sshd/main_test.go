@@ -56,6 +56,46 @@ func TestDetectShellReturnsExistingShell(t *testing.T) {
 	}
 }
 
+func TestDetectShellIgnoresOKDEVShellEnv(t *testing.T) {
+	t.Setenv("OKDEV_SHELL", "/bin/sh")
+	got := detectShell()
+	if got != "/bin/bash" && got != "/bin/sh" {
+		t.Fatalf("expected command shell fallback to ignore OKDEV_SHELL, got %q", got)
+	}
+}
+
+func TestDetectShellIgnoresNonexistentOKDEVShell(t *testing.T) {
+	t.Setenv("OKDEV_SHELL", "/definitely/missing/zsh")
+	got := detectShell()
+	if got != "/bin/bash" && got != "/bin/sh" {
+		t.Fatalf("expected command shell fallback to ignore nonexistent OKDEV_SHELL, got %q", got)
+	}
+}
+
+func TestResolveInteractiveShellUsesOKDEVShell(t *testing.T) {
+	t.Setenv("OKDEV_SHELL", "/bin/sh")
+	got := resolveInteractiveShell("/bin/bash")
+	if got != "/bin/sh" {
+		t.Fatalf("expected /bin/sh from OKDEV_SHELL, got %q", got)
+	}
+}
+
+func TestResolveInteractiveShellIgnoresNonexistentOKDEVShell(t *testing.T) {
+	t.Setenv("OKDEV_SHELL", "/definitely/missing/zsh")
+	got := resolveInteractiveShell("/bin/sh")
+	if got == "/definitely/missing/zsh" {
+		t.Fatal("expected resolveInteractiveShell to ignore nonexistent OKDEV_SHELL path")
+	}
+}
+
+func TestResolveInteractiveShellFallsBackToDetection(t *testing.T) {
+	t.Setenv("OKDEV_SHELL", "")
+	got := resolveInteractiveShell("/bin/sh")
+	if got != "/bin/bash" && got != "/bin/zsh" && got != "/bin/sh" {
+		t.Fatalf("expected a valid shell from fallback detection, got %q", got)
+	}
+}
+
 func TestLoadAuthorizedKeysMissingFileReturnsNil(t *testing.T) {
 	keys, err := loadAuthorizedKeys("/definitely/missing/authorized_keys")
 	if err != nil {
@@ -115,6 +155,33 @@ func TestBuildInteractiveLoginScript(t *testing.T) {
 		if !strings.Contains(script, want) {
 			t.Fatalf("expected script to contain %q: %s", want, script)
 		}
+	}
+}
+
+func TestBuildInteractiveLoginScriptWithZshSourcesZshrc(t *testing.T) {
+	script := buildInteractiveLoginScript(
+		map[string]string{},
+		"/bin/zsh",
+		"/workspace/demo",
+		"1",
+	)
+	if !strings.Contains(script, ".okdev/zshrc") {
+		t.Fatalf("expected zsh bootstrap to source .okdev/zshrc: %s", script)
+	}
+	if !strings.Contains(script, "exec '/bin/zsh' -l") {
+		t.Fatalf("expected login shell exec with zsh: %s", script)
+	}
+}
+
+func TestBuildInteractiveLoginScriptWithBashDoesNotSourceZshrc(t *testing.T) {
+	script := buildInteractiveLoginScript(
+		map[string]string{},
+		"/bin/bash",
+		"/workspace/demo",
+		"1",
+	)
+	if strings.Contains(script, ".okdev/zshrc") {
+		t.Fatalf("expected bash bootstrap to not source .okdev/zshrc: %s", script)
 	}
 }
 
@@ -219,10 +286,21 @@ func TestSessionEnvMap(t *testing.T) {
 func TestBuildCmdInteractiveShell(t *testing.T) {
 	t.Setenv("OKDEV_WORKSPACE", "")
 	t.Setenv("OKDEV_TMUX", "")
+	t.Setenv("OKDEV_SHELL", "")
 	cmd := buildCmd(fakeSessionCmd{}, "/bin/sh", nil)
-	want := `/bin/sh -lc if [ "${TERM:-}" = "xterm-ghostty" ]; then export TERM=xterm-256color; fi; exec '/bin/sh' -l`
-	if got := strings.Join(cmd.Args, " "); got != want {
-		t.Fatalf("unexpected interactive args: %q", got)
+	got := strings.Join(cmd.Args, " ")
+	// The bootstrap script runs via the server shell (/bin/sh -lc ...),
+	// but the final exec uses the resolved interactive shell.
+	if !strings.HasPrefix(got, "/bin/sh -lc") {
+		t.Fatalf("expected server shell /bin/sh to run the bootstrap script: %q", got)
+	}
+	if !strings.Contains(got, "xterm-ghostty") {
+		t.Fatalf("expected terminal bootstrap in script: %q", got)
+	}
+	// The final exec should use whatever resolveInteractiveShell returns.
+	resolved := resolveInteractiveShell("/bin/sh")
+	if !strings.Contains(got, "exec '"+resolved+"' -l") {
+		t.Fatalf("expected exec with resolved interactive shell %q: %q", resolved, got)
 	}
 }
 
