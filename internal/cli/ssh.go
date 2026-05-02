@@ -460,6 +460,7 @@ func buildInterPodSSHConfig(user string, endpoints []interPodSSHEndpoint) string
 	for _, endpoint := range endpoints {
 		fmt.Fprintf(&b, "Host %s\n", endpoint.PodName)
 		fmt.Fprintf(&b, "  HostName %s\n", endpoint.PodIP)
+		fmt.Fprintf(&b, "  Port 2222\n")
 		fmt.Fprintf(&b, "  User %s\n", user)
 		fmt.Fprintln(&b, "  IdentityFile ~/.ssh/okdev_interpod_ed25519")
 		fmt.Fprintln(&b, "  IdentitiesOnly yes")
