@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +24,7 @@ import (
 	"github.com/acmore/okdev/internal/shellutil"
 	okssh "github.com/acmore/okdev/internal/ssh"
 	syncengine "github.com/acmore/okdev/internal/sync"
+	"github.com/acmore/okdev/internal/workload"
 	"github.com/spf13/cobra"
 )
 
@@ -399,7 +401,17 @@ func printContainerRestartNotice(w io.Writer, info *kube.ContainerRestartInfo) {
 	fmt.Fprintln(w, "Run \"okdev ssh\" to reconnect after the container is ready.")
 }
 
-func ensureSSHKeyOnPod(opts *Options, namespace, pod, container, keyPath string) error {
+type interPodSSHEndpoint struct {
+	PodName string
+	PodIP   string
+}
+
+type interPodSSHClient interface {
+	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+	ListPods(context.Context, string, bool, string) ([]kube.PodSummary, error)
+}
+
+func ensureSSHKeyExists(keyPath string) error {
 	if err := ensureCommand("ssh-keygen"); err != nil {
 		return err
 	}
@@ -412,17 +424,150 @@ func ensureSSHKeyOnPod(opts *Options, namespace, pod, container, keyPath string)
 			return fmt.Errorf("generate ssh key: %w (%s)", err, strings.TrimSpace(string(out)))
 		}
 	}
+	return nil
+}
 
-	pubKeyBytes, err := os.ReadFile(keyPath + ".pub")
+func readSSHKeyMaterial(keyPath string) (string, string, error) {
+	privateKeyBytes, err := os.ReadFile(keyPath)
 	if err != nil {
-		return fmt.Errorf("read public key: %w", err)
+		return "", "", fmt.Errorf("read private key: %w", err)
 	}
-	pubKey := strings.TrimSpace(string(pubKeyBytes))
-	if pubKey == "" {
-		return errors.New("public key is empty")
+	publicKeyBytes, err := os.ReadFile(keyPath + ".pub")
+	if err != nil {
+		return "", "", fmt.Errorf("read public key: %w", err)
+	}
+	privateKey := strings.TrimSpace(string(privateKeyBytes))
+	publicKey := strings.TrimSpace(string(publicKeyBytes))
+	if publicKey == "" {
+		return "", "", errors.New("public key is empty")
+	}
+	if privateKey == "" {
+		return "", "", errors.New("private key is empty")
+	}
+	return privateKey, publicKey, nil
+}
+
+func interPodSSHKeyPath(sessionName string) (string, error) {
+	dir, err := session.SessionDir(sessionName)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "okdev_interpod_ed25519"), nil
+}
+
+func buildInterPodSSHConfig(user string, endpoints []interPodSSHEndpoint) string {
+	var b strings.Builder
+	for _, endpoint := range endpoints {
+		fmt.Fprintf(&b, "Host %s\n", endpoint.PodName)
+		fmt.Fprintf(&b, "  HostName %s\n", endpoint.PodIP)
+		fmt.Fprintf(&b, "  User %s\n", user)
+		fmt.Fprintln(&b, "  IdentityFile ~/.ssh/okdev_interpod_ed25519")
+		fmt.Fprintln(&b, "  IdentitiesOnly yes")
+		fmt.Fprintln(&b, "  StrictHostKeyChecking no")
+		fmt.Fprintln(&b, "  UserKnownHostsFile /dev/null")
+		fmt.Fprintln(&b, "  LogLevel ERROR")
+		fmt.Fprintln(&b)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func buildInterPodSSHSetupScript(privateKey, publicKey, sshConfig string) string {
+	includeLine := "Include ~/.ssh/okdev_interpod_config"
+	return fmt.Sprintf(`set -eu
+mkdir -p "$HOME/.ssh"
+chmod 700 "$HOME/.ssh"
+printf '%%s\n' %s >"$HOME/.ssh/okdev_interpod_ed25519"
+chmod 600 "$HOME/.ssh/okdev_interpod_ed25519"
+printf '%%s\n' %s >"$HOME/.ssh/okdev_interpod_ed25519.pub"
+chmod 644 "$HOME/.ssh/okdev_interpod_ed25519.pub"
+touch "$HOME/.ssh/authorized_keys"
+chmod 600 "$HOME/.ssh/authorized_keys"
+grep -qxF %s "$HOME/.ssh/authorized_keys" || printf '%%s\n' %s >>"$HOME/.ssh/authorized_keys"
+printf '%%s\n' %s >"$HOME/.ssh/okdev_interpod_config"
+chmod 600 "$HOME/.ssh/okdev_interpod_config"
+touch "$HOME/.ssh/config"
+chmod 600 "$HOME/.ssh/config"
+grep -qxF %s "$HOME/.ssh/config" || printf '%%s\n' %s >>"$HOME/.ssh/config"
+`, syncengine.ShellEscape(privateKey), syncengine.ShellEscape(publicKey),
+		syncengine.ShellEscape(publicKey), syncengine.ShellEscape(publicKey),
+		syncengine.ShellEscape(sshConfig),
+		syncengine.ShellEscape(includeLine), syncengine.ShellEscape(includeLine))
+}
+
+func configureInterPodSSHOnPods(ctx context.Context, k devSSHStarter, namespace, container string, endpoints []interPodSSHEndpoint, privateKey, publicKey, user string) error {
+	script := buildInterPodSSHSetupScript(privateKey, publicKey, buildInterPodSSHConfig(user, endpoints))
+	for _, endpoint := range endpoints {
+		if _, err := k.ExecShInContainer(ctx, namespace, endpoint.PodName, container, script); err != nil {
+			return fmt.Errorf("configure inter-pod ssh on %s: %w", endpoint.PodName, err)
+		}
+	}
+	return nil
+}
+
+func discoverInterPodSSHEndpoints(ctx context.Context, k interPodSSHClient, namespace string, labels map[string]string) ([]interPodSSHEndpoint, error) {
+	pods, err := k.ListPods(ctx, namespace, false, workload.DiscoveryLabelSelector(labels))
+	if err != nil {
+		return nil, fmt.Errorf("discover session pods for inter-pod ssh: %w", err)
+	}
+	sort.Slice(pods, func(i, j int) bool {
+		return pods[i].Name < pods[j].Name
+	})
+	endpoints := make([]interPodSSHEndpoint, 0, len(pods))
+	for _, pod := range pods {
+		if pod.Deleting {
+			continue
+		}
+		if strings.TrimSpace(pod.PodIP) == "" {
+			return nil, fmt.Errorf("pod %q is missing an IP address for inter-pod ssh", pod.Name)
+		}
+		endpoints = append(endpoints, interPodSSHEndpoint{
+			PodName: pod.Name,
+			PodIP:   strings.TrimSpace(pod.PodIP),
+		})
+	}
+	return endpoints, nil
+}
+
+func setupInterPodSSHWithClient(ctx context.Context, k interPodSSHClient, namespace, sessionName string, labels map[string]string, container, user string, timeout time.Duration) error {
+	endpoints, err := discoverInterPodSSHEndpoints(ctx, k, namespace, labels)
+	if err != nil {
+		return err
+	}
+	if len(endpoints) <= 1 {
+		return nil
+	}
+	keyPath, err := interPodSSHKeyPath(sessionName)
+	if err != nil {
+		return err
+	}
+	if err := ensureSSHKeyExists(keyPath); err != nil {
+		return err
+	}
+	privateKey, publicKey, err := readSSHKeyMaterial(keyPath)
+	if err != nil {
+		return err
+	}
+	if err := configureInterPodSSHOnPods(ctx, k, namespace, container, endpoints, privateKey, publicKey, user); err != nil {
+		return err
+	}
+	for _, endpoint := range endpoints {
+		if err := waitForSSHReadyWithClient(ctx, k, namespace, endpoint.PodName, container, timeout); err != nil {
+			return fmt.Errorf("wait for inter-pod ssh on %s: %w", endpoint.PodName, err)
+		}
+	}
+	return nil
+}
+
+func ensureSSHKeyOnPod(opts *Options, namespace, pod, container, keyPath string) error {
+	if err := ensureSSHKeyExists(keyPath); err != nil {
+		return err
+	}
+	_, publicKey, err := readSSHKeyMaterial(keyPath)
+	if err != nil {
+		return err
 	}
 
-	script := fmt.Sprintf("mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && (grep -qxF %s ~/.ssh/authorized_keys || echo %s >> ~/.ssh/authorized_keys)", syncengine.ShellEscape(pubKey), syncengine.ShellEscape(pubKey))
+	script := fmt.Sprintf("mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && (grep -qxF %s ~/.ssh/authorized_keys || echo %s >> ~/.ssh/authorized_keys)", syncengine.ShellEscape(publicKey), syncengine.ShellEscape(publicKey))
 	k := newKubeClient(opts)
 	var lastErr error
 	installed := false

@@ -923,6 +923,12 @@ func upSetupSSH(state *upState, target workload.TargetRef, keyPath string) (stri
 	if err != nil {
 		return "", fmt.Errorf("wait for SSH service: %w", err)
 	}
+	if state.command.cfg.Spec.SSH.InterPodEnabled() {
+		state.ui.stepRun("ssh", "configuring inter-pod access")
+		if err := setupInterPodSSHWithClient(state.ctx, state.command.kube, state.command.namespace, state.command.sessionName, state.labels, target.Container, state.command.cfg.Spec.SSH.User, state.flags.waitTimeout); err != nil {
+			return "", fmt.Errorf("setup inter-pod ssh: %w", err)
+		}
+	}
 	alias := sshHostAlias(state.command.sessionName)
 	if _, cfgErr := ensureSSHConfigEntry(alias, state.command.sessionName, state.command.namespace, state.command.cfg.Spec.SSH.User, sshPort, keyPath, state.command.cfgPath, state.command.cfg.Spec.Ports); cfgErr != nil {
 		return "", fmt.Errorf("update ~/.ssh/config: %w", cfgErr)

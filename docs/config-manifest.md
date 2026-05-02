@@ -299,6 +299,7 @@ spec:
 | `privateKeyPath` | `string` | — | Path to SSH private key |
 | `autoDetectPorts` | `bool` | `true` | Auto-detect listening ports in the container |
 | `forwardAgent` | `bool` | `false` | Forward the local SSH agent for live `okdev ssh` sessions |
+| `interPod` | `bool` | `false` | Enable passwordless SSH between session pods using a session-scoped key |
 | `persistentSession` | `bool` | `true` | Enable tmux-backed interactive sessions |
 | `keepAliveIntervalSeconds` | `int` | `10` | SSH keepalive interval |
 | `keepAliveTimeoutSeconds` | `int` | `10` | SSH keepalive timeout |
@@ -307,6 +308,8 @@ spec:
 
 When `forwardAgent: true`, `okdev ssh` forwards the local `SSH_AUTH_SOCK` only for that live SSH session. This lets Git/SSH in the workload use your local agent for operations like `git push`, but it requires that your local machine already has an active ssh-agent with identities loaded via `ssh-add`.
 
+When `interPod: true`, `okdev up` generates a session-scoped SSH key, installs it on all session pods, starts `okdev-sshd` on each pod, and writes per-pod SSH host entries inside the workload so you can `ssh <pod-name>` from one session pod to another. For every injected pod template that participates in the session, okdev treats sidecars as effectively enabled at runtime even if the manifest still says `sidecar: false`.
+
 ```yaml
 spec:
   ssh:
@@ -314,6 +317,7 @@ spec:
     privateKeyPath: ~/.okdev/ssh/id_ed25519
     autoDetectPorts: true
     forwardAgent: false
+    interPod: false
     persistentSession: true
     keepAliveIntervalSeconds: 30
     keepAliveTimeoutSeconds: 90

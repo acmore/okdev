@@ -73,6 +73,7 @@ if [[ "$RUN_PYTORCHJOB" == "1" ]]; then
   echo "Installing Kubeflow Training Operator"
   kubectl apply --server-side -k "https://github.com/kubeflow/training-operator.git/manifests/overlays/standalone?ref=v1.8.1"
   kubectl -n kubeflow wait --for=condition=Available deployment/training-operator --timeout=120s
+  bash scripts/e2e_kind_pytorchjob_interpod_ssh.sh
   bash scripts/e2e_kind_pytorchjob.sh
 fi
 

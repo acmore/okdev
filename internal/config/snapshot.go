@@ -36,10 +36,12 @@ func BuildWorkloadSnapshot(cfg *DevEnvironment, workspaceMountPath, targetContai
 	if kind == "" {
 		kind = "pod"
 	}
+	workloadSpec := cfg.Spec.Workload
+	workloadSpec.Inject = cfg.EffectiveWorkloadInject()
 	snap := LastAppliedWorkloadSpec{
 		Version:            SnapshotVersion,
 		WorkloadKind:       kind,
-		Workload:           cfg.Spec.Workload,
+		Workload:           workloadSpec,
 		PodTemplate:        cfg.Spec.PodTemplate,
 		Volumes:            cfg.Spec.Volumes,
 		SidecarImage:       cfg.Spec.Sidecar.Image,
