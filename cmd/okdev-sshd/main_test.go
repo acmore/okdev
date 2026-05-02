@@ -48,7 +48,7 @@ func TestNewServerAddsPublicKeyHandlerWhenKeysProvided(t *testing.T) {
 
 func TestDetectShellReturnsExistingShell(t *testing.T) {
 	got := detectShell()
-	if got != "/bin/bash" && got != "/bin/zsh" && got != "/bin/sh" {
+	if got != "/bin/bash" && got != "/bin/sh" {
 		t.Fatalf("unexpected shell %q", got)
 	}
 	if _, err := os.Stat(got); err != nil {
@@ -56,19 +56,19 @@ func TestDetectShellReturnsExistingShell(t *testing.T) {
 	}
 }
 
-func TestDetectShellReadsOKDEVShellEnv(t *testing.T) {
+func TestDetectShellIgnoresOKDEVShellEnv(t *testing.T) {
 	t.Setenv("OKDEV_SHELL", "/bin/sh")
 	got := detectShell()
-	if got != "/bin/sh" {
-		t.Fatalf("expected /bin/sh from OKDEV_SHELL, got %q", got)
+	if got != "/bin/bash" && got != "/bin/sh" {
+		t.Fatalf("expected command shell fallback to ignore OKDEV_SHELL, got %q", got)
 	}
 }
 
 func TestDetectShellIgnoresNonexistentOKDEVShell(t *testing.T) {
 	t.Setenv("OKDEV_SHELL", "/definitely/missing/zsh")
 	got := detectShell()
-	if got == "/definitely/missing/zsh" {
-		t.Fatal("expected detectShell to ignore nonexistent OKDEV_SHELL path")
+	if got != "/bin/bash" && got != "/bin/sh" {
+		t.Fatalf("expected command shell fallback to ignore nonexistent OKDEV_SHELL, got %q", got)
 	}
 }
 

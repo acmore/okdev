@@ -9,6 +9,74 @@ import (
 	"testing"
 )
 
+func TestMigrateScaffoldsZshFilesWhenShellConfigured(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, ".okdev.yaml")
+	if err := os.WriteFile(cfgPath, []byte(`apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: demo
+spec:
+  ssh:
+    shell: /bin/zsh
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newMigrateCmd(&Options{ConfigPath: cfgPath})
+	cmd.SetArgs([]string{"--no-backup"})
+	cmd.SetIn(strings.NewReader(""))
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("migrate execute: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev", "zshrc")); err != nil {
+		t.Fatalf("expected migrate to scaffold .okdev/zshrc: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev", "zsh-setup.example.sh")); err != nil {
+		t.Fatalf("expected migrate to scaffold .okdev/zsh-setup.example.sh: %v", err)
+	}
+	if !strings.Contains(out.String(), "interactive SSH sessions only") {
+		t.Fatalf("expected migrate output to include zsh guidance, got:\n%s", out.String())
+	}
+}
+
+func TestMigrateSkipsZshScaffoldWhenShellNotZsh(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, ".okdev.yaml")
+	if err := os.WriteFile(cfgPath, []byte(`apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: demo
+spec:
+  ssh:
+    shell: /bin/bash
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newMigrateCmd(&Options{ConfigPath: cfgPath})
+	cmd.SetArgs([]string{"--no-backup"})
+	cmd.SetIn(strings.NewReader(""))
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("migrate execute: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev", "zshrc")); !os.IsNotExist(err) {
+		t.Fatalf("expected no zshrc scaffold for non-zsh shell, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev", "zsh-setup.example.sh")); !os.IsNotExist(err) {
+		t.Fatalf("expected no zsh setup scaffold for non-zsh shell, err=%v", err)
+	}
+}
+
 type migrateTemplateFixture struct {
 	configPath   string
 	manifestPath string
