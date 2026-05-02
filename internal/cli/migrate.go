@@ -405,6 +405,9 @@ func templateVarsForMigrate(cfg *config.DevEnvironment, cfgPath string) *config.
 	if sshUser := strings.TrimSpace(cfg.Spec.SSH.User); sshUser != "" {
 		vars.SSHUser = sshUser
 	}
+	if shell := strings.TrimSpace(cfg.Spec.SSH.Shell); shell != "" {
+		vars.Shell = shell
+	}
 	if sidecarImage := strings.TrimSpace(cfg.Spec.Sidecar.Image); sidecarImage != "" {
 		vars.SidecarImage = sidecarImage
 	}
