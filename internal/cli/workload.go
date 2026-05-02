@@ -37,7 +37,7 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName, workloadNa
 		rt := workload.NewPodRuntime(
 			sessionName, labels, annotations, podSpec,
 			volumes, workspaceMountPath, cfg.Spec.Sidecar.Image, cfg.Spec.Sidecar.Resources,
-			tmux, preStop, targetContainer,
+			tmux, cfg.Spec.SSH.Shell, preStop, targetContainer,
 		)
 		rt.WorkloadNameOverride = workloadName
 		rt.LastAppliedSpecJSON = snapJSON
@@ -53,6 +53,7 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName, workloadNa
 			SidecarImage:         cfg.Spec.Sidecar.Image,
 			SidecarResources:     cfg.Spec.Sidecar.Resources,
 			Tmux:                 tmux,
+			Shell:                cfg.Spec.SSH.Shell,
 			PreStop:              preStop,
 			TargetContainer:      targetContainer,
 			Volumes:              volumes,
