@@ -28,7 +28,7 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName, workloadNa
 		manifestResolvedPath = workload.ResolveManifestPath(cfgPath, cfg.Spec.Workload.ManifestPath)
 	}
 
-	snap := config.BuildWorkloadSnapshot(cfg, workspaceMountPath, targetContainer, tmux, preStop, manifestPath, manifestResolvedPath)
+	snap := config.BuildWorkloadSnapshot(cfg, workspaceMountPath, targetContainer, tmux, cfg.Spec.SSH.Shell, preStop, manifestPath, manifestResolvedPath)
 	snapJSON, _ := snap.JSON()
 	snapHash, _ := snap.SHA256()
 

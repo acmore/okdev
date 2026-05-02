@@ -26,12 +26,13 @@ type LastAppliedWorkloadSpec struct {
 	WorkspaceMountPath string                      `json:"workspaceMountPath"`
 	TargetContainer    string                      `json:"targetContainer"`
 	Tmux               bool                        `json:"tmux"`
+	Shell              string                      `json:"shell,omitempty"`
 	PreStop            string                      `json:"preStop"`
 	ManifestPath       string                      `json:"manifestPath,omitempty"`
 	ManifestSHA256     string                      `json:"manifestSHA256,omitempty"`
 }
 
-func BuildWorkloadSnapshot(cfg *DevEnvironment, workspaceMountPath, targetContainer string, tmux bool, preStop, manifestPath, manifestResolvedPath string) LastAppliedWorkloadSpec {
+func BuildWorkloadSnapshot(cfg *DevEnvironment, workspaceMountPath, targetContainer string, tmux bool, shell string, preStop, manifestPath, manifestResolvedPath string) LastAppliedWorkloadSpec {
 	kind := cfg.Spec.Workload.Type
 	if kind == "" {
 		kind = "pod"
@@ -49,6 +50,7 @@ func BuildWorkloadSnapshot(cfg *DevEnvironment, workspaceMountPath, targetContai
 		WorkspaceMountPath: workspaceMountPath,
 		TargetContainer:    targetContainer,
 		Tmux:               tmux,
+		Shell:              shell,
 		PreStop:            preStop,
 		ManifestPath:       manifestPath,
 	}
