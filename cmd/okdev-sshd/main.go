@@ -78,12 +78,7 @@ func newServer(addr, shell string, keys []ssh.PublicKey) *ssh.Server {
 }
 
 func detectShell() string {
-	if env := strings.TrimSpace(os.Getenv("OKDEV_SHELL")); env != "" {
-		if _, err := os.Stat(env); err == nil {
-			return env
-		}
-	}
-	for _, sh := range []string{"/bin/bash", "/bin/zsh", "/bin/sh"} {
+	for _, sh := range []string{"/bin/bash", "/bin/sh"} {
 		if _, err := os.Stat(sh); err == nil {
 			return sh
 		}
