@@ -95,7 +95,7 @@ cd "$WORKDIR"
 MANIFEST_PATH="$WORKDIR/.okdev/pytorchjob.yaml"
 replace_all_in_file "$MANIFEST_PATH" 'name: dev' 'name: pytorch'
 replace_all_in_file "$MANIFEST_PATH" 'image: # TODO: replace with your image' 'image: ubuntu:22.04'
-replace_all_in_file "$MANIFEST_PATH" 'command: ["sleep", "infinity"]' 'command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]'
+replace_all_in_file "$MANIFEST_PATH" 'command: ["sleep", "infinity"]' 'command: ["sh", "-lc", "apt-get update -qq && apt-get install -y -qq openssh-client >/dev/null 2>&1; trap : TERM INT; while true; do sleep 3600; done"]'
 python3 - <<'PY' "$MANIFEST_PATH" "$PVC_NAME" "$PVC_WORKSPACE_SUBPATH" "$SECONDARY_PVC_MOUNT"
 import pathlib, sys
 
@@ -330,6 +330,18 @@ echo "Verifying SSH into master pod"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --setup-key --cmd 'echo pytorchjob-ssh-ok'
 
 FIRST_WORKER_POD=$(echo "$WORKER_PODS" | awk '{print $1}')
+echo "Waiting for ssh client to be available in master pod"
+for i in $(seq 1 30); do
+  if "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --cmd 'which ssh' >/dev/null 2>&1; then
+    break
+  fi
+  if [[ "$i" -eq 30 ]]; then
+    echo "ERROR: ssh client not available in master pod after 60s" >&2
+    exit 1
+  fi
+  sleep 2
+done
+
 echo "Verifying inter-pod SSH from master to worker"
 INTERPOD_SSH_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --cmd "ssh -o BatchMode=yes $FIRST_WORKER_POD 'echo interpod-ssh-ok'")
 if [[ "$INTERPOD_SSH_OUTPUT" != *"interpod-ssh-ok"* ]]; then
