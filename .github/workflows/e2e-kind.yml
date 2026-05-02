@@ -57,6 +57,9 @@ jobs:
           kubectl -n kubeflow wait --for=condition=Available deployment/training-operator --timeout=120s
 
       - name: Run PyTorchJob test
+        run: bash scripts/e2e_kind_pytorchjob_interpod_ssh.sh
+
+      - name: Run PyTorchJob workflow test
         run: bash scripts/e2e_kind_pytorchjob.sh
 
       - name: Dump cluster state on failure
