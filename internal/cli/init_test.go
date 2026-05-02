@@ -1072,3 +1072,45 @@ spec:
 		t.Fatalf("expected shadowed basic template ref to be persisted, got:\n%s", string(raw))
 	}
 }
+
+func TestInitWithZshShellScaffoldsZshFiles(t *testing.T) {
+	tmp := t.TempDir()
+	oldwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newInitCmd(&Options{})
+	cmd.SetArgs([]string{"--yes", "--shell", "/bin/zsh"})
+	cmd.SetIn(strings.NewReader(""))
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	zshrcPath := filepath.Join(tmp, ".okdev", "zshrc")
+	if _, err := os.Stat(zshrcPath); err != nil {
+		t.Fatalf("expected .okdev/zshrc to be scaffolded: %v", err)
+	}
+	examplePath := filepath.Join(tmp, ".okdev", "zsh-setup.example.sh")
+	if _, err := os.Stat(examplePath); err != nil {
+		t.Fatalf("expected .okdev/zsh-setup.example.sh to be scaffolded: %v", err)
+	}
+
+	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev.yaml"))
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(cfgRaw), "shell: /bin/zsh") {
+		t.Fatalf("expected config to contain shell: /bin/zsh, got:\n%s", cfgRaw)
+	}
+
+	if !strings.Contains(out.String(), "zsh-setup.example.sh") {
+		t.Fatalf("expected guidance message in output, got %q", out.String())
+	}
+}
