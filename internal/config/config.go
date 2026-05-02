@@ -151,6 +151,7 @@ type LifecycleSpec struct {
 }
 
 type SSHSpec struct {
+	Shell             string `yaml:"shell"`
 	User              string `yaml:"user"`
 	PrivateKeyPath    string `yaml:"privateKeyPath"`
 	AutoDetectPorts   *bool  `yaml:"autoDetectPorts"`
@@ -334,6 +335,11 @@ func (d *DevEnvironment) Validate() error {
 	}
 	if err := validateAgents(d.Spec.Agents); err != nil {
 		return err
+	}
+	if shell := strings.TrimSpace(d.Spec.SSH.Shell); shell != "" {
+		if !filepath.IsAbs(shell) {
+			return fmt.Errorf("spec.ssh.shell must be an absolute path, got %q", shell)
+		}
 	}
 	return nil
 }
