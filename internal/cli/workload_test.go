@@ -52,6 +52,34 @@ func TestSessionRuntimeReturnsGenericRuntimeForJob(t *testing.T) {
 	}
 }
 
+func TestSessionRuntimeEnablesSidecarsForInterPodSSH(t *testing.T) {
+	cfg := &config.DevEnvironment{}
+	cfg.Spec.Workload.Type = workload.TypePyTorchJob
+	cfg.Spec.Workload.ManifestPath = ".okdev/pytorchjob.yaml"
+	enabled := true
+	disabled := false
+	cfg.Spec.SSH.InterPod = &enabled
+	cfg.Spec.Workload.Inject = []config.WorkloadInjectSpec{
+		{Path: "spec.pytorchReplicaSpecs.Master.template"},
+		{Path: "spec.pytorchReplicaSpecs.Worker.template", Sidecar: &disabled},
+	}
+
+	rt, err := sessionRuntime(cfg, "/tmp/.okdev.yaml", "sess1", "okdev-sess1-abcd1234", nil, nil, corev1.PodSpec{}, nil, false, "")
+	if err != nil {
+		t.Fatalf("sessionRuntime: %v", err)
+	}
+	gen, ok := rt.(*workload.GenericRuntime)
+	if !ok {
+		t.Fatalf("expected GenericRuntime, got %T", rt)
+	}
+	if len(gen.Inject) != 2 {
+		t.Fatalf("expected 2 inject specs, got %d", len(gen.Inject))
+	}
+	if gen.Inject[1].Sidecar == nil || !*gen.Inject[1].Sidecar {
+		t.Fatalf("expected worker inject sidecar to be enabled when interPod=true, got %+v", gen.Inject[1])
+	}
+}
+
 func TestSessionRuntimeReturnsPodRuntimeByDefault(t *testing.T) {
 	cfg := &config.DevEnvironment{}
 	cfg.Spec.Sidecar.Image = "ghcr.io/acmore/okdev:edge"

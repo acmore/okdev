@@ -157,6 +157,7 @@ PY
 
 # Disable persistent SSH sessions for CI
 insert_after_line_once "$CFG_PATH" '  ssh:' '    persistentSession: false'
+insert_after_line_once "$CFG_PATH" '  ssh:' '    interPod: true'
 
 # Add lifecycle hooks for verification.
 # postCreate runs only on target pod; postSync runs on all pods after sync;
@@ -327,6 +328,16 @@ done
 
 echo "Verifying SSH into master pod"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --setup-key --cmd 'echo pytorchjob-ssh-ok'
+
+FIRST_WORKER_POD=$(echo "$WORKER_PODS" | awk '{print $1}')
+echo "Verifying inter-pod SSH from master to worker"
+INTERPOD_SSH_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --cmd "ssh -o BatchMode=yes $FIRST_WORKER_POD 'echo interpod-ssh-ok'")
+if [[ "$INTERPOD_SSH_OUTPUT" != *"interpod-ssh-ok"* ]]; then
+  echo "ERROR: expected inter-pod SSH from master to worker to succeed" >&2
+  echo "$INTERPOD_SSH_OUTPUT" >&2
+  exit 1
+fi
+echo "inter-pod SSH verified"
 
 # ---------------------------------------------------------------------------
 # Multi-pod exec (pdsh) verification

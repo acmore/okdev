@@ -155,6 +155,7 @@ type SSHSpec struct {
 	PrivateKeyPath    string `yaml:"privateKeyPath"`
 	AutoDetectPorts   *bool  `yaml:"autoDetectPorts"`
 	ForwardAgent      *bool  `yaml:"forwardAgent"`
+	InterPod          *bool  `yaml:"interPod"`
 	PersistentSession *bool  `yaml:"persistentSession"`
 	KeepAliveInterval int    `yaml:"keepAliveIntervalSeconds"`
 	KeepAliveTimeout  int    `yaml:"keepAliveTimeoutSeconds"`
@@ -276,7 +277,8 @@ func (d *DevEnvironment) Validate() error {
 			return fmt.Errorf("spec.workload.manifestPath is required when spec.workload.type=%q", d.Spec.Workload.Type)
 		}
 	}
-	for i, inject := range d.Spec.Workload.Inject {
+	effectiveInject := d.EffectiveWorkloadInject()
+	for i, inject := range effectiveInject {
 		if strings.TrimSpace(inject.Path) == "" {
 			return fmt.Errorf("spec.workload.inject[%d].path is required", i)
 		}
@@ -350,11 +352,33 @@ func (s SSHSpec) ForwardAgentEnabled() bool {
 	return *s.ForwardAgent
 }
 
+func (s SSHSpec) InterPodEnabled() bool {
+	if s.InterPod == nil {
+		return false
+	}
+	return *s.InterPod
+}
+
 func (s SyncthingSpec) AutoInstallEnabled() bool {
 	if s.AutoInstall == nil {
 		return true
 	}
 	return *s.AutoInstall
+}
+
+func (d *DevEnvironment) EffectiveWorkloadInject() []WorkloadInjectSpec {
+	if d == nil || len(d.Spec.Workload.Inject) == 0 {
+		return nil
+	}
+	out := make([]WorkloadInjectSpec, len(d.Spec.Workload.Inject))
+	copy(out, d.Spec.Workload.Inject)
+	if !d.Spec.SSH.InterPodEnabled() {
+		return out
+	}
+	for i := range out {
+		out[i].Sidecar = boolPtr(true)
+	}
+	return out
 }
 
 func (d *DevEnvironment) EffectiveVolumes() []corev1.Volume {
@@ -375,6 +399,10 @@ func (d *DevEnvironment) EffectiveVolumes() []corev1.Volume {
 		})
 	}
 	return out
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
 
 func (d *DevEnvironment) WorkspaceMountPath() string {

@@ -58,7 +58,7 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName, workloadNa
 			Volumes:              volumes,
 			Labels:               labels,
 			Annotations:          annotations,
-			Inject:               cfg.Spec.Workload.Inject,
+			Inject:               cfg.EffectiveWorkloadInject(),
 			LastAppliedSpecJSON:  snapJSON,
 			LastAppliedSpecHash:  snapHash,
 		}, nil
