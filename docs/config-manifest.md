@@ -308,7 +308,7 @@ spec:
 
 When `forwardAgent: true`, `okdev ssh` forwards the local `SSH_AUTH_SOCK` only for that live SSH session. This lets Git/SSH in the workload use your local agent for operations like `git push`, but it requires that your local machine already has an active ssh-agent with identities loaded via `ssh-add`.
 
-When `interPod: true`, `okdev up` generates a session-scoped SSH key, installs it on all session pods, starts `okdev-sshd` on each pod, and writes per-pod SSH host entries inside the workload so you can `ssh <pod-name>` from one session pod to another. This requires sidecars on every injected pod template that participates in the session; configs with `sidecar: false` on any injected pod are rejected during validation.
+When `interPod: true`, `okdev up` generates a session-scoped SSH key, installs it on all session pods, starts `okdev-sshd` on each pod, and writes per-pod SSH host entries inside the workload so you can `ssh <pod-name>` from one session pod to another. For every injected pod template that participates in the session, okdev treats sidecars as effectively enabled at runtime even if the manifest still says `sidecar: false`.
 
 ```yaml
 spec:

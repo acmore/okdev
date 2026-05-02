@@ -151,6 +151,35 @@ func TestBuildWorkloadSnapshotGenericIncludesManifestHash(t *testing.T) {
 	}
 }
 
+func TestBuildWorkloadSnapshotUsesEffectiveInjectForInterPodSSH(t *testing.T) {
+	enabled := true
+	disabled := false
+	cfg := &DevEnvironment{
+		Spec: DevEnvSpec{
+			Workload: WorkloadSpec{
+				Type:         "pytorchjob",
+				ManifestPath: "pytorchjob.yaml",
+				Inject: []WorkloadInjectSpec{
+					{Path: "spec.pytorchReplicaSpecs.Master.template"},
+					{Path: "spec.pytorchReplicaSpecs.Worker.template", Sidecar: &disabled},
+				},
+			},
+			SSH: SSHSpec{InterPod: &enabled},
+			Sidecar: SidecarSpec{
+				Image: "img:1",
+			},
+		},
+	}
+
+	snap := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "pytorchjob.yaml", "")
+	if len(snap.Workload.Inject) != 2 {
+		t.Fatalf("expected 2 inject specs, got %d", len(snap.Workload.Inject))
+	}
+	if snap.Workload.Inject[1].Sidecar == nil || !*snap.Workload.Inject[1].Sidecar {
+		t.Fatalf("expected effective snapshot inject sidecar to be enabled, got %+v", snap.Workload.Inject[1])
+	}
+}
+
 func TestWorkloadSnapshotHashIgnoresManifestPath(t *testing.T) {
 	cfg := &DevEnvironment{
 		Spec: DevEnvSpec{

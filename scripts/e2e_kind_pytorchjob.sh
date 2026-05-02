@@ -289,6 +289,17 @@ if [[ "$PODS_READY" != "true" ]]; then
   exit 1
 fi
 
+echo "Verifying inter-pod SSH effectively re-enables worker sidecars"
+for WPOD in $WORKER_PODS; do
+  WORKER_CONTAINERS=$(kubectl -n "$NAMESPACE" get pod "$WPOD" -o jsonpath='{.spec.containers[*].name}')
+  if [[ "$WORKER_CONTAINERS" != *"okdev-sidecar"* ]]; then
+    echo "ERROR: expected worker pod $WPOD to include okdev-sidecar when ssh.interPod=true" >&2
+    echo "containers: $WORKER_CONTAINERS" >&2
+    exit 1
+  fi
+done
+echo "worker sidecars verified"
+
 echo "Verifying PVC subPath is visible through the full PVC mount on master"
 wait_for_pod_file_content \
   "$MASTER_POD" \

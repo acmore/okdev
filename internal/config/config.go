@@ -277,15 +277,13 @@ func (d *DevEnvironment) Validate() error {
 			return fmt.Errorf("spec.workload.manifestPath is required when spec.workload.type=%q", d.Spec.Workload.Type)
 		}
 	}
-	for i, inject := range d.Spec.Workload.Inject {
+	effectiveInject := d.EffectiveWorkloadInject()
+	for i, inject := range effectiveInject {
 		if strings.TrimSpace(inject.Path) == "" {
 			return fmt.Errorf("spec.workload.inject[%d].path is required", i)
 		}
 		if inject.Attachable != nil && *inject.Attachable && inject.Sidecar != nil && !*inject.Sidecar {
 			return fmt.Errorf("spec.workload.inject[%d]: attachable=true requires sidecar=true", i)
-		}
-		if d.Spec.SSH.InterPodEnabled() && inject.Sidecar != nil && !*inject.Sidecar {
-			return fmt.Errorf("spec.ssh.interPod requires sidecar=true for spec.workload.inject[%d].path=%q", i, strings.TrimSpace(inject.Path))
 		}
 	}
 	if d.Spec.Workload.Type == "job" {
@@ -368,6 +366,21 @@ func (s SyncthingSpec) AutoInstallEnabled() bool {
 	return *s.AutoInstall
 }
 
+func (d *DevEnvironment) EffectiveWorkloadInject() []WorkloadInjectSpec {
+	if d == nil || len(d.Spec.Workload.Inject) == 0 {
+		return nil
+	}
+	out := make([]WorkloadInjectSpec, len(d.Spec.Workload.Inject))
+	copy(out, d.Spec.Workload.Inject)
+	if !d.Spec.SSH.InterPodEnabled() {
+		return out
+	}
+	for i := range out {
+		out[i].Sidecar = boolPtr(true)
+	}
+	return out
+}
+
 func (d *DevEnvironment) EffectiveVolumes() []corev1.Volume {
 	out := make([]corev1.Volume, 0, len(d.Spec.Volumes)+1)
 	hasWorkspace := false
@@ -386,6 +399,10 @@ func (d *DevEnvironment) EffectiveVolumes() []corev1.Volume {
 		})
 	}
 	return out
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
 
 func (d *DevEnvironment) WorkspaceMountPath() string {

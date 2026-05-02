@@ -213,7 +213,7 @@ func TestValidateRejectsInvalidEngine(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsInterPodSSHWithoutSidecarsOnAllInjectedPods(t *testing.T) {
+func TestValidateAllowsInterPodSSHToOverrideDisabledSidecars(t *testing.T) {
 	cfg := validConfig()
 	cfg.Spec.Workload.Type = "pytorchjob"
 	cfg.Spec.Workload.ManifestPath = "manifests/pytorchjob.yaml"
@@ -224,10 +224,10 @@ func TestValidateRejectsInterPodSSHWithoutSidecarsOnAllInjectedPods(t *testing.T
 		{Path: "spec.pytorchReplicaSpecs.Master.template"},
 		{Path: "spec.pytorchReplicaSpecs.Worker.template", Sidecar: &disabled},
 	}
+	cfg.SetDefaults()
 
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "spec.ssh.interPod requires sidecar=true") {
-		t.Fatalf("expected interPod sidecar validation error, got %v", err)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected interPod to allow disabled sidecars in config, got %v", err)
 	}
 }
 
