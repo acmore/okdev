@@ -63,6 +63,8 @@ type Client struct {
 	cachedKey     string
 }
 
+var defaultPortForwardAddresses = []string{"localhost"}
+
 type PodSummary struct {
 	Namespace   string
 	Name        string
@@ -992,11 +994,18 @@ func (c *Client) ExecInteractiveInContainer(ctx context.Context, namespace, pod,
 }
 
 func (c *Client) PortForward(ctx context.Context, namespace, pod string, forwards []string, stdout io.Writer, stderr io.Writer) error {
+	return c.PortForwardOnAddresses(ctx, namespace, pod, defaultPortForwardAddresses, forwards, stdout, stderr)
+}
+
+func (c *Client) PortForwardOnAddresses(ctx context.Context, namespace, pod string, addresses []string, forwards []string, stdout io.Writer, stderr io.Writer) error {
+	if len(addresses) == 0 {
+		addresses = defaultPortForwardAddresses
+	}
 	backoff := time.Second
 	const maxBackoff = 30 * time.Second
 	for {
 		start := time.Now()
-		err := c.portForwardOnce(ctx, namespace, pod, forwards, stdout, stderr)
+		err := c.portForwardOnceOnAddresses(ctx, namespace, pod, addresses, forwards, stdout, stderr)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -1020,6 +1029,10 @@ func (c *Client) PortForward(ctx context.Context, namespace, pod string, forward
 			backoff = maxBackoff
 		}
 	}
+}
+
+func (c *Client) portForwardOnce(ctx context.Context, namespace, pod string, forwards []string, stdout io.Writer, stderr io.Writer) error {
+	return c.portForwardOnceOnAddresses(ctx, namespace, pod, defaultPortForwardAddresses, forwards, stdout, stderr)
 }
 
 func isRetryablePortForwardError(err error) bool {
@@ -1046,7 +1059,7 @@ func isRetryablePortForwardError(err error) bool {
 	return true
 }
 
-func (c *Client) portForwardOnce(ctx context.Context, namespace, pod string, forwards []string, stdout io.Writer, stderr io.Writer) error {
+func (c *Client) portForwardOnceOnAddresses(ctx context.Context, namespace, pod string, addresses []string, forwards []string, stdout io.Writer, stderr io.Writer) error {
 	cs, cfg, err := c.clientset()
 	if err != nil {
 		return err
@@ -1071,7 +1084,7 @@ func (c *Client) portForwardOnce(ctx context.Context, namespace, pod string, for
 		<-ctx.Done()
 		close(stopCh)
 	}()
-	pf, err := portforward.New(dialer, forwards, stopCh, readyCh, stdout, stderr)
+	pf, err := portforward.NewOnAddresses(dialer, addresses, forwards, stopCh, readyCh, stdout, stderr)
 	if err != nil {
 		return err
 	}
