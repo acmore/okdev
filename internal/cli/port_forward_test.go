@@ -98,12 +98,14 @@ func TestSplitPortForwardArgs(t *testing.T) {
 type fakePortForwardClient struct {
 	forwardedNamespace string
 	forwardedPod       string
+	forwardedAddresses []string
 	forwardedMappings  []string
 }
 
-func (f *fakePortForwardClient) PortForward(ctx context.Context, namespace, pod string, forwards []string, stdout io.Writer, stderr io.Writer) error {
+func (f *fakePortForwardClient) PortForwardOnAddresses(ctx context.Context, namespace, pod string, addresses []string, forwards []string, stdout io.Writer, stderr io.Writer) error {
 	f.forwardedNamespace = namespace
 	f.forwardedPod = pod
+	f.forwardedAddresses = append([]string(nil), addresses...)
 	f.forwardedMappings = append([]string(nil), forwards...)
 	return context.Canceled
 }
@@ -112,12 +114,16 @@ func TestRunPortForwardUsesDirectKubePortForward(t *testing.T) {
 	client := &fakePortForwardClient{}
 	target := workload.TargetRef{PodName: "okdev-sess-master-0"}
 	var out bytes.Buffer
-	err := runPortForward(context.Background(), client, "demo", target, []string{"8080:8080"}, &out)
+	err := runPortForward(context.Background(), client, "demo", target, []string{"localhost", "0.0.0.0"}, []string{"8080:8080"}, &out)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context-canceled passthrough, got %v", err)
 	}
 	if client.forwardedNamespace != "demo" || client.forwardedPod != "okdev-sess-master-0" {
 		t.Fatalf("unexpected forwarded target: ns=%q pod=%q", client.forwardedNamespace, client.forwardedPod)
+	}
+	wantAddresses := []string{"localhost", "0.0.0.0"}
+	if !reflect.DeepEqual(wantAddresses, client.forwardedAddresses) {
+		t.Fatalf("unexpected addresses: got=%v want=%v", client.forwardedAddresses, wantAddresses)
 	}
 	wantMappings := []string{"8080:8080"}
 	if !reflect.DeepEqual(wantMappings, client.forwardedMappings) {
@@ -125,6 +131,38 @@ func TestRunPortForwardUsesDirectKubePortForward(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Forwarding to pod=okdev-sess-master-0") {
 		t.Fatalf("expected startup message, got %q", out.String())
+	}
+}
+
+func TestNormalizePortForwardAddresses(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		input   []string
+		want    []string
+		wantErr string
+	}{
+		{name: "default localhost", input: nil, want: []string{"localhost"}},
+		{name: "single explicit", input: []string{"0.0.0.0"}, want: []string{"0.0.0.0"}},
+		{name: "comma separated", input: []string{"localhost,0.0.0.0"}, want: []string{"localhost", "0.0.0.0"}},
+		{name: "repeated and deduped", input: []string{"localhost", "0.0.0.0", "localhost"}, want: []string{"localhost", "0.0.0.0"}},
+		{name: "trim spaces", input: []string{" localhost ", " 0.0.0.0 "}, want: []string{"localhost", "0.0.0.0"}},
+		{name: "reject empty", input: []string{"localhost,"}, wantErr: "invalid --address value"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := normalizePortForwardAddresses(tc.input)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("normalizePortForwardAddresses: %v", err)
+			}
+			if !reflect.DeepEqual(tc.want, got) {
+				t.Fatalf("unexpected addresses: got=%v want=%v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -143,5 +181,21 @@ func TestPortForwardCommandRejectsMissingMappings(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "requires at least one") {
 		t.Fatalf("expected missing mapping error, got %v", err)
+	}
+}
+
+func TestPortForwardCommandExposesAddressFlag(t *testing.T) {
+	cmd := newPortForwardCmd(&Options{})
+	flag := cmd.Flags().Lookup("address")
+	if flag == nil {
+		t.Fatal("expected --address flag")
+	}
+	got, err := cmd.Flags().GetStringSlice("address")
+	if err != nil {
+		t.Fatalf("GetStringSlice(address): %v", err)
+	}
+	want := []string{"localhost"}
+	if !reflect.DeepEqual(want, got) {
+		t.Fatalf("unexpected default addresses: got=%v want=%v", got, want)
 	}
 }

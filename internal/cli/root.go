@@ -1,6 +1,11 @@
 package cli
 
 import (
+	"context"
+	"os"
+	"os/signal"
+	"syscall"
+
 	"github.com/acmore/okdev/internal/logx"
 	"github.com/spf13/cobra"
 )
@@ -70,6 +75,13 @@ func newRootCmdWithOptions() (*cobra.Command, *Options) {
 }
 
 func Execute() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	cmd, _ := newRootCmdWithOptions()
-	return cmd.Execute()
+	return executeWithContext(ctx, cmd)
+}
+
+func executeWithContext(ctx context.Context, cmd *cobra.Command) error {
+	return cmd.ExecuteContext(ctx)
 }
