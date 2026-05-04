@@ -2,10 +2,15 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestNewRootCmdRegistersExpectedCommandsAndFlags(t *testing.T) {
@@ -53,6 +58,28 @@ func TestExecuteDoesNotPrintTelemetryNotice(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "okdev ") {
 		t.Fatalf("expected version output, got stdout %q", stdout)
+	}
+}
+
+func TestExecuteWithContextPropagatesCanceledContext(t *testing.T) {
+	root := &cobra.Command{Use: "okdev"}
+	root.AddCommand(&cobra.Command{
+		Use: "observe",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !errors.Is(cmd.Context().Err(), context.Canceled) {
+				return fmt.Errorf("expected canceled command context, got %v", cmd.Context().Err())
+			}
+			return cmd.Context().Err()
+		},
+	})
+	root.SetArgs([]string{"observe"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := executeWithContext(ctx, root)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
 	}
 }
 
