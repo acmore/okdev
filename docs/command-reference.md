@@ -31,7 +31,7 @@
 - `okdev logs [session] [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
 - `okdev ssh [session] [--setup-key] [--user root] [--cmd "..."] [--no-tmux] [--forward-agent|--no-forward-agent]`
 - `okdev ports`
-- `okdev port-forward [session] <local:remote>... [--pod <name> | --role <role>] [--ready-only]`
+- `okdev port-forward [session] <local:remote>... [--address <addr>[,<addr>...]] [--pod <name> | --role <role>] [--ready-only]`
 - `okdev sync [--mode up|down|bi] [--foreground] [--reset] [--dry-run]`
 - `okdev prune [--ttl-hours 72] [--all-namespaces] [--all-users] [--include-pvc] [--dry-run]`
 - `okdev migrate [--template <name>] [--set key=value] [--dry-run] [--yes]`
@@ -210,6 +210,7 @@
 
 - Runs direct foreground Kubernetes port-forwarding to one selected session pod.
 - Uses the current session target pod by default.
+- `--address`: local listen addresses (default: `localhost`). Accepts comma-separated values or repeated flags, for example `--address localhost,0.0.0.0`.
 - `--pod` selects one explicit pod by name.
 - `--role` selects one pod by workload role. Ambiguity is an error.
 - `--ready-only`: restricts selection to already-running pods.

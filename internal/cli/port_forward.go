@@ -16,6 +16,7 @@ func newPortForwardCmd(opts *Options) *cobra.Command {
 	var podName string
 	var role string
 	var readyOnly bool
+	var addresses []string
 
 	cmd := &cobra.Command{
 		Use:   "port-forward [session] <local:remote>...",
@@ -42,16 +43,21 @@ func newPortForwardCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			listenAddresses, err := normalizePortForwardAddresses(addresses)
+			if err != nil {
+				return err
+			}
 
 			target, err := resolvePortForwardTarget(cmd.Context(), cc, podName, role, readyOnly)
 			if err != nil {
 				return err
 			}
-			return runPortForward(cmd.Context(), cc.kube, cc.namespace, target, mappings, cmd.OutOrStdout())
+			return runPortForward(cmd.Context(), cc.kube, cc.namespace, target, listenAddresses, mappings, cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().StringVar(&podName, "pod", "", "Target a specific pod by name")
 	cmd.Flags().StringVar(&role, "role", "", "Target a pod by workload role")
+	cmd.Flags().StringSliceVar(&addresses, "address", []string{"localhost"}, "Addresses to listen on (repeatable or comma-separated)")
 	cmd.Flags().BoolVar(&readyOnly, "ready-only", false, "Use only already-running pods")
 	return cmd
 }
@@ -102,6 +108,31 @@ func parsePortForwardMappings(args []string) ([]string, error) {
 	return out, nil
 }
 
+func normalizePortForwardAddresses(values []string) ([]string, error) {
+	if len(values) == 0 {
+		return []string{"localhost"}, nil
+	}
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			addr := strings.TrimSpace(part)
+			if addr == "" {
+				return nil, fmt.Errorf("invalid --address value %q", value)
+			}
+			if _, ok := seen[addr]; ok {
+				continue
+			}
+			seen[addr] = struct{}{}
+			out = append(out, addr)
+		}
+	}
+	if len(out) == 0 {
+		return []string{"localhost"}, nil
+	}
+	return out, nil
+}
+
 func selectSinglePortForwardPod(pods []kube.PodSummary) (kube.PodSummary, error) {
 	if len(pods) != 1 {
 		return kube.PodSummary{}, fmt.Errorf("port-forward requires exactly one pod, got %d", len(pods))
@@ -121,10 +152,10 @@ func splitPortForwardArgs(args []string) ([]string, []string) {
 }
 
 type portForwardRunner interface {
-	PortForward(context.Context, string, string, []string, io.Writer, io.Writer) error
+	PortForwardOnAddresses(context.Context, string, string, []string, []string, io.Writer, io.Writer) error
 }
 
-func runPortForward(ctx context.Context, client portForwardRunner, namespace string, target workload.TargetRef, forwards []string, out io.Writer) error {
+func runPortForward(ctx context.Context, client portForwardRunner, namespace string, target workload.TargetRef, addresses []string, forwards []string, out io.Writer) error {
 	fmt.Fprintf(out, "Forwarding to pod=%s %s\n", target.PodName, strings.Join(forwards, ", "))
-	return client.PortForward(ctx, namespace, target.PodName, forwards, out, io.Discard)
+	return client.PortForwardOnAddresses(ctx, namespace, target.PodName, addresses, forwards, out, io.Discard)
 }
