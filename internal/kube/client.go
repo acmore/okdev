@@ -1127,6 +1127,14 @@ type singleFileDownloadState struct {
 	AlreadyComplete bool
 }
 
+type remoteFileInfo struct {
+	Size int64
+	Mode os.FileMode
+}
+
+type remoteRangeOpener func(offset int64) (io.ReadCloser, error)
+type completionCheck func() error
+
 // CopyToPodInContainerWithProgress copies a single local file to remotePath
 // in the given pod/container. It optionally reports progress via prog.
 func (c *Client) CopyToPodInContainerWithProgress(ctx context.Context, namespace, localPath, podName, container, remotePath string, prog CopyProgress) error {
@@ -1242,6 +1250,112 @@ func localFileSize(path string) (size int64, exists bool, err error) {
 	default:
 		return 0, false, err
 	}
+}
+
+func downloadSingleFileResumable(ctx context.Context, localPath string, info remoteFileInfo, openRange remoteRangeOpener, prog CopyProgress, done ...completionCheck) error {
+	state, err := resolveSingleFileDownloadState(localPath, info.Size)
+	if err != nil {
+		return err
+	}
+	if state.AlreadyComplete {
+		return nil
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if state.ResumeOffset >= info.Size {
+			return finalizeSingleFileDownload(state, info.Mode)
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		rc, err := openRange(state.ResumeOffset)
+		if err != nil {
+			return err
+		}
+
+		copyErr := appendSingleFileRange(state.PartialPath, rc, prog)
+		closeErr := rc.Close()
+		if copyErr == nil {
+			copyErr = closeErr
+		}
+
+		currentSize, exists, err := localFileSize(state.PartialPath)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			currentSize = 0
+		}
+		state.ResumeOffset = currentSize
+
+		if copyErr == nil && currentSize < info.Size {
+			copyErr = io.ErrUnexpectedEOF
+		}
+		if copyErr != nil {
+			lastErr = copyErr
+			if !isRetryableCopyStreamError(copyErr) || attempt == 2 {
+				return copyErr
+			}
+			time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+			continue
+		}
+
+		if currentSize != info.Size {
+			lastErr = io.ErrUnexpectedEOF
+			if attempt == 2 {
+				return lastErr
+			}
+			time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+			continue
+		}
+
+		for _, check := range done {
+			if check == nil {
+				continue
+			}
+			if err := check(); err != nil {
+				if isRetryableCopyStreamError(err) {
+					return finalizeSingleFileDownload(state, info.Mode)
+				}
+				return err
+			}
+		}
+		return finalizeSingleFileDownload(state, info.Mode)
+	}
+	return lastErr
+}
+
+func appendSingleFileRange(path string, src io.Reader, prog CopyProgress) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	reader := src
+	if prog.OnBytes != nil {
+		reader = io.TeeReader(src, byteCounterWriter(prog.OnBytes))
+	}
+	_, err = io.Copy(f, reader)
+	return err
+}
+
+func finalizeSingleFileDownload(state singleFileDownloadState, mode os.FileMode) error {
+	if mode == 0 {
+		mode = 0o644
+	}
+	if err := os.Chmod(state.PartialPath, mode); err != nil {
+		return err
+	}
+	if err := os.Remove(state.FinalPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return os.Rename(state.PartialPath, state.FinalPath)
 }
 
 func (c *Client) ExtractTarToPod(ctx context.Context, namespace, podName, remoteDir string, tarStream io.Reader) error {

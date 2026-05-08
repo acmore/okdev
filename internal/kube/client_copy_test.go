@@ -3,9 +3,12 @@ package kube
 import (
 	"archive/tar"
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -226,4 +229,98 @@ func TestResolveSingleFileDownloadStateTreatsCompleteFinalFileAsDone(t *testing.
 	if !state.AlreadyComplete {
 		t.Fatal("expected already-complete state")
 	}
+}
+
+func TestDownloadSingleFileResumableCompletesFromExistingPartial(t *testing.T) {
+	dir := t.TempDir()
+	finalPath := filepath.Join(dir, "model.bin")
+	partialPath := finalPath + ".okdev-part"
+	remoteData := []byte("abcdefghij")
+	if err := os.WriteFile(partialPath, remoteData[:4], 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var offsets []int64
+	err := downloadSingleFileResumable(context.Background(), finalPath, remoteFileInfo{
+		Size: 10,
+		Mode: 0o640,
+	}, func(offset int64) (io.ReadCloser, error) {
+		offsets = append(offsets, offset)
+		return io.NopCloser(bytes.NewReader(remoteData[offset:])), nil
+	}, CopyProgress{})
+	if err != nil {
+		t.Fatalf("downloadSingleFileResumable: %v", err)
+	}
+	if !reflect.DeepEqual(offsets, []int64{4}) {
+		t.Fatalf("offsets = %v, want [4]", offsets)
+	}
+	data, err := os.ReadFile(finalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(remoteData) {
+		t.Fatalf("final data = %q, want %q", data, remoteData)
+	}
+	info, err := os.Stat(finalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("mode = %o, want 640", info.Mode().Perm())
+	}
+}
+
+func TestDownloadSingleFileResumableRetriesFromAdvancedOffset(t *testing.T) {
+	dir := t.TempDir()
+	finalPath := filepath.Join(dir, "model.bin")
+	remoteData := []byte("abcdefghij")
+
+	var offsets []int64
+	attempt := 0
+	err := downloadSingleFileResumable(context.Background(), finalPath, remoteFileInfo{
+		Size: 10,
+		Mode: 0o644,
+	}, func(offset int64) (io.ReadCloser, error) {
+		offsets = append(offsets, offset)
+		attempt++
+		if attempt == 1 {
+			return io.NopCloser(io.MultiReader(
+				bytes.NewReader(remoteData[offset:6]),
+				errReader{err: io.ErrUnexpectedEOF},
+			)), nil
+		}
+		return io.NopCloser(bytes.NewReader(remoteData[offset:])), nil
+	}, CopyProgress{})
+	if err != nil {
+		t.Fatalf("downloadSingleFileResumable: %v", err)
+	}
+	if !reflect.DeepEqual(offsets, []int64{0, 6}) {
+		t.Fatalf("offsets = %v, want [0 6]", offsets)
+	}
+}
+
+func TestDownloadSingleFileResumableTreatsLateRetryableErrorAsSuccess(t *testing.T) {
+	dir := t.TempDir()
+	finalPath := filepath.Join(dir, "model.bin")
+	remoteData := []byte("abcdefghij")
+
+	err := downloadSingleFileResumable(context.Background(), finalPath, remoteFileInfo{
+		Size: 10,
+		Mode: 0o644,
+	}, func(offset int64) (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(remoteData[offset:])), nil
+	}, CopyProgress{}, func() error {
+		return errors.New("connection reset by peer")
+	})
+	if err != nil {
+		t.Fatalf("expected late retryable completion error to be ignored, got %v", err)
+	}
+}
+
+type errReader struct {
+	err error
+}
+
+func (r errReader) Read(_ []byte) (int, error) {
+	return 0, r.err
 }
