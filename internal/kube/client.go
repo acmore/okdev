@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1135,6 +1136,14 @@ type remoteFileInfo struct {
 type remoteRangeOpener func(offset int64) (io.ReadCloser, error)
 type completionCheck func() error
 
+var probeRemoteSingleFileForCopy = func(ctx context.Context, c *Client, namespace, podName, container, remotePath string) (remoteFileInfo, error) {
+	return c.probeRemoteSingleFile(ctx, namespace, podName, container, remotePath)
+}
+
+var openRemoteSingleFileRangeForCopy = func(ctx context.Context, c *Client, namespace, podName, container, remotePath string, offset int64) (io.ReadCloser, completionCheck, error) {
+	return c.openRemoteSingleFileRange(ctx, namespace, podName, container, remotePath, offset)
+}
+
 // CopyToPodInContainerWithProgress copies a single local file to remotePath
 // in the given pod/container. It optionally reports progress via prog.
 func (c *Client) CopyToPodInContainerWithProgress(ctx context.Context, namespace, localPath, podName, container, remotePath string, prog CopyProgress) error {
@@ -1358,6 +1367,80 @@ func finalizeSingleFileDownload(state singleFileDownloadState, mode os.FileMode)
 	return os.Rename(state.PartialPath, state.FinalPath)
 }
 
+func parseRemoteSingleFileProbeOutput(raw string) (remoteFileInfo, error) {
+	lines := strings.Split(strings.TrimRight(raw, "\n"), "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) == "" {
+		return remoteFileInfo{}, fmt.Errorf("remote file probe returned no size")
+	}
+	size, err := strconv.ParseInt(strings.TrimSpace(lines[0]), 10, 64)
+	if err != nil {
+		return remoteFileInfo{}, fmt.Errorf("parse remote file size: %w", err)
+	}
+
+	info := remoteFileInfo{Size: size, Mode: 0o644}
+	if len(lines) > 1 {
+		modeLine := strings.TrimSpace(lines[1])
+		if modeLine != "" {
+			mode, err := strconv.ParseUint(modeLine, 8, 32)
+			if err != nil {
+				return remoteFileInfo{}, fmt.Errorf("parse remote file mode: %w", err)
+			}
+			info.Mode = os.FileMode(mode)
+		}
+	}
+	return info, nil
+}
+
+func (c *Client) probeRemoteSingleFile(ctx context.Context, namespace, podName, container, remotePath string) (remoteFileInfo, error) {
+	cs, cfg, err := c.clientset()
+	if err != nil {
+		return remoteFileInfo{}, err
+	}
+	var out bytes.Buffer
+	cmd := []string{"sh", "-lc", fmt.Sprintf("test -f %s && wc -c < %s && (stat -c '%%a' %s 2>/dev/null || true)", shellQuote(remotePath), shellQuote(remotePath), shellQuote(remotePath))}
+	if err := c.execStream(ctx, cs, cfg, namespace, podName, container, cmd, nil, &out, io.Discard, false); err != nil {
+		return remoteFileInfo{}, err
+	}
+	return parseRemoteSingleFileProbeOutput(out.String())
+}
+
+func (c *Client) openRemoteSingleFileRange(ctx context.Context, namespace, podName, container, remotePath string, offset int64) (io.ReadCloser, completionCheck, error) {
+	cs, cfg, err := c.clientset()
+	if err != nil {
+		return nil, nil, err
+	}
+	pr, pw := io.Pipe()
+	errCh := make(chan error, 1)
+	cmd := []string{"sh", "-lc", fmt.Sprintf("dd if=%s bs=1 skip=%d 2>/dev/null", shellQuote(remotePath), offset)}
+	go func() {
+		errCh <- c.execStream(ctx, cs, cfg, namespace, podName, container, cmd, nil, pw, io.Discard, false)
+		_ = pw.Close()
+	}()
+	return pr, func() error {
+		return <-errCh
+	}, nil
+}
+
+type remoteRangeReadCloser struct {
+	io.ReadCloser
+	done completionCheck
+}
+
+func (r *remoteRangeReadCloser) Close() error {
+	closeErr := r.ReadCloser.Close()
+	if r.done == nil {
+		return closeErr
+	}
+	doneErr := r.done()
+	if closeErr == nil {
+		return doneErr
+	}
+	if doneErr == nil {
+		return closeErr
+	}
+	return errors.Join(closeErr, doneErr)
+}
+
 func (c *Client) ExtractTarToPod(ctx context.Context, namespace, podName, remoteDir string, tarStream io.Reader) error {
 	cs, cfg, err := c.clientset()
 	if err != nil {
@@ -1379,49 +1462,20 @@ func (c *Client) CopyFromPodInContainer(ctx context.Context, namespace, podName,
 // localPath. Bytes reported via prog.OnBytes are post-decompression
 // (i.e., the actual file size received locally), not wire bytes.
 func (c *Client) CopyFromPodInContainerWithProgress(ctx context.Context, namespace, podName, container, remotePath, localPath string, prog CopyProgress) error {
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		lastErr = c.copyFromPodInContainerOnce(ctx, namespace, podName, container, remotePath, localPath, prog)
-		if lastErr == nil {
-			return nil
-		}
-		if !isRetryableCopyStreamError(lastErr) || attempt == 2 {
-			return lastErr
-		}
-		time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
-	}
-	return lastErr
-}
-
-func (c *Client) copyFromPodInContainerOnce(ctx context.Context, namespace, podName, container, remotePath, localPath string, prog CopyProgress) error {
-	cs, cfg, err := c.clientset()
+	info, err := probeRemoteSingleFileForCopy(ctx, c, namespace, podName, container, remotePath)
 	if err != nil {
 		return err
 	}
-	parent := filepath.Dir(remotePath)
-	base := filepath.Base(remotePath)
-	cmd := []string{"sh", "-lc", fmt.Sprintf("tar czf - -C %s %s", shellQuote(parent), shellQuote(base))}
-	pr, pw := io.Pipe()
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- c.execStream(ctx, cs, cfg, namespace, podName, container, cmd, nil, pw, io.Discard, false)
-		pw.Close()
-	}()
-	gr, err := gzip.NewReader(pr)
-	if err != nil {
-		pr.Close()
-		return err
-	}
-	defer gr.Close()
-	src := io.Reader(gr)
-	if prog.OnBytes != nil {
-		src = io.TeeReader(gr, byteCounterWriter(prog.OnBytes))
-	}
-	if err := extractSingleFileFromTar(src, localPath); err != nil {
-		pr.Close()
-		return err
-	}
-	return <-errCh
+	return downloadSingleFileResumable(ctx, localPath, info, func(offset int64) (io.ReadCloser, error) {
+		rc, done, err := openRemoteSingleFileRangeForCopy(ctx, c, namespace, podName, container, remotePath, offset)
+		if err != nil {
+			return nil, err
+		}
+		if done == nil {
+			return rc, nil
+		}
+		return &remoteRangeReadCloser{ReadCloser: rc, done: done}, nil
+	}, prog)
 }
 
 func createTempDownloadFile(localPath string) (*os.File, error) {

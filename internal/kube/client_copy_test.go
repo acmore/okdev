@@ -324,3 +324,64 @@ type errReader struct {
 func (r errReader) Read(_ []byte) (int, error) {
 	return 0, r.err
 }
+
+func TestParseRemoteSingleFileProbeOutput(t *testing.T) {
+	info, err := parseRemoteSingleFileProbeOutput("10\n640\n")
+	if err != nil {
+		t.Fatalf("parseRemoteSingleFileProbeOutput: %v", err)
+	}
+	if info.Size != 10 || info.Mode != 0o640 {
+		t.Fatalf("unexpected info %#v", info)
+	}
+}
+
+func TestParseRemoteSingleFileProbeOutputFallsBackToDefaultMode(t *testing.T) {
+	info, err := parseRemoteSingleFileProbeOutput("10\n\n")
+	if err != nil {
+		t.Fatalf("parseRemoteSingleFileProbeOutput: %v", err)
+	}
+	if info.Mode != 0o644 {
+		t.Fatalf("mode = %o, want 0644", info.Mode)
+	}
+}
+
+func TestCopyFromPodInContainerWithProgressUsesResumableDownloadPath(t *testing.T) {
+	dir := t.TempDir()
+	finalPath := filepath.Join(dir, "model.bin")
+	partialPath := finalPath + ".okdev-part"
+	remoteData := []byte("abcdefghij")
+	if err := os.WriteFile(partialPath, remoteData[:4], 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prevProbe := probeRemoteSingleFileForCopy
+	prevRange := openRemoteSingleFileRangeForCopy
+	t.Cleanup(func() {
+		probeRemoteSingleFileForCopy = prevProbe
+		openRemoteSingleFileRangeForCopy = prevRange
+	})
+
+	var offsets []int64
+	probeRemoteSingleFileForCopy = func(context.Context, *Client, string, string, string, string) (remoteFileInfo, error) {
+		return remoteFileInfo{Size: 10, Mode: 0o640}, nil
+	}
+	openRemoteSingleFileRangeForCopy = func(_ context.Context, _ *Client, _ string, _ string, _ string, _ string, offset int64) (io.ReadCloser, completionCheck, error) {
+		offsets = append(offsets, offset)
+		return io.NopCloser(bytes.NewReader(remoteData[offset:])), nil, nil
+	}
+
+	client := &Client{}
+	if err := client.CopyFromPodInContainerWithProgress(context.Background(), "default", "pod-0", "dev", "/workspace/model.bin", finalPath, CopyProgress{}); err != nil {
+		t.Fatalf("CopyFromPodInContainerWithProgress: %v", err)
+	}
+	if !reflect.DeepEqual(offsets, []int64{4}) {
+		t.Fatalf("offsets = %v, want [4]", offsets)
+	}
+	data, err := os.ReadFile(finalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(remoteData) {
+		t.Fatalf("final data = %q, want %q", data, remoteData)
+	}
+}
