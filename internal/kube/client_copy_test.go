@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -150,5 +151,79 @@ func TestExtractSingleFileFromTarRejectsTruncatedArchive(t *testing.T) {
 	err := extractSingleFileFromTar(bytes.NewReader(truncated), filepath.Join(t.TempDir(), "out.txt"))
 	if err == nil {
 		t.Fatal("expected truncated tar extraction to fail")
+	}
+}
+
+func TestResolveSingleFileDownloadStatePromotesUndersizedFinalFile(t *testing.T) {
+	dir := t.TempDir()
+	finalPath := filepath.Join(dir, "model.bin")
+	if err := os.WriteFile(finalPath, bytes.Repeat([]byte("a"), 3), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := resolveSingleFileDownloadState(finalPath, 10)
+	if err != nil {
+		t.Fatalf("resolveSingleFileDownloadState: %v", err)
+	}
+	if state.ResumeOffset != 3 {
+		t.Fatalf("resume offset = %d, want 3", state.ResumeOffset)
+	}
+	if state.PartialPath != finalPath+".okdev-part" {
+		t.Fatalf("partial path = %q, want %q", state.PartialPath, finalPath+".okdev-part")
+	}
+	if _, err := os.Stat(finalPath); !os.IsNotExist(err) {
+		t.Fatalf("expected final path to be renamed away, stat err = %v", err)
+	}
+}
+
+func TestResolveSingleFileDownloadStatePrefersLargerPartialSource(t *testing.T) {
+	dir := t.TempDir()
+	finalPath := filepath.Join(dir, "model.bin")
+	partialPath := finalPath + ".okdev-part"
+	if err := os.WriteFile(finalPath, bytes.Repeat([]byte("a"), 3), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(partialPath, bytes.Repeat([]byte("b"), 7), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := resolveSingleFileDownloadState(finalPath, 10)
+	if err != nil {
+		t.Fatalf("resolveSingleFileDownloadState: %v", err)
+	}
+	if state.ResumeOffset != 7 {
+		t.Fatalf("resume offset = %d, want 7", state.ResumeOffset)
+	}
+	if _, err := os.Stat(finalPath); !os.IsNotExist(err) {
+		t.Fatalf("expected smaller final file to be removed, stat err = %v", err)
+	}
+}
+
+func TestResolveSingleFileDownloadStateRejectsOversizedLocalFile(t *testing.T) {
+	dir := t.TempDir()
+	finalPath := filepath.Join(dir, "model.bin")
+	if err := os.WriteFile(finalPath, bytes.Repeat([]byte("a"), 12), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := resolveSingleFileDownloadState(finalPath, 10)
+	if err == nil || !strings.Contains(err.Error(), "larger than remote file") {
+		t.Fatalf("expected oversized file error, got %v", err)
+	}
+}
+
+func TestResolveSingleFileDownloadStateTreatsCompleteFinalFileAsDone(t *testing.T) {
+	dir := t.TempDir()
+	finalPath := filepath.Join(dir, "model.bin")
+	if err := os.WriteFile(finalPath, bytes.Repeat([]byte("a"), 10), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := resolveSingleFileDownloadState(finalPath, 10)
+	if err != nil {
+		t.Fatalf("resolveSingleFileDownloadState: %v", err)
+	}
+	if !state.AlreadyComplete {
+		t.Fatal("expected already-complete state")
 	}
 }

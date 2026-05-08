@@ -1120,6 +1120,13 @@ type CopyProgress struct {
 	OnFile func()
 }
 
+type singleFileDownloadState struct {
+	FinalPath       string
+	PartialPath     string
+	ResumeOffset    int64
+	AlreadyComplete bool
+}
+
 // CopyToPodInContainerWithProgress copies a single local file to remotePath
 // in the given pod/container. It optionally reports progress via prog.
 func (c *Client) CopyToPodInContainerWithProgress(ctx context.Context, namespace, localPath, podName, container, remotePath string, prog CopyProgress) error {
@@ -1150,6 +1157,91 @@ func (f byteCounterWriter) Write(p []byte) (int, error) {
 		f(int64(len(p)))
 	}
 	return len(p), nil
+}
+
+func resolveSingleFileDownloadState(localPath string, remoteSize int64) (singleFileDownloadState, error) {
+	state := singleFileDownloadState{
+		FinalPath:   localPath,
+		PartialPath: localPath + ".okdev-part",
+	}
+
+	finalSize, finalExists, err := localFileSize(localPath)
+	if err != nil {
+		return state, err
+	}
+	partialSize, partialExists, err := localFileSize(state.PartialPath)
+	if err != nil {
+		return state, err
+	}
+	if finalExists && finalSize > remoteSize {
+		return state, fmt.Errorf("local file %s is larger than remote file", localPath)
+	}
+	if partialExists && partialSize > remoteSize {
+		return state, fmt.Errorf("local file %s is larger than remote file", state.PartialPath)
+	}
+
+	switch {
+	case finalExists && finalSize == remoteSize:
+		if partialExists {
+			if err := os.Remove(state.PartialPath); err != nil {
+				return state, err
+			}
+		}
+		state.AlreadyComplete = true
+		state.ResumeOffset = remoteSize
+		return state, nil
+	case partialExists && partialSize == remoteSize:
+		if finalExists {
+			if err := os.Remove(localPath); err != nil {
+				return state, err
+			}
+		}
+		if err := os.Rename(state.PartialPath, localPath); err != nil {
+			return state, err
+		}
+		state.AlreadyComplete = true
+		state.ResumeOffset = remoteSize
+		return state, nil
+	case finalExists && partialExists:
+		if partialSize >= finalSize {
+			if err := os.Remove(localPath); err != nil {
+				return state, err
+			}
+			state.ResumeOffset = partialSize
+			return state, nil
+		}
+		if err := os.Remove(state.PartialPath); err != nil {
+			return state, err
+		}
+		if err := os.Rename(localPath, state.PartialPath); err != nil {
+			return state, err
+		}
+		state.ResumeOffset = finalSize
+		return state, nil
+	case finalExists:
+		if err := os.Rename(localPath, state.PartialPath); err != nil {
+			return state, err
+		}
+		state.ResumeOffset = finalSize
+		return state, nil
+	case partialExists:
+		state.ResumeOffset = partialSize
+		return state, nil
+	default:
+		return state, nil
+	}
+}
+
+func localFileSize(path string) (size int64, exists bool, err error) {
+	info, err := os.Stat(path)
+	switch {
+	case err == nil:
+		return info.Size(), true, nil
+	case os.IsNotExist(err):
+		return 0, false, nil
+	default:
+		return 0, false, err
+	}
 }
 
 func (c *Client) ExtractTarToPod(ctx context.Context, namespace, podName, remoteDir string, tarStream io.Reader) error {
