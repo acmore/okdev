@@ -172,6 +172,10 @@ func runSinglePodCpWithProgress(ctx context.Context, client *kube.Client, namesp
 	if prog != nil {
 		kp.OnBytes = prog.addBytes
 		kp.OnFile = prog.addFile
+		kp.OnResume = func(n int64) {
+			prog.addExistingBytes(n)
+			prog.noteResume(n)
+		}
 	}
 	if upload {
 		info, err := os.Stat(localPath)

@@ -1119,6 +1119,9 @@ type CopyProgress struct {
 	// OnFile is invoked once per regular file packed into a directory upload
 	// archive. It is not invoked for downloads or single-file copies.
 	OnFile func()
+	// OnResume is invoked once before a resumable single-file download starts
+	// from existing local bytes.
+	OnResume func(int64)
 }
 
 type singleFileDownloadState struct {
@@ -1268,6 +1271,9 @@ func downloadSingleFileResumable(ctx context.Context, localPath string, info rem
 	}
 	if state.AlreadyComplete {
 		return nil
+	}
+	if state.ResumeOffset > 0 && prog.OnResume != nil {
+		prog.OnResume(state.ResumeOffset)
 	}
 
 	var lastErr error
