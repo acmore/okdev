@@ -506,7 +506,6 @@ spec:
     paths:
       - .:/workspace
     exclude:
-      - .git/
       - node_modules/
       - dist/
   ports:
@@ -686,7 +685,6 @@ spec:
     paths:
       - .:/workspace
     exclude:
-      - .git/
       - vendor/
   ports:
     - name: grpc
@@ -727,8 +725,6 @@ spec:
     engine: syncthing
     paths:
       - .:/workspace
-    exclude:
-      - .git/
   ports:
     - name: app
       local: 8080

@@ -56,7 +56,7 @@ spec:
 	if err != nil {
 		t.Fatalf("read .stignore: %v", err)
 	}
-	if string(got) != ".git/\n.venv/\nnode_modules/\n.DS_Store\n" {
+	if string(got) != ".venv/\nnode_modules/\n.DS_Store\n" {
 		t.Fatalf("unexpected .stignore content %q", string(got))
 	}
 }
@@ -164,7 +164,7 @@ spec:
 	if err != nil {
 		t.Fatalf("read .stignore: %v", err)
 	}
-	if string(got) != ".git/\nbin/\ndist/\n.coverprofile\ncoverage.out\n.DS_Store\n" {
+	if string(got) != "bin/\ndist/\n.coverprofile\ncoverage.out\n.DS_Store\n" {
 		t.Fatalf("unexpected .stignore content %q", string(got))
 	}
 }

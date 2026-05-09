@@ -33,13 +33,11 @@ var builtinNames = map[string]string{
 
 var stignorePresets = map[string][]string{
 	"default": {
-		".git/",
 		".venv/",
 		"node_modules/",
 		".DS_Store",
 	},
 	"python": {
-		".git/",
 		".venv/",
 		"__pycache__/",
 		".pytest_cache/",
@@ -48,7 +46,6 @@ var stignorePresets = map[string][]string{
 		".DS_Store",
 	},
 	"node": {
-		".git/",
 		"node_modules/",
 		".next/",
 		"dist/",
@@ -56,7 +53,6 @@ var stignorePresets = map[string][]string{
 		".DS_Store",
 	},
 	"go": {
-		".git/",
 		"bin/",
 		"dist/",
 		".coverprofile",
@@ -64,7 +60,6 @@ var stignorePresets = map[string][]string{
 		".DS_Store",
 	},
 	"rust": {
-		".git/",
 		"target/",
 		".DS_Store",
 	},

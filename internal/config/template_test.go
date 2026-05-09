@@ -96,7 +96,7 @@ func TestBuiltinTemplateLocalIgnores(t *testing.T) {
 	if len(patterns) == 0 {
 		t.Fatal("expected built-in local ignore patterns")
 	}
-	if patterns[0] != ".git/" {
+	if patterns[0] != ".venv/" {
 		t.Fatalf("unexpected first pattern %q", patterns[0])
 	}
 	if got := BuiltinTemplateLocalIgnores("./custom.yaml"); got != nil {
@@ -109,8 +109,8 @@ func TestSTIgnorePreset(t *testing.T) {
 	if len(patterns) == 0 {
 		t.Fatal("expected go preset patterns")
 	}
-	if patterns[1] != "bin/" {
-		t.Fatalf("unexpected go preset pattern %q", patterns[1])
+	if patterns[0] != "bin/" {
+		t.Fatalf("unexpected go preset pattern %q", patterns[0])
 	}
 	if got := STIgnorePreset("missing"); got != nil {
 		t.Fatalf("expected nil for unknown preset, got %+v", got)
