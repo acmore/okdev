@@ -4,7 +4,9 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -418,6 +420,148 @@ func TestCopyFromPodInContainerWithProgressUsesResumableDownloadPath(t *testing.
 	}
 	if !reflect.DeepEqual(offsets, []int64{4}) {
 		t.Fatalf("offsets = %v, want [4]", offsets)
+	}
+	data, err := os.ReadFile(finalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(remoteData) {
+		t.Fatalf("final data = %q, want %q", data, remoteData)
+	}
+}
+
+func TestCopyFromPodInContainerVerifiedWithProgressResumesAndChecksChecksum(t *testing.T) {
+	dir := t.TempDir()
+	finalPath := filepath.Join(dir, "model.bin")
+	partialPath := finalPath + ".okdev-part"
+	remoteData := []byte("abcdefghij")
+	if err := os.WriteFile(partialPath, remoteData[:4], 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prevProbe := probeRemoteSingleFileForCopy
+	prevVerified := openRemoteVerifiedSingleFileRangeForCopy
+	t.Cleanup(func() {
+		probeRemoteSingleFileForCopy = prevProbe
+		openRemoteVerifiedSingleFileRangeForCopy = prevVerified
+	})
+
+	wantSum := fmt.Sprintf("%x", sha256.Sum256(remoteData))
+	var offsets []int64
+	var gotLocalSum string
+	probeRemoteSingleFileForCopy = func(context.Context, *Client, string, string, string, string) (remoteFileInfo, error) {
+		return remoteFileInfo{Size: int64(len(remoteData)), Mode: 0o640}, nil
+	}
+	openRemoteVerifiedSingleFileRangeForCopy = func(_ context.Context, _ *Client, _ string, _ string, _ string, _ string, offset int64, localSHA256 func() string) (io.ReadCloser, error) {
+		offsets = append(offsets, offset)
+		return &remoteRangeReadCloser{
+			ReadCloser: io.NopCloser(bytes.NewReader(remoteData[offset:])),
+			done: func() error {
+				gotLocalSum = localSHA256()
+				if gotLocalSum != wantSum {
+					return fmt.Errorf("%w: remote %s local %s", errChecksumMismatch, wantSum, gotLocalSum)
+				}
+				return nil
+			},
+		}, nil
+	}
+
+	client := &Client{}
+	if err := client.CopyFromPodInContainerVerifiedWithProgress(context.Background(), "default", "pod-0", "dev", "/workspace/model.bin", finalPath, CopyProgress{}); err != nil {
+		t.Fatalf("CopyFromPodInContainerVerifiedWithProgress: %v", err)
+	}
+	if !reflect.DeepEqual(offsets, []int64{4}) {
+		t.Fatalf("offsets = %v, want [4]", offsets)
+	}
+	if gotLocalSum != wantSum {
+		t.Fatalf("local checksum = %q, want %q", gotLocalSum, wantSum)
+	}
+	data, err := os.ReadFile(finalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(remoteData) {
+		t.Fatalf("final data = %q, want %q", data, remoteData)
+	}
+}
+
+func TestCopyFromPodInContainerVerifiedWithProgressRemovesCorruptCompletePartial(t *testing.T) {
+	dir := t.TempDir()
+	finalPath := filepath.Join(dir, "model.bin")
+	partialPath := finalPath + ".okdev-part"
+	remoteData := []byte("abcdefghij")
+
+	prevProbe := probeRemoteSingleFileForCopy
+	prevVerified := openRemoteVerifiedSingleFileRangeForCopy
+	t.Cleanup(func() {
+		probeRemoteSingleFileForCopy = prevProbe
+		openRemoteVerifiedSingleFileRangeForCopy = prevVerified
+	})
+
+	probeRemoteSingleFileForCopy = func(context.Context, *Client, string, string, string, string) (remoteFileInfo, error) {
+		return remoteFileInfo{Size: int64(len(remoteData)), Mode: 0o640}, nil
+	}
+	openRemoteVerifiedSingleFileRangeForCopy = func(_ context.Context, _ *Client, _ string, _ string, _ string, _ string, offset int64, localSHA256 func() string) (io.ReadCloser, error) {
+		return &remoteRangeReadCloser{
+			ReadCloser: io.NopCloser(bytes.NewReader(remoteData[offset:])),
+			done: func() error {
+				return fmt.Errorf("%w: remote %s local %s", errChecksumMismatch, strings.Repeat("0", 64), localSHA256())
+			},
+		}, nil
+	}
+
+	client := &Client{}
+	err := client.CopyFromPodInContainerVerifiedWithProgress(context.Background(), "default", "pod-0", "dev", "/workspace/model.bin", finalPath, CopyProgress{})
+	if !errors.Is(err, errChecksumMismatch) {
+		t.Fatalf("expected checksum mismatch, got %v", err)
+	}
+	if _, statErr := os.Stat(partialPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected corrupt partial to be removed, stat err = %v", statErr)
+	}
+	if _, statErr := os.Stat(finalPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no final file after mismatch, stat err = %v", statErr)
+	}
+}
+
+func TestCopyFromPodInContainerVerifiedWithProgressChecksAlreadyCompleteFile(t *testing.T) {
+	dir := t.TempDir()
+	finalPath := filepath.Join(dir, "model.bin")
+	remoteData := []byte("abcdefghij")
+	if err := os.WriteFile(finalPath, remoteData, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	prevProbe := probeRemoteSingleFileForCopy
+	prevVerified := openRemoteVerifiedSingleFileRangeForCopy
+	t.Cleanup(func() {
+		probeRemoteSingleFileForCopy = prevProbe
+		openRemoteVerifiedSingleFileRangeForCopy = prevVerified
+	})
+
+	wantSum := fmt.Sprintf("%x", sha256.Sum256(remoteData))
+	var offsets []int64
+	probeRemoteSingleFileForCopy = func(context.Context, *Client, string, string, string, string) (remoteFileInfo, error) {
+		return remoteFileInfo{Size: int64(len(remoteData)), Mode: 0o640}, nil
+	}
+	openRemoteVerifiedSingleFileRangeForCopy = func(_ context.Context, _ *Client, _ string, _ string, _ string, _ string, offset int64, localSHA256 func() string) (io.ReadCloser, error) {
+		offsets = append(offsets, offset)
+		return &remoteRangeReadCloser{
+			ReadCloser: io.NopCloser(bytes.NewReader(nil)),
+			done: func() error {
+				if got := localSHA256(); got != wantSum {
+					return fmt.Errorf("%w: remote %s local %s", errChecksumMismatch, wantSum, got)
+				}
+				return nil
+			},
+		}, nil
+	}
+
+	client := &Client{}
+	if err := client.CopyFromPodInContainerVerifiedWithProgress(context.Background(), "default", "pod-0", "dev", "/workspace/model.bin", finalPath, CopyProgress{}); err != nil {
+		t.Fatalf("CopyFromPodInContainerVerifiedWithProgress: %v", err)
+	}
+	if !reflect.DeepEqual(offsets, []int64{int64(len(remoteData))}) {
+		t.Fatalf("offsets = %v, want [%d]", offsets, len(remoteData))
 	}
 	data, err := os.ReadFile(finalPath)
 	if err != nil {

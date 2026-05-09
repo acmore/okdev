@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -1137,6 +1139,7 @@ type remoteFileInfo struct {
 }
 
 type remoteRangeOpener func(offset int64) (io.ReadCloser, error)
+type verifiedRemoteRangeOpener func(offset int64, localSHA256 func() string) (io.ReadCloser, error)
 type completionCheck func() error
 
 var probeRemoteSingleFileForCopy = func(ctx context.Context, c *Client, namespace, podName, container, remotePath string) (remoteFileInfo, error) {
@@ -1146,6 +1149,12 @@ var probeRemoteSingleFileForCopy = func(ctx context.Context, c *Client, namespac
 var openRemoteSingleFileRangeForCopy = func(ctx context.Context, c *Client, namespace, podName, container, remotePath string, offset int64) (io.ReadCloser, completionCheck, error) {
 	return c.openRemoteSingleFileRange(ctx, namespace, podName, container, remotePath, offset)
 }
+
+var openRemoteVerifiedSingleFileRangeForCopy = func(ctx context.Context, c *Client, namespace, podName, container, remotePath string, offset int64, localSHA256 func() string) (io.ReadCloser, error) {
+	return c.openRemoteVerifiedSingleFileRange(ctx, namespace, podName, container, remotePath, offset, localSHA256)
+}
+
+var errChecksumMismatch = errors.New("checksum mismatch")
 
 // CopyToPodInContainerWithProgress copies a single local file to remotePath
 // in the given pod/container. It optionally reports progress via prog.
@@ -1343,6 +1352,10 @@ func downloadSingleFileResumable(ctx context.Context, localPath string, info rem
 }
 
 func appendSingleFileRange(path string, src io.Reader, prog CopyProgress) error {
+	return appendSingleFileRangeWithTaps(path, src, prog, nil)
+}
+
+func appendSingleFileRangeWithTaps(path string, src io.Reader, prog CopyProgress, taps []io.Writer) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -1353,11 +1366,53 @@ func appendSingleFileRange(path string, src io.Reader, prog CopyProgress) error 
 	defer f.Close()
 
 	reader := src
-	if prog.OnBytes != nil {
-		reader = io.TeeReader(src, byteCounterWriter(prog.OnBytes))
+	if prog.OnBytes != nil || len(taps) > 0 {
+		writers := make([]io.Writer, 0, len(taps)+1)
+		if prog.OnBytes != nil {
+			writers = append(writers, byteCounterWriter(prog.OnBytes))
+		}
+		writers = append(writers, taps...)
+		reader = io.TeeReader(src, io.MultiWriter(writers...))
 	}
 	_, err = io.Copy(f, reader)
 	return err
+}
+
+type singleFileSHA256Verifier struct {
+	hasher hash.Hash
+}
+
+func newSingleFileSHA256Verifier(state singleFileDownloadState) (*singleFileSHA256Verifier, error) {
+	v := &singleFileSHA256Verifier{hasher: sha256.New()}
+	switch {
+	case state.AlreadyComplete:
+		if err := seedSingleFileSHA256(v.hasher, state.FinalPath); err != nil {
+			return nil, err
+		}
+	case state.ResumeOffset > 0:
+		if err := seedSingleFileSHA256(v.hasher, state.PartialPath); err != nil {
+			return nil, err
+		}
+	}
+	return v, nil
+}
+
+func seedSingleFileSHA256(dst hash.Hash, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(dst, f)
+	return err
+}
+
+func (v *singleFileSHA256Verifier) Writer() io.Writer {
+	return v.hasher
+}
+
+func (v *singleFileSHA256Verifier) SumHex() string {
+	return fmt.Sprintf("%x", v.hasher.Sum(nil))
 }
 
 func finalizeSingleFileDownload(state singleFileDownloadState, mode os.FileMode) error {
@@ -1427,6 +1482,92 @@ func (c *Client) openRemoteSingleFileRange(ctx context.Context, namespace, podNa
 	}, nil
 }
 
+func buildVerifiedRemoteSingleFileRangeCommand(remotePath string, offset int64) string {
+	pythonScript := strings.Join([]string{
+		"import hashlib, sys",
+		"path = sys.argv[1]",
+		"offset = int(sys.argv[2])",
+		"h = hashlib.sha256()",
+		"sent = 0",
+		"with open(path, 'rb') as f:",
+		"    while True:",
+		"        chunk = f.read(1024 * 1024)",
+		"        if not chunk:",
+		"            break",
+		"        h.update(chunk)",
+		"        next_sent = sent + len(chunk)",
+		"        if next_sent > offset:",
+		"            start = max(0, offset - sent)",
+		"            data = chunk[start:]",
+		"            if data:",
+		"                sys.stdout.buffer.write(data)",
+		"        sent = next_sent",
+		"sys.stdout.flush()",
+		"sys.stderr.write('OKDEV_SHA256 ' + h.hexdigest() + '\\n')",
+		"sys.stderr.flush()",
+	}, "\n")
+	return fmt.Sprintf(
+		"if command -v python3 >/dev/null 2>&1; then exec python3 -c %s -- %s %d; fi; "+
+			"if command -v python >/dev/null 2>&1; then exec python -c %s -- %s %d; fi; "+
+			"echo 'checksum verification requires python3 or python in the container' >&2; exit 127",
+		shellQuote(pythonScript), shellQuote(remotePath), offset,
+		shellQuote(pythonScript), shellQuote(remotePath), offset,
+	)
+}
+
+func parseVerifiedRemoteSingleFileChecksum(raw string) (string, error) {
+	lines := strings.Split(strings.TrimSpace(raw), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(line, "OKDEV_SHA256 ") {
+			continue
+		}
+		sum := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(line, "OKDEV_SHA256 ")))
+		if len(sum) != 64 {
+			return "", fmt.Errorf("parse remote checksum: unexpected sha256 %q", sum)
+		}
+		return sum, nil
+	}
+	return "", fmt.Errorf("remote checksum missing from verified download stream")
+}
+
+func (c *Client) openRemoteVerifiedSingleFileRange(ctx context.Context, namespace, podName, container, remotePath string, offset int64, localSHA256 func() string) (io.ReadCloser, error) {
+	cs, cfg, err := c.clientset()
+	if err != nil {
+		return nil, err
+	}
+	pr, pw := io.Pipe()
+	var stderr bytes.Buffer
+	errCh := make(chan error, 1)
+	cmd := []string{"sh", "-lc", buildVerifiedRemoteSingleFileRangeCommand(remotePath, offset)}
+	go func() {
+		errCh <- c.execStream(ctx, cs, cfg, namespace, podName, container, cmd, nil, pw, &stderr, false)
+		_ = pw.Close()
+	}()
+	return &remoteRangeReadCloser{
+		ReadCloser: pr,
+		done: func() error {
+			err := <-errCh
+			stderrText := stderr.String()
+			if err != nil {
+				if msg := strings.TrimSpace(stderrText); msg != "" {
+					return fmt.Errorf("%w: %s", err, msg)
+				}
+				return err
+			}
+			remoteSHA256, err := parseVerifiedRemoteSingleFileChecksum(stderrText)
+			if err != nil {
+				return err
+			}
+			localSum := strings.ToLower(localSHA256())
+			if localSum != remoteSHA256 {
+				return fmt.Errorf("%w: remote %s local %s", errChecksumMismatch, remoteSHA256, localSum)
+			}
+			return nil
+		},
+	}, nil
+}
+
 type remoteRangeReadCloser struct {
 	io.ReadCloser
 	done completionCheck
@@ -1482,6 +1623,87 @@ func (c *Client) CopyFromPodInContainerWithProgress(ctx context.Context, namespa
 		}
 		return &remoteRangeReadCloser{ReadCloser: rc, done: done}, nil
 	}, prog)
+}
+
+func (c *Client) CopyFromPodInContainerVerifiedWithProgress(ctx context.Context, namespace, podName, container, remotePath, localPath string, prog CopyProgress) error {
+	info, err := probeRemoteSingleFileForCopy(ctx, c, namespace, podName, container, remotePath)
+	if err != nil {
+		return err
+	}
+	state, err := resolveSingleFileDownloadState(localPath, info.Size)
+	if err != nil {
+		return err
+	}
+	verifier, err := newSingleFileSHA256Verifier(state)
+	if err != nil {
+		return err
+	}
+	if state.AlreadyComplete {
+		rc, err := openRemoteVerifiedSingleFileRangeForCopy(ctx, c, namespace, podName, container, remotePath, info.Size, verifier.SumHex)
+		if err != nil {
+			return err
+		}
+		return rc.Close()
+	}
+	if state.ResumeOffset > 0 && prog.OnResume != nil {
+		prog.OnResume(state.ResumeOffset)
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if state.ResumeOffset >= info.Size {
+			return finalizeSingleFileDownload(state, info.Mode)
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		rc, err := openRemoteVerifiedSingleFileRangeForCopy(ctx, c, namespace, podName, container, remotePath, state.ResumeOffset, verifier.SumHex)
+		if err != nil {
+			return err
+		}
+
+		copyErr := appendSingleFileRangeWithTaps(state.PartialPath, rc, prog, []io.Writer{verifier.Writer()})
+		closeErr := rc.Close()
+		if copyErr == nil {
+			copyErr = closeErr
+		}
+
+		currentSize, exists, err := localFileSize(state.PartialPath)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			currentSize = 0
+		}
+		state.ResumeOffset = currentSize
+
+		if copyErr == nil && currentSize < info.Size {
+			copyErr = io.ErrUnexpectedEOF
+		}
+		if copyErr != nil {
+			if errors.Is(copyErr, errChecksumMismatch) && currentSize == info.Size {
+				_ = os.Remove(state.PartialPath)
+			}
+			lastErr = copyErr
+			if !isRetryableCopyStreamError(copyErr) || attempt == 2 {
+				return copyErr
+			}
+			time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+			continue
+		}
+
+		if currentSize != info.Size {
+			lastErr = io.ErrUnexpectedEOF
+			if attempt == 2 {
+				return lastErr
+			}
+			time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+			continue
+		}
+		return finalizeSingleFileDownload(state, info.Mode)
+	}
+	return lastErr
 }
 
 func createTempDownloadFile(localPath string) (*os.File, error) {

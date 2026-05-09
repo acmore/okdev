@@ -92,6 +92,35 @@ func TestValidateCpFlags(t *testing.T) {
 	}
 }
 
+func TestValidateCpMode(t *testing.T) {
+	tests := []struct {
+		name    string
+		upload  bool
+		verify  bool
+		wantErr string
+	}{
+		{name: "download without verify", upload: false, verify: false},
+		{name: "download with verify", upload: false, verify: true},
+		{name: "upload without verify", upload: true, verify: false},
+		{name: "upload with verify rejected", upload: true, verify: true, wantErr: "--verify is only supported for downloads"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateCpMode(tt.upload, tt.verify)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
 func TestMultiPodDownloadPath(t *testing.T) {
 	if got := multiPodDownloadPath("/tmp/out", "worker-0", "/workspace/result.txt", false); got != "/tmp/out/worker-0/result.txt" {
 		t.Fatalf("file download path = %q", got)
