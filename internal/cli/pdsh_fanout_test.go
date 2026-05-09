@@ -197,6 +197,52 @@ func TestRunDetachExecFanoutLimitsParallelism(t *testing.T) {
 	}
 }
 
+func TestRunExecPodGroupsSequentialRunsGroupsOneByOne(t *testing.T) {
+	groups := []execPodGroup{
+		{Label: "group-1", Pods: []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}, {Name: "okdev-sess-worker-1", Phase: "Running"}}},
+		{Label: "group-2", Pods: []kube.PodSummary{{Name: "okdev-sess-worker-2", Phase: "Running"}, {Name: "okdev-sess-worker-3", Phase: "Running"}}},
+	}
+	client := newTrackingExecClient(30 * time.Millisecond)
+	var stdout, stderr bytes.Buffer
+	err := runExecPodGroups(context.Background(), client, "default", groups, execGroupRunOptions{
+		Container: "dev",
+		Command:   []string{"sh", "-c", "echo ok"},
+		Order:     execGroupOrderSequential,
+		Fanout:    pdshDefaultFanout,
+		Stdout:    &stdout,
+		Stderr:    &stderr,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if peak := client.maxConcurrent(); peak > 2 {
+		t.Fatalf("expected sequential groups to cap peak concurrency at 2, got %d", peak)
+	}
+}
+
+func TestRunExecPodGroupsParallelRunsGroupsTogether(t *testing.T) {
+	groups := []execPodGroup{
+		{Label: "group-1", Pods: []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}, {Name: "okdev-sess-worker-1", Phase: "Running"}}},
+		{Label: "group-2", Pods: []kube.PodSummary{{Name: "okdev-sess-worker-2", Phase: "Running"}, {Name: "okdev-sess-worker-3", Phase: "Running"}}},
+	}
+	client := newTrackingExecClient(30 * time.Millisecond)
+	var stdout, stderr bytes.Buffer
+	err := runExecPodGroups(context.Background(), client, "default", groups, execGroupRunOptions{
+		Container: "dev",
+		Command:   []string{"sh", "-c", "echo ok"},
+		Order:     execGroupOrderParallel,
+		Fanout:    pdshDefaultFanout,
+		Stdout:    &stdout,
+		Stderr:    &stderr,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if peak := client.maxConcurrent(); peak < 4 {
+		t.Fatalf("expected parallel groups to run together, peak concurrency=%d", peak)
+	}
+}
+
 // --- Full pipeline E2E: filter → execute → output ---
 
 func TestMultiExecPipelineAllPodsWithPrefixedOutput(t *testing.T) {

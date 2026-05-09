@@ -455,14 +455,19 @@ func TestRunMultiExecWithLogDir(t *testing.T) {
 
 func TestValidateMultiPodFlags(t *testing.T) {
 	tests := []struct {
-		name     string
-		podNames []string
-		role     string
-		labels   []string
-		exclude  []string
-		hasCmd   bool
-		detach   bool
-		wantErr  string
+		name       string
+		allPods    bool
+		workers    bool
+		podNames   []string
+		role       string
+		labels     []string
+		exclude    []string
+		groups     []string
+		hasCmd     bool
+		detach     bool
+		sequential bool
+		parallel   bool
+		wantErr    string
 	}{
 		{
 			name:    "role requires command",
@@ -485,6 +490,27 @@ func TestValidateMultiPodFlags(t *testing.T) {
 			wantErr: "--exclude cannot be used with --pod",
 		},
 		{
+			name:    "workers conflicts with role",
+			workers: true,
+			role:    "worker",
+			hasCmd:  true,
+			wantErr: "--workers cannot be used with --role",
+		},
+		{
+			name:     "group conflicts with pod",
+			groups:   []string{"worker-0,worker-1"},
+			podNames: []string{"p1"},
+			hasCmd:   true,
+			wantErr:  "--group cannot be used with --pod, --role, --label, --exclude, --all, or --workers",
+		},
+		{
+			name:       "sequential conflicts with parallel",
+			hasCmd:     true,
+			sequential: true,
+			parallel:   true,
+			wantErr:    "--parallel and --sequential are mutually exclusive",
+		},
+		{
 			name:   "valid default all with command",
 			hasCmd: true,
 		},
@@ -500,10 +526,19 @@ func TestValidateMultiPodFlags(t *testing.T) {
 			name:   "valid detach with cmd",
 			detach: true, hasCmd: true,
 		},
+		{
+			name:    "valid workers with command",
+			workers: true, hasCmd: true,
+		},
+		{
+			name:   "valid groups with sequential command",
+			groups: []string{"master-0,worker-0", "master-1,worker-1"},
+			hasCmd: true, sequential: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateMultiPodFlags(tt.podNames, tt.role, tt.labels, tt.exclude, tt.hasCmd, tt.detach)
+			err := validateMultiPodFlags(tt.allPods, tt.workers, tt.podNames, tt.role, tt.labels, tt.exclude, tt.groups, tt.hasCmd, tt.detach, tt.sequential, tt.parallel)
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -517,6 +552,41 @@ func TestValidateMultiPodFlags(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
 			}
 		})
+	}
+}
+
+func TestBuildExecPodGroupsSupportsShortNamesAndWorkers(t *testing.T) {
+	pods := []kube.PodSummary{
+		{Name: "okdev-sess-master-0", Phase: "Running", Labels: map[string]string{"okdev.io/workload-role": "Master"}},
+		{Name: "okdev-sess-worker-0", Phase: "Running", Labels: map[string]string{"okdev.io/workload-role": "Worker"}},
+		{Name: "okdev-sess-worker-1", Phase: "Running", Labels: map[string]string{"okdev.io/workload-role": "Worker"}},
+	}
+
+	groups, err := buildExecPodGroups("sess", pods, execTargetPlan{
+		workers:    true,
+		sequential: true,
+	})
+	if err != nil {
+		t.Fatalf("buildExecPodGroups workers: %v", err)
+	}
+	if len(groups) != 2 {
+		t.Fatalf("expected 2 single-pod worker groups, got %d", len(groups))
+	}
+	if len(groups[0].Pods) != 1 || groups[0].Pods[0].Name != "okdev-sess-worker-0" {
+		t.Fatalf("unexpected first worker group: %+v", groups[0])
+	}
+
+	grouped, err := buildExecPodGroups("sess", pods, execTargetPlan{
+		groups: []string{"master-0,worker-1"},
+	})
+	if err != nil {
+		t.Fatalf("buildExecPodGroups groups: %v", err)
+	}
+	if len(grouped) != 1 || len(grouped[0].Pods) != 2 {
+		t.Fatalf("unexpected grouped selection: %+v", grouped)
+	}
+	if grouped[0].Pods[0].Name != "okdev-sess-master-0" || grouped[0].Pods[1].Name != "okdev-sess-worker-1" {
+		t.Fatalf("unexpected grouped pods: %+v", grouped[0].Pods)
 	}
 }
 
