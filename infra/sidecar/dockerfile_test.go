@@ -8,8 +8,8 @@ import (
 )
 
 var (
-	goDirectivePattern         = regexp.MustCompile(`(?m)^go (\d+\.\d+)(?:\.\d+)?$`)
-	dockerBuilderImagePattern  = regexp.MustCompile(`(?m)^FROM golang:(\d+\.\d+)(?:[^\s]*) AS builder$`)
+	goDirectivePattern        = regexp.MustCompile(`(?m)^go (\d+\.\d+)(?:\.\d+)?$`)
+	dockerBuilderImagePattern = regexp.MustCompile(`(?m)^FROM golang:(\d+\.\d+)(?:[^\s]*) AS builder$`)
 )
 
 func TestBuilderGoVersionMatchesGoMod(t *testing.T) {
