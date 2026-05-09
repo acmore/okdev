@@ -130,6 +130,7 @@ func TestBundledDevTmuxProfileUsesCtrlAPrefix(t *testing.T) {
 		"set -g prefix C-a",
 		"unbind C-b",
 		"bind-key C-a send-prefix",
+		`bind-key / copy-mode \; command-prompt -T search -p "(search up)" { send-keys -X search-backward -- "%%" }`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected bundled tmux profile to contain %q:\n%s", want, text)
