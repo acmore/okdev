@@ -231,6 +231,48 @@ func TestResolveSingleFileDownloadStateTreatsCompleteFinalFileAsDone(t *testing.
 	}
 }
 
+func TestDownloadSingleFileResumablePromotesCompletePartialWithoutRedownload(t *testing.T) {
+	dir := t.TempDir()
+	finalPath := filepath.Join(dir, "model.bin")
+	partialPath := finalPath + ".okdev-part"
+	remoteData := []byte("abcdefghij")
+	if err := os.WriteFile(partialPath, remoteData, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	openCalls := 0
+	err := downloadSingleFileResumable(context.Background(), finalPath, remoteFileInfo{
+		Size: int64(len(remoteData)),
+		Mode: 0o640,
+	}, func(offset int64) (io.ReadCloser, error) {
+		openCalls++
+		return io.NopCloser(bytes.NewReader(remoteData[offset:])), nil
+	}, CopyProgress{})
+	if err != nil {
+		t.Fatalf("downloadSingleFileResumable: %v", err)
+	}
+	if openCalls != 0 {
+		t.Fatalf("expected no remote reads, got %d", openCalls)
+	}
+	if _, err := os.Stat(partialPath); !os.IsNotExist(err) {
+		t.Fatalf("expected partial path to be promoted away, stat err = %v", err)
+	}
+	data, err := os.ReadFile(finalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(remoteData) {
+		t.Fatalf("final data = %q, want %q", data, remoteData)
+	}
+	info, err := os.Stat(finalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("mode = %o, want 640", info.Mode().Perm())
+	}
+}
+
 func TestDownloadSingleFileResumableCompletesFromExistingPartial(t *testing.T) {
 	dir := t.TempDir()
 	finalPath := filepath.Join(dir, "model.bin")
