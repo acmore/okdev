@@ -43,7 +43,7 @@ const (
 // defaultSyncExcludes are written to a starter .stignore when one does not
 // already exist. They prevent common large or noisy directories from being
 // synced by default.
-var defaultSyncExcludes = []string{".git/", "node_modules", "vendor", "__pycache__", ".DS_Store"}
+var defaultSyncExcludes = []string{"node_modules", "vendor", "__pycache__", ".DS_Store"}
 
 const (
 	largeSyncWarnThreshold = 100 * 1024 * 1024

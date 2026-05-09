@@ -177,7 +177,7 @@ func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, e
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := upCommandContext(flags.waitTimeout)
+	ctx, cancel := upCommandContext(cmd.Context(), flags.waitTimeout)
 	previousTarget, _ := loadTargetRef(cc.sessionName)
 	return &upState{
 		cmd:            cmd,
@@ -544,6 +544,7 @@ func upWait(state *upState) error {
 	eventCancel() // Stop event watcher immediately so no stale events print after this point.
 	state.ui.stopActive()
 	if waitErr != nil {
+		waitErr = normalizeUpWaitError(waitErr)
 		hints := fmt.Sprintf("next steps:\n- run `okdev status --session %s`\n- run `kubectl -n %s describe pod %s`", state.command.sessionName, state.command.namespace, state.workloadName)
 		diag, derr := state.command.kube.DescribePod(state.ctx, state.command.namespace, state.workloadName)
 		if derr == nil {
@@ -579,6 +580,13 @@ func upWait(state *upState) error {
 	state.target = target
 	state.ui.stepDone("target", target.PodName+"/"+target.Container)
 	return nil
+}
+
+func normalizeUpWaitError(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("cancelled while waiting for pod readiness")
+	}
+	return err
 }
 
 func shouldPreferReplacementTarget(state *upState) bool {
@@ -1143,13 +1151,16 @@ func shouldReuseExistingWorkload(ctx context.Context, k workloadExistenceChecker
 	return exists, nil
 }
 
-func upCommandContext(waitTimeout time.Duration) (context.Context, context.CancelFunc) {
+func upCommandContext(parent context.Context, waitTimeout time.Duration) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
 	timeout := defaultContextTimeout
 	needed := (2 * waitTimeout) + upContextBuffer
 	if needed > timeout {
 		timeout = needed
 	}
-	return context.WithTimeout(context.Background(), timeout)
+	return context.WithTimeout(parent, timeout)
 }
 
 func reconcileMissingPVCs(ctx context.Context, k interface {

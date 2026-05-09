@@ -9,7 +9,7 @@ import (
 )
 
 func TestUpCommandContextUsesDefaultFloor(t *testing.T) {
-	ctx, cancel := upCommandContext(30 * time.Second)
+	ctx, cancel := upCommandContext(context.Background(), 30*time.Second)
 	defer cancel()
 
 	deadline, ok := ctx.Deadline()
@@ -23,7 +23,7 @@ func TestUpCommandContextUsesDefaultFloor(t *testing.T) {
 }
 
 func TestUpCommandContextExpandsForLargeWaitTimeout(t *testing.T) {
-	ctx, cancel := upCommandContext(10 * time.Minute)
+	ctx, cancel := upCommandContext(context.Background(), 10*time.Minute)
 	defer cancel()
 
 	deadline, ok := ctx.Deadline()
@@ -38,7 +38,7 @@ func TestUpCommandContextExpandsForLargeWaitTimeout(t *testing.T) {
 }
 
 func TestUpCommandContextIsCancellable(t *testing.T) {
-	ctx, cancel := upCommandContext(time.Minute)
+	ctx, cancel := upCommandContext(context.Background(), time.Minute)
 	cancel()
 
 	select {
@@ -48,6 +48,33 @@ func TestUpCommandContextIsCancellable(t *testing.T) {
 	}
 	if ctx.Err() != context.Canceled {
 		t.Fatalf("expected context canceled, got %v", ctx.Err())
+	}
+}
+
+func TestUpCommandContextCancelsWhenParentCancels(t *testing.T) {
+	parent, parentCancel := context.WithCancel(context.Background())
+	ctx, cancel := upCommandContext(parent, time.Minute)
+	defer cancel()
+
+	parentCancel()
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("expected derived context to cancel after parent cancel")
+	}
+	if ctx.Err() != context.Canceled {
+		t.Fatalf("expected context canceled, got %v", ctx.Err())
+	}
+}
+
+func TestNormalizeUpWaitCancellation(t *testing.T) {
+	err := normalizeUpWaitError(context.Canceled)
+	if err == nil {
+		t.Fatal("expected normalized error")
+	}
+	if got := err.Error(); got != "cancelled while waiting for pod readiness" {
+		t.Fatalf("unexpected normalized error %q", got)
 	}
 }
 
