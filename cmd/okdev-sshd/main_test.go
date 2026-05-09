@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -115,6 +116,27 @@ func TestBuildInteractiveLoginScript(t *testing.T) {
 		if !strings.Contains(script, want) {
 			t.Fatalf("expected script to contain %q: %s", want, script)
 		}
+	}
+}
+
+func TestBundledDevTmuxProfileUsesCtrlAPrefix(t *testing.T) {
+	confPath := filepath.Join("..", "..", "infra", "sidecar", "dev-tmux.conf")
+	raw, err := os.ReadFile(confPath)
+	if err != nil {
+		t.Fatalf("read bundled tmux profile: %v", err)
+	}
+	text := string(raw)
+	for _, want := range []string{
+		"set -g prefix C-a",
+		"unbind C-b",
+		"bind-key C-a send-prefix",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected bundled tmux profile to contain %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "set -g prefix C-b") {
+		t.Fatalf("did not expect bundled tmux profile to keep Ctrl-b prefix:\n%s", text)
 	}
 }
 
