@@ -109,7 +109,7 @@ type fakeJobsClient struct {
 	streamPlans     map[string]fakeJobsStreamPlan
 	execShResponses map[string]fakeJobsExecResponse
 	execScripts     []string
-	onExec         func(pod, key string)
+	onExec          func(pod, key string)
 }
 
 type fakeJobsStreamPlan struct {
