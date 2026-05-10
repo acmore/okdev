@@ -608,8 +608,10 @@ func mustDetachJSONTemplateWithExit(v detachMetadata) string {
 	return out
 }
 
-func newDetachJobSpec(pod, container, cmd string) detachJobSpec {
-	jobID := newDetachJobID()
+func newDetachJobSpec(jobID, pod, container, cmd string) detachJobSpec {
+	if strings.TrimSpace(jobID) == "" {
+		jobID = newDetachJobID()
+	}
 	startedAt := time.Now().UTC().Format(time.RFC3339)
 	logPath := filepath.Join(detachMetadataDir, jobID+".log")
 	metaPath := filepath.Join(detachMetadataDir, jobID+".json")
@@ -664,6 +666,7 @@ func runDetachExec(ctx context.Context, client connect.ExecClient, namespace str
 
 	results := make(chan podDetachResult, len(pods))
 	sem := make(chan struct{}, fanout)
+	jobID := newDetachJobID()
 
 	var wg sync.WaitGroup
 	for i, pod := range pods {
@@ -672,7 +675,7 @@ func runDetachExec(ctx context.Context, client connect.ExecClient, namespace str
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			spec := newDetachJobSpec(pod.Name, container, cmdStr)
+			spec := newDetachJobSpec(jobID, pod.Name, container, cmdStr)
 			command := detachCommand(spec)
 			var remoteStdout, remoteStderr bytes.Buffer
 			err := connect.RunOnContainer(ctx, client, namespace, pod.Name, container, command, false, nil, &remoteStdout, &remoteStderr)

@@ -57,6 +57,7 @@ func newRootCmdWithOptions() (*cobra.Command, *Options) {
 	cmd.AddCommand(newTargetCmd(opts))
 	cmd.AddCommand(newAgentCmd(opts))
 	cmd.AddCommand(newExecCmd(opts))
+	cmd.AddCommand(newJobsCmd(opts))
 	cmd.AddCommand(newExecJobsCmd(opts))
 	cmd.AddCommand(newPortForwardCmd(opts))
 	cmd.AddCommand(newCpCmd(opts))

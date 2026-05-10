@@ -227,13 +227,13 @@ func (s *slowExecClient) ExecInteractiveInContainer(ctx context.Context, namespa
 
 func TestRunDetachExec(t *testing.T) {
 	launch, _ := json.Marshal(detachLaunchInfo{
-		JobID:    "job-worker-0",
+		JobID:    "job-shared",
 		PID:      48217,
 		LogPath:  "/tmp/okdev-exec/job-worker-0.log",
 		MetaPath: "/tmp/okdev-exec/job-worker-0.json",
 	})
 	launch2, _ := json.Marshal(detachLaunchInfo{
-		JobID:    "job-worker-1",
+		JobID:    "job-shared",
 		PID:      49102,
 		LogPath:  "/tmp/okdev-exec/job-worker-1.log",
 		MetaPath: "/tmp/okdev-exec/job-worker-1.json",
@@ -256,8 +256,8 @@ func TestRunDetachExec(t *testing.T) {
 	}
 	got := stdout.String()
 	for _, want := range []string{
-		"worker-0] detached job_id=job-worker-0 pid=48217 log=/tmp/okdev-exec/job-worker-0.log meta=/tmp/okdev-exec/job-worker-0.json",
-		"worker-1] detached job_id=job-worker-1 pid=49102 log=/tmp/okdev-exec/job-worker-1.log meta=/tmp/okdev-exec/job-worker-1.json",
+		"worker-0] detached job_id=job-shared pid=48217 log=/tmp/okdev-exec/job-worker-0.log meta=/tmp/okdev-exec/job-worker-0.json",
+		"worker-1] detached job_id=job-shared pid=49102 log=/tmp/okdev-exec/job-worker-1.log meta=/tmp/okdev-exec/job-worker-1.json",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected detach metadata output %q, got %q", want, got)

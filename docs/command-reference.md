@@ -27,6 +27,11 @@
 - `okdev target set [--pod <name> | --role <role>]`
 - `okdev agent list`
 - `okdev exec [session] [--shell /bin/bash] [--no-tty] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--detach] [--timeout <duration>] [--log-dir <path>] [--no-prefix] [--fanout N] [-- command...]`
+- `okdev jobs list [session] [--job-id <id>] [--container <name>] [--fanout N]`
+- `okdev jobs logs <job-id> [session] [-f|--follow] [--container <name>] [--fanout N]`
+- `okdev jobs stop <job-id> [session] [--container <name>] [--fanout N]`
+- `okdev jobs wait <job-id> [session] [--container <name>] [--fanout N]`
+- `okdev exec-jobs [session] [--job-id <id>] [--container <name>] [--fanout N]`
 - `okdev cp [session] <src> <dst> [--all | --pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--fanout N]`
 - `okdev logs [session] [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
 - `okdev ssh [session] [--setup-key] [--user root] [--cmd "..."] [--no-tmux] [--forward-agent|--no-forward-agent]`
@@ -86,12 +91,13 @@
 - `--fanout N`: maximum concurrent pod executions (default 16).
 - `--pod`, `--role`, and `--label` are mutually exclusive.
 
-### `okdev exec-jobs [session]`
+### `okdev jobs list [session]`
 
 - Lists detached `okdev exec --detach` jobs across the session's running pods.
 - Reads job metadata from `/tmp/okdev-exec/*.json` in the target container.
-- Shows pod, container, job id, pid, current state, exit code when available, and log path in table form for text output.
-- State values: `running` (wrapper alive and user command in flight), `exited` (user command finished; `EXIT` column holds the captured status), and `orphaned` (metadata still says `running` but the pid has exited or been recycled - typically the wrapper was `SIGKILL`ed or the container was restarted before the completion metadata could be written).
+- Text output is grouped by logical job id, with one row per detached launch showing job id, summarized state, pod count, earliest start time, and original command.
+- JSON output includes both the logical job summary and the per-pod `podStates` records.
+- State values: `running` (wrapper alive and user command in flight), `exited` (user command finished; exit code is recorded in `podStates` / JSON), and `orphaned` (metadata still says `running` but the pid has exited or been recycled - typically the wrapper was `SIGKILL`ed or the container was restarted before the completion metadata could be written). Grouped text summaries render forms such as `running(1/2)`, `exited(2/2)`, and `failed(1/2)`.
 - When any pod fails to list its jobs, the command still prints the jobs it was able to collect from the healthy pods and reports the failures in a `FAILED:` footer (or an `errors` array in `--json` output); exit status is non-zero so scripts can detect partial failures.
 - `--pod`: target specific pods by name (repeatable or comma-separated).
 - `--role`: target pods by `okdev.io/workload-role` label (case-insensitive).
@@ -101,6 +107,30 @@
 - `--job-id`: filter to a specific detached exec job id.
 - `--fanout N`: maximum concurrent pod queries (default 16).
 - `--ready-only`: inspect only pods that are already running.
+
+### `okdev jobs logs <job-id> [session]`
+
+- Streams the detached job's combined stdout/stderr aggregated across all pods in the logical job.
+- Each line is prefixed by the pod short name so multi-pod output stays attributable.
+- `-f` / `--follow`: keep following until every pod in the job reaches a terminal state.
+- If some pod logs are unavailable, okdev still streams the logs it can read and reports the missing pods in a `FAILED:` footer before returning non-zero.
+
+### `okdev jobs wait <job-id> [session]`
+
+- Polls the detached job until all pod-local records are terminal.
+- Returns success only when every pod exits cleanly.
+- Returns non-zero when any pod exits non-zero, becomes `orphaned`, cannot be queried, or the job id does not exist.
+
+### `okdev jobs stop <job-id> [session]`
+
+- Stops every still-running pod in the logical job by sending `SIGTERM`, waiting 10 seconds, then sending `SIGKILL` to survivors.
+- Prints which pods were signaled during the stop flow.
+- Returns non-zero when any pod could not be queried or signaled, or if pods are still running after the stop attempt.
+
+### `okdev exec-jobs [session]`
+
+- Compatibility alias for `okdev jobs list [session]`.
+- Uses the same grouped logical-job output and flags as `okdev jobs list`.
 
 ### `okdev cp [session] <src> <dst>`
 

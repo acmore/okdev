@@ -85,8 +85,8 @@ func TestRunExecJobsRendersPartialFailureFooter(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := out.String()
-	// Healthy pod row must still render.
-	for _, want := range []string{"okdev-sess-worker-0", "job-a", "running"} {
+	// Healthy logical job row must still render.
+	for _, want := range []string{"JOB ID", "job-a", "running(1/1)", "python train.py"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected table to include healthy pod row, missing %q in %q", want, got)
 		}
@@ -100,8 +100,8 @@ func TestRunExecJobsRendersPartialFailureFooter(t *testing.T) {
 func TestRunExecJobs(t *testing.T) {
 	client := &fakePdshExecClient{
 		outputs: map[string]string{
-			"okdev-sess-worker-0": "{\"jobId\":\"job-a\",\"pod\":\"okdev-sess-worker-0\",\"container\":\"dev\",\"pid\":48217,\"command\":\"python train.py\",\"startedAt\":\"2026-04-23T03:00:00Z\",\"stdoutPath\":\"/tmp/okdev-exec/job-a.log\",\"stderrPath\":\"/tmp/okdev-exec/job-a.log\",\"metaPath\":\"/tmp/okdev-exec/job-a.json\",\"state\":\"running\"}\n",
-			"okdev-sess-worker-1": "",
+			"okdev-sess-worker-0": "{\"jobId\":\"job-shared\",\"pod\":\"okdev-sess-worker-0\",\"container\":\"dev\",\"pid\":48217,\"command\":\"python train.py\",\"startedAt\":\"2026-04-23T03:00:00Z\",\"stdoutPath\":\"/tmp/okdev-exec/job-shared.log\",\"stderrPath\":\"/tmp/okdev-exec/job-shared.log\",\"metaPath\":\"/tmp/okdev-exec/job-shared.json\",\"state\":\"running\"}\n",
+			"okdev-sess-worker-1": "{\"jobId\":\"job-shared\",\"pod\":\"okdev-sess-worker-1\",\"container\":\"dev\",\"pid\":49102,\"command\":\"python train.py\",\"startedAt\":\"2026-04-23T03:00:01Z\",\"stdoutPath\":\"/tmp/okdev-exec/job-shared.log\",\"stderrPath\":\"/tmp/okdev-exec/job-shared.log\",\"metaPath\":\"/tmp/okdev-exec/job-shared.json\",\"state\":\"exited\",\"exitCode\":0}\n",
 		},
 		errs: map[string]error{},
 	}
@@ -114,9 +114,40 @@ func TestRunExecJobs(t *testing.T) {
 		t.Fatalf("runExecJobs: %v", err)
 	}
 	got := out.String()
-	for _, want := range []string{"POD", "JOB ID", "STATE", "okdev-sess-worker-0", "job-a", "running"} {
+	for _, want := range []string{"JOB ID", "STATE", "PODS", "COMMAND", "job-shared", "running(1/2)", "2", "python train.py"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected table output containing %q, got %q", want, got)
+		}
+	}
+}
+
+func TestRunExecJobsJSONGroupsLogicalJobs(t *testing.T) {
+	client := &fakePdshExecClient{
+		outputs: map[string]string{
+			"okdev-sess-worker-0": "{\"jobId\":\"job-shared\",\"pod\":\"okdev-sess-worker-0\",\"container\":\"dev\",\"pid\":48217,\"command\":\"python train.py\",\"startedAt\":\"2026-04-23T03:00:00Z\",\"stdoutPath\":\"/tmp/okdev-exec/job-shared.log\",\"stderrPath\":\"/tmp/okdev-exec/job-shared.log\",\"metaPath\":\"/tmp/okdev-exec/job-shared.json\",\"state\":\"running\"}\n",
+			"okdev-sess-worker-1": "{\"jobId\":\"job-shared\",\"pod\":\"okdev-sess-worker-1\",\"container\":\"dev\",\"pid\":49102,\"command\":\"python train.py\",\"startedAt\":\"2026-04-23T03:00:01Z\",\"stdoutPath\":\"/tmp/okdev-exec/job-shared.log\",\"stderrPath\":\"/tmp/okdev-exec/job-shared.log\",\"metaPath\":\"/tmp/okdev-exec/job-shared.json\",\"state\":\"exited\",\"exitCode\":0}\n",
+		},
+		errs: map[string]error{},
+	}
+	pods := []kube.PodSummary{
+		{Name: "okdev-sess-worker-0", Phase: "Running"},
+		{Name: "okdev-sess-worker-1", Phase: "Running"},
+	}
+	var out bytes.Buffer
+	if err := runExecJobs(context.Background(), client, "default", pods, "dev", "", pdshDefaultFanout, &out, true); err != nil {
+		t.Fatalf("runExecJobs: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"\"jobId\": \"job-shared\"",
+		"\"state\": \"running(1/2)\"",
+		"\"pods\": 2",
+		"\"podStates\": [",
+		"\"pod\": \"okdev-sess-worker-0\"",
+		"\"pod\": \"okdev-sess-worker-1\"",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected grouped json output containing %q, got %q", want, got)
 		}
 	}
 }
@@ -216,3 +247,50 @@ func TestCollectDetachJobsFiltersByJobID(t *testing.T) {
 		t.Fatalf("expected only job-b, got %+v", rows)
 	}
 }
+
+func TestGroupDetachJobsSummarizesLogicalJob(t *testing.T) {
+	rows := []execJobView{
+		{
+			Pod:       "okdev-sess-worker-0",
+			Container: "dev",
+			JobID:     "job-shared",
+			PID:       100,
+			State:     "running",
+			LogPath:   "/tmp/okdev-exec/job-shared-worker-0.log",
+			MetaPath:  "/tmp/okdev-exec/job-shared-worker-0.json",
+			StartedAt: "2026-05-09T10:00:00Z",
+			Command:   "python train.py",
+		},
+		{
+			Pod:       "okdev-sess-worker-1",
+			Container: "dev",
+			JobID:     "job-shared",
+			PID:       101,
+			State:     "exited",
+			ExitCode:  intPtr(0),
+			LogPath:   "/tmp/okdev-exec/job-shared-worker-1.log",
+			MetaPath:  "/tmp/okdev-exec/job-shared-worker-1.json",
+			StartedAt: "2026-05-09T10:00:01Z",
+			Command:   "python train.py",
+		},
+	}
+
+	jobs := groupDetachJobs(rows)
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 logical job, got %d", len(jobs))
+	}
+	if jobs[0].JobID != "job-shared" {
+		t.Fatalf("unexpected job id %q", jobs[0].JobID)
+	}
+	if jobs[0].Pods != 2 {
+		t.Fatalf("expected 2 pods, got %d", jobs[0].Pods)
+	}
+	if jobs[0].SummaryState != "running(1/2)" {
+		t.Fatalf("unexpected summary state %q", jobs[0].SummaryState)
+	}
+	if jobs[0].Command != "python train.py" {
+		t.Fatalf("unexpected command %q", jobs[0].Command)
+	}
+}
+
+func intPtr(v int) *int { return &v }
