@@ -250,7 +250,7 @@ func TestRunDetachExec(t *testing.T) {
 		{Name: "okdev-sess-worker-1", Phase: "Running"},
 	}
 	var stdout bytes.Buffer
-	err := runDetachExec(context.Background(), client, "default", pods, "dev", "python train.py", pdshDefaultFanout, &stdout)
+	err := runDetachExec(context.Background(), client, "default", pods, "dev", "python train.py", make(chan struct{}, pdshDefaultFanout), &stdout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestRunDetachExecWithError(t *testing.T) {
 		{Name: "okdev-sess-worker-1", Phase: "Running"},
 	}
 	var stdout bytes.Buffer
-	err := runDetachExec(context.Background(), client, "default", pods, "dev", "python train.py", pdshDefaultFanout, &stdout)
+	err := runDetachExec(context.Background(), client, "default", pods, "dev", "python train.py", make(chan struct{}, pdshDefaultFanout), &stdout)
 	if err == nil {
 		t.Fatal("expected error for partial failure")
 	}
@@ -308,7 +308,7 @@ func TestRunDetachExecRequiresLaunchMetadata(t *testing.T) {
 		{Name: "okdev-sess-worker-0", Phase: "Running"},
 	}
 	var stdout bytes.Buffer
-	err := runDetachExec(context.Background(), client, "default", pods, "dev", "python train.py", pdshDefaultFanout, &stdout)
+	err := runDetachExec(context.Background(), client, "default", pods, "dev", "python train.py", make(chan struct{}, pdshDefaultFanout), &stdout)
 	if err == nil {
 		t.Fatal("expected metadata parse error")
 	}
@@ -330,7 +330,7 @@ func TestRunMultiExecSuccess(t *testing.T) {
 		{Name: "okdev-sess-worker-1", Phase: "Running"},
 	}
 	var stdout, stderr bytes.Buffer
-	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-lc", "echo ok"}, "", 0, false, pdshDefaultFanout, &stdout, &stderr)
+	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-lc", "echo ok"}, "", 0, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestRunMultiExecPartialFailure(t *testing.T) {
 		{Name: "okdev-sess-worker-1", Phase: "Running"},
 	}
 	var stdout, stderr bytes.Buffer
-	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-lc", "echo ok"}, "", 0, false, pdshDefaultFanout, &stdout, &stderr)
+	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-lc", "echo ok"}, "", 0, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error for partial failure")
 	}
@@ -379,7 +379,7 @@ func TestRunMultiExecClassifiesTimeoutAndTransportFailures(t *testing.T) {
 		{Name: "okdev-sess-worker-1", Phase: "Running"},
 	}
 	var stdout, stderr bytes.Buffer
-	err := runMultiExec(context.Background(), client, "default", pods, "serving", []string{"sh", "-lc", "echo ok"}, "", 0, false, pdshDefaultFanout, &stdout, &stderr)
+	err := runMultiExec(context.Background(), client, "default", pods, "serving", []string{"sh", "-lc", "echo ok"}, "", 0, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error for classified failures")
 	}
@@ -398,7 +398,7 @@ func TestRunMultiExecTimeout(t *testing.T) {
 		{Name: "pod-0", Phase: "Running"},
 	}
 	var stdout, stderr bytes.Buffer
-	err := runMultiExec(context.Background(), slowClient, "default", pods, "dev", []string{"sh", "-c", "sleep 100"}, "", 50*time.Millisecond, false, pdshDefaultFanout, &stdout, &stderr)
+	err := runMultiExec(context.Background(), slowClient, "default", pods, "dev", []string{"sh", "-c", "sleep 100"}, "", 50*time.Millisecond, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -415,7 +415,7 @@ func TestRunMultiExecNoPrefix(t *testing.T) {
 		{Name: "pod-0", Phase: "Running"},
 	}
 	var stdout, stderr bytes.Buffer
-	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-c", "echo hello"}, "", 0, true, pdshDefaultFanout, &stdout, &stderr)
+	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-c", "echo hello"}, "", 0, true, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -438,7 +438,7 @@ func TestRunMultiExecWithLogDir(t *testing.T) {
 	}
 	logDir := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-c", "echo gpu"}, logDir, 0, false, pdshDefaultFanout, &stdout, &stderr)
+	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-c", "echo gpu"}, logDir, 0, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -511,6 +511,27 @@ func TestValidateMultiPodFlags(t *testing.T) {
 			wantErr:    "--parallel and --sequential are mutually exclusive",
 		},
 		{
+			name:     "parallel requires groups",
+			hasCmd:   true,
+			parallel: true,
+			wantErr:  "--parallel requires one or more --group flags",
+		},
+		{
+			name:       "sequential without command",
+			sequential: true,
+			wantErr:    "command after -- is required",
+		},
+		{
+			name:    "all without command",
+			allPods: true,
+			wantErr: "command after -- is required",
+		},
+		{
+			name:    "group without command",
+			groups:  []string{"worker-0"},
+			wantErr: "command after -- is required",
+		},
+		{
 			name:   "valid default all with command",
 			hasCmd: true,
 		},
@@ -534,6 +555,11 @@ func TestValidateMultiPodFlags(t *testing.T) {
 			name:   "valid groups with sequential command",
 			groups: []string{"master-0,worker-0", "master-1,worker-1"},
 			hasCmd: true, sequential: true,
+		},
+		{
+			name:   "valid groups with parallel command",
+			groups: []string{"master-0,worker-0", "master-1,worker-1"},
+			hasCmd: true, parallel: true,
 		},
 	}
 	for _, tt := range tests {
@@ -569,11 +595,11 @@ func TestBuildExecPodGroupsSupportsShortNamesAndWorkers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildExecPodGroups workers: %v", err)
 	}
-	if len(groups) != 2 {
-		t.Fatalf("expected 2 single-pod worker groups, got %d", len(groups))
+	if len(groups) != 1 || len(groups[0].Pods) != 2 {
+		t.Fatalf("expected a single group with 2 worker pods, got %+v", groups)
 	}
-	if len(groups[0].Pods) != 1 || groups[0].Pods[0].Name != "okdev-sess-worker-0" {
-		t.Fatalf("unexpected first worker group: %+v", groups[0])
+	if groups[0].Pods[0].Name != "okdev-sess-worker-0" || groups[0].Pods[1].Name != "okdev-sess-worker-1" {
+		t.Fatalf("unexpected worker pods: %+v", groups[0].Pods)
 	}
 
 	grouped, err := buildExecPodGroups("sess", pods, execTargetPlan{
@@ -587,6 +613,20 @@ func TestBuildExecPodGroupsSupportsShortNamesAndWorkers(t *testing.T) {
 	}
 	if grouped[0].Pods[0].Name != "okdev-sess-master-0" || grouped[0].Pods[1].Name != "okdev-sess-worker-1" {
 		t.Fatalf("unexpected grouped pods: %+v", grouped[0].Pods)
+	}
+}
+
+func TestBuildExecPodGroupsRejectsPodInMultipleGroups(t *testing.T) {
+	pods := []kube.PodSummary{
+		{Name: "okdev-sess-master-0", Phase: "Running"},
+		{Name: "okdev-sess-worker-0", Phase: "Running"},
+		{Name: "okdev-sess-worker-1", Phase: "Running"},
+	}
+	_, err := buildExecPodGroups("sess", pods, execTargetPlan{
+		groups: []string{"master-0,worker-0", "master-0,worker-1"},
+	})
+	if err == nil || !strings.Contains(err.Error(), `appears in both group 1 and group 2`) {
+		t.Fatalf("expected duplicate pod error, got %v", err)
 	}
 }
 
