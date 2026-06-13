@@ -506,12 +506,15 @@ if errs:
 if not jobs:
     print("ERROR: exec-jobs returned no jobs", file=sys.stderr)
     sys.exit(1)
-for row in jobs:
-    # exec-jobs stores the shell-quoted command string. Match by parsed
-    # argv so both `sleep 30` and `'sleep' '30'` forms are accepted.
-    if shlex.split(row.get("command") or "") != ["sleep", "30"]:
+# Each top-level entry is a logical job grouped by jobId; per-pod state
+# lives under "podStates". exec-jobs stores the shell-quoted command
+# string. Match by parsed argv so both `sleep 30` and `'sleep' '30'`
+# forms are accepted.
+for job in jobs:
+    if shlex.split(job.get("command") or "") != ["sleep", "30"]:
         continue
-    print(f"{row['pod']}\t{row['jobId']}\t{row['pid']}\t{row['state']}")
+    for row in job.get("podStates", []):
+        print(f"{row['pod']}\t{row['jobId']}\t{row['pid']}\t{row['state']}")
 PY
 )
 if [[ -z "$LONG_DETACH_PARSED" ]]; then
@@ -561,8 +564,17 @@ for _ in $(seq 1 45); do
     OKDEV_JOBS_JSON="$EXEC_JOBS_NOW" python3 - <<'PY'
 import json, os, shlex
 payload = json.loads(os.environ["OKDEV_JOBS_JSON"])
-print(sum(1 for j in payload.get("jobs", [])
-          if shlex.split(j.get("command") or "") == ["sleep", "30"] and j.get("state") == "running"))
+# Count per-pod entries still in the "running" state across every logical
+# `sleep 30` job. Top-level state is a summary string like "running(2/3)";
+# the unambiguous per-pod state lives on podStates[].
+count = 0
+for job in payload.get("jobs", []):
+    if shlex.split(job.get("command") or "") != ["sleep", "30"]:
+        continue
+    for row in job.get("podStates", []):
+        if row.get("state") == "running":
+            count += 1
+print(count)
 PY
   )
   if [[ "$STILL_RUNNING" == "0" ]]; then
@@ -578,11 +590,14 @@ MISMATCH=$(
   OKDEV_JOBS_JSON="$EXEC_JOBS_DONE" python3 - <<'PY'
 import json, os, shlex, sys
 payload = json.loads(os.environ["OKDEV_JOBS_JSON"])
-for row in payload.get("jobs", []):
-    if shlex.split(row.get("command") or "") != ["sleep", "30"]:
+# Per-pod terminal state lives on podStates[]; exitCode is only present
+# on entries that actually exited.
+for job in payload.get("jobs", []):
+    if shlex.split(job.get("command") or "") != ["sleep", "30"]:
         continue
-    if row.get("state") != "exited" or row.get("exitCode") != 0:
-        sys.stdout.write(f"{row.get('pod')}/{row.get('jobId')} state={row.get('state')} exit={row.get('exitCode')}\n")
+    for row in job.get("podStates", []):
+        if row.get("state") != "exited" or row.get("exitCode") != 0:
+            sys.stdout.write(f"{row.get('pod')}/{row.get('jobId')} state={row.get('state')} exit={row.get('exitCode')}\n")
 PY
 )
 if [[ -n "$MISMATCH" ]]; then
@@ -604,8 +619,12 @@ FAIL_CHECK=$(
   OKDEV_JOBS_JSON="$FAIL_JOBS_JSON" python3 - <<'PY'
 import json, os, shlex, sys
 payload = json.loads(os.environ["OKDEV_JOBS_JSON"])
-for row in payload.get("jobs", []):
-    if shlex.split(row.get("command") or "") == ["sh", "-lc", "exit 7"]:
+# Per-pod exit codes live on podStates[]; the top-level "state" is a
+# summary like "failed(1/1)" rather than the raw "exited" we want.
+for job in payload.get("jobs", []):
+    if shlex.split(job.get("command") or "") != ["sh", "-lc", "exit 7"]:
+        continue
+    for row in job.get("podStates", []):
         if row.get("state") == "exited" and row.get("exitCode") == 7:
             print("ok")
             sys.exit(0)
