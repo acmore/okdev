@@ -982,6 +982,13 @@ func detachWrapperScript(jobID string, argv []string, cleanupPaths []string, met
 		}
 		cleanupLines += fmt.Sprintf("rm -f %s 2>/dev/null || true\n", shellutil.Quote(path))
 	}
+	if cleanupLines == "" {
+		// POSIX sh rejects an empty function body, so always emit at least
+		// a no-op. Without this the wrapper script aborts before publishing
+		// metadata whenever no cleanup paths are supplied (the common case
+		// for non-script `okdev exec --detach`).
+		cleanupLines = ":\n"
+	}
 	return fmt.Sprintf(
 		"meta_path=%s\n"+
 			"meta_tmp=\"${meta_path}.tmp\"\n"+
