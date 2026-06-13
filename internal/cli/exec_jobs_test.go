@@ -216,7 +216,7 @@ func TestDetachJobsCommandReconcilesAndReapsTmpFiles(t *testing.T) {
 		"/proc/$pid/environ",
 		"alive=1",
 		"alive=0",
-		"grep -qx \"OKDEV_JOB_ID=$job_id\"",
+		"grep -Fqx \"OKDEV_JOB_ID=$job_id\"",
 		// Per-line output is "<alive>\t<json>".
 		"printf '%s\\t%s\\n' \"$alive\" \"$contents\"",
 		// Best-effort cleanup of stale temp files left by killed wrappers.

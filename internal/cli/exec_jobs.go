@@ -197,30 +197,29 @@ func summarizeLogicalJobState(rows []execJobView) string {
 		return "unknown"
 	}
 	total := len(rows)
-	counts := make(map[string]int, total)
+	var running, failed, exited int
 	for _, row := range rows {
-		counts[row.State]++
+		switch {
+		case row.State == "running":
+			running++
+		case row.State == "orphaned":
+			failed++
+		case row.ExitCode != nil && *row.ExitCode != 0:
+			failed++
+		case row.State == "exited":
+			exited++
+		}
 	}
-	if running := counts["running"]; running > 0 {
+	if running > 0 {
 		return fmt.Sprintf("running(%d/%d)", running, total)
 	}
-	if failed := counts["orphaned"] + failedRows(rows); failed > 0 {
+	if failed > 0 {
 		return fmt.Sprintf("failed(%d/%d)", failed, total)
 	}
-	if exited := counts["exited"]; exited == total {
+	if exited == total {
 		return fmt.Sprintf("exited(%d/%d)", exited, total)
 	}
 	return fmt.Sprintf("mixed(%d/%d)", total, total)
-}
-
-func failedRows(rows []execJobView) int {
-	failed := 0
-	for _, row := range rows {
-		if row.ExitCode != nil && *row.ExitCode != 0 {
-			failed++
-		}
-	}
-	return failed
 }
 
 func earliestStartedAt(rows []execJobView) string {
@@ -253,7 +252,7 @@ for f in "$dir"/*.json; do
   job_id=$(basename "$f" .json)
   alive=0
   if [ -n "$pid" ] && [ -r "/proc/$pid/environ" ]; then
-    if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qx "OKDEV_JOB_ID=$job_id"; then
+    if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -Fqx "OKDEV_JOB_ID=$job_id"; then
       alive=1
     fi
   fi

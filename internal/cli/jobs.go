@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -222,6 +223,7 @@ func fanoutOrDefault(v int) int {
 func runJobsLogs(ctx context.Context, client detachJobClient, namespace string, pods []kube.PodSummary, container, jobID string, fanout int, follow bool, out io.Writer) error {
 	job, podErrors, err := resolveLogicalDetachJob(ctx, client, namespace, pods, container, jobID, fanout)
 	if err != nil {
+		printExecJobsErrors(out, podErrors)
 		return err
 	}
 	shortNames := shortPodNames(jobPodNames(job))
@@ -272,14 +274,18 @@ func runJobsLogs(ctx context.Context, client detachJobClient, namespace string, 
 
 	if !follow {
 		wg.Wait()
-		printExecJobsErrors(out, append(podErrors, logErrors...))
-		if len(podErrors)+len(logErrors) > 0 {
-			return fmt.Errorf("failed to stream detached job %q logs on %d pod(s)", jobID, len(podErrors)+len(logErrors))
+		allErrs := mergePodErrors(podErrorMap(podErrors), logErrors)
+		printExecJobsErrors(out, allErrs)
+		if len(allErrs) > 0 {
+			return fmt.Errorf("failed to stream detached job %q logs on %d pod(s)", jobID, len(allErrs))
 		}
 		return nil
 	}
 
-	followPodErrors := append([]execJobsPodError{}, podErrors...)
+	// Accumulate per-pod query errors across the follow loop (dedup by pod,
+	// latest message wins) so initial failures and later poll failures both
+	// surface in the final FAILED footer.
+	followPodErrors := podErrorMap(podErrors)
 	ticker := time.NewTicker(detachJobPollEvery)
 	defer ticker.Stop()
 	for {
@@ -290,29 +296,42 @@ func runJobsLogs(ctx context.Context, client detachJobClient, namespace string, 
 			return ctx.Err()
 		case <-ticker.C:
 			current, errs, resolveErr := resolveLogicalDetachJob(ctx, client, namespace, pods, container, jobID, fanout)
+			for _, e := range errs {
+				followPodErrors[e.Pod] = e.Error
+			}
 			if resolveErr != nil {
 				cancel()
 				wg.Wait()
+				printExecJobsErrors(out, mergePodErrors(followPodErrors, logErrors))
 				return resolveErr
 			}
 			if len(errs) > 0 {
-				followPodErrors = errs
 				cancel()
 				wg.Wait()
-				printExecJobsErrors(out, append(followPodErrors, logErrors...))
-				return fmt.Errorf("failed to follow detached job %q logs on %d pod(s)", jobID, len(followPodErrors)+len(logErrors))
+				allErrs := mergePodErrors(followPodErrors, logErrors)
+				printExecJobsErrors(out, allErrs)
+				return fmt.Errorf("failed to follow detached job %q logs on %d pod(s)", jobID, len(allErrs))
 			}
 			if allLogicalJobTerminal(current) {
 				cancel()
 				wg.Wait()
-				printExecJobsErrors(out, append(followPodErrors, logErrors...))
-				if len(logErrors) > 0 {
-					return fmt.Errorf("failed to follow detached job %q logs on %d pod(s)", jobID, len(logErrors))
+				allErrs := mergePodErrors(followPodErrors, logErrors)
+				printExecJobsErrors(out, allErrs)
+				if len(allErrs) > 0 {
+					return fmt.Errorf("failed to follow detached job %q logs on %d pod(s)", jobID, len(allErrs))
 				}
 				return nil
 			}
 		}
 	}
+}
+
+func podErrorMap(errs []execJobsPodError) map[string]string {
+	m := make(map[string]string, len(errs))
+	for _, e := range errs {
+		m[e.Pod] = e.Error
+	}
+	return m
 }
 
 func runJobsWait(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container, jobID string, fanout int) error {
@@ -341,11 +360,11 @@ func runJobsWait(ctx context.Context, client connect.ExecClient, namespace strin
 }
 
 func runJobsStop(ctx context.Context, client detachJobClient, namespace string, pods []kube.PodSummary, container, jobID string, fanout int, out io.Writer) error {
-	job, podErrors, err := resolveLogicalDetachJob(ctx, client, namespace, pods, container, jobID, fanout)
+	job, initialPodErrors, err := resolveLogicalDetachJob(ctx, client, namespace, pods, container, jobID, fanout)
 	if err != nil {
+		printExecJobsErrors(out, initialPodErrors)
 		return err
 	}
-	initialPodErrors := append([]execJobsPodError{}, podErrors...)
 
 	shortNames := shortPodNames(jobPodNames(job))
 	prefixes := formatPodPrefixes(shortNames, false)
@@ -353,6 +372,11 @@ func runJobsStop(ctx context.Context, client detachJobClient, namespace string, 
 	for i, row := range job.PodStates {
 		prefixByPod[row.Pod] = prefixes[i]
 	}
+
+	// Accumulate per-pod query errors across both the SIGTERM wait phase and
+	// the final verification poll (dedup by pod) so transient errors don't
+	// silently shadow earlier signal failures and vice versa.
+	aggregated := podErrorMap(initialPodErrors)
 
 	signalErrors := make([]execJobsPodError, 0)
 	for _, row := range job.PodStates {
@@ -367,6 +391,9 @@ func runJobsStop(ctx context.Context, client detachJobClient, namespace string, 
 		}
 		fmt.Fprintf(out, "%s sent SIGTERM pid=%d (%s)\n", prefixByPod[row.Pod], row.PID, result)
 	}
+	for _, e := range signalErrors {
+		aggregated[e.Pod] = e.Error
+	}
 
 	deadline := time.NewTimer(detachJobStopGrace)
 	defer deadline.Stop()
@@ -374,6 +401,7 @@ func runJobsStop(ctx context.Context, client detachJobClient, namespace string, 
 	defer ticker.Stop()
 
 	current := job
+	jobGone := false
 waitLoop:
 	for {
 		if allLogicalJobTerminal(current) {
@@ -385,18 +413,33 @@ waitLoop:
 		case <-deadline.C:
 			break waitLoop
 		case <-ticker.C:
-			current, podErrors, err = resolveLogicalDetachJob(ctx, client, namespace, pods, container, jobID, fanout)
-			if err != nil {
-				return err
+			next, errs, resolveErr := resolveLogicalDetachJob(ctx, client, namespace, pods, container, jobID, fanout)
+			if resolveErr != nil {
+				// errDetachJobNotFound here means no metadata is visible
+				// anywhere — wrapper exited and cleaned up, or all pods
+				// concurrently dropped the file. Treat as terminal.
+				if errors.Is(resolveErr, errDetachJobNotFound) {
+					for _, e := range errs {
+						aggregated[e.Pod] = e.Error
+					}
+					jobGone = true
+					break waitLoop
+				}
+				printExecJobsErrors(out, mergePodErrors(aggregated, nil))
+				return resolveErr
 			}
-			if len(podErrors) > 0 {
-				break waitLoop
+			current = next
+			for _, e := range errs {
+				aggregated[e.Pod] = e.Error
 			}
+			// Note: deliberately do NOT break on transient pod-query errors.
+			// The deadline already bounds total wait time; bailing here on a
+			// flaky poll left SIGKILL operating on a stale snapshot.
 		}
 	}
 
 	killErrors := make([]execJobsPodError, 0)
-	if !allLogicalJobTerminal(current) {
+	if !jobGone && !allLogicalJobTerminal(current) {
 		for _, row := range current.PodStates {
 			if row.State != "running" {
 				continue
@@ -410,18 +453,40 @@ waitLoop:
 			fmt.Fprintf(out, "%s sent SIGKILL pid=%d (%s)\n", prefixByPod[row.Pod], row.PID, result)
 		}
 	}
-
-	current, podErrors, err = resolveLogicalDetachJob(ctx, client, namespace, pods, container, jobID, fanout)
-	if err != nil {
-		return err
+	for _, e := range killErrors {
+		aggregated[e.Pod] = e.Error
 	}
-	allErrors := append(append(append([]execJobsPodError{}, initialPodErrors...), podErrors...), signalErrors...)
-	allErrors = append(allErrors, killErrors...)
+
+	terminalOk := jobGone
+	if !jobGone {
+		final, finalPodErrors, finalErr := resolveLogicalDetachJob(ctx, client, namespace, pods, container, jobID, fanout)
+		if finalErr != nil {
+			// not-found at this point means the wrapper finished and no
+			// metadata is visible — treat as terminal so a successful stop
+			// isn't reported as a failure.
+			if !errors.Is(finalErr, errDetachJobNotFound) {
+				printExecJobsErrors(out, mergePodErrors(aggregated, nil))
+				return finalErr
+			}
+			for _, e := range finalPodErrors {
+				aggregated[e.Pod] = e.Error
+			}
+			terminalOk = true
+		} else {
+			for _, e := range finalPodErrors {
+				aggregated[e.Pod] = e.Error
+			}
+			terminalOk = allLogicalJobTerminal(final)
+			current = final
+		}
+	}
+
+	allErrors := mergePodErrors(aggregated, nil)
 	printExecJobsErrors(out, allErrors)
 	if len(allErrors) > 0 {
 		return fmt.Errorf("failed to stop detached job %q on %d pod(s)", jobID, len(allErrors))
 	}
-	if !allLogicalJobTerminal(current) {
+	if !terminalOk {
 		return fmt.Errorf("detached job %q still has running pods", jobID)
 	}
 	return nil
@@ -431,9 +496,30 @@ func resolveLogicalDetachJob(ctx context.Context, client connect.ExecClient, nam
 	rows, podErrors := collectDetachJobs(ctx, client, namespace, pods, container, jobID, fanout)
 	jobs := groupDetachJobs(rows)
 	if len(jobs) == 0 {
+		if len(podErrors) > 0 {
+			return logicalExecJobView{}, podErrors, fmt.Errorf("%w %q (%d of %d pod(s) failed to query)", errDetachJobNotFound, jobID, len(podErrors), len(pods))
+		}
 		return logicalExecJobView{}, podErrors, fmt.Errorf("%w %q", errDetachJobNotFound, jobID)
 	}
 	return jobs[0], podErrors, nil
+}
+
+// mergePodErrors deduplicates per-pod error entries (last write wins) and
+// returns a sorted slice suitable for printExecJobsErrors / FAILED footer.
+func mergePodErrors(podErrors map[string]string, extras []execJobsPodError) []execJobsPodError {
+	merged := make(map[string]string, len(podErrors)+len(extras))
+	for k, v := range podErrors {
+		merged[k] = v
+	}
+	for _, e := range extras {
+		merged[e.Pod] = e.Error
+	}
+	out := make([]execJobsPodError, 0, len(merged))
+	for pod, msg := range merged {
+		out = append(out, execJobsPodError{Pod: pod, Error: msg})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Pod < out[j].Pod })
+	return out
 }
 
 func jobPodNames(job logicalExecJobView) []string {
@@ -512,7 +598,7 @@ func signalDetachJobScript(jobID string, pid int, signalName string) string {
 			"  echo not-running\n"+
 			"  exit 0\n"+
 			"fi\n"+
-			"if ! tr '\\000' '\\n' <\"$env_path\" | grep -qx %s; then\n"+
+			"if ! tr '\\000' '\\n' <\"$env_path\" | grep -Fqx %s; then\n"+
 			"  echo job-mismatch >&2\n"+
 			"  exit 1\n"+
 			"fi\n"+
