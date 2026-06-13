@@ -173,6 +173,7 @@ okdev list
 okdev use serving-main-alice
 okdev status --all
 okdev list --all-users    # cross-owner visibility
+okdev status --details    # pod IPs, nodes, mounts, and sync path semantics
 ```
 
 ## Dry Run

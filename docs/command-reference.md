@@ -46,7 +46,8 @@
 
 - Shows session status for the current or selected session.
 - When `session` is provided, `okdev` can resolve the saved config from session metadata even outside the repo.
-- `--details`: prints a single-session diagnostic view with target selection, pod list, managed SSH state, sync state, key local paths, and target pod details.
+- `--details`: prints a single-session diagnostic view with target selection, pod list, pod IP and node placement, mount persistence, sync path semantics, managed SSH state, key local paths, and target pod details.
+- Detailed JSON output includes per-pod mount metadata and a `pathSemantics` section describing which configured sync paths are shared via the workspace sync and which are expected to survive a session restart.
 - `--details` is only valid when exactly one session is selected.
 
 ### `okdev target show`
