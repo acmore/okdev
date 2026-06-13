@@ -29,6 +29,7 @@ const detachExitPlaceholder = "__OKDEV_DETACH_EXIT__"
 
 func newExecCmd(opts *Options) *cobra.Command {
 	var shell string
+	var scriptPath string
 	var noTTY bool
 	var allPods bool
 	var workers bool
@@ -57,6 +58,9 @@ func newExecCmd(opts *Options) *cobra.Command {
   # Run a command on all session pods
   okdev exec -- nvidia-smi
 
+  # Upload and run a local script on all session pods
+  okdev exec --script ./collect-logs.sh -- --since 10m
+
   # Run on worker pods only
   okdev exec --workers -- nvidia-smi
 
@@ -67,12 +71,19 @@ func newExecCmd(opts *Options) *cobra.Command {
   okdev exec --role worker -- df -h /workspace
 
   # Detach a background command on worker pods
-  okdev exec --role worker --detach -- python train.py`,
+  okdev exec --role worker --detach -- python train.py
+
+  # Detach a local script on worker pods
+  okdev exec --role worker --detach --script ./benchmark.sh -- --steps 100`,
 		Aliases:           []string{"connect"},
 		Args:              validateExecArgs,
 		ValidArgsFunction: sessionCompletionFunc(opts),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sessionArgs, commandArgs := splitExecArgs(cmd, args)
+			invocation, err := buildExecInvocation(commandArgs, scriptPath)
+			if err != nil {
+				return err
+			}
 			applySessionArg(opts, sessionArgs)
 			cc, err := resolveCommandContext(opts, resolveSessionName)
 			if err != nil {
@@ -95,13 +106,17 @@ func newExecCmd(opts *Options) *cobra.Command {
 				parallel:   parallel,
 			}
 
-			multiPod := len(commandArgs) > 0 || allPods || workers || len(podNames) > 0 || role != "" || len(labels) > 0 || len(groups) > 0 || detach
-			if err := validateMultiPodFlags(allPods, workers, podNames, role, labels, exclude, groups, len(commandArgs) > 0, detach, sequential, parallel); err != nil {
+			hasCommand := len(invocation.Argv) > 0 || invocation.ScriptLocalPath != ""
+			multiPod := hasCommand || allPods || workers || len(podNames) > 0 || role != "" || len(labels) > 0 || len(groups) > 0 || detach
+			if err := validateExecMode(shell, invocation); err != nil {
+				return err
+			}
+			if err := validateMultiPodFlags(allPods, workers, podNames, role, labels, exclude, groups, hasCommand, detach, sequential, parallel); err != nil {
 				return err
 			}
 
 			if multiPod || detach {
-				return runMultiPodExec(cmd, cc, commandArgs, plan, container, detach, timeout, logDir, noPrefix, fanout)
+				return runMultiPodExec(cmd, cc, invocation, plan, container, detach, timeout, logDir, noPrefix, fanout)
 			}
 
 			// Single-pod mode (existing behavior)
@@ -126,6 +141,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&shell, "shell", "", "Shell to start (default auto-detects bash/sh)")
+	cmd.Flags().StringVar(&scriptPath, "script", "", "Upload and run a local script file")
 	cmd.Flags().BoolVar(&noTTY, "no-tty", false, "Disable TTY allocation")
 	cmd.Flags().BoolVar(&allPods, "all", false, "Target all session pods explicitly")
 	cmd.Flags().BoolVar(&workers, "workers", false, "Target worker-role pods")
@@ -147,6 +163,18 @@ func newExecCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&sequential, "sequential", false, "Run selected pods or groups one after another")
 	cmd.Flags().BoolVar(&parallel, "parallel", false, "Run explicit groups in parallel")
 	return cmd
+}
+
+type execInvocation struct {
+	Argv             []string
+	DisplayCommand   string
+	ScriptLocalPath  string
+	ScriptHasShebang bool
+}
+
+type scriptCopyClient interface {
+	connect.ExecClient
+	CopyToPodInContainer(ctx context.Context, namespace, localPath, podName, container, remotePath string) error
 }
 
 func splitExecArgs(cmd *cobra.Command, args []string) ([]string, []string) {
@@ -191,23 +219,29 @@ const (
 )
 
 type execGroupRunOptions struct {
-	Container      string
-	Command        []string
-	DisplayCommand string
-	Detach         bool
-	Timeout        time.Duration
-	LogDir         string
-	NoPrefix       bool
-	Fanout         int
-	Order          execGroupOrder
-	Stdout         io.Writer
-	Stderr         io.Writer
+	Container  string
+	Invocation execInvocation
+	Detach     bool
+	Timeout    time.Duration
+	LogDir     string
+	NoPrefix   bool
+	Fanout     int
+	Order      execGroupOrder
+	Stdout     io.Writer
+	Stderr     io.Writer
+}
+
+func validateExecMode(shell string, invocation execInvocation) error {
+	if strings.TrimSpace(shell) != "" && invocation.ScriptLocalPath != "" {
+		return fmt.Errorf("--shell cannot be used with --script")
+	}
+	return nil
 }
 
 func validateMultiPodFlags(allPods bool, workers bool, podNames []string, role string, labels []string, exclude []string, groups []string, hasCommand bool, detach bool, sequential bool, parallel bool) error {
 	usesSelector := allPods || workers || len(podNames) > 0 || role != "" || len(labels) > 0 || len(exclude) > 0 || len(groups) > 0
 	if (usesSelector || detach || sequential || parallel) && !hasCommand {
-		return fmt.Errorf("command after -- is required when using --all, --workers, --pod, --role, --label, --exclude, --group, --sequential, --parallel, or --detach")
+		return fmt.Errorf("command after -- or --script is required when using --all, --workers, --pod, --role, --label, --exclude, --group, --sequential, --parallel, or --detach")
 	}
 	if sequential && parallel {
 		return fmt.Errorf("--parallel and --sequential are mutually exclusive")
@@ -252,7 +286,7 @@ func validateMultiPodFlags(allPods bool, workers bool, podNames []string, role s
 	return nil
 }
 
-func runMultiPodExec(cmd *cobra.Command, cc *commandContext, commandArgs []string, plan execTargetPlan, container string, detach bool, timeout time.Duration, logDir string, noPrefix bool, fanout int) error {
+func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvocation, plan execTargetPlan, container string, detach bool, timeout time.Duration, logDir string, noPrefix bool, fanout int) error {
 	ctx := cmd.Context()
 	labelSel := selectorForSessionRun(cc.sessionName)
 	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
@@ -290,26 +324,66 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, commandArgs []strin
 		order = execGroupOrderParallel
 	}
 	return runExecPodGroups(ctx, cc.kube, cc.namespace, groups, execGroupRunOptions{
-		Container:      targetContainer,
-		Command:        commandArgs,
-		DisplayCommand: commandArgsShellString(commandArgs),
-		Detach:         detach,
-		Timeout:        timeout,
-		LogDir:         logDir,
-		NoPrefix:       noPrefix,
-		Fanout:         effectiveFanout,
-		Order:          order,
-		Stdout:         cmd.OutOrStdout(),
-		Stderr:         cmd.ErrOrStderr(),
+		Container:  targetContainer,
+		Invocation: invocation,
+		Detach:     detach,
+		Timeout:    timeout,
+		LogDir:     logDir,
+		NoPrefix:   noPrefix,
+		Fanout:     effectiveFanout,
+		Order:      order,
+		Stdout:     cmd.OutOrStdout(),
+		Stderr:     cmd.ErrOrStderr(),
 	})
 }
 
-func commandArgsShellString(args []string) string {
-	parts := make([]string, 0, len(args))
-	for _, arg := range args {
-		parts = append(parts, shellutil.Quote(arg))
+func buildExecInvocation(commandArgs []string, scriptPath string) (execInvocation, error) {
+	invocation := execInvocation{
+		Argv:           append([]string(nil), commandArgs...),
+		DisplayCommand: shellQuotedArgs(commandArgs),
 	}
-	return strings.Join(parts, " ")
+	if strings.TrimSpace(scriptPath) == "" {
+		return invocation, nil
+	}
+
+	info, err := os.Stat(scriptPath)
+	if err != nil {
+		return execInvocation{}, fmt.Errorf("stat script: %w", err)
+	}
+	if info.IsDir() {
+		return execInvocation{}, fmt.Errorf("script path must be a file: %s", scriptPath)
+	}
+	hasShebang, err := localFileHasShebang(scriptPath)
+	if err != nil {
+		return execInvocation{}, err
+	}
+	invocation.ScriptLocalPath = scriptPath
+	invocation.ScriptHasShebang = hasShebang
+	invocation.DisplayCommand = shellQuotedArgs(append([]string{scriptPath}, commandArgs...))
+	return invocation, nil
+}
+
+func localFileHasShebang(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, fmt.Errorf("open script: %w", err)
+	}
+	defer f.Close()
+	var prefix [2]byte
+	n, err := f.Read(prefix[:])
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, fmt.Errorf("read script: %w", err)
+	}
+	return n == 2 && string(prefix[:]) == "#!", nil
+}
+
+// remoteExecScriptPath returns a per-call destination for an uploaded script.
+// Files live directly in /tmp so the upload does not depend on a parent dir
+// existing on the target container. The "okdev-exec-script-" prefix is stable
+// so leftover files (after SIGKILL or a torn-down stream) are discoverable via
+// `ls /tmp/okdev-exec-script-*`.
+func remoteExecScriptPath() string {
+	return filepath.Join("/tmp", "okdev-exec-script-"+newDetachJobID())
 }
 
 func buildExecPodGroups(sessionName string, sessionPods []kube.PodSummary, plan execTargetPlan) ([]execPodGroup, error) {
@@ -447,7 +521,7 @@ func splitAndTrimCSV(items []string) []string {
 	return out
 }
 
-func runExecPodGroups(ctx context.Context, client connect.ExecClient, namespace string, groups []execPodGroup, opts execGroupRunOptions) error {
+func runExecPodGroups(ctx context.Context, client scriptCopyClient, namespace string, groups []execPodGroup, opts execGroupRunOptions) error {
 	if len(groups) == 0 {
 		return errors.New("no exec pod groups selected")
 	}
@@ -479,13 +553,16 @@ func runExecPodGroups(ctx context.Context, client connect.ExecClient, namespace 
 		}
 		if opts.Detach {
 			// Detached jobs log inside the pod; --log-dir is not used.
-			return runDetachExec(ctx, client, namespace, group.Pods, opts.Container, opts.DisplayCommand, sem, stdout)
+			return runDetachExec(ctx, client, namespace, group.Pods, opts.Container, opts.Invocation, sem, stdout)
 		}
 		groupLogDir, err := groupExecLogDir(opts.LogDir, index, group.Label, len(groups) > 1)
 		if err != nil {
 			return err
 		}
-		return runMultiExec(ctx, client, namespace, group.Pods, opts.Container, opts.Command, groupLogDir, opts.Timeout, opts.NoPrefix, sem, stdout, stderr)
+		if opts.Invocation.ScriptLocalPath != "" {
+			return runMultiExecScript(ctx, client, namespace, group.Pods, opts.Container, opts.Invocation, groupLogDir, opts.Timeout, opts.NoPrefix, sem, stdout, stderr)
+		}
+		return runMultiExec(ctx, client, namespace, group.Pods, opts.Container, opts.Invocation.Argv, groupLogDir, opts.Timeout, opts.NoPrefix, sem, stdout, stderr)
 	}
 
 	groupErrs := make([]error, len(groups))
@@ -762,6 +839,8 @@ type detachJobSpec struct {
 	Pod        string
 	Container  string
 	Command    string
+	Argv       []string
+	Cleanup    []string
 	StartedAt  string
 	LogPath    string
 	MetaPath   string
@@ -828,7 +907,7 @@ func detachCommand(spec detachJobSpec) []string {
 		State:      "exited",
 		ExitCode:   &exitCodeZero,
 	})
-	wrapper := detachWrapperScript(spec.JobID, spec.Command, spec.MetaPath, runningTemplate, completionTemplate)
+	wrapper := detachWrapperScript(spec.JobID, spec.Argv, spec.Cleanup, spec.MetaPath, runningTemplate, completionTemplate)
 	script := fmt.Sprintf(
 		"set -eu\n"+
 			"log_path=%s\n"+
@@ -894,27 +973,38 @@ func detachCommand(spec detachJobSpec) []string {
 // We deliberately do NOT `set -e` around the user command so that a
 // non-zero exit still falls through to the EXIT trap that records the real
 // exit code.
-func detachWrapperScript(jobID, command, metaPath, runningTemplate, completionTemplate string) string {
+func detachWrapperScript(jobID string, argv []string, cleanupPaths []string, metaPath, runningTemplate, completionTemplate string) string {
+	quotedArgs := shellQuotedArgs(argv)
+	cleanupLines := ""
+	for _, path := range cleanupPaths {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		cleanupLines += fmt.Sprintf("rm -f %s 2>/dev/null || true\n", shellutil.Quote(path))
+	}
 	return fmt.Sprintf(
 		"meta_path=%s\n"+
 			"meta_tmp=\"${meta_path}.tmp\"\n"+
 			"running_json=%s\n"+
 			"exit_json=%s\n"+
 			"export OKDEV_JOB_ID=%s\n"+
-			"(exec %s) &\n"+
+			"set -- %s\n"+
+			"cleanup() {\n%s}\n"+
+			"(exec \"$@\") &\n"+
 			"user_pid=$!\n"+
 			"if [ -z \"$user_pid\" ] || [ \"$user_pid\" -le 0 ]; then\n"+
 			"  exit 1\n"+
 			"fi\n"+
 			"printf '%%s\\n' \"$running_json\" | sed \"s/%s/$user_pid/g\" >\"$meta_tmp\" || exit 1\n"+
 			"mv \"$meta_tmp\" \"$meta_path\" || exit 1\n"+
-			"trap 'rc=$?; printf \"%%s\\n\" \"$exit_json\" | sed \"s/%s/$user_pid/g; s/%s/$rc/g\" >\"$meta_tmp\" 2>/dev/null && mv \"$meta_tmp\" \"$meta_path\" 2>/dev/null; exit $rc' EXIT\n"+
+			"trap 'rc=$?; printf \"%%s\\n\" \"$exit_json\" | sed \"s/%s/$user_pid/g; s/%s/$rc/g\" >\"$meta_tmp\" 2>/dev/null && mv \"$meta_tmp\" \"$meta_path\" 2>/dev/null; cleanup; exit $rc' EXIT\n"+
 			"wait \"$user_pid\"\n",
 		shellutil.Quote(metaPath),
 		shellutil.Quote(runningTemplate),
 		shellutil.Quote(completionTemplate),
 		shellutil.Quote(jobID),
-		command,
+		quotedArgs,
+		cleanupLines,
 		detachPIDPlaceholder,
 		detachPIDPlaceholder,
 		detachExitPlaceholder,
@@ -940,7 +1030,7 @@ func mustDetachJSONTemplateWithExit(v detachMetadata) string {
 	return out
 }
 
-func newDetachJobSpec(pod, container, cmd string) detachJobSpec {
+func newDetachJobSpec(pod, container, cmd string, argv []string, cleanupPaths []string) detachJobSpec {
 	jobID := newDetachJobID()
 	startedAt := time.Now().UTC().Format(time.RFC3339)
 	logPath := filepath.Join(detachMetadataDir, jobID+".log")
@@ -951,11 +1041,47 @@ func newDetachJobSpec(pod, container, cmd string) detachJobSpec {
 		Pod:        pod,
 		Container:  container,
 		Command:    cmd,
+		Argv:       append([]string(nil), argv...),
+		Cleanup:    append([]string(nil), cleanupPaths...),
 		StartedAt:  startedAt,
 		LogPath:    logPath,
 		MetaPath:   metaPath,
 		ScriptPath: scriptPath,
 	}
+}
+
+func shellQuotedArgs(args []string) string {
+	parts := make([]string, 0, len(args))
+	for _, arg := range args {
+		parts = append(parts, shellutil.Quote(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func scriptExecCommand(remotePath string, hasShebang bool, args []string, cleanup bool) []string {
+	runExpr := "\"$script_path\" \"$@\""
+	if !hasShebang {
+		runExpr = "sh \"$script_path\" \"$@\""
+	}
+	// When cleanup is requested we install it as a trap so the uploaded
+	// script is removed even if the remote shell is signalled (SIGTERM/INT
+	// from `kubectl exec` teardown or a `--timeout` cancellation) before the
+	// script returns. We preserve $? across the trap so the wrapper exits
+	// with the user script's status, matching the detach wrapper's pattern.
+	trapLine := ""
+	if cleanup {
+		trapLine = "trap 'rc=$?; rm -f \"$script_path\" 2>/dev/null; exit $rc' EXIT INT TERM\n"
+	}
+	script := fmt.Sprintf(
+		"script_path=$1\n"+
+			"shift\n"+
+			"%s"+
+			"chmod 700 \"$script_path\" || exit 1\n"+
+			"%s\n",
+		trapLine,
+		runExpr,
+	)
+	return append([]string{"sh", "-lc", script, "okdev-script", remotePath}, args...)
 }
 
 func newDetachJobID() string {
@@ -985,7 +1111,7 @@ func parseDetachLaunchOutput(raw string) (detachLaunchInfo, error) {
 	return detachLaunchInfo{}, errors.New("missing detach launch metadata")
 }
 
-func runDetachExec(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, cmdStr string, sem chan struct{}, out io.Writer) error {
+func runDetachExec(ctx context.Context, client scriptCopyClient, namespace string, pods []kube.PodSummary, container string, invocation execInvocation, sem chan struct{}, out io.Writer) error {
 	podNames := make([]string, len(pods))
 	for i, p := range pods {
 		podNames[i] = p.Name
@@ -1003,7 +1129,18 @@ func runDetachExec(ctx context.Context, client connect.ExecClient, namespace str
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			spec := newDetachJobSpec(pod.Name, container, cmdStr)
+			argv := append([]string(nil), invocation.Argv...)
+			cleanup := []string(nil)
+			if invocation.ScriptLocalPath != "" {
+				remotePath := remoteExecScriptPath()
+				if err := client.CopyToPodInContainer(ctx, namespace, invocation.ScriptLocalPath, pod.Name, container, remotePath); err != nil {
+					results <- podDetachResult{pod: pod.Name, err: fmt.Errorf("upload script: %w", err)}
+					return
+				}
+				argv = scriptExecCommand(remotePath, invocation.ScriptHasShebang, invocation.Argv, false)
+				cleanup = []string{remotePath}
+			}
+			spec := newDetachJobSpec(pod.Name, container, invocation.DisplayCommand, argv, cleanup)
 			command := detachCommand(spec)
 			var remoteStdout, remoteStderr bytes.Buffer
 			err := connect.RunOnContainer(ctx, client, namespace, pod.Name, container, command, false, nil, &remoteStdout, &remoteStderr)
@@ -1047,6 +1184,91 @@ func runDetachExec(ctx context.Context, client connect.ExecClient, namespace str
 	}
 	if failCount > 0 {
 		return fmt.Errorf("%d of %d pods failed to detach", failCount, len(pods))
+	}
+	return nil
+}
+
+func runMultiExecScript(ctx context.Context, client scriptCopyClient, namespace string, pods []kube.PodSummary, container string, invocation execInvocation, logDir string, timeout time.Duration, noPrefix bool, sem chan struct{}, stdout, stderr io.Writer) error {
+	podNames := make([]string, len(pods))
+	for i, p := range pods {
+		podNames[i] = p.Name
+	}
+	shortNames := shortPodNames(podNames)
+	colorEnabled := isInteractiveWriter(stdout)
+	displayPrefixes := formatPodPrefixes(shortNames, colorEnabled)
+
+	results := make(chan podExecResult, len(pods))
+	var wg sync.WaitGroup
+	var writeMu sync.Mutex
+
+	for i, pod := range pods {
+		wg.Add(1)
+		go func(pod kube.PodSummary, shortName string, displayPrefix string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			execCtx := ctx
+			var cancel context.CancelFunc
+			if timeout > 0 {
+				execCtx, cancel = context.WithTimeout(ctx, timeout)
+				defer cancel()
+			}
+
+			var podStdout, podStderr io.Writer
+			if noPrefix {
+				podStdout = stdout
+				podStderr = stderr
+			} else {
+				pw := newPrefixedWriter(displayPrefix, stdout, &writeMu)
+				pe := newPrefixedWriter(displayPrefix, stderr, &writeMu)
+				defer pw.Flush()
+				defer pe.Flush()
+				podStdout = pw
+				podStderr = pe
+			}
+
+			if logDir != "" {
+				logPath := filepath.Join(logDir, shortName+".log")
+				f, err := os.Create(logPath)
+				if err != nil {
+					results <- podExecResult{pod: pod.Name, err: fmt.Errorf("create log file: %w", err)}
+					return
+				}
+				defer f.Close()
+				podStdout = io.MultiWriter(podStdout, f)
+				podStderr = io.MultiWriter(podStderr, f)
+			}
+
+			remotePath := remoteExecScriptPath()
+			if err := client.CopyToPodInContainer(execCtx, namespace, invocation.ScriptLocalPath, pod.Name, container, remotePath); err != nil {
+				results <- podExecResult{pod: pod.Name, err: fmt.Errorf("upload script: %w", err)}
+				return
+			}
+			command := scriptExecCommand(remotePath, invocation.ScriptHasShebang, invocation.Argv, true)
+			err := connect.RunOnContainer(execCtx, client, namespace, pod.Name, container, command, false, nil, podStdout, podStderr)
+			results <- podExecResult{pod: pod.Name, err: err}
+		}(pod, shortNames[i], displayPrefixes[i])
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	var failures []podExecResult
+	for r := range results {
+		if r.err != nil {
+			failures = append(failures, r)
+		}
+	}
+	if len(failures) > 0 {
+		parts := make([]string, 0, len(failures))
+		for _, f := range failures {
+			parts = append(parts, formatPodExecFailureSummary(f.pod, container, f.err))
+		}
+		fmt.Fprintf(stderr, "\nFAILED:\n%s\n", strings.Join(parts, "\n"))
+		return fmt.Errorf("%d of %d pods failed", len(failures), len(pods))
 	}
 	return nil
 }
