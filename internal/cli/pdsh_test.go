@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -295,6 +296,35 @@ func TestDetachWrapperScriptWiresCleanup(t *testing.T) {
 	}
 	if !strings.Contains(got, "cleanup; exit $rc") {
 		t.Fatalf("expected EXIT trap to call cleanup, got %q", got)
+	}
+}
+
+func TestDetachWrapperScriptIsValidShellWithAndWithoutCleanup(t *testing.T) {
+	// Regression: without any cleanup paths (the common non-script
+	// `okdev exec --detach` invocation), the wrapper previously emitted
+	// `cleanup() {\n}` which is a POSIX sh syntax error. The wrapper
+	// aborted before publishing metadata and the launcher surfaced
+	// "N of N pods failed to detach" 5 seconds later. Validate both
+	// branches with `sh -n` so the regression cannot reappear.
+	cases := []struct {
+		name    string
+		cleanup []string
+	}{
+		{name: "no cleanup paths", cleanup: nil},
+		{name: "one cleanup path", cleanup: []string{"/tmp/okdev-exec-script-A"}},
+		{name: "blank cleanup path", cleanup: []string{"   "}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			script := detachWrapperScript("job-x", []string{"echo", "hi"}, tc.cleanup, "/tmp/okdev-exec/job-x.json", "RUNNING", "EXITED")
+			cmd := exec.Command("sh", "-n")
+			cmd.Stdin = strings.NewReader(script)
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("wrapper script failed sh -n syntax check: %v\nstderr: %s\nscript:\n%s", err, stderr.String(), script)
+			}
+		})
 	}
 }
 
