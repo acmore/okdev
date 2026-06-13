@@ -88,6 +88,7 @@ func TestDetachCommand(t *testing.T) {
 		Pod:        "okdev-sess-worker-0",
 		Container:  "dev",
 		Command:    "python train.py --epochs 100",
+		Argv:       []string{"python", "train.py", "--epochs", "100"},
 		StartedAt:  "2026-04-23T03:00:00Z",
 		LogPath:    "/tmp/okdev-exec/job-123.log",
 		MetaPath:   "/tmp/okdev-exec/job-123.json",
@@ -107,7 +108,7 @@ func TestDetachCommand(t *testing.T) {
 		"cat >\"$wrapper_path\" <<'OKDEV_DETACH_WRAPPER'",
 		"chmod 700 \"$wrapper_path\"",
 		"nohup sh \"$wrapper_path\" >\"$log_path\" 2>&1 &",
-		"python train.py --epochs 100",
+		"set -- 'python' 'train.py' '--epochs' '100'",
 		"meta_path='/tmp/okdev-exec/job-123.json'",
 		"rc=$?",
 		"state\":\"running\"",
@@ -126,7 +127,7 @@ func TestDetachCommand(t *testing.T) {
 		// pid of the user command itself (via execve), not the wrapper
 		// shell. This is the pid we report to the caller and the one that
 		// responds to `kill <pid>`.
-		"(exec python train.py --epochs 100) &",
+		"(exec \"$@\") &",
 		"user_pid=$!",
 		"wait \"$user_pid\"",
 		// OKDEV_JOB_ID is exported so exec-jobs can reconcile liveness via
@@ -159,6 +160,7 @@ func TestDetachCommandWithQuotes(t *testing.T) {
 		Pod:        "worker-0",
 		Container:  "dev",
 		Command:    "echo 'hello world'",
+		Argv:       []string{"echo", "hello world"},
 		StartedAt:  "2026-04-23T03:00:00Z",
 		LogPath:    "/tmp/okdev-exec/job-quoted.log",
 		MetaPath:   "/tmp/okdev-exec/job-quoted.json",
@@ -168,8 +170,131 @@ func TestDetachCommandWithQuotes(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("expected shell command triplet, got %v", got)
 	}
-	if !strings.Contains(got[2], "nohup sh \"$wrapper_path\"") || !strings.Contains(got[2], "(exec echo 'hello world') &") {
+	if !strings.Contains(got[2], "nohup sh \"$wrapper_path\"") || !strings.Contains(got[2], "set -- 'echo' 'hello world'") || !strings.Contains(got[2], "(exec \"$@\") &") {
 		t.Fatalf("expected quoted user command to survive detach wrapper, got %q", got[2])
+	}
+}
+
+func TestScriptExecCommandUsesDirectExecForShebangScripts(t *testing.T) {
+	got := scriptExecCommand("/tmp/okdev-exec/script.py", true, []string{"--epochs", "3"}, true)
+	if len(got) < 5 || got[0] != "sh" || got[1] != "-lc" {
+		t.Fatalf("unexpected script exec command shape: %v", got)
+	}
+	if !strings.Contains(got[2], "\"$script_path\" \"$@\"") {
+		t.Fatalf("expected direct exec wrapper, got %q", got[2])
+	}
+	if !strings.Contains(got[2], "rm -f \"$script_path\"") {
+		t.Fatalf("expected cleanup for foreground script exec, got %q", got[2])
+	}
+}
+
+func TestScriptExecCommandFallsBackToShWithoutShebang(t *testing.T) {
+	got := scriptExecCommand("/tmp/okdev-exec/script.sh", false, []string{"--epochs", "3"}, true)
+	if len(got) < 5 || got[0] != "sh" || got[1] != "-lc" {
+		t.Fatalf("unexpected script exec command shape: %v", got)
+	}
+	if !strings.Contains(got[2], "sh \"$script_path\" \"$@\"") {
+		t.Fatalf("expected sh fallback wrapper, got %q", got[2])
+	}
+}
+
+func TestBuildExecInvocationWithScriptDetectsShebang(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "remote.py")
+	if err := os.WriteFile(scriptPath, []byte("#!/usr/bin/env python3\nprint('ok')\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := buildExecInvocation([]string{"--epochs", "3"}, scriptPath)
+	if err != nil {
+		t.Fatalf("buildExecInvocation: %v", err)
+	}
+	if got.ScriptLocalPath != scriptPath {
+		t.Fatalf("script path = %q, want %q", got.ScriptLocalPath, scriptPath)
+	}
+	if !got.ScriptHasShebang {
+		t.Fatal("expected shebang detection")
+	}
+	if !strings.Contains(got.DisplayCommand, scriptPath) {
+		t.Fatalf("display command should include script path, got %q", got.DisplayCommand)
+	}
+}
+
+func TestValidateExecModeRejectsShellWithScript(t *testing.T) {
+	err := validateExecMode("bash", execInvocation{ScriptLocalPath: "/tmp/run.sh"})
+	if err == nil || !strings.Contains(err.Error(), "--shell cannot be used with --script") {
+		t.Fatalf("expected shell/script conflict, got %v", err)
+	}
+}
+
+func TestValidateExecModeAllowsWhitespaceShellWithScript(t *testing.T) {
+	// A shell value of just whitespace should be treated as unset so it does
+	// not collide with --script. Otherwise users who export an empty SHELL
+	// would hit a spurious error.
+	if err := validateExecMode("   ", execInvocation{ScriptLocalPath: "/tmp/run.sh"}); err != nil {
+		t.Fatalf("expected whitespace shell to be ignored, got %v", err)
+	}
+}
+
+func TestBuildExecInvocationRejectsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := buildExecInvocation(nil, dir); err == nil || !strings.Contains(err.Error(), "script path must be a file") {
+		t.Fatalf("expected directory rejection, got %v", err)
+	}
+}
+
+func TestBuildExecInvocationRejectsMissingFile(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist.sh")
+	_, err := buildExecInvocation(nil, missing)
+	if err == nil || !strings.Contains(err.Error(), "stat script") {
+		t.Fatalf("expected stat error for missing script, got %v", err)
+	}
+}
+
+func TestScriptExecCommandInstallsCleanupTrap(t *testing.T) {
+	// The foreground wrapper must remove the uploaded script even if the
+	// remote shell is signalled mid-run. Verify the trap is wired up and
+	// preserves the user script's exit status.
+	got := scriptExecCommand("/tmp/okdev-exec-script-XYZ", true, nil, true)
+	if len(got) < 5 || got[0] != "sh" || got[1] != "-lc" {
+		t.Fatalf("unexpected wrapper shape: %v", got)
+	}
+	body := got[2]
+	if !strings.Contains(body, "trap 'rc=$?; rm -f \"$script_path\" 2>/dev/null; exit $rc' EXIT INT TERM") {
+		t.Fatalf("expected cleanup trap wired to EXIT/INT/TERM, got %q", body)
+	}
+}
+
+func TestScriptExecCommandSkipsTrapWithoutCleanup(t *testing.T) {
+	got := scriptExecCommand("/tmp/okdev-exec-script-XYZ", true, nil, false)
+	if strings.Contains(got[2], "trap ") {
+		t.Fatalf("expected no trap when cleanup is disabled, got %q", got[2])
+	}
+}
+
+func TestRemoteExecScriptPathLivesInTmpWithStablePrefix(t *testing.T) {
+	// Stable, greppable prefix lets operators find leftover uploads after a
+	// SIGKILL bypasses the trap. /tmp avoids depending on a parent dir on
+	// the target container.
+	p1 := remoteExecScriptPath()
+	p2 := remoteExecScriptPath()
+	if !strings.HasPrefix(p1, "/tmp/okdev-exec-script-") {
+		t.Fatalf("expected /tmp/okdev-exec-script- prefix, got %q", p1)
+	}
+	if p1 == p2 {
+		t.Fatalf("expected unique paths per call, got duplicate %q", p1)
+	}
+}
+
+func TestDetachWrapperScriptWiresCleanup(t *testing.T) {
+	// The detach EXIT trap must invoke cleanup() so per-pod uploaded scripts
+	// are removed once the user command exits.
+	got := detachWrapperScript("job-x", []string{"echo", "hi"}, []string{"/tmp/okdev-exec-script-A"}, "/tmp/okdev-exec/job-x.json", "RUNNING", "EXITED")
+	if !strings.Contains(got, "rm -f '/tmp/okdev-exec-script-A' 2>/dev/null || true") {
+		t.Fatalf("expected cleanup line for uploaded script, got %q", got)
+	}
+	if !strings.Contains(got, "cleanup; exit $rc") {
+		t.Fatalf("expected EXIT trap to call cleanup, got %q", got)
 	}
 }
 
@@ -188,6 +313,8 @@ func TestFilterRunningPods(t *testing.T) {
 type fakePdshExecClient struct {
 	mu      sync.Mutex
 	calls   []string
+	cmds    map[string][]string
+	uploads map[string]string
 	outputs map[string]string
 	errs    map[string]error
 }
@@ -195,6 +322,10 @@ type fakePdshExecClient struct {
 func (f *fakePdshExecClient) ExecInteractive(ctx context.Context, namespace, pod string, tty bool, command []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) error {
 	f.mu.Lock()
 	f.calls = append(f.calls, pod)
+	if f.cmds == nil {
+		f.cmds = make(map[string][]string)
+	}
+	f.cmds[pod] = append([]string(nil), command...)
 	output := f.outputs[pod]
 	err := f.errs[pod]
 	f.mu.Unlock()
@@ -206,6 +337,16 @@ func (f *fakePdshExecClient) ExecInteractive(ctx context.Context, namespace, pod
 
 func (f *fakePdshExecClient) ExecInteractiveInContainer(ctx context.Context, namespace, pod, container string, tty bool, command []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) error {
 	return f.ExecInteractive(ctx, namespace, pod, tty, command, stdin, stdout, stderr)
+}
+
+func (f *fakePdshExecClient) CopyToPodInContainer(ctx context.Context, namespace, localPath, podName, container, remotePath string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.uploads == nil {
+		f.uploads = make(map[string]string)
+	}
+	f.uploads[podName] = remotePath
+	return nil
 }
 
 type slowExecClient struct {
@@ -250,7 +391,10 @@ func TestRunDetachExec(t *testing.T) {
 		{Name: "okdev-sess-worker-1", Phase: "Running"},
 	}
 	var stdout bytes.Buffer
-	err := runDetachExec(context.Background(), client, "default", pods, "dev", "python train.py", pdshDefaultFanout, &stdout)
+	err := runDetachExec(context.Background(), client, "default", pods, "dev", execInvocation{
+		Argv:           []string{"python", "train.py"},
+		DisplayCommand: "python train.py",
+	}, make(chan struct{}, pdshDefaultFanout), &stdout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -285,7 +429,10 @@ func TestRunDetachExecWithError(t *testing.T) {
 		{Name: "okdev-sess-worker-1", Phase: "Running"},
 	}
 	var stdout bytes.Buffer
-	err := runDetachExec(context.Background(), client, "default", pods, "dev", "python train.py", pdshDefaultFanout, &stdout)
+	err := runDetachExec(context.Background(), client, "default", pods, "dev", execInvocation{
+		Argv:           []string{"python", "train.py"},
+		DisplayCommand: "python train.py",
+	}, make(chan struct{}, pdshDefaultFanout), &stdout)
 	if err == nil {
 		t.Fatal("expected error for partial failure")
 	}
@@ -308,12 +455,107 @@ func TestRunDetachExecRequiresLaunchMetadata(t *testing.T) {
 		{Name: "okdev-sess-worker-0", Phase: "Running"},
 	}
 	var stdout bytes.Buffer
-	err := runDetachExec(context.Background(), client, "default", pods, "dev", "python train.py", pdshDefaultFanout, &stdout)
+	err := runDetachExec(context.Background(), client, "default", pods, "dev", execInvocation{
+		Argv:           []string{"python", "train.py"},
+		DisplayCommand: "python train.py",
+	}, make(chan struct{}, pdshDefaultFanout), &stdout)
 	if err == nil {
 		t.Fatal("expected metadata parse error")
 	}
 	if !strings.Contains(stdout.String(), "worker-0] error: missing detach launch metadata") {
 		t.Fatalf("expected metadata parse error to be surfaced, got %q", stdout.String())
+	}
+}
+
+func TestRunMultiExecScriptUploadsPerPod(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "run.sh")
+	if err := os.WriteFile(scriptPath, []byte("echo ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	client := &fakePdshExecClient{
+		outputs: map[string]string{
+			"okdev-sess-worker-0": "ok\n",
+			"okdev-sess-worker-1": "ok\n",
+		},
+		errs: map[string]error{},
+	}
+	pods := []kube.PodSummary{
+		{Name: "okdev-sess-worker-0", Phase: "Running"},
+		{Name: "okdev-sess-worker-1", Phase: "Running"},
+	}
+	invocation, err := buildExecInvocation([]string{"--epochs", "3"}, scriptPath)
+	if err != nil {
+		t.Fatalf("buildExecInvocation: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := runMultiExecScript(context.Background(), client, "default", pods, "dev", invocation, "", 0, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr); err != nil {
+		t.Fatalf("runMultiExecScript: %v", err)
+	}
+	for _, pod := range []string{"okdev-sess-worker-0", "okdev-sess-worker-1"} {
+		remotePath := client.uploads[pod]
+		if remotePath == "" {
+			t.Fatalf("expected upload for %s", pod)
+		}
+		cmd := client.cmds[pod]
+		if len(cmd) < 5 || cmd[0] != "sh" || cmd[1] != "-lc" {
+			t.Fatalf("unexpected command for %s: %v", pod, cmd)
+		}
+		if !strings.Contains(cmd[2], "sh \"$script_path\" \"$@\"") {
+			t.Fatalf("expected shell-script wrapper for %s, got %q", pod, cmd[2])
+		}
+		if cmd[4] != remotePath {
+			t.Fatalf("expected remote payload path in command args for %s, got %v", pod, cmd)
+		}
+	}
+}
+
+func TestRunDetachExecUploadsScriptPerPod(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "run.sh")
+	if err := os.WriteFile(scriptPath, []byte("echo ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	launch, _ := json.Marshal(detachLaunchInfo{
+		JobID:    "job-worker-0",
+		PID:      48217,
+		LogPath:  "/tmp/okdev-exec/job-worker-0.log",
+		MetaPath: "/tmp/okdev-exec/job-worker-0.json",
+	})
+	client := &fakePdshExecClient{
+		outputs: map[string]string{
+			"okdev-sess-worker-0": string(launch) + "\n",
+		},
+		errs: map[string]error{},
+	}
+	pods := []kube.PodSummary{
+		{Name: "okdev-sess-worker-0", Phase: "Running"},
+	}
+	invocation, err := buildExecInvocation([]string{"--epochs", "3"}, scriptPath)
+	if err != nil {
+		t.Fatalf("buildExecInvocation: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	if err := runDetachExec(context.Background(), client, "default", pods, "dev", invocation, make(chan struct{}, pdshDefaultFanout), &stdout); err != nil {
+		t.Fatalf("runDetachExec: %v", err)
+	}
+	remotePath := client.uploads["okdev-sess-worker-0"]
+	if remotePath == "" {
+		t.Fatal("expected uploaded script path")
+	}
+	cmd := client.cmds["okdev-sess-worker-0"]
+	if len(cmd) != 3 || cmd[0] != "sh" || cmd[1] != "-c" {
+		t.Fatalf("unexpected detach launcher command: %v", cmd)
+	}
+	if !strings.Contains(cmd[2], remotePath) {
+		t.Fatalf("expected detach launcher to reference uploaded path %q, got %q", remotePath, cmd[2])
+	}
+	if !strings.Contains(cmd[2], "set -- 'sh' '-lc'") {
+		t.Fatalf("expected detach wrapper to preserve script argv, got %q", cmd[2])
 	}
 }
 
@@ -330,7 +572,7 @@ func TestRunMultiExecSuccess(t *testing.T) {
 		{Name: "okdev-sess-worker-1", Phase: "Running"},
 	}
 	var stdout, stderr bytes.Buffer
-	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-lc", "echo ok"}, "", 0, false, pdshDefaultFanout, &stdout, &stderr)
+	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-lc", "echo ok"}, "", 0, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -353,7 +595,7 @@ func TestRunMultiExecPartialFailure(t *testing.T) {
 		{Name: "okdev-sess-worker-1", Phase: "Running"},
 	}
 	var stdout, stderr bytes.Buffer
-	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-lc", "echo ok"}, "", 0, false, pdshDefaultFanout, &stdout, &stderr)
+	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-lc", "echo ok"}, "", 0, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error for partial failure")
 	}
@@ -379,7 +621,7 @@ func TestRunMultiExecClassifiesTimeoutAndTransportFailures(t *testing.T) {
 		{Name: "okdev-sess-worker-1", Phase: "Running"},
 	}
 	var stdout, stderr bytes.Buffer
-	err := runMultiExec(context.Background(), client, "default", pods, "serving", []string{"sh", "-lc", "echo ok"}, "", 0, false, pdshDefaultFanout, &stdout, &stderr)
+	err := runMultiExec(context.Background(), client, "default", pods, "serving", []string{"sh", "-lc", "echo ok"}, "", 0, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error for classified failures")
 	}
@@ -398,7 +640,7 @@ func TestRunMultiExecTimeout(t *testing.T) {
 		{Name: "pod-0", Phase: "Running"},
 	}
 	var stdout, stderr bytes.Buffer
-	err := runMultiExec(context.Background(), slowClient, "default", pods, "dev", []string{"sh", "-c", "sleep 100"}, "", 50*time.Millisecond, false, pdshDefaultFanout, &stdout, &stderr)
+	err := runMultiExec(context.Background(), slowClient, "default", pods, "dev", []string{"sh", "-c", "sleep 100"}, "", 50*time.Millisecond, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -415,7 +657,7 @@ func TestRunMultiExecNoPrefix(t *testing.T) {
 		{Name: "pod-0", Phase: "Running"},
 	}
 	var stdout, stderr bytes.Buffer
-	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-c", "echo hello"}, "", 0, true, pdshDefaultFanout, &stdout, &stderr)
+	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-c", "echo hello"}, "", 0, true, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -438,7 +680,7 @@ func TestRunMultiExecWithLogDir(t *testing.T) {
 	}
 	logDir := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-c", "echo gpu"}, logDir, 0, false, pdshDefaultFanout, &stdout, &stderr)
+	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-c", "echo gpu"}, logDir, 0, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -455,34 +697,81 @@ func TestRunMultiExecWithLogDir(t *testing.T) {
 
 func TestValidateMultiPodFlags(t *testing.T) {
 	tests := []struct {
-		name     string
-		podNames []string
-		role     string
-		labels   []string
-		exclude  []string
-		hasCmd   bool
-		detach   bool
-		wantErr  string
+		name       string
+		allPods    bool
+		workers    bool
+		podNames   []string
+		role       string
+		labels     []string
+		exclude    []string
+		groups     []string
+		hasCmd     bool
+		detach     bool
+		sequential bool
+		parallel   bool
+		wantErr    string
 	}{
 		{
 			name:    "role requires command",
 			role:    "worker",
-			wantErr: "command after -- is required",
+			wantErr: "command after -- or --script is required",
 		},
 		{
 			name:    "detach requires cmd",
 			detach:  true,
-			wantErr: "command after -- is required",
+			wantErr: "command after -- or --script is required",
 		},
 		{
 			name:    "exclude without selector",
 			exclude: []string{"p1"},
-			wantErr: "command after -- is required",
+			wantErr: "command after -- or --script is required",
 		},
 		{
 			name:     "exclude with pod and command",
 			podNames: []string{"p1"}, exclude: []string{"p1"}, hasCmd: true,
 			wantErr: "--exclude cannot be used with --pod",
+		},
+		{
+			name:    "workers conflicts with role",
+			workers: true,
+			role:    "worker",
+			hasCmd:  true,
+			wantErr: "--workers cannot be used with --role",
+		},
+		{
+			name:     "group conflicts with pod",
+			groups:   []string{"worker-0,worker-1"},
+			podNames: []string{"p1"},
+			hasCmd:   true,
+			wantErr:  "--group cannot be used with --pod, --role, --label, --exclude, --all, or --workers",
+		},
+		{
+			name:       "sequential conflicts with parallel",
+			hasCmd:     true,
+			sequential: true,
+			parallel:   true,
+			wantErr:    "--parallel and --sequential are mutually exclusive",
+		},
+		{
+			name:     "parallel requires groups",
+			hasCmd:   true,
+			parallel: true,
+			wantErr:  "--parallel requires one or more --group flags",
+		},
+		{
+			name:       "sequential without command",
+			sequential: true,
+			wantErr:    "command after -- or --script is required",
+		},
+		{
+			name:    "all without command",
+			allPods: true,
+			wantErr: "command after -- or --script is required",
+		},
+		{
+			name:    "group without command",
+			groups:  []string{"worker-0"},
+			wantErr: "command after -- or --script is required",
 		},
 		{
 			name:   "valid default all with command",
@@ -500,10 +789,24 @@ func TestValidateMultiPodFlags(t *testing.T) {
 			name:   "valid detach with cmd",
 			detach: true, hasCmd: true,
 		},
+		{
+			name:    "valid workers with command",
+			workers: true, hasCmd: true,
+		},
+		{
+			name:   "valid groups with sequential command",
+			groups: []string{"master-0,worker-0", "master-1,worker-1"},
+			hasCmd: true, sequential: true,
+		},
+		{
+			name:   "valid groups with parallel command",
+			groups: []string{"master-0,worker-0", "master-1,worker-1"},
+			hasCmd: true, parallel: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateMultiPodFlags(tt.podNames, tt.role, tt.labels, tt.exclude, tt.hasCmd, tt.detach)
+			err := validateMultiPodFlags(tt.allPods, tt.workers, tt.podNames, tt.role, tt.labels, tt.exclude, tt.groups, tt.hasCmd, tt.detach, tt.sequential, tt.parallel)
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -517,6 +820,55 @@ func TestValidateMultiPodFlags(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
 			}
 		})
+	}
+}
+
+func TestBuildExecPodGroupsSupportsShortNamesAndWorkers(t *testing.T) {
+	pods := []kube.PodSummary{
+		{Name: "okdev-sess-master-0", Phase: "Running", Labels: map[string]string{"okdev.io/workload-role": "Master"}},
+		{Name: "okdev-sess-worker-0", Phase: "Running", Labels: map[string]string{"okdev.io/workload-role": "Worker"}},
+		{Name: "okdev-sess-worker-1", Phase: "Running", Labels: map[string]string{"okdev.io/workload-role": "Worker"}},
+	}
+
+	groups, err := buildExecPodGroups("sess", pods, execTargetPlan{
+		workers:    true,
+		sequential: true,
+	})
+	if err != nil {
+		t.Fatalf("buildExecPodGroups workers: %v", err)
+	}
+	if len(groups) != 1 || len(groups[0].Pods) != 2 {
+		t.Fatalf("expected a single group with 2 worker pods, got %+v", groups)
+	}
+	if groups[0].Pods[0].Name != "okdev-sess-worker-0" || groups[0].Pods[1].Name != "okdev-sess-worker-1" {
+		t.Fatalf("unexpected worker pods: %+v", groups[0].Pods)
+	}
+
+	grouped, err := buildExecPodGroups("sess", pods, execTargetPlan{
+		groups: []string{"master-0,worker-1"},
+	})
+	if err != nil {
+		t.Fatalf("buildExecPodGroups groups: %v", err)
+	}
+	if len(grouped) != 1 || len(grouped[0].Pods) != 2 {
+		t.Fatalf("unexpected grouped selection: %+v", grouped)
+	}
+	if grouped[0].Pods[0].Name != "okdev-sess-master-0" || grouped[0].Pods[1].Name != "okdev-sess-worker-1" {
+		t.Fatalf("unexpected grouped pods: %+v", grouped[0].Pods)
+	}
+}
+
+func TestBuildExecPodGroupsRejectsPodInMultipleGroups(t *testing.T) {
+	pods := []kube.PodSummary{
+		{Name: "okdev-sess-master-0", Phase: "Running"},
+		{Name: "okdev-sess-worker-0", Phase: "Running"},
+		{Name: "okdev-sess-worker-1", Phase: "Running"},
+	}
+	_, err := buildExecPodGroups("sess", pods, execTargetPlan{
+		groups: []string{"master-0,worker-0", "master-0,worker-1"},
+	})
+	if err == nil || !strings.Contains(err.Error(), `appears in both group 1 and group 2`) {
+		t.Fatalf("expected duplicate pod error, got %v", err)
 	}
 }
 

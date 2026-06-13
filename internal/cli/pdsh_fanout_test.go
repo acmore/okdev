@@ -77,6 +77,10 @@ func (t *trackingExecClient) ExecInteractiveInContainer(ctx context.Context, nam
 	return t.ExecInteractive(ctx, namespace, pod, tty, command, stdin, stdout, stderr)
 }
 
+func (t *trackingExecClient) CopyToPodInContainer(context.Context, string, string, string, string, string) error {
+	return nil
+}
+
 // maxConcurrent returns the peak number of pods executing simultaneously.
 func (t *trackingExecClient) maxConcurrent() int {
 	t.mu.Lock()
@@ -127,7 +131,7 @@ func TestRunMultiExecFanoutLimitsParallelism(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runMultiExec(context.Background(), client, "default", pods, "dev",
-		[]string{"sh", "-c", "echo ok"}, "", 0, false, 2, &stdout, &stderr)
+		[]string{"sh", "-c", "echo ok"}, "", 0, false, make(chan struct{}, 2), &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -155,7 +159,7 @@ func TestRunMultiExecFanoutOneIsSerial(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runMultiExec(context.Background(), client, "default", pods, "dev",
-		[]string{"sh", "-c", "echo ok"}, "", 0, false, 1, &stdout, &stderr)
+		[]string{"sh", "-c", "echo ok"}, "", 0, false, make(chan struct{}, 1), &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -177,7 +181,7 @@ func TestRunDetachExecFanoutLimitsParallelism(t *testing.T) {
 
 	var stdout bytes.Buffer
 	err := runDetachExec(context.Background(), client, "default", pods, "dev",
-		"python train.py", 2, &stdout)
+		execInvocation{Argv: []string{"python", "train.py"}, DisplayCommand: "python train.py"}, make(chan struct{}, 2), &stdout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -194,6 +198,117 @@ func TestRunDetachExecFanoutLimitsParallelism(t *testing.T) {
 		if !strings.Contains(stdout.String(), "detached") {
 			t.Fatalf("expected detach confirmation for all pods, got %q", stdout.String())
 		}
+	}
+}
+
+func TestRunExecPodGroupsSequentialRunsGroupsOneByOne(t *testing.T) {
+	groups := []execPodGroup{
+		{Label: "group-1", Pods: []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}, {Name: "okdev-sess-worker-1", Phase: "Running"}}},
+		{Label: "group-2", Pods: []kube.PodSummary{{Name: "okdev-sess-worker-2", Phase: "Running"}, {Name: "okdev-sess-worker-3", Phase: "Running"}}},
+	}
+	client := newTrackingExecClient(30 * time.Millisecond)
+	var stdout, stderr bytes.Buffer
+	err := runExecPodGroups(context.Background(), client, "default", groups, execGroupRunOptions{
+		Container:  "dev",
+		Invocation: execInvocation{Argv: []string{"sh", "-c", "echo ok"}, DisplayCommand: "sh -c 'echo ok'"},
+		Order:      execGroupOrderSequential,
+		Fanout:     pdshDefaultFanout,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if peak := client.maxConcurrent(); peak > 2 {
+		t.Fatalf("expected sequential groups to cap peak concurrency at 2, got %d", peak)
+	}
+}
+
+func TestRunExecPodGroupsParallelRunsGroupsTogether(t *testing.T) {
+	groups := []execPodGroup{
+		{Label: "group-1", Pods: []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}, {Name: "okdev-sess-worker-1", Phase: "Running"}}},
+		{Label: "group-2", Pods: []kube.PodSummary{{Name: "okdev-sess-worker-2", Phase: "Running"}, {Name: "okdev-sess-worker-3", Phase: "Running"}}},
+	}
+	client := newTrackingExecClient(30 * time.Millisecond)
+	for _, g := range groups {
+		for _, p := range g.Pods {
+			client.outputs[p.Name] = "ok\n"
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	err := runExecPodGroups(context.Background(), client, "default", groups, execGroupRunOptions{
+		Container:  "dev",
+		Invocation: execInvocation{Argv: []string{"sh", "-c", "echo ok"}, DisplayCommand: "sh -c 'echo ok'"},
+		Order:      execGroupOrderParallel,
+		Fanout:     pdshDefaultFanout,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if peak := client.maxConcurrent(); peak < 4 {
+		t.Fatalf("expected parallel groups to run together, peak concurrency=%d", peak)
+	}
+}
+
+func TestRunExecPodGroupsSharedFanoutCapsTotalConcurrency(t *testing.T) {
+	groups := []execPodGroup{
+		{Label: "group-1", Pods: []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}, {Name: "okdev-sess-worker-1", Phase: "Running"}}},
+		{Label: "group-2", Pods: []kube.PodSummary{{Name: "okdev-sess-worker-2", Phase: "Running"}, {Name: "okdev-sess-worker-3", Phase: "Running"}}},
+	}
+	client := newTrackingExecClient(30 * time.Millisecond)
+	var stdout, stderr bytes.Buffer
+	err := runExecPodGroups(context.Background(), client, "default", groups, execGroupRunOptions{
+		Container:  "dev",
+		Invocation: execInvocation{Argv: []string{"sh", "-c", "echo ok"}, DisplayCommand: "sh -c 'echo ok'"},
+		Order:      execGroupOrderParallel,
+		Fanout:     2,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if peak := client.maxConcurrent(); peak > 2 {
+		t.Fatalf("expected shared fanout to cap total concurrency at 2, got %d", peak)
+	}
+}
+
+func TestRunExecPodGroupsSurfacesGroupErrors(t *testing.T) {
+	groups := []execPodGroup{
+		{Label: "group-1", Pods: []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}}},
+		{Label: "group-2", Pods: []kube.PodSummary{{Name: "okdev-sess-worker-1", Phase: "Running"}}},
+	}
+	client := newTrackingExecClient(time.Millisecond)
+	client.errs["okdev-sess-worker-1"] = errors.New("boom")
+	var stdout, stderr bytes.Buffer
+	err := runExecPodGroups(context.Background(), client, "default", groups, execGroupRunOptions{
+		Container:  "dev",
+		Invocation: execInvocation{Argv: []string{"sh", "-c", "echo ok"}, DisplayCommand: "sh -c 'echo ok'"},
+		Order:      execGroupOrderSequential,
+		Fanout:     pdshDefaultFanout,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "1 of 2 groups failed") || !strings.Contains(err.Error(), "group 2/2 (group-2)") {
+		t.Fatalf("expected aggregated error naming the failed group, got %v", err)
+	}
+
+	// A single group returns the underlying error verbatim.
+	err = runExecPodGroups(context.Background(), client, "default", groups[1:], execGroupRunOptions{
+		Container:  "dev",
+		Invocation: execInvocation{Argv: []string{"sh", "-c", "echo ok"}, DisplayCommand: "sh -c 'echo ok'"},
+		Order:      execGroupOrderSequential,
+		Fanout:     pdshDefaultFanout,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	})
+	if err == nil || err.Error() != "1 of 1 pods failed" {
+		t.Fatalf("expected verbatim single-group error, got %v", err)
 	}
 }
 
@@ -230,7 +345,7 @@ func TestMultiExecPipelineAllPodsWithPrefixedOutput(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	err := runMultiExec(context.Background(), client, "default", workers, "dev",
-		[]string{"sh", "-lc", "nvidia-smi"}, "", 0, false, pdshDefaultFanout, &stdout, &stderr)
+		[]string{"sh", "-lc", "nvidia-smi"}, "", 0, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -269,7 +384,7 @@ func TestMultiExecPipelineExcludeAndLogDir(t *testing.T) {
 	logDir := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	err := runMultiExec(context.Background(), client, "default", filtered, "dev",
-		[]string{"sh", "-c", "echo test"}, logDir, 0, false, pdshDefaultFanout, &stdout, &stderr)
+		[]string{"sh", "-c", "echo test"}, logDir, 0, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -307,7 +422,7 @@ func TestMultiExecPipelineLabelFilterWithTimeout(t *testing.T) {
 	slowClient := &slowExecClient{delay: 5 * time.Second}
 	var stdout, stderr bytes.Buffer
 	err := runMultiExec(context.Background(), slowClient, "default", filtered, "dev",
-		[]string{"sh", "-c", "sleep 100"}, "", 50*time.Millisecond, false, pdshDefaultFanout, &stdout, &stderr)
+		[]string{"sh", "-c", "sleep 100"}, "", 50*time.Millisecond, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -335,7 +450,7 @@ func TestMultiExecPipelinePartialFailureWithDetach(t *testing.T) {
 
 	var stdout bytes.Buffer
 	err := runDetachExec(context.Background(), client, "default", pods, "dev",
-		"python train.py", pdshDefaultFanout, &stdout)
+		execInvocation{Argv: []string{"python", "train.py"}, DisplayCommand: "python train.py"}, make(chan struct{}, pdshDefaultFanout), &stdout)
 	if err == nil {
 		t.Fatal("expected error for partial failure")
 	}
@@ -371,7 +486,7 @@ func TestMultiExecPipelineNoPrefixModeMultiplePods(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runMultiExec(context.Background(), client, "default", pods, "dev",
-		[]string{"sh", "-c", "echo test"}, "", 0, true, pdshDefaultFanout, &stdout, &stderr)
+		[]string{"sh", "-c", "echo test"}, "", 0, true, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -405,7 +520,7 @@ func TestRunMultiExecCancelledContext(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runMultiExec(ctx, client, "default", pods, "dev",
-		[]string{"sh", "-c", "sleep 100"}, "", 0, false, 2, &stdout, &stderr)
+		[]string{"sh", "-c", "sleep 100"}, "", 0, false, make(chan struct{}, 2), &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error from cancelled context")
 	}
@@ -427,7 +542,7 @@ func TestRunDetachExecCancelledContext(t *testing.T) {
 
 	var stdout bytes.Buffer
 	err := runDetachExec(ctx, client, "default", pods, "dev",
-		"python train.py", 2, &stdout)
+		execInvocation{Argv: []string{"python", "train.py"}, DisplayCommand: "python train.py"}, make(chan struct{}, 2), &stdout)
 	if err == nil {
 		t.Fatal("expected error from cancelled context")
 	}
@@ -450,7 +565,7 @@ func TestRunMultiExecLargePodSetWithFanout(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runMultiExec(context.Background(), client, "default", pods, "dev",
-		[]string{"sh", "-c", "echo done"}, "", 0, false, 8, &stdout, &stderr)
+		[]string{"sh", "-c", "echo done"}, "", 0, false, make(chan struct{}, 8), &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -509,7 +624,7 @@ func TestMultiExecFullPipelineRoleFilterFanoutLogDir(t *testing.T) {
 	logDir := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	err := runMultiExec(context.Background(), client, "default", filtered, "dev",
-		[]string{"sh", "-c", "echo test"}, logDir, 0, false, 2, &stdout, &stderr)
+		[]string{"sh", "-c", "echo test"}, logDir, 0, false, make(chan struct{}, 2), &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
