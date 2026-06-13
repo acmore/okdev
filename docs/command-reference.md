@@ -70,13 +70,22 @@
 - Opens a shell or runs a command in one or more session pods.
 - Without `-- command...`, opens an interactive shell on the pinned target pod.
 - With `-- command...`, runs the command across all running pods by default, with output prefixed by short pod name.
+- `--all` explicitly targets all session pods. This matches the existing default fanout behavior when you pass a command with no selector.
+- `--workers` targets only worker-role pods.
+- `--group <pod-a,pod-b>` targets an explicit pod group. Repeat `--group` to define multiple groups, and use either full pod names or the short names shown in `okdev status`. A pod may appear in at most one group.
+- Declared groups run one after another by default.
+- `--sequential` runs selected pods one-by-one when no groups are declared (output and `--log-dir` layout are unchanged), or makes the default group-after-group ordering explicit when groups are declared.
+- `--parallel` runs declared groups in parallel. `--fanout` caps total concurrent pod executions across all groups.
 - The `-- command...` path is non-interactive fanout execution, not a terminal session. TTY-dependent programs such as `watch`, `top`, `htop`, or full-screen TUIs are not expected to work there; use `okdev ssh` or `okdev exec` without `-- command...` to open an interactive shell first.
 - `--pod`: target specific pods by name (repeatable or comma-separated).
 - `--role`: target pods by `okdev.io/workload-role` label (case-insensitive).
 - `--label`: target pods by arbitrary label `key=value` (repeatable, AND logic).
 - `--exclude`: exclude specific pods from the selected set (repeatable or comma-separated). Cannot be used with `--pod`.
+- `--group` is mutually exclusive with `--all`, `--workers`, `--pod`, `--role`, `--label`, and `--exclude`.
+- `--parallel` and `--sequential` are mutually exclusive.
 - `--container`: override which container to exec into (default: session target container). Works in both modes.
 - `--detach`: launches the command in the background and returns immediately. Prints per-pod launch details including job id, pid, log path, and metadata path.
+- When `--log-dir` is used with multiple declared groups, logs are written into per-group subdirectories under the requested path. `--log-dir` has no effect with `--detach` (detached jobs log inside the pod).
 - Detached jobs store combined stdout/stderr and JSON metadata under `/tmp/okdev-exec/` in the target container. For large outputs (training logs, profiles, dumps), prefer `--log-dir` on the caller or redirect inside your command to a session volume; `/tmp` is typically a small tmpfs and heavy writers can fill it.
 - The `pid` returned from `--detach` is the pid of your command itself (okdev re-parents the launcher so `$!` is your program's pid after `execve`). `kill <pid>` or `okdev exec --pod <pod> -- kill <pid>` therefore targets your command, not a wrapper shell.
 - When using `--detach`, pass the command you want okdev to launch directly. Do not add an extra `nohup ... &` inside the command string.

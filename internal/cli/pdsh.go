@@ -30,10 +30,13 @@ const detachExitPlaceholder = "__OKDEV_DETACH_EXIT__"
 func newExecCmd(opts *Options) *cobra.Command {
 	var shell string
 	var noTTY bool
+	var allPods bool
+	var workers bool
 	var podNames []string
 	var role string
 	var labels []string
 	var exclude []string
+	var groups []string
 	var container string
 	var detach bool
 	var timeout time.Duration
@@ -41,6 +44,8 @@ func newExecCmd(opts *Options) *cobra.Command {
 	var noPrefix bool
 	var fanout int
 	var readyOnly bool
+	var sequential bool
+	var parallel bool
 
 	cmd := &cobra.Command{
 		Use:   "exec [session]",
@@ -51,6 +56,12 @@ func newExecCmd(opts *Options) *cobra.Command {
 
   # Run a command on all session pods
   okdev exec -- nvidia-smi
+
+  # Run on worker pods only
+  okdev exec --workers -- nvidia-smi
+
+  # Run on explicit pod groups
+  okdev exec --group master-0,worker-0 --group master-1,worker-1 --parallel -- ./run-bench.sh
 
   # Run on a specific role
   okdev exec --role worker -- df -h /workspace
@@ -71,13 +82,26 @@ func newExecCmd(opts *Options) *cobra.Command {
 				return err
 			}
 
-			multiPod := len(commandArgs) > 0 || len(podNames) > 0 || role != "" || len(labels) > 0 || detach
-			if err := validateMultiPodFlags(podNames, role, labels, exclude, len(commandArgs) > 0, detach); err != nil {
+			plan := execTargetPlan{
+				allPods:    allPods,
+				workers:    workers,
+				podNames:   podNames,
+				role:       role,
+				labels:     labels,
+				exclude:    exclude,
+				groups:     groups,
+				readyOnly:  readyOnly,
+				sequential: sequential,
+				parallel:   parallel,
+			}
+
+			multiPod := len(commandArgs) > 0 || allPods || workers || len(podNames) > 0 || role != "" || len(labels) > 0 || len(groups) > 0 || detach
+			if err := validateMultiPodFlags(allPods, workers, podNames, role, labels, exclude, groups, len(commandArgs) > 0, detach, sequential, parallel); err != nil {
 				return err
 			}
 
 			if multiPod || detach {
-				return runMultiPodExec(cmd, cc, commandArgs, podNames, role, labels, exclude, container, detach, timeout, logDir, noPrefix, fanout, readyOnly)
+				return runMultiPodExec(cmd, cc, commandArgs, plan, container, detach, timeout, logDir, noPrefix, fanout)
 			}
 
 			// Single-pod mode (existing behavior)
@@ -103,10 +127,16 @@ func newExecCmd(opts *Options) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&shell, "shell", "", "Shell to start (default auto-detects bash/sh)")
 	cmd.Flags().BoolVar(&noTTY, "no-tty", false, "Disable TTY allocation")
+	cmd.Flags().BoolVar(&allPods, "all", false, "Target all session pods explicitly")
+	cmd.Flags().BoolVar(&workers, "workers", false, "Target worker-role pods")
 	cmd.Flags().StringSliceVar(&podNames, "pod", nil, "Target specific pods by name (repeatable/comma-separated)")
 	cmd.Flags().StringVar(&role, "role", "", "Target pods by workload role")
 	cmd.Flags().StringSliceVar(&labels, "label", nil, "Target pods by label key=value (repeatable)")
 	cmd.Flags().StringSliceVar(&exclude, "exclude", nil, "Exclude specific pods (repeatable/comma-separated)")
+	// StringArrayVar, not StringSliceVar: commas are group-member separators
+	// that buildExplicitExecPodGroups parses itself; StringSliceVar would
+	// CSV-split each --group value into separate single-pod specs.
+	cmd.Flags().StringArrayVar(&groups, "group", nil, "Target explicit pod groups by comma-separated pod names (repeatable)")
 	cmd.Flags().StringVar(&container, "container", "", "Override target container")
 	cmd.Flags().BoolVar(&detach, "detach", false, "Launch command in background and return")
 	cmd.Flags().DurationVar(&timeout, "timeout", 0, "Per-pod command timeout (e.g., 30s, 5m)")
@@ -114,6 +144,8 @@ func newExecCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&noPrefix, "no-prefix", false, "Suppress pod name prefix in output")
 	cmd.Flags().IntVar(&fanout, "fanout", pdshDefaultFanout, "Maximum concurrent pod executions")
 	cmd.Flags().BoolVar(&readyOnly, "ready-only", false, "Run only on pods that are already running (skip readiness check)")
+	cmd.Flags().BoolVar(&sequential, "sequential", false, "Run selected pods or groups one after another")
+	cmd.Flags().BoolVar(&parallel, "parallel", false, "Run explicit groups in parallel")
 	return cmd
 }
 
@@ -133,18 +165,75 @@ func validateExecArgs(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func validateMultiPodFlags(podNames []string, role string, labels []string, exclude []string, hasCommand bool, detach bool) error {
-	usesSelector := len(podNames) > 0 || role != "" || len(labels) > 0 || len(exclude) > 0
-	if (usesSelector || detach) && !hasCommand {
-		return fmt.Errorf("command after -- is required when using --pod, --role, --label, --exclude, or --detach")
+type execTargetPlan struct {
+	allPods    bool
+	workers    bool
+	podNames   []string
+	role       string
+	labels     []string
+	exclude    []string
+	groups     []string
+	readyOnly  bool
+	sequential bool
+	parallel   bool
+}
+
+type execPodGroup struct {
+	Label string
+	Pods  []kube.PodSummary
+}
+
+type execGroupOrder int
+
+const (
+	execGroupOrderSequential execGroupOrder = iota
+	execGroupOrderParallel
+)
+
+type execGroupRunOptions struct {
+	Container      string
+	Command        []string
+	DisplayCommand string
+	Detach         bool
+	Timeout        time.Duration
+	LogDir         string
+	NoPrefix       bool
+	Fanout         int
+	Order          execGroupOrder
+	Stdout         io.Writer
+	Stderr         io.Writer
+}
+
+func validateMultiPodFlags(allPods bool, workers bool, podNames []string, role string, labels []string, exclude []string, groups []string, hasCommand bool, detach bool, sequential bool, parallel bool) error {
+	usesSelector := allPods || workers || len(podNames) > 0 || role != "" || len(labels) > 0 || len(exclude) > 0 || len(groups) > 0
+	if (usesSelector || detach || sequential || parallel) && !hasCommand {
+		return fmt.Errorf("command after -- is required when using --all, --workers, --pod, --role, --label, --exclude, --group, --sequential, --parallel, or --detach")
+	}
+	if sequential && parallel {
+		return fmt.Errorf("--parallel and --sequential are mutually exclusive")
+	}
+	if parallel && len(groups) == 0 {
+		return fmt.Errorf("--parallel requires one or more --group flags")
+	}
+	if workers && role != "" {
+		return fmt.Errorf("--workers cannot be used with --role")
 	}
 	if len(exclude) > 0 && len(podNames) > 0 {
 		return fmt.Errorf("--exclude cannot be used with --pod")
+	}
+	if len(groups) > 0 && (allPods || workers || len(podNames) > 0 || role != "" || len(labels) > 0 || len(exclude) > 0) {
+		return fmt.Errorf("--group cannot be used with --pod, --role, --label, --exclude, --all, or --workers")
 	}
 	if !hasCommand && !detach {
 		return nil
 	}
 	exclusiveCount := 0
+	if allPods {
+		exclusiveCount++
+	}
+	if workers {
+		exclusiveCount++
+	}
 	if len(podNames) > 0 {
 		exclusiveCount++
 	}
@@ -154,15 +243,23 @@ func validateMultiPodFlags(podNames []string, role string, labels []string, excl
 	if len(labels) > 0 {
 		exclusiveCount++
 	}
+	if len(groups) > 0 {
+		exclusiveCount++
+	}
 	if exclusiveCount > 1 {
-		return fmt.Errorf("--pod, --role, and --label are mutually exclusive")
+		return fmt.Errorf("--all, --workers, --pod, --role, --label, and --group are mutually exclusive")
 	}
 	return nil
 }
 
-func runMultiPodExec(cmd *cobra.Command, cc *commandContext, commandArgs []string, podNames []string, role string, labels []string, exclude []string, container string, detach bool, timeout time.Duration, logDir string, noPrefix bool, fanout int, readyOnly bool) error {
+func runMultiPodExec(cmd *cobra.Command, cc *commandContext, commandArgs []string, plan execTargetPlan, container string, detach bool, timeout time.Duration, logDir string, noPrefix bool, fanout int) error {
 	ctx := cmd.Context()
-	pods, err := selectSessionPods(ctx, cc, podNames, role, labels, exclude, readyOnly)
+	labelSel := selectorForSessionRun(cc.sessionName)
+	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
+	if err != nil {
+		return fmt.Errorf("list session pods: %w", err)
+	}
+	groups, err := buildExecPodGroups(cc.sessionName, sessionPods, plan)
 	if err != nil {
 		return err
 	}
@@ -182,62 +279,29 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, commandArgs []strin
 	if effectiveFanout <= 0 {
 		effectiveFanout = pdshDefaultFanout
 	}
-
-	if detach {
-		return runDetachExec(ctx, cc.kube, cc.namespace, pods, targetContainer, commandArgsShellString(commandArgs), effectiveFanout, cmd.OutOrStdout())
+	if plan.sequential && len(plan.groups) == 0 {
+		// --sequential without --group serializes pods within the single
+		// selection group, keeping the flat log layout and short prefixes.
+		effectiveFanout = 1
 	}
 
-	return runMultiExec(ctx, cc.kube, cc.namespace, pods, targetContainer, commandArgs, logDir, timeout, noPrefix, effectiveFanout, cmd.OutOrStdout(), cmd.ErrOrStderr())
-}
-
-// selectSessionPods lists the session's pods, applies user filters, and
-// enforces the running-vs-targeted readiness check shared by exec and
-// exec-jobs. The returned slice is the set of running pods that satisfy the
-// filters; readyOnly skips the failure when some targeted pods are not yet
-// running.
-func selectSessionPods(ctx context.Context, cc *commandContext, podNames []string, role string, labels []string, exclude []string, readyOnly bool) ([]kube.PodSummary, error) {
-	labelSel := selectorForSessionRun(cc.sessionName)
-	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
-	if err != nil {
-		return nil, fmt.Errorf("list session pods: %w", err)
+	order := execGroupOrderSequential
+	if plan.parallel {
+		order = execGroupOrderParallel
 	}
-
-	// Apply user-specified filters before the readiness check so the
-	// running-vs-total comparison only considers targeted pods.
-	allPods := sessionPods
-	switch {
-	case len(podNames) > 0:
-		allPods = filterPodsByName(allPods, podNames)
-	case role != "":
-		allPods = filterPodsByRole(allPods, role)
-	case len(labels) > 0:
-		allPods = filterPodsByLabels(allPods, labels)
-	}
-	if len(exclude) > 0 {
-		allPods = excludePods(allPods, exclude)
-	}
-	if len(allPods) == 0 {
-		return nil, fmt.Errorf("no pods match the specified filters in session %q", cc.sessionName)
-	}
-	pods := filterRunningPods(allPods)
-	if len(pods) == 0 {
-		return nil, fmt.Errorf("no running pods in session %q (0/%d pods ready)", cc.sessionName, len(allPods))
-	}
-	if len(pods) < len(allPods) && !readyOnly {
-		notReady := make([]string, 0, len(allPods)-len(pods))
-		runningSet := make(map[string]bool, len(pods))
-		for _, p := range pods {
-			runningSet[p.Name] = true
-		}
-		for _, p := range allPods {
-			if !runningSet[p.Name] {
-				notReady = append(notReady, fmt.Sprintf("%s (%s)", p.Name, p.Phase))
-			}
-		}
-		return nil, fmt.Errorf("%d/%d pods are not running: %s\nUse --ready-only to run on the %d ready pods",
-			len(notReady), len(allPods), strings.Join(notReady, ", "), len(pods))
-	}
-	return pods, nil
+	return runExecPodGroups(ctx, cc.kube, cc.namespace, groups, execGroupRunOptions{
+		Container:      targetContainer,
+		Command:        commandArgs,
+		DisplayCommand: commandArgsShellString(commandArgs),
+		Detach:         detach,
+		Timeout:        timeout,
+		LogDir:         logDir,
+		NoPrefix:       noPrefix,
+		Fanout:         effectiveFanout,
+		Order:          order,
+		Stdout:         cmd.OutOrStdout(),
+		Stderr:         cmd.ErrOrStderr(),
+	})
 }
 
 func commandArgsShellString(args []string) string {
@@ -248,12 +312,281 @@ func commandArgsShellString(args []string) string {
 	return strings.Join(parts, " ")
 }
 
+func buildExecPodGroups(sessionName string, sessionPods []kube.PodSummary, plan execTargetPlan) ([]execPodGroup, error) {
+	if len(plan.groups) > 0 {
+		return buildExplicitExecPodGroups(sessionName, sessionPods, plan.groups, plan.readyOnly)
+	}
+
+	filtered := sessionPods
+	switch {
+	case len(plan.podNames) > 0:
+		filtered = filterPodsByName(filtered, plan.podNames)
+	case plan.workers:
+		filtered = filterPodsByRole(filtered, "worker")
+	case plan.role != "":
+		filtered = filterPodsByRole(filtered, plan.role)
+	case len(plan.labels) > 0:
+		filtered = filterPodsByLabels(filtered, plan.labels)
+	case plan.allPods:
+		// keep all
+	default:
+		// command with no selector defaults to all pods
+	}
+	if len(plan.exclude) > 0 {
+		filtered = excludePods(filtered, plan.exclude)
+	}
+
+	running, err := readyExecPods(sessionName, "", filtered, plan.readyOnly)
+	if err != nil {
+		return nil, err
+	}
+	return []execPodGroup{{
+		Label: "all",
+		Pods:  running,
+	}}, nil
+}
+
+func buildExplicitExecPodGroups(sessionName string, sessionPods []kube.PodSummary, specs []string, readyOnly bool) ([]execPodGroup, error) {
+	aliasToPod := make(map[string]kube.PodSummary)
+	names := podSummaryNames(sessionPods)
+	shorts := shortPodNames(names)
+	for i, pod := range sessionPods {
+		aliasToPod[pod.Name] = pod
+		aliasToPod[shorts[i]] = pod
+	}
+
+	groups := make([]execPodGroup, 0, len(specs))
+	groupOfPod := make(map[string]int)
+	for i, spec := range specs {
+		parts := splitAndTrimCSV([]string{spec})
+		if len(parts) == 0 {
+			return nil, fmt.Errorf("group %d is empty", i+1)
+		}
+		selected := make([]kube.PodSummary, 0, len(parts))
+		seen := make(map[string]bool)
+		for _, part := range parts {
+			pod, ok := aliasToPod[part]
+			if !ok {
+				return nil, fmt.Errorf("group %d references unknown pod %q", i+1, part)
+			}
+			if seen[pod.Name] {
+				continue
+			}
+			if prev, ok := groupOfPod[pod.Name]; ok {
+				return nil, fmt.Errorf("pod %q appears in both group %d and group %d", pod.Name, prev, i+1)
+			}
+			groupOfPod[pod.Name] = i + 1
+			seen[pod.Name] = true
+			selected = append(selected, pod)
+		}
+		running, err := readyExecPods(sessionName, fmt.Sprintf("group %d", i+1), selected, readyOnly)
+		if err != nil {
+			return nil, err
+		}
+		groups = append(groups, execPodGroup{
+			Label: strings.Join(parts, ","),
+			Pods:  running,
+		})
+	}
+	return groups, nil
+}
+
+// readyExecPods enforces the running-vs-targeted readiness check. scope is an
+// optional human-readable label (for example "group 2") that is woven into the
+// error message when set; callers that don't operate on a named group (the
+// shared selectSessionPods helper, exec-jobs, port-forward) should pass "".
+func readyExecPods(sessionName string, scope string, targeted []kube.PodSummary, readyOnly bool) ([]kube.PodSummary, error) {
+	scopeSuffix := ""
+	scopePrefix := ""
+	if scope != "" {
+		scopeSuffix = " (" + scope + ")"
+		scopePrefix = scope + ": "
+	}
+	if len(targeted) == 0 {
+		return nil, fmt.Errorf("no pods match the specified filters in session %q%s", sessionName, scopeSuffix)
+	}
+	pods := filterRunningPods(targeted)
+	if len(pods) == 0 {
+		return nil, fmt.Errorf("no running pods in session %q%s (0/%d pods ready)", sessionName, scopeSuffix, len(targeted))
+	}
+	if len(pods) < len(targeted) && !readyOnly {
+		notReady := make([]string, 0, len(targeted)-len(pods))
+		runningSet := make(map[string]bool, len(pods))
+		for _, p := range pods {
+			runningSet[p.Name] = true
+		}
+		for _, p := range targeted {
+			if !runningSet[p.Name] {
+				notReady = append(notReady, fmt.Sprintf("%s (%s)", p.Name, p.Phase))
+			}
+		}
+		return nil, fmt.Errorf("%s%d/%d pods are not running: %s\nUse --ready-only to run on the %d ready pods",
+			scopePrefix, len(notReady), len(targeted), strings.Join(notReady, ", "), len(pods))
+	}
+	return pods, nil
+}
+
+func podSummaryNames(pods []kube.PodSummary) []string {
+	out := make([]string, len(pods))
+	for i, pod := range pods {
+		out[i] = pod.Name
+	}
+	return out
+}
+
+func splitAndTrimCSV(items []string) []string {
+	out := make([]string, 0)
+	for _, item := range items {
+		for _, part := range strings.Split(item, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				out = append(out, part)
+			}
+		}
+	}
+	return out
+}
+
+func runExecPodGroups(ctx context.Context, client connect.ExecClient, namespace string, groups []execPodGroup, opts execGroupRunOptions) error {
+	if len(groups) == 0 {
+		return errors.New("no exec pod groups selected")
+	}
+	if opts.Fanout <= 0 {
+		opts.Fanout = pdshDefaultFanout
+	}
+	if opts.Stdout == nil {
+		opts.Stdout = io.Discard
+	}
+	if opts.Stderr == nil {
+		opts.Stderr = io.Discard
+	}
+
+	stdout, stderr := opts.Stdout, opts.Stderr
+	runParallel := opts.Order == execGroupOrderParallel && len(groups) > 1
+	if runParallel {
+		// Each runMultiExec call only synchronizes its own writers, so
+		// concurrent groups need a shared lock on the underlying streams.
+		stdout = &lockedWriter{w: stdout}
+		stderr = &lockedWriter{w: stderr}
+	}
+	// One semaphore across all groups so --fanout caps total concurrent pod
+	// executions, not per-group.
+	sem := make(chan struct{}, opts.Fanout)
+
+	runGroup := func(index int, group execPodGroup) error {
+		if len(groups) > 1 {
+			fmt.Fprintf(stdout, "==> group %d/%d: %s\n", index+1, len(groups), group.Label)
+		}
+		if opts.Detach {
+			// Detached jobs log inside the pod; --log-dir is not used.
+			return runDetachExec(ctx, client, namespace, group.Pods, opts.Container, opts.DisplayCommand, sem, stdout)
+		}
+		groupLogDir, err := groupExecLogDir(opts.LogDir, index, group.Label, len(groups) > 1)
+		if err != nil {
+			return err
+		}
+		return runMultiExec(ctx, client, namespace, group.Pods, opts.Container, opts.Command, groupLogDir, opts.Timeout, opts.NoPrefix, sem, stdout, stderr)
+	}
+
+	groupErrs := make([]error, len(groups))
+	if runParallel {
+		var wg sync.WaitGroup
+		for i, group := range groups {
+			wg.Add(1)
+			go func(index int, group execPodGroup) {
+				defer wg.Done()
+				groupErrs[index] = runGroup(index, group)
+			}(i, group)
+		}
+		wg.Wait()
+	} else {
+		for i, group := range groups {
+			groupErrs[i] = runGroup(i, group)
+		}
+	}
+
+	if len(groups) == 1 {
+		return groupErrs[0]
+	}
+	var failed []error
+	for i, err := range groupErrs {
+		if err != nil {
+			failed = append(failed, fmt.Errorf("group %d/%d (%s): %w", i+1, len(groups), groups[i].Label, err))
+		}
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("%d of %d groups failed: %w", len(failed), len(groups), errors.Join(failed...))
+	}
+	return nil
+}
+
+func groupExecLogDir(base string, index int, label string, useGroupDir bool) (string, error) {
+	if base == "" {
+		return "", nil
+	}
+	if !useGroupDir {
+		return base, nil
+	}
+	sanitized := sanitizeGroupLabel(label)
+	dir := filepath.Join(base, fmt.Sprintf("group-%02d-%s", index+1, sanitized))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create group log directory: %w", err)
+	}
+	return dir, nil
+}
+
+func sanitizeGroupLabel(label string) string {
+	label = strings.ToLower(label)
+	label = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= '0' && r <= '9':
+			return r
+		default:
+			return '-'
+		}
+	}, label)
+	label = strings.Trim(label, "-")
+	// Cap like session naming's sanitize(): labels join full pod names, which
+	// can exceed the 255-byte filename limit otherwise.
+	if len(label) > 50 {
+		label = strings.Trim(label[:50], "-")
+	}
+	if label == "" {
+		return "pods"
+	}
+	return label
+}
+
+// selectSessionPods preserves the existing shared selection helper used by
+// exec-jobs and port-forward. It intentionally exposes only the pre-existing
+// selector surface; grouped orchestration stays local to exec.
+func selectSessionPods(ctx context.Context, cc *commandContext, podNames []string, role string, labels []string, exclude []string, readyOnly bool) ([]kube.PodSummary, error) {
+	labelSel := selectorForSessionRun(cc.sessionName)
+	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
+	if err != nil {
+		return nil, fmt.Errorf("list session pods: %w", err)
+	}
+	groups, err := buildExecPodGroups(cc.sessionName, sessionPods, execTargetPlan{
+		podNames:  podNames,
+		role:      role,
+		labels:    labels,
+		exclude:   exclude,
+		readyOnly: readyOnly,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return groups[0].Pods, nil
+}
+
 type podExecResult struct {
 	pod string
 	err error
 }
 
-func runMultiExec(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, command []string, logDir string, timeout time.Duration, noPrefix bool, fanout int, stdout, stderr io.Writer) error {
+func runMultiExec(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, command []string, logDir string, timeout time.Duration, noPrefix bool, sem chan struct{}, stdout, stderr io.Writer) error {
 	podNames := make([]string, len(pods))
 	for i, p := range pods {
 		podNames[i] = p.Name
@@ -266,7 +599,6 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 	noPrefixOut := &lockedWriter{w: stdout}
 	noPrefixErr := &lockedWriter{w: stderr}
 	results := make(chan podExecResult, len(pods))
-	sem := make(chan struct{}, fanout)
 
 	var wg sync.WaitGroup
 	for i, pod := range pods {
@@ -653,7 +985,7 @@ func parseDetachLaunchOutput(raw string) (detachLaunchInfo, error) {
 	return detachLaunchInfo{}, errors.New("missing detach launch metadata")
 }
 
-func runDetachExec(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, cmdStr string, fanout int, out io.Writer) error {
+func runDetachExec(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, cmdStr string, sem chan struct{}, out io.Writer) error {
 	podNames := make([]string, len(pods))
 	for i, p := range pods {
 		podNames[i] = p.Name
@@ -663,7 +995,6 @@ func runDetachExec(ctx context.Context, client connect.ExecClient, namespace str
 	displayPrefixes := formatPodPrefixes(shortNames, colorEnabled)
 
 	results := make(chan podDetachResult, len(pods))
-	sem := make(chan struct{}, fanout)
 
 	var wg sync.WaitGroup
 	for i, pod := range pods {
