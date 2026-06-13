@@ -77,6 +77,7 @@ type PodSummary struct {
 	Restarts    int32
 	Reason      string
 	PodIP       string
+	NodeName    string
 }
 
 type ResourceSummary struct {
@@ -874,6 +875,14 @@ func (c *Client) GetPodSummary(ctx context.Context, namespace, name string) (*Po
 	}
 	s := podSummaryFromPod(p)
 	return &s, nil
+}
+
+func (c *Client) GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
+	cs, _, err := c.clientset()
+	if err != nil {
+		return nil, err
+	}
+	return cs.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
 }
 
 // ContainerRestartInfo holds restart details for a single container.
@@ -1753,6 +1762,7 @@ func podSummaryFromPod(p *corev1.Pod) PodSummary {
 		Restarts:    restarts,
 		Reason:      reason,
 		PodIP:       p.Status.PodIP,
+		NodeName:    p.Spec.NodeName,
 	}
 }
 

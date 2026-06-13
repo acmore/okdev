@@ -15,6 +15,7 @@ import (
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
 	syncengine "github.com/acmore/okdev/internal/sync"
+	corev1 "k8s.io/api/core/v1"
 )
 
 var (
@@ -24,26 +25,28 @@ var (
 
 type statusDetailsClient interface {
 	DescribePod(context.Context, string, string) (string, error)
+	GetPod(context.Context, string, string) (*corev1.Pod, error)
 }
 
 type detailedStatus struct {
-	Session          string               `json:"session"`
-	Namespace        string               `json:"namespace"`
-	Owner            string               `json:"owner"`
-	Workload         string               `json:"workload"`
-	Phase            string               `json:"phase"`
-	Ready            string               `json:"ready"`
-	Restarts         int32                `json:"restarts"`
-	Reason           string               `json:"reason"`
-	Age              string               `json:"age"`
-	PodCount         int                  `json:"podCount"`
-	Target           detailedStatusTarget `json:"target"`
-	Pods             []detailedStatusPod  `json:"pods"`
-	SSH              detailedStatusSSH    `json:"ssh"`
-	Sync             detailedStatusSync   `json:"sync"`
-	Agents           []agentListRow       `json:"agents,omitempty"`
-	Logs             detailedStatusLogs   `json:"logs"`
-	TargetPodDetails string               `json:"targetPodDetails,omitempty"`
+	Session          string                        `json:"session"`
+	Namespace        string                        `json:"namespace"`
+	Owner            string                        `json:"owner"`
+	Workload         string                        `json:"workload"`
+	Phase            string                        `json:"phase"`
+	Ready            string                        `json:"ready"`
+	Restarts         int32                         `json:"restarts"`
+	Reason           string                        `json:"reason"`
+	Age              string                        `json:"age"`
+	PodCount         int                           `json:"podCount"`
+	Target           detailedStatusTarget          `json:"target"`
+	Pods             []detailedStatusPod           `json:"pods"`
+	SSH              detailedStatusSSH             `json:"ssh"`
+	Sync             detailedStatusSync            `json:"sync"`
+	PathSemantics    []detailedStatusPathSemantics `json:"pathSemantics,omitempty"`
+	Agents           []agentListRow                `json:"agents,omitempty"`
+	Logs             detailedStatusLogs            `json:"logs"`
+	TargetPodDetails string                        `json:"targetPodDetails,omitempty"`
 }
 
 type detailedStatusTarget struct {
@@ -54,15 +57,39 @@ type detailedStatusTarget struct {
 }
 
 type detailedStatusPod struct {
-	Name       string `json:"name"`
-	Role       string `json:"role,omitempty"`
-	Attachable bool   `json:"attachable"`
-	Phase      string `json:"phase"`
-	Ready      string `json:"ready"`
-	Restarts   int32  `json:"restarts"`
-	Reason     string `json:"reason"`
-	Age        string `json:"age"`
-	Selected   bool   `json:"selected"`
+	Name       string                `json:"name"`
+	Role       string                `json:"role,omitempty"`
+	Attachable bool                  `json:"attachable"`
+	Phase      string                `json:"phase"`
+	Ready      string                `json:"ready"`
+	Restarts   int32                 `json:"restarts"`
+	Reason     string                `json:"reason"`
+	Age        string                `json:"age"`
+	Selected   bool                  `json:"selected"`
+	PodIP      string                `json:"podIP,omitempty"`
+	NodeName   string                `json:"nodeName,omitempty"`
+	Mounts     []detailedStatusMount `json:"mounts,omitempty"`
+}
+
+type detailedStatusMount struct {
+	Name        string `json:"name"`
+	MountPath   string `json:"mountPath"`
+	ReadOnly    bool   `json:"readOnly,omitempty"`
+	SourceType  string `json:"sourceType"`
+	Persistence string `json:"persistence"`
+}
+
+type detailedStatusPathSemantics struct {
+	LocalPath     string `json:"localPath"`
+	RemotePath    string `json:"remotePath"`
+	WorkspacePath string `json:"workspacePath"`
+	SyncScope     string `json:"syncScope"`
+	Survival      string `json:"survival"`
+}
+
+type detailedStatusPathPair struct {
+	LocalPath  string
+	RemotePath string
 }
 
 type detailedStatusSSH struct {
@@ -125,6 +152,8 @@ func gatherDetailedStatus(ctx context.Context, opts *Options, cfg *config.DevEnv
 		}
 	}
 	detail.Logs = buildDetailedLogs()
+	enrichDetailedStatusPods(ctx, namespace, target.SelectedContainer, &detail, client)
+	detail.PathSemantics = buildDetailedPathSemantics(cfg, cfgPath, detail.Pods, target)
 
 	if client != nil && strings.TrimSpace(view.TargetPod) != "" {
 		if desc, err := client.DescribePod(ctx, namespace, view.TargetPod); err == nil {
@@ -161,9 +190,172 @@ func buildDetailedTarget(view sessionView, cfg *config.DevEnvironment) (detailed
 			Reason:     pod.Reason,
 			Age:        age(pod.CreatedAt),
 			Selected:   pod.Name == view.TargetPod,
+			PodIP:      pod.PodIP,
+			NodeName:   pod.NodeName,
 		})
 	}
 	return target, pods
+}
+
+func enrichDetailedStatusPods(ctx context.Context, namespace, container string, detail *detailedStatus, client statusDetailsClient) {
+	if detail == nil || client == nil {
+		return
+	}
+	for i := range detail.Pods {
+		pod, err := client.GetPod(ctx, namespace, detail.Pods[i].Name)
+		if err != nil || pod == nil {
+			continue
+		}
+		if strings.TrimSpace(detail.Pods[i].PodIP) == "" {
+			detail.Pods[i].PodIP = strings.TrimSpace(pod.Status.PodIP)
+		}
+		if strings.TrimSpace(detail.Pods[i].NodeName) == "" {
+			detail.Pods[i].NodeName = strings.TrimSpace(pod.Spec.NodeName)
+		}
+		detail.Pods[i].Mounts = podMountsForContainer(pod, container)
+	}
+}
+
+func buildDetailedPathSemantics(cfg *config.DevEnvironment, cfgPath string, pods []detailedStatusPod, target detailedStatusTarget) []detailedStatusPathSemantics {
+	if cfg == nil {
+		return nil
+	}
+	pairs, err := parseDetailedStatusPathPairs(cfg, cfgPath)
+	if err != nil || len(pairs) == 0 {
+		return nil
+	}
+	workspacePath := cfg.EffectiveWorkspaceMountPath(cfgPath)
+	if workspacePath == "" {
+		workspacePath = "/workspace"
+	}
+	for _, pod := range pods {
+		if pod.Name == target.SelectedPod {
+			return buildPathSemantics(pairs, pod.Mounts, workspacePath)
+		}
+	}
+	return buildPathSemantics(pairs, nil, workspacePath)
+}
+
+func parseDetailedStatusPathPairs(cfg *config.DevEnvironment, cfgPath string) ([]detailedStatusPathPair, error) {
+	pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.EffectiveWorkspaceMountPath(cfgPath))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]detailedStatusPathPair, 0, len(pairs))
+	for _, pair := range pairs {
+		out = append(out, detailedStatusPathPair{LocalPath: pair.Local, RemotePath: pair.Remote})
+	}
+	return out, nil
+}
+
+func buildPathSemantics(pairs []detailedStatusPathPair, mounts []detailedStatusMount, workspacePath string) []detailedStatusPathSemantics {
+	out := make([]detailedStatusPathSemantics, 0, len(pairs))
+	for _, pair := range pairs {
+		scope := "not-shared-by-sync"
+		if pathWithin(pair.RemotePath, workspacePath) {
+			scope = "all-pods-via-syncthing"
+		}
+		survival := "depends on workload storage"
+		if mount, ok := findBestMountForPath(mounts, pair.RemotePath); ok {
+			switch mount.Persistence {
+			case "persistent":
+				survival = "survives session restart"
+			case "ephemeral":
+				survival = "ephemeral in pod"
+			}
+		}
+		out = append(out, detailedStatusPathSemantics{
+			LocalPath:     pair.LocalPath,
+			RemotePath:    pair.RemotePath,
+			WorkspacePath: workspacePath,
+			SyncScope:     scope,
+			Survival:      survival,
+		})
+	}
+	return out
+}
+
+func podMountsForContainer(pod *corev1.Pod, container string) []detailedStatusMount {
+	if pod == nil {
+		return nil
+	}
+	container = strings.TrimSpace(container)
+	if container == "" && len(pod.Spec.Containers) > 0 {
+		container = pod.Spec.Containers[0].Name
+	}
+	volumes := make(map[string]corev1.Volume, len(pod.Spec.Volumes))
+	for _, volume := range pod.Spec.Volumes {
+		volumes[volume.Name] = volume
+	}
+	for _, c := range pod.Spec.Containers {
+		if c.Name != container {
+			continue
+		}
+		mounts := make([]detailedStatusMount, 0, len(c.VolumeMounts))
+		for _, mount := range c.VolumeMounts {
+			sourceType := "other"
+			persistence := "unknown"
+			if volume, ok := volumes[mount.Name]; ok {
+				sourceType, persistence = classifyMountSource(volume)
+			}
+			mounts = append(mounts, detailedStatusMount{
+				Name:        mount.Name,
+				MountPath:   mount.MountPath,
+				ReadOnly:    mount.ReadOnly,
+				SourceType:  sourceType,
+				Persistence: persistence,
+			})
+		}
+		return mounts
+	}
+	return nil
+}
+
+func classifyMountSource(volume corev1.Volume) (string, string) {
+	switch {
+	case volume.EmptyDir != nil:
+		return "emptyDir", "ephemeral"
+	case volume.PersistentVolumeClaim != nil:
+		return "persistentVolumeClaim", "persistent"
+	case volume.HostPath != nil:
+		return "hostPath", "persistent"
+	case volume.ConfigMap != nil:
+		return "configMap", "ephemeral"
+	case volume.Secret != nil:
+		return "secret", "ephemeral"
+	case volume.Projected != nil:
+		return "projected", "ephemeral"
+	case volume.DownwardAPI != nil:
+		return "downwardAPI", "ephemeral"
+	default:
+		return "other", "unknown"
+	}
+}
+
+func findBestMountForPath(mounts []detailedStatusMount, remotePath string) (detailedStatusMount, bool) {
+	bestLen := -1
+	var best detailedStatusMount
+	for _, mount := range mounts {
+		if !pathWithin(remotePath, mount.MountPath) {
+			continue
+		}
+		if l := len(strings.TrimRight(mount.MountPath, "/")); l > bestLen {
+			bestLen = l
+			best = mount
+		}
+	}
+	return best, bestLen >= 0
+}
+
+func pathWithin(path, root string) bool {
+	path = strings.TrimSpace(path)
+	root = strings.TrimSpace(root)
+	if path == "" || root == "" {
+		return false
+	}
+	cleanPath := filepath.Clean(path)
+	cleanRoot := filepath.Clean(root)
+	return cleanPath == cleanRoot || strings.HasPrefix(cleanPath, cleanRoot+string(os.PathSeparator))
 }
 
 func buildDetailedSSH(sessionName string, forwards []config.PortMapping) detailedStatusSSH {
@@ -344,6 +536,15 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 			line += " attachable=false"
 		}
 		fmt.Fprintln(w, line)
+		for _, extra := range []string{
+			renderPodLocationLine("ip", pod.PodIP),
+			renderPodLocationLine("node", pod.NodeName),
+			renderMountsLine(pod.Mounts),
+		} {
+			if extra != "" {
+				fmt.Fprintf(w, "  %s\n", extra)
+			}
+		}
 	}
 
 	fmt.Fprintln(w, "\nSSH:")
@@ -412,6 +613,13 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 		}
 	}
 
+	if len(detail.PathSemantics) > 0 {
+		fmt.Fprintln(w, "\nPath Semantics:")
+		for _, item := range detail.PathSemantics {
+			fmt.Fprintf(w, "- %s -> %s sync=%s survival=%s\n", emptyDash(item.LocalPath), emptyDash(item.RemotePath), item.SyncScope, item.Survival)
+		}
+	}
+
 	if len(detail.Agents) > 0 {
 		fmt.Fprintln(w, "\nAgents:")
 		for _, agent := range detail.Agents {
@@ -436,6 +644,25 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 		fmt.Fprintln(w, "\nTarget Pod Details:")
 		writeIndentedBlock(w, detail.TargetPodDetails, "  ")
 	}
+}
+
+func renderPodLocationLine(label, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return label + "=" + value
+}
+
+func renderMountsLine(mounts []detailedStatusMount) string {
+	if len(mounts) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(mounts))
+	for _, mount := range mounts {
+		parts = append(parts, fmt.Sprintf("%s [%s, %s]", mount.MountPath, mount.SourceType, mount.Persistence))
+	}
+	return "mounts: " + strings.Join(parts, ", ")
 }
 
 func summarizeConfiguredPorts(forwards []config.PortMapping) []string {
