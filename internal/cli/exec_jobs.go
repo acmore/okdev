@@ -13,59 +13,7 @@ import (
 	"github.com/acmore/okdev/internal/connect"
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/output"
-	"github.com/spf13/cobra"
 )
-
-func newExecJobsCmd(opts *Options) *cobra.Command {
-	var podNames []string
-	var role string
-	var labels []string
-	var exclude []string
-	var container string
-	var jobID string
-	var fanout int
-	var readyOnly bool
-
-	cmd := &cobra.Command{
-		Use:               "exec-jobs [session]",
-		Short:             "List detached exec jobs",
-		Args:              validateExecArgs,
-		ValidArgsFunction: sessionCompletionFunc(opts),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			applySessionArg(opts, args)
-			cc, err := resolveCommandContext(opts, resolveSessionName)
-			if err != nil {
-				return err
-			}
-			if err := ensureExistingSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
-				return err
-			}
-
-			pods, err := selectSessionPods(cmd.Context(), cc, podNames, role, labels, exclude, readyOnly)
-			if err != nil {
-				return err
-			}
-			targetContainer := container
-			if targetContainer == "" {
-				targetContainer = resolveTargetContainer(cc.cfg)
-			}
-			effectiveFanout := fanout
-			if effectiveFanout <= 0 {
-				effectiveFanout = pdshDefaultFanout
-			}
-			return runExecJobs(cmd.Context(), cc.kube, cc.namespace, pods, targetContainer, jobID, effectiveFanout, cmd.OutOrStdout(), strings.EqualFold(opts.Output, "json"))
-		},
-	}
-	cmd.Flags().StringSliceVar(&podNames, "pod", nil, "Target specific pods by name (repeatable/comma-separated)")
-	cmd.Flags().StringVar(&role, "role", "", "Target pods by workload role")
-	cmd.Flags().StringSliceVar(&labels, "label", nil, "Target pods by label key=value (repeatable)")
-	cmd.Flags().StringSliceVar(&exclude, "exclude", nil, "Exclude specific pods (repeatable/comma-separated)")
-	cmd.Flags().StringVar(&container, "container", "", "Override target container")
-	cmd.Flags().StringVar(&jobID, "job-id", "", "Filter to a specific detached exec job id")
-	cmd.Flags().IntVar(&fanout, "fanout", pdshDefaultFanout, "Maximum concurrent pod queries")
-	cmd.Flags().BoolVar(&readyOnly, "ready-only", false, "Query only pods that are already running (skip readiness check)")
-	return cmd
-}
 
 type execJobView struct {
 	Pod       string `json:"pod"`
@@ -80,19 +28,28 @@ type execJobView struct {
 	Command   string `json:"command"`
 }
 
+type logicalExecJobView struct {
+	JobID        string        `json:"jobId"`
+	SummaryState string        `json:"state"`
+	Pods         int           `json:"pods"`
+	StartedAt    string        `json:"startedAt"`
+	Command      string        `json:"command"`
+	PodStates    []execJobView `json:"podStates,omitempty"`
+}
+
 type podDetachJobsResult struct {
 	pod  string
 	jobs []detachMetadata
 	err  error
 }
 
-// execJobsOutput is the JSON shape for `okdev exec-jobs`. Per-pod errors
-// are carried alongside the successful job rows so operators can see both
-// results from one listing instead of losing everything on the first
-// failure.
+// execJobsOutput is the JSON shape for `okdev jobs list` / `okdev exec-jobs`.
+// Per-pod errors are carried alongside the successful grouped job rows so
+// operators can see both results from one listing instead of losing
+// everything on the first failure.
 type execJobsOutput struct {
-	Jobs   []execJobView      `json:"jobs"`
-	Errors []execJobsPodError `json:"errors,omitempty"`
+	Jobs   []logicalExecJobView `json:"jobs"`
+	Errors []execJobsPodError   `json:"errors,omitempty"`
 }
 
 type execJobsPodError struct {
@@ -102,32 +59,27 @@ type execJobsPodError struct {
 
 func runExecJobs(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, jobID string, fanout int, out io.Writer, jsonOutput bool) error {
 	rows, podErrors := collectDetachJobs(ctx, client, namespace, pods, container, jobID, fanout)
+	jobs := groupDetachJobs(rows)
 	if jsonOutput {
-		if err := outputJSON(out, execJobsOutput{Jobs: rows, Errors: podErrors}); err != nil {
+		if err := outputJSON(out, execJobsOutput{Jobs: jobs, Errors: podErrors}); err != nil {
 			return err
 		}
 	} else {
-		if len(rows) == 0 && len(podErrors) == 0 {
+		if len(jobs) == 0 && len(podErrors) == 0 {
 			fmt.Fprintln(out, "No detached exec jobs found")
 		}
-		if len(rows) > 0 {
-			table := make([][]string, 0, len(rows))
-			for _, row := range rows {
-				exit := "-"
-				if row.ExitCode != nil {
-					exit = fmt.Sprintf("%d", *row.ExitCode)
-				}
+		if len(jobs) > 0 {
+			table := make([][]string, 0, len(jobs))
+			for _, job := range jobs {
 				table = append(table, []string{
-					row.Pod,
-					row.Container,
-					row.JobID,
-					fmt.Sprintf("%d", row.PID),
-					row.State,
-					exit,
-					row.LogPath,
+					job.JobID,
+					job.SummaryState,
+					fmt.Sprintf("%d", job.Pods),
+					job.StartedAt,
+					job.Command,
 				})
 			}
-			output.PrintTable(out, []string{"POD", "CONTAINER", "JOB ID", "PID", "STATE", "EXIT", "LOG"}, table)
+			output.PrintTable(out, []string{"JOB ID", "STATE", "PODS", "STARTED", "COMMAND"}, table)
 		}
 		if len(podErrors) > 0 {
 			fmt.Fprintf(out, "\nFAILED:\n")
@@ -207,6 +159,82 @@ func collectDetachJobs(ctx context.Context, client connect.ExecClient, namespace
 	return rows, podErrors
 }
 
+func groupDetachJobs(rows []execJobView) []logicalExecJobView {
+	byJob := make(map[string][]execJobView)
+	for _, row := range rows {
+		byJob[row.JobID] = append(byJob[row.JobID], row)
+	}
+
+	logical := make([]logicalExecJobView, 0, len(byJob))
+	for jobID, members := range byJob {
+		sort.Slice(members, func(i, j int) bool {
+			if members[i].Pod != members[j].Pod {
+				return members[i].Pod < members[j].Pod
+			}
+			return members[i].StartedAt < members[j].StartedAt
+		})
+		logical = append(logical, logicalExecJobView{
+			JobID:        jobID,
+			SummaryState: summarizeLogicalJobState(members),
+			Pods:         len(members),
+			StartedAt:    earliestStartedAt(members),
+			Command:      members[0].Command,
+			PodStates:    members,
+		})
+	}
+
+	sort.Slice(logical, func(i, j int) bool {
+		if logical[i].StartedAt != logical[j].StartedAt {
+			return logical[i].StartedAt < logical[j].StartedAt
+		}
+		return logical[i].JobID < logical[j].JobID
+	})
+	return logical
+}
+
+func summarizeLogicalJobState(rows []execJobView) string {
+	if len(rows) == 0 {
+		return "unknown"
+	}
+	total := len(rows)
+	var running, failed, exited int
+	for _, row := range rows {
+		switch {
+		case row.State == "running":
+			running++
+		case row.State == "orphaned":
+			failed++
+		case row.ExitCode != nil && *row.ExitCode != 0:
+			failed++
+		case row.State == "exited":
+			exited++
+		}
+	}
+	if running > 0 {
+		return fmt.Sprintf("running(%d/%d)", running, total)
+	}
+	if failed > 0 {
+		return fmt.Sprintf("failed(%d/%d)", failed, total)
+	}
+	if exited == total {
+		return fmt.Sprintf("exited(%d/%d)", exited, total)
+	}
+	return fmt.Sprintf("mixed(%d/%d)", total, total)
+}
+
+func earliestStartedAt(rows []execJobView) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	earliest := rows[0].StartedAt
+	for _, row := range rows[1:] {
+		if earliest == "" || (row.StartedAt != "" && row.StartedAt < earliest) {
+			earliest = row.StartedAt
+		}
+	}
+	return earliest
+}
+
 func detachJobsCommand() []string {
 	// Each output line is "<alive>\t<json>" where <alive> is 1 if the job's
 	// pid is still running and its /proc/<pid>/environ contains the
@@ -224,7 +252,7 @@ for f in "$dir"/*.json; do
   job_id=$(basename "$f" .json)
   alive=0
   if [ -n "$pid" ] && [ -r "/proc/$pid/environ" ]; then
-    if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qx "OKDEV_JOB_ID=$job_id"; then
+    if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -Fqx "OKDEV_JOB_ID=$job_id"; then
       alive=1
     fi
   fi
