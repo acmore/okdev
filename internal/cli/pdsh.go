@@ -1030,8 +1030,10 @@ func mustDetachJSONTemplateWithExit(v detachMetadata) string {
 	return out
 }
 
-func newDetachJobSpec(pod, container, cmd string, argv []string, cleanupPaths []string) detachJobSpec {
-	jobID := newDetachJobID()
+func newDetachJobSpec(jobID, pod, container, cmd string, argv []string, cleanupPaths []string) detachJobSpec {
+	if strings.TrimSpace(jobID) == "" {
+		jobID = newDetachJobID()
+	}
 	startedAt := time.Now().UTC().Format(time.RFC3339)
 	logPath := filepath.Join(detachMetadataDir, jobID+".log")
 	metaPath := filepath.Join(detachMetadataDir, jobID+".json")
@@ -1121,6 +1123,7 @@ func runDetachExec(ctx context.Context, client scriptCopyClient, namespace strin
 	displayPrefixes := formatPodPrefixes(shortNames, colorEnabled)
 
 	results := make(chan podDetachResult, len(pods))
+	jobID := newDetachJobID()
 
 	var wg sync.WaitGroup
 	for i, pod := range pods {
@@ -1140,7 +1143,7 @@ func runDetachExec(ctx context.Context, client scriptCopyClient, namespace strin
 				argv = scriptExecCommand(remotePath, invocation.ScriptHasShebang, invocation.Argv, false)
 				cleanup = []string{remotePath}
 			}
-			spec := newDetachJobSpec(pod.Name, container, invocation.DisplayCommand, argv, cleanup)
+			spec := newDetachJobSpec(jobID, pod.Name, container, invocation.DisplayCommand, argv, cleanup)
 			command := detachCommand(spec)
 			var remoteStdout, remoteStderr bytes.Buffer
 			err := connect.RunOnContainer(ctx, client, namespace, pod.Name, container, command, false, nil, &remoteStdout, &remoteStderr)

@@ -196,4 +196,10 @@ const (
 
 	// Maximum concurrent pod exec operations in multi-pod mode.
 	pdshDefaultFanout = 16
+
+	// Poll interval for detached job status reconciliation.
+	detachJobPollInterval = 200 * time.Millisecond
+
+	// Grace period between SIGTERM and SIGKILL when stopping a detached job.
+	detachJobStopGracePeriod = 10 * time.Second
 )
