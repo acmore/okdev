@@ -436,6 +436,45 @@ if [[ "$EXEC_NOPREFIX_LINES" -lt 3 ]]; then
 fi
 echo "exec --no-prefix verified"
 
+echo "Testing exec --json emits an ordered per-pod array across multiple pods"
+# 3-pod session => JSON array, one envelope per pod. The remote command exits
+# non-zero on purpose; okdev must still exit 0 (the exit code is data), and
+# each envelope must carry the captured stdout and the remote exit code.
+set +e
+EXEC_JSON_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --json -- sh -lc 'echo json-$(hostname); exit 5')
+EXEC_JSON_STATUS=$?
+set -e
+if [[ "$EXEC_JSON_STATUS" -ne 0 ]]; then
+  echo "ERROR: expected exec --json to exit 0 even when remote command exits 5, got $EXEC_JSON_STATUS" >&2
+  echo "$EXEC_JSON_OUTPUT" >&2
+  exit 1
+fi
+echo "$EXEC_JSON_OUTPUT" | python3 - <<'PY'
+import json, sys
+doc = json.load(sys.stdin)
+if not isinstance(doc, list):
+    print(f"ERROR: expected a JSON array for a multi-pod session, got {type(doc).__name__}", file=sys.stderr)
+    sys.exit(1)
+if len(doc) < 3:
+    print(f"ERROR: expected >=3 per-pod envelopes, got {len(doc)}", file=sys.stderr)
+    sys.exit(1)
+for env in doc:
+    for key in ("pod", "exit", "stdout", "stderr"):
+        if key not in env:
+            print(f"ERROR: envelope missing key {key!r}: {env}", file=sys.stderr)
+            sys.exit(1)
+    if env["exit"] != 5:
+        print(f"ERROR: expected remote exit 5 as data, got {env['exit']} for {env['pod']}", file=sys.stderr)
+        sys.exit(1)
+    if "json-" not in env["stdout"]:
+        print(f"ERROR: expected captured stdout for {env['pod']}, got {env['stdout']!r}", file=sys.stderr)
+        sys.exit(1)
+    if env.get("error"):
+        print(f"ERROR: remote non-zero exit must not set error field, got {env['error']!r}", file=sys.stderr)
+        sys.exit(1)
+print(f"exec --json array verified ({len(doc)} pods, exit=5 captured as data)")
+PY
+
 echo "Testing exec --log-dir writes per-pod log files"
 EXEC_LOG_DIR=$(mktemp -d)
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --log-dir "$EXEC_LOG_DIR" -- sh -lc 'echo log-test'
