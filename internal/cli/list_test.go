@@ -9,7 +9,7 @@ import (
 	"github.com/acmore/okdev/internal/kube"
 )
 
-func TestLoadOptionalConfigForListAnnouncesAndStops(t *testing.T) {
+func TestLoadOptionalConfigForList(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, config.DefaultFile)
 	if err := os.WriteFile(cfgPath, []byte(`
@@ -25,16 +25,7 @@ spec:
 		t.Fatalf("write config: %v", err)
 	}
 
-	var announcedPath string
-	var doneCalled bool
-	var doneSuccess bool
-	cfg, err := loadOptionalConfigForList(&Options{ConfigPath: cfgPath}, func(path string) func(bool) {
-		announcedPath = path
-		return func(success bool) {
-			doneCalled = true
-			doneSuccess = success
-		}
-	})
+	cfg, err := loadOptionalConfigForList(&Options{ConfigPath: cfgPath})
 	if err != nil {
 		t.Fatalf("loadOptionalConfigForList returned error: %v", err)
 	}
@@ -43,15 +34,6 @@ spec:
 	}
 	if cfg.Spec.Namespace != "team-a" {
 		t.Fatalf("expected namespace team-a, got %q", cfg.Spec.Namespace)
-	}
-	if announcedPath != cfgPath {
-		t.Fatalf("expected announced path %q, got %q", cfgPath, announcedPath)
-	}
-	if !doneCalled {
-		t.Fatal("expected announce completion callback to be called")
-	}
-	if !doneSuccess {
-		t.Fatal("expected announce completion callback to report success")
 	}
 }
 

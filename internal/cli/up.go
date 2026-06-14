@@ -121,24 +121,22 @@ func newUpCmd(opts *Options) *cobra.Command {
 }
 
 func runUp(cmd *cobra.Command, opts *Options, flags upOptions) error {
-	return withQuietConfigAnnounce(func() error {
-		state, err := upValidate(cmd, opts, flags)
-		if err != nil {
-			return err
-		}
-		defer state.cancel()
+	state, err := upValidate(cmd, opts, flags)
+	if err != nil {
+		return err
+	}
+	defer state.cancel()
 
-		if err := upReconcile(state, !flags.dryRun); err != nil {
-			return err
-		}
-		if flags.dryRun {
-			return upDryRun(state)
-		}
-		if err := upWait(state); err != nil {
-			return err
-		}
-		return upSetup(state)
-	})
+	if err := upReconcile(state, !flags.dryRun); err != nil {
+		return err
+	}
+	if flags.dryRun {
+		return upDryRun(state)
+	}
+	if err := upWait(state); err != nil {
+		return err
+	}
+	return upSetup(state)
 }
 
 func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, error) {

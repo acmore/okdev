@@ -44,9 +44,7 @@ func loadConfigAndNamespace(opts *Options) (*config.DevEnvironment, string, erro
 	if err != nil {
 		return nil, "", err
 	}
-	done := announceConfigPath(path)
 	cfg, path, err := config.Load(path)
-	done(err == nil)
 	if err != nil {
 		var migErr *config.MigrationEligibleError
 		if errors.As(err, &migErr) {
@@ -122,19 +120,6 @@ func optionsWithSessionConfig(opts *Options) (*Options, error) {
 	return &cloned, nil
 }
 
-func withQuietConfigAnnounce(fn func() error) error {
-	prevQuiet, hadQuiet := os.LookupEnv("OKDEV_QUIET_CONFIG_ANNOUNCE")
-	_ = os.Setenv("OKDEV_QUIET_CONFIG_ANNOUNCE", "1")
-	defer func() {
-		if hadQuiet {
-			_ = os.Setenv("OKDEV_QUIET_CONFIG_ANNOUNCE", prevQuiet)
-		} else {
-			_ = os.Unsetenv("OKDEV_QUIET_CONFIG_ANNOUNCE")
-		}
-	}()
-	return fn()
-}
-
 func applyConfigKubeContext(opts *Options, cfg *config.DevEnvironment) {
 	if opts == nil || cfg == nil {
 		return
@@ -144,29 +129,6 @@ func applyConfigKubeContext(opts *Options, cfg *config.DevEnvironment) {
 	}
 	if ctx := strings.TrimSpace(cfg.Spec.KubeContext); ctx != "" {
 		opts.Context = ctx
-	}
-}
-
-func announceConfigPath(path string) func(success bool) {
-	return announceConfigPathWithWriter(os.Stderr, path, isInteractiveWriter(os.Stderr))
-}
-
-func announceConfigPathWithWriter(w io.Writer, path string, interactive bool) func(success bool) {
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("OKDEV_QUIET_CONFIG_ANNOUNCE")), "1") {
-		return func(bool) {}
-	}
-	if strings.TrimSpace(path) == "" {
-		return func(bool) {}
-	}
-	if status := newTransientStatusWithMode(w, "Loading config "+path, interactive); status.enabled {
-		return func(bool) {
-			status.stop()
-		}
-	}
-	return func(success bool) {
-		if success {
-			fmt.Fprintf(w, "Using config: %s\n", path)
-		}
 	}
 }
 
