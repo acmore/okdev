@@ -11,6 +11,17 @@
 - `--verbose`: debug logging
 - `NO_COLOR=1` or `TERM=dumb`: disable ANSI color/styling in interactive terminal output
 
+## Exit Codes
+
+Commands that resolve a session distinguish failure classes so scripts and
+agents can react without launching a diagnostic chain on every blip:
+
+- `0`: success.
+- non-zero from a remote command (e.g. `okdev exec -- false` → `1`, `exit 7` → `7`): the remote process's own status, always preserved.
+- `74`: the cluster was reachable but the session has no pods — it is genuinely gone.
+- `78`: a transient cluster-contact failure (API timeout, connection refused/reset, server overload). okdev already retries once with backoff before surfacing this; on `78` the caller should retry rather than treat the session as dead.
+- `1`: any other error (configuration, permissions/RBAC, a failed job result, etc.).
+
 ## Commands
 
 - `okdev version`
