@@ -53,9 +53,9 @@ If the user expects workload-shaping changes to apply, check whether they need:
 
 Use:
 
-- `okdev ssh` for the managed interactive shell
+- `okdev ssh` for the managed interactive shell (bash or zsh; okdev tmux prefix is `ctrl-a`)
 - `ssh okdev-<session>` for plain SSH
-- `okdev exec` for multi-pod parallel command execution (pdsh-style fanout with `--role`, `--label`, `--pod` targeting, `--detach` for background runs, and `--fanout` concurrency control)
+- `okdev exec` for multi-pod parallel command execution (pdsh-style fanout with `--role`/`--label`/`--pod`/`--group`/`--workers` targeting, `--script` to upload+run a file, `--detach` for background runs surfaced by `okdev jobs list`, `--json` for structured per-pod results, and `--fanout` concurrency control)
 
 If attachable pods are involved, explain that interactive targeting follows attachable-pod selection rules rather than arbitrary pod choice.
 
@@ -64,6 +64,7 @@ If attachable pods are involved, explain that interactive targeting follows atta
 Default guidance:
 
 - `okdev up` already starts sync and waits for initial convergence
+- `.git` is synced by default
 - `okdev status --details` shows whether sync is active
 - `okdev sync --foreground` is useful when the user needs live troubleshooting
 - `okdev sync --reset` is the standard repair path for stale local sync state
@@ -76,6 +77,7 @@ Use:
 - `okdev cp :/remote/path ./local/path` for downloading files from a session pod
 - `--all` or `--role` to fan out copies across multiple pods
 - downloads from multiple pods are written into per-pod subdirectories
+- single-file downloads resume automatically from a partial `<dest>` or `<dest>.okdev-part`; rerun `okdev cp` to continue, and add `--verify` to check SHA-256
 
 ## Teardown
 

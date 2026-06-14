@@ -20,11 +20,12 @@ Primary docs:
 
 Use this skill when the request involves:
 
-- `okdev init`, `up`, `status`, `ssh`, `exec`, `cp`, `sync`, `ports`, `down`, `prune`
+- `okdev init`, `up`, `status`, `ssh`, `exec`, `cp`, `sync`, `ports`, `down`, `prune`, `jobs`
 - config discovery or `.okdev.yaml` / `.okdev/okdev.yaml`
 - sync behavior, session reuse, port forwards, or SSH access
 - manifest-backed workloads such as `job`, `generic`, or `pytorchjob`
 - attachable pod behavior, multi-pod sessions, or inter-pod SSH
+- exec fanout controls: pod grouping (`--group`), uploaded `--script`, background `--detach` jobs (`okdev jobs list`), or structured `--json` output
 
 Do not use this skill for:
 
@@ -48,5 +49,9 @@ Do not use this skill for:
 - `okdev up` reuses an existing session workload by default.
 - Use `okdev up --reconcile` when workload-shaping config changed and the user wants those changes applied.
 - Use `okdev sync --reset` when local/background sync state is stale but the workload itself is still the intended one.
-- `okdev ssh` is the okdev-managed interactive path; `ssh okdev-<session>` is the plain SSH host alias path.
+- `okdev ssh` is the okdev-managed interactive path; `ssh okdev-<session>` is the plain SSH host alias path. The interactive shell can be bash or zsh, and the okdev tmux prefix is `ctrl-a`.
 - For sync, SSH, and port-forward issues, `okdev status --details` is usually the first useful diagnostic.
+- For commands across pods, prefer `okdev exec` fanout: `--group`/`--workers`/`--role`/`--label`/`--pod` to target, `--script` for non-trivial pipelines, and `--detach` + `okdev jobs list` for long background runs.
+- `okdev exec --json` is the scripting/agent path: it returns each pod's `{pod, exit, stdout, stderr}` and `okdev` stays exit 0 whenever the JSON is produced, so branch on each envelope's `exit`/`error`, not on okdev's process exit.
+- okdev pre-flight exit codes: `74` = session not found (pods genuinely gone, recreate with `okdev up`), `78` = transient cluster-contact failure (retry — okdev already retried once). These go to stderr and bypass `--json`.
+- On non-TTY stdout (pipes, CI, agents) `okdev exec` auto-suppresses the per-pod name prefix; pass `--no-prefix=false` to force it back.
