@@ -62,189 +62,187 @@ func newSSHCmd(opts *Options) *cobra.Command {
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: sessionCompletionFunc(opts),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withQuietConfigAnnounce(func() error {
-				errOut := cmd.ErrOrStderr()
-				applySessionArg(opts, args)
-				stopResolve := startTransientStatus(errOut, "Resolving SSH session")
-				cc, err := resolveCommandContext(opts, resolveSessionName)
-				stopResolve()
-				if err != nil {
-					return err
-				}
-				stopOwnership := startTransientStatus(errOut, "Verifying session access")
-				if err := ensureExistingSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
-					stopOwnership()
-					return err
-				}
+			errOut := cmd.ErrOrStderr()
+			applySessionArg(opts, args)
+			stopResolve := startTransientStatus(errOut, "Resolving SSH session")
+			cc, err := resolveCommandContext(opts, resolveSessionName)
+			stopResolve()
+			if err != nil {
+				return err
+			}
+			stopOwnership := startTransientStatus(errOut, "Verifying session access")
+			if err := ensureExistingSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 				stopOwnership()
-				target, err := resolveTargetRef(cmd.Context(), cc.opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
+				return err
+			}
+			stopOwnership()
+			target, err := resolveTargetRef(cmd.Context(), cc.opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
+			if err != nil {
+				return err
+			}
+			stopMaintenance := startSessionMaintenanceWithClient(cc.kube, cc.namespace, cc.sessionName, cmd.OutOrStdout(), true)
+			defer stopMaintenance()
+
+			if user == "" {
+				user = cc.cfg.Spec.SSH.User
+			}
+			if remotePort == 0 {
+				remotePort = sshPort
+			}
+			if localPort == 0 {
+				localPort = 2222
+			}
+			if keyPath == "" {
+				keyPath, err = defaultSSHKeyPath(cc.cfg)
 				if err != nil {
 					return err
 				}
-				stopMaintenance := startSessionMaintenanceWithClient(cc.kube, cc.namespace, cc.sessionName, cmd.OutOrStdout(), true)
-				defer stopMaintenance()
+			}
 
-				if user == "" {
-					user = cc.cfg.Spec.SSH.User
-				}
-				if remotePort == 0 {
-					remotePort = sshPort
-				}
-				if localPort == 0 {
-					localPort = 2222
-				}
-				if keyPath == "" {
-					keyPath, err = defaultSSHKeyPath(cc.cfg)
-					if err != nil {
-						return err
-					}
-				}
-
-				if setupKey {
-					stopKeySetup := startTransientStatus(errOut, "Installing SSH key")
-					if err := ensureSSHKeyOnPod(cc.opts, cc.namespace, target.PodName, target.Container, keyPath); err != nil {
-						stopKeySetup()
-						return err
-					}
+			if setupKey {
+				stopKeySetup := startTransientStatus(errOut, "Installing SSH key")
+				if err := ensureSSHKeyOnPod(cc.opts, cc.namespace, target.PodName, target.Container, keyPath); err != nil {
 					stopKeySetup()
-				}
-				stopSSHDReady := startTransientStatus(errOut, "Waiting for SSH service")
-				if err := waitForSSHReady(cmd.Context(), cc.opts, cc.namespace, target.PodName, target.Container, sshServiceWaitTimeout); err != nil {
-					stopSSHDReady()
-					fmt.Fprintf(errOut, "warning: ssh service not ready yet (%v); continuing with SSH tunnel setup anyway\n", err)
-				} else {
-					stopSSHDReady()
-				}
-
-				stopPortForward := startTransientStatus(errOut, "Starting SSH tunnel")
-				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(cmd.Context(), cc.kube, cc.namespace, target.PodName, localPort, remotePort)
-				if err != nil {
-					stopPortForward()
 					return err
 				}
+				stopKeySetup()
+			}
+			stopSSHDReady := startTransientStatus(errOut, "Waiting for SSH service")
+			if err := waitForSSHReady(cmd.Context(), cc.opts, cc.namespace, target.PodName, target.Container, sshServiceWaitTimeout); err != nil {
+				stopSSHDReady()
+				fmt.Fprintf(errOut, "warning: ssh service not ready yet (%v); continuing with SSH tunnel setup anyway\n", err)
+			} else {
+				stopSSHDReady()
+			}
+
+			stopPortForward := startTransientStatus(errOut, "Starting SSH tunnel")
+			cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(cmd.Context(), cc.kube, cc.namespace, target.PodName, localPort, remotePort)
+			if err != nil {
 				stopPortForward()
-				pfKeepAliveCtx, pfKeepAliveCancel := context.WithCancel(cmd.Context())
-				var tmRef atomic.Pointer[okssh.TunnelManager]
-				pfDegraded := func() {
-					if t := tmRef.Load(); t != nil {
-						t.ForceReconnect()
-					}
+				return err
+			}
+			stopPortForward()
+			pfKeepAliveCtx, pfKeepAliveCancel := context.WithCancel(cmd.Context())
+			var tmRef atomic.Pointer[okssh.TunnelManager]
+			pfDegraded := func() {
+				if t := tmRef.Load(); t != nil {
+					t.ForceReconnect()
 				}
-				startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, portForwardKeepaliveInterval, pfDegraded)
-				var pfMu sync.Mutex
-				currentCancelPF := cancelPF
-				defer func() {
-					pfKeepAliveCancel()
-					pfMu.Lock()
-					defer pfMu.Unlock()
-					if currentCancelPF != nil {
-						currentCancelPF()
-					}
-				}()
+			}
+			startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, portForwardKeepaliveInterval, pfDegraded)
+			var pfMu sync.Mutex
+			currentCancelPF := cancelPF
+			defer func() {
+				pfKeepAliveCancel()
+				pfMu.Lock()
+				defer pfMu.Unlock()
+				if currentCancelPF != nil {
+					currentCancelPF()
+				}
+			}()
 
-				sshHost := sshHostAlias(cc.sessionName)
-				stopSSHConfig := startTransientStatus(errOut, "Preparing SSH config")
-				if _, cfgErr := ensureSSHConfigEntry(sshHost, cc.sessionName, cc.namespace, user, remotePort, keyPath, cc.cfgPath, cc.cfg.Spec.Ports); cfgErr != nil {
-					stopSSHConfig()
-					fmt.Fprintf(errOut, "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
-				} else {
-					stopSSHConfig()
-				}
+			sshHost := sshHostAlias(cc.sessionName)
+			stopSSHConfig := startTransientStatus(errOut, "Preparing SSH config")
+			if _, cfgErr := ensureSSHConfigEntry(sshHost, cc.sessionName, cc.namespace, user, remotePort, keyPath, cc.cfgPath, cc.cfg.Spec.Ports); cfgErr != nil {
+				stopSSHConfig()
+				fmt.Fprintf(errOut, "warning: failed to update ~/.ssh/config: %v\n", cfgErr)
+			} else {
+				stopSSHConfig()
+			}
 
-				warnSyncHealth(errOut, cc.sessionName)
+			warnSyncHealth(errOut, cc.sessionName)
 
-				forwardAgentEnabled := effectiveSSHForwardAgent(cc.cfg, forwardAgent, noForwardAgent)
-				agentSock := ""
-				if forwardAgentEnabled {
-					agentSock, err = resolveLocalSSHAgentSocket()
-					if err != nil {
-						return err
-					}
+			forwardAgentEnabled := effectiveSSHForwardAgent(cc.cfg, forwardAgent, noForwardAgent)
+			agentSock := ""
+			if forwardAgentEnabled {
+				agentSock, err = resolveLocalSSHAgentSocket()
+				if err != nil {
+					return err
 				}
+			}
 
-				tm := &okssh.TunnelManager{
-					SSHUser:           user,
-					SSHKeyPath:        keyPath,
-					ForwardAgentSock:  agentSock,
-					RemotePort:        remotePort,
-					KeepAliveInterval: time.Duration(cc.cfg.Spec.SSH.KeepAliveInterval) * time.Second,
-					KeepAliveTimeout:  time.Duration(cc.cfg.Spec.SSH.KeepAliveTimeout) * time.Second,
-					KeepAliveCountMax: cc.cfg.Spec.SSH.KeepAliveCountMax,
+			tm := &okssh.TunnelManager{
+				SSHUser:           user,
+				SSHKeyPath:        keyPath,
+				ForwardAgentSock:  agentSock,
+				RemotePort:        remotePort,
+				KeepAliveInterval: time.Duration(cc.cfg.Spec.SSH.KeepAliveInterval) * time.Second,
+				KeepAliveTimeout:  time.Duration(cc.cfg.Spec.SSH.KeepAliveTimeout) * time.Second,
+				KeepAliveCountMax: cc.cfg.Spec.SSH.KeepAliveCountMax,
+			}
+			tm.Env = buildSSHSessionEnv(noTmux)
+			tmRef.Store(tm)
+			tm.SetReconnectTargetProvider(func(_ context.Context) (string, int, error) {
+				pfMu.Lock()
+				defer pfMu.Unlock()
+				if currentCancelPF != nil {
+					currentCancelPF()
+					currentCancelPF = nil
 				}
-				tm.Env = buildSSHSessionEnv(noTmux)
-				tmRef.Store(tm)
-				tm.SetReconnectTargetProvider(func(_ context.Context) (string, int, error) {
-					pfMu.Lock()
-					defer pfMu.Unlock()
-					if currentCancelPF != nil {
-						currentCancelPF()
-						currentCancelPF = nil
-					}
-					pfKeepAliveCancel()
-					reconnectLocalPort := localPort
-					if p, perr := reserveEphemeralPort(); perr == nil {
-						reconnectLocalPort = p
-					}
-					cancel, lp, err := startSSHPortForwardWithFallback(cmd.Context(), cc.kube, cc.namespace, target.PodName, reconnectLocalPort, remotePort)
-					if err != nil {
-						return "", 0, err
-					}
-					currentCancelPF = cancel
-					newCtx, newCancel := context.WithCancel(cmd.Context())
-					pfKeepAliveCancel = newCancel
-					startPortForwardKeepalive(newCtx, lp, portForwardKeepaliveInterval, pfDegraded)
-					return "127.0.0.1", lp, nil
-				})
-				var lastRTTWarnNanos atomic.Int64
-				tm.SetKeepAliveRTTCallback(func(rtt time.Duration) {
-					if rtt < sshRTTWarnThreshold {
-						return
-					}
-					now := time.Now().UnixNano()
-					prev := lastRTTWarnNanos.Load()
-					if prev != 0 && now-prev < int64(sshRTTWarnCooldown) {
-						return
-					}
-					if lastRTTWarnNanos.CompareAndSwap(prev, now) {
-						fmt.Fprintf(cmd.ErrOrStderr(), "warning: ssh keepalive RTT is very high: %s\n", rtt.Round(10*time.Millisecond))
-					}
-				})
-				stopConnect := startTransientStatus(errOut, "Connecting to session")
-				if err := tm.Connect(cmd.Context(), "127.0.0.1", usedLocalPort); err != nil {
-					stopConnect()
-					return fmt.Errorf("connect ssh tunnel: %w", err)
+				pfKeepAliveCancel()
+				reconnectLocalPort := localPort
+				if p, perr := reserveEphemeralPort(); perr == nil {
+					reconnectLocalPort = p
 				}
-				stopConnect()
-				defer tm.Close()
-
-				if cmdStr != "" {
-					out, err := tm.Exec(cmdStr)
-					if len(out) > 0 {
-						_, _ = cmd.OutOrStdout().Write(out)
-					}
-					if err != nil {
-						return fmt.Errorf("ssh command failed: %w", err)
-					}
-					return nil
+				cancel, lp, err := startSSHPortForwardWithFallback(cmd.Context(), cc.kube, cc.namespace, target.PodName, reconnectLocalPort, remotePort)
+				if err != nil {
+					return "", 0, err
 				}
-				var baselineRestarts int32
-				if ri, riErr := cc.kube.GetContainerRestartInfo(cmd.Context(), cc.namespace, target.PodName, target.Container); riErr == nil && ri != nil {
-					baselineRestarts = ri.RestartCount
-				}
-				checkRestart := func() *kube.ContainerRestartInfo {
-					ctx, cancel := context.WithTimeout(context.Background(), sessionAccessTimeout)
-					defer cancel()
-					ri, err := cc.kube.GetContainerRestartInfo(ctx, cc.namespace, target.PodName, target.Container)
-					if err != nil || ri == nil {
-						return nil
-					}
-					if ri.RestartCount > baselineRestarts {
-						return ri
-					}
-					return nil
-				}
-				return runSSHShellWithReconnectAndRestartCheck(cmd.Context(), tm, cc.sessionName, cmd.ErrOrStderr(), checkRestart)
+				currentCancelPF = cancel
+				newCtx, newCancel := context.WithCancel(cmd.Context())
+				pfKeepAliveCancel = newCancel
+				startPortForwardKeepalive(newCtx, lp, portForwardKeepaliveInterval, pfDegraded)
+				return "127.0.0.1", lp, nil
 			})
+			var lastRTTWarnNanos atomic.Int64
+			tm.SetKeepAliveRTTCallback(func(rtt time.Duration) {
+				if rtt < sshRTTWarnThreshold {
+					return
+				}
+				now := time.Now().UnixNano()
+				prev := lastRTTWarnNanos.Load()
+				if prev != 0 && now-prev < int64(sshRTTWarnCooldown) {
+					return
+				}
+				if lastRTTWarnNanos.CompareAndSwap(prev, now) {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: ssh keepalive RTT is very high: %s\n", rtt.Round(10*time.Millisecond))
+				}
+			})
+			stopConnect := startTransientStatus(errOut, "Connecting to session")
+			if err := tm.Connect(cmd.Context(), "127.0.0.1", usedLocalPort); err != nil {
+				stopConnect()
+				return fmt.Errorf("connect ssh tunnel: %w", err)
+			}
+			stopConnect()
+			defer tm.Close()
+
+			if cmdStr != "" {
+				out, err := tm.Exec(cmdStr)
+				if len(out) > 0 {
+					_, _ = cmd.OutOrStdout().Write(out)
+				}
+				if err != nil {
+					return fmt.Errorf("ssh command failed: %w", err)
+				}
+				return nil
+			}
+			var baselineRestarts int32
+			if ri, riErr := cc.kube.GetContainerRestartInfo(cmd.Context(), cc.namespace, target.PodName, target.Container); riErr == nil && ri != nil {
+				baselineRestarts = ri.RestartCount
+			}
+			checkRestart := func() *kube.ContainerRestartInfo {
+				ctx, cancel := context.WithTimeout(context.Background(), sessionAccessTimeout)
+				defer cancel()
+				ri, err := cc.kube.GetContainerRestartInfo(ctx, cc.namespace, target.PodName, target.Container)
+				if err != nil || ri == nil {
+					return nil
+				}
+				if ri.RestartCount > baselineRestarts {
+					return ri
+				}
+				return nil
+			}
+			return runSSHShellWithReconnectAndRestartCheck(cmd.Context(), tm, cc.sessionName, cmd.ErrOrStderr(), checkRestart)
 		},
 	}
 
@@ -791,150 +789,148 @@ func newSSHProxyCmd(opts *Options) *cobra.Command {
 		Short:  "Internal SSH proxy bridge",
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return withQuietConfigAnnounce(func() error {
-				cc, err := resolveCommandContext(opts, resolveSessionName)
-				if err != nil {
-					return err
-				}
-				if err := ensureExistingSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
-					return err
-				}
-				target, err := resolveTargetRef(cmd.Context(), cc.opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
-				if err != nil {
-					return err
-				}
-				if remotePort == 0 {
-					remotePort = sshPort
-				}
+			cc, err := resolveCommandContext(opts, resolveSessionName)
+			if err != nil {
+				return err
+			}
+			if err := ensureExistingSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
+				return err
+			}
+			target, err := resolveTargetRef(cmd.Context(), cc.opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
+			if err != nil {
+				return err
+			}
+			if remotePort == 0 {
+				remotePort = sshPort
+			}
 
-				stopMaintenance := startSessionMaintenanceWithClient(cc.kube, cc.namespace, cc.sessionName, cmd.ErrOrStderr(), true)
-				defer stopMaintenance()
+			stopMaintenance := startSessionMaintenanceWithClient(cc.kube, cc.namespace, cc.sessionName, cmd.ErrOrStderr(), true)
+			defer stopMaintenance()
 
-				cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(cmd.Context(), cc.kube, cc.namespace, target.PodName, 2222, remotePort)
-				if err != nil {
-					return err
-				}
-				if cancelPF != nil {
-					defer cancelPF()
-				}
+			cancelPF, usedLocalPort, err := startSSHPortForwardWithFallback(cmd.Context(), cc.kube, cc.namespace, target.PodName, 2222, remotePort)
+			if err != nil {
+				return err
+			}
+			if cancelPF != nil {
+				defer cancelPF()
+			}
 
-				slog.Debug("ssh-proxy dialing local port-forward", "port", usedLocalPort)
-				conn, err := waitDialLocal(usedLocalPort, localDialTotalTimeout)
-				if err != nil {
-					slog.Debug("ssh-proxy dial failed", "error", err)
-					return err
-				}
-				defer conn.Close()
-				startTime := time.Now()
-				var healthDisconnect atomic.Bool
+			slog.Debug("ssh-proxy dialing local port-forward", "port", usedLocalPort)
+			conn, err := waitDialLocal(usedLocalPort, localDialTotalTimeout)
+			if err != nil {
+				slog.Debug("ssh-proxy dial failed", "error", err)
+				return err
+			}
+			defer conn.Close()
+			startTime := time.Now()
+			var healthDisconnect atomic.Bool
 
-				// Layer 1: TCP keepalive tuning (5s period, KEEPCNT=2 where supported)
-				setTCPKeepAliveProxyTuning(conn)
+			// Layer 1: TCP keepalive tuning (5s period, KEEPCNT=2 where supported)
+			setTCPKeepAliveProxyTuning(conn)
 
-				// Layer 3: Port-forward keepalive probe with onDegraded wired up
-				pfKeepAliveCtx, pfKeepAliveCancel := context.WithCancel(cmd.Context())
-				defer pfKeepAliveCancel()
-				startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, portForwardKeepaliveInterval, func() {
-					healthDisconnect.Store(true)
-					logx.Printf("time=%s source=ssh-proxy msg=%q port=%d uptime=%s\n",
-						time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
-						"port-forward degraded, closing connection",
-						usedLocalPort,
-						time.Since(startTime).Round(time.Second),
-					)
-					_ = conn.Close()
-				})
-
-				slog.Debug("ssh-proxy connection established", "localAddr", conn.LocalAddr(), "remoteAddr", conn.RemoteAddr())
-
-				// Close conn on context cancellation (SIGINT/SIGTERM) to unblock io.Copy goroutines
-				go func() {
-					<-cmd.Context().Done()
-					_ = conn.Close()
-				}()
-
-				// Layer 2: Data flow monitor
-				var lastData atomic.Int64
-				lastData.Store(time.Now().UnixNano())
-				watchdogCtx, watchdogCancel := context.WithCancel(cmd.Context())
-				defer watchdogCancel()
-				go proxyDataFlowWatchdog(watchdogCtx, &lastData, dataFlowWatchdogInterval, dataFlowWatchdogIdleTimeout, func(idle time.Duration) {
-					healthDisconnect.Store(true)
-					logx.Printf("time=%s source=ssh-proxy msg=%q idle=%s threshold=%s uptime=%s\n",
-						time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
-						"data flow watchdog idle timeout",
-						idle.Round(time.Millisecond),
-						dataFlowWatchdogIdleTimeout,
-						time.Since(startTime).Round(time.Second),
-					)
-					_ = conn.Close()
-				})
-
-				var copyErr error
-				var copyErrMu sync.Mutex
-				var once sync.Once
-				done := make(chan struct{})
-				getCopyErr := func() error {
-					copyErrMu.Lock()
-					defer copyErrMu.Unlock()
-					return copyErr
-				}
-				setErr := func(err error) {
-					if err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, syscall.EPIPE) || isIgnorableProxyIOError(err) {
-						return
-					}
-					slog.Debug("ssh-proxy copy error", "error", err)
-					once.Do(func() {
-						copyErrMu.Lock()
-						copyErr = err
-						copyErrMu.Unlock()
-					})
-				}
-				go func() {
-					slog.Debug("ssh-proxy starting copy: stdin -> conn")
-					_, err := monitoredCopy(conn, os.Stdin, &lastData)
-					setErr(err)
-					slog.Debug("ssh-proxy finished copy: stdin -> conn")
-					select {
-					case <-done:
-					default:
-						_ = conn.Close()
-					}
-				}()
-				go func() {
-					slog.Debug("ssh-proxy starting copy: conn -> stdout")
-					_, err := monitoredCopy(os.Stdout, conn, &lastData)
-					setErr(err)
-					slog.Debug("ssh-proxy finished copy: conn -> stdout")
-					close(done)
-					_ = conn.Close()
-				}()
-				<-done
-				watchdogCancel()
-				if healthDisconnect.Load() {
-					err := getCopyErr()
-					logx.Printf("time=%s source=ssh-proxy msg=%q err=%q uptime=%s\n",
-						time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
-						"session finished after health-triggered disconnect",
-						err,
-						time.Since(startTime).Round(time.Second),
-					)
-					if err != nil {
-						return fmt.Errorf("%w: %v", ErrProxyHealthDisconnect, err)
-					}
-					return ErrProxyHealthDisconnect
-				}
-				if err := getCopyErr(); err != nil {
-					logx.Printf("time=%s source=ssh-proxy msg=%q err=%q uptime=%s\n",
-						time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
-						"session finished with proxy copy error",
-						err,
-						time.Since(startTime).Round(time.Second),
-					)
-					return err
-				}
-				return nil
+			// Layer 3: Port-forward keepalive probe with onDegraded wired up
+			pfKeepAliveCtx, pfKeepAliveCancel := context.WithCancel(cmd.Context())
+			defer pfKeepAliveCancel()
+			startPortForwardKeepalive(pfKeepAliveCtx, usedLocalPort, portForwardKeepaliveInterval, func() {
+				healthDisconnect.Store(true)
+				logx.Printf("time=%s source=ssh-proxy msg=%q port=%d uptime=%s\n",
+					time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
+					"port-forward degraded, closing connection",
+					usedLocalPort,
+					time.Since(startTime).Round(time.Second),
+				)
+				_ = conn.Close()
 			})
+
+			slog.Debug("ssh-proxy connection established", "localAddr", conn.LocalAddr(), "remoteAddr", conn.RemoteAddr())
+
+			// Close conn on context cancellation (SIGINT/SIGTERM) to unblock io.Copy goroutines
+			go func() {
+				<-cmd.Context().Done()
+				_ = conn.Close()
+			}()
+
+			// Layer 2: Data flow monitor
+			var lastData atomic.Int64
+			lastData.Store(time.Now().UnixNano())
+			watchdogCtx, watchdogCancel := context.WithCancel(cmd.Context())
+			defer watchdogCancel()
+			go proxyDataFlowWatchdog(watchdogCtx, &lastData, dataFlowWatchdogInterval, dataFlowWatchdogIdleTimeout, func(idle time.Duration) {
+				healthDisconnect.Store(true)
+				logx.Printf("time=%s source=ssh-proxy msg=%q idle=%s threshold=%s uptime=%s\n",
+					time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
+					"data flow watchdog idle timeout",
+					idle.Round(time.Millisecond),
+					dataFlowWatchdogIdleTimeout,
+					time.Since(startTime).Round(time.Second),
+				)
+				_ = conn.Close()
+			})
+
+			var copyErr error
+			var copyErrMu sync.Mutex
+			var once sync.Once
+			done := make(chan struct{})
+			getCopyErr := func() error {
+				copyErrMu.Lock()
+				defer copyErrMu.Unlock()
+				return copyErr
+			}
+			setErr := func(err error) {
+				if err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, syscall.EPIPE) || isIgnorableProxyIOError(err) {
+					return
+				}
+				slog.Debug("ssh-proxy copy error", "error", err)
+				once.Do(func() {
+					copyErrMu.Lock()
+					copyErr = err
+					copyErrMu.Unlock()
+				})
+			}
+			go func() {
+				slog.Debug("ssh-proxy starting copy: stdin -> conn")
+				_, err := monitoredCopy(conn, os.Stdin, &lastData)
+				setErr(err)
+				slog.Debug("ssh-proxy finished copy: stdin -> conn")
+				select {
+				case <-done:
+				default:
+					_ = conn.Close()
+				}
+			}()
+			go func() {
+				slog.Debug("ssh-proxy starting copy: conn -> stdout")
+				_, err := monitoredCopy(os.Stdout, conn, &lastData)
+				setErr(err)
+				slog.Debug("ssh-proxy finished copy: conn -> stdout")
+				close(done)
+				_ = conn.Close()
+			}()
+			<-done
+			watchdogCancel()
+			if healthDisconnect.Load() {
+				err := getCopyErr()
+				logx.Printf("time=%s source=ssh-proxy msg=%q err=%q uptime=%s\n",
+					time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
+					"session finished after health-triggered disconnect",
+					err,
+					time.Since(startTime).Round(time.Second),
+				)
+				if err != nil {
+					return fmt.Errorf("%w: %v", ErrProxyHealthDisconnect, err)
+				}
+				return ErrProxyHealthDisconnect
+			}
+			if err := getCopyErr(); err != nil {
+				logx.Printf("time=%s source=ssh-proxy msg=%q err=%q uptime=%s\n",
+					time.Now().Format("2006-01-02T15:04:05.000Z07:00"),
+					"session finished with proxy copy error",
+					err,
+					time.Since(startTime).Round(time.Second),
+				)
+				return err
+			}
+			return nil
 		},
 	}
 	cmd.Flags().IntVar(&remotePort, "remote-port", 0, "Remote SSH port in pod")
