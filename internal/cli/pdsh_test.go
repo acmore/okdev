@@ -921,3 +921,27 @@ func TestFilterRunningPodsReadinessCheck(t *testing.T) {
 		t.Fatalf("expected leader-0, got %s", running[0].Name)
 	}
 }
+
+func TestResolveExecNoPrefix(t *testing.T) {
+	// A non-terminal writer (bytes.Buffer has no Fd) simulates a pipe/redirect.
+	var pipe bytes.Buffer
+
+	tests := []struct {
+		name          string
+		explicitlySet bool
+		noPrefix      bool
+		out           io.Writer
+		want          bool
+	}{
+		{name: "piped, flag untouched -> auto-suppress", explicitlySet: false, noPrefix: false, out: &pipe, want: true},
+		{name: "piped, explicit --no-prefix=false honored", explicitlySet: true, noPrefix: false, out: &pipe, want: false},
+		{name: "piped, explicit --no-prefix=true", explicitlySet: true, noPrefix: true, out: &pipe, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveExecNoPrefix(tt.explicitlySet, tt.noPrefix, tt.out); got != tt.want {
+				t.Fatalf("resolveExecNoPrefix(%v, %v, pipe) = %v, want %v", tt.explicitlySet, tt.noPrefix, got, tt.want)
+			}
+		})
+	}
+}

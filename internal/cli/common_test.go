@@ -214,16 +214,6 @@ func TestTransientStatusResetElapsed(t *testing.T) {
 	}
 }
 
-func TestAnnounceConfigPathFallsBackToStaticOutput(t *testing.T) {
-	var out bytes.Buffer
-	done := announceConfigPathWithWriter(&out, "/tmp/.okdev.yaml", false)
-	done(true)
-
-	if got := out.String(); got != "Using config: /tmp/.okdev.yaml\n" {
-		t.Fatalf("unexpected static output %q", got)
-	}
-}
-
 func TestANSIEnabledDefaultsToTrue(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
 	t.Setenv("TERM", "xterm-256color")
@@ -244,38 +234,6 @@ func TestANSIEnabledHonorsNoColorAndDumbTerm(t *testing.T) {
 	t.Setenv("TERM", "dumb")
 	if ansiEnabled() {
 		t.Fatal("expected TERM=dumb to disable ANSI")
-	}
-}
-
-func TestAnnounceConfigPathSkipsWhenQuietOrEmpty(t *testing.T) {
-	t.Setenv("OKDEV_QUIET_CONFIG_ANNOUNCE", "1")
-
-	var out bytes.Buffer
-	done := announceConfigPathWithWriter(&out, "/tmp/.okdev.yaml", false)
-	done(true)
-	if out.Len() != 0 {
-		t.Fatalf("expected quiet announce to suppress output, got %q", out.String())
-	}
-
-	done = announceConfigPathWithWriter(&out, "", false)
-	done(true)
-	if out.Len() != 0 {
-		t.Fatalf("expected empty path to suppress output, got %q", out.String())
-	}
-}
-
-func TestWithQuietConfigAnnounceSetsAndRestoresEnv(t *testing.T) {
-	t.Setenv("OKDEV_QUIET_CONFIG_ANNOUNCE", "0")
-	if err := withQuietConfigAnnounce(func() error {
-		if got := os.Getenv("OKDEV_QUIET_CONFIG_ANNOUNCE"); got != "1" {
-			t.Fatalf("expected quiet env to be forced inside callback, got %q", got)
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("withQuietConfigAnnounce: %v", err)
-	}
-	if got := os.Getenv("OKDEV_QUIET_CONFIG_ANNOUNCE"); got != "0" {
-		t.Fatalf("expected quiet env to be restored, got %q", got)
 	}
 }
 

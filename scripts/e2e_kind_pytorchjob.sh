@@ -404,6 +404,22 @@ if [[ "$EXEC_EXCLUDE_LINES" -ne 2 ]]; then
 fi
 echo "exec --exclude verified"
 
+echo "Testing exec auto-suppresses prefix when stdout is captured (non-TTY)"
+# No --no-prefix flag, but the command substitution makes stdout a pipe, so
+# the [pod] prefix should be auto-suppressed (okdev-exec-output spec §1).
+EXEC_AUTO_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'echo auto-bare')
+if echo "$EXEC_AUTO_OUTPUT" | grep -q '^\['; then
+  echo "ERROR: expected auto-suppressed prefix for captured exec output, got prefixed lines" >&2
+  echo "$EXEC_AUTO_OUTPUT" >&2
+  exit 1
+fi
+if [[ "$(echo "$EXEC_AUTO_OUTPUT" | grep -c 'auto-bare')" -lt 3 ]]; then
+  echo "ERROR: expected 3 auto-bare lines from captured exec, got:" >&2
+  echo "$EXEC_AUTO_OUTPUT" >&2
+  exit 1
+fi
+echo "exec auto-suppress prefix verified"
+
 echo "Testing exec --no-prefix suppresses pod name prefix"
 EXEC_NOPREFIX_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-prefix --no-tty -- sh -lc 'echo raw-output')
 echo "$EXEC_NOPREFIX_OUTPUT"
