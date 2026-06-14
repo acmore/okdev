@@ -1154,6 +1154,10 @@ var openRemoteVerifiedSingleFileRangeForCopy = func(ctx context.Context, c *Clie
 	return c.openRemoteVerifiedSingleFileRange(ctx, namespace, podName, container, remotePath, offset, localSHA256)
 }
 
+var computeRemoteSingleFileSHA256ForCopy = func(ctx context.Context, c *Client, namespace, podName, container, remotePath string) (string, error) {
+	return c.computeRemoteSingleFileSHA256(ctx, namespace, podName, container, remotePath)
+}
+
 var errChecksumMismatch = errors.New("checksum mismatch")
 
 // CopyToPodInContainerWithProgress copies a single local file to remotePath
@@ -1472,7 +1476,7 @@ func (c *Client) openRemoteSingleFileRange(ctx context.Context, namespace, podNa
 	}
 	pr, pw := io.Pipe()
 	errCh := make(chan error, 1)
-	cmd := []string{"sh", "-lc", fmt.Sprintf("dd if=%s bs=1 skip=%d 2>/dev/null", shellQuote(remotePath), offset)}
+	cmd := []string{"sh", "-lc", buildRemoteSingleFileRangeCommand(remotePath, offset)}
 	go func() {
 		errCh <- c.execStream(ctx, cs, cfg, namespace, podName, container, cmd, nil, pw, io.Discard, false)
 		_ = pw.Close()
@@ -1480,6 +1484,18 @@ func (c *Client) openRemoteSingleFileRange(ctx context.Context, namespace, podNa
 	return pr, func() error {
 		return <-errCh
 	}, nil
+}
+
+// buildRemoteSingleFileRangeCommand emits bytes [offset, EOF) from
+// remotePath. `tail -c +N` selects from byte N (1-indexed) and streams via
+// stdio buffering (block-sized reads). Using `dd skip=N bs=1` instead
+// would force byte-by-byte syscalls on both the skip and the read, which
+// turns a single-GB transfer into a multi-hour ordeal.
+func buildRemoteSingleFileRangeCommand(remotePath string, offset int64) string {
+	if offset <= 0 {
+		return fmt.Sprintf("cat %s", shellQuote(remotePath))
+	}
+	return fmt.Sprintf("tail -c +%d %s", offset+1, shellQuote(remotePath))
 }
 
 func buildVerifiedRemoteSingleFileRangeCommand(remotePath string, offset int64) string {
@@ -1513,6 +1529,56 @@ func buildVerifiedRemoteSingleFileRangeCommand(remotePath string, offset int64) 
 		shellQuote(pythonScript), shellQuote(remotePath), offset,
 		shellQuote(pythonScript), shellQuote(remotePath), offset,
 	)
+}
+
+// buildRemoteSingleFileSHA256Command emits the file's SHA-256 hex digest on
+// stdout. Used when the local copy is already complete and we only need
+// the remote hash for verification — no bytes have to be re-sent.
+//
+// sha256sum (coreutils) covers ~every Linux container including alpine
+// and busybox-based images; the python fallbacks chunk-read so we don't
+// load multi-GB files into memory.
+func buildRemoteSingleFileSHA256Command(remotePath string) string {
+	quoted := shellQuote(remotePath)
+	pythonScript := strings.Join([]string{
+		"import hashlib, sys",
+		"h = hashlib.sha256()",
+		"with open(sys.argv[1], 'rb') as f:",
+		"    while True:",
+		"        chunk = f.read(1024 * 1024)",
+		"        if not chunk:",
+		"            break",
+		"        h.update(chunk)",
+		"print(h.hexdigest())",
+	}, "\n")
+	pyQuoted := shellQuote(pythonScript)
+	return fmt.Sprintf(
+		"if command -v sha256sum >/dev/null 2>&1; then sha256sum < %s | awk '{print $1}'; exit 0; fi; "+
+			"if command -v python3 >/dev/null 2>&1; then exec python3 -c %s -- %s; fi; "+
+			"if command -v python  >/dev/null 2>&1; then exec python  -c %s -- %s; fi; "+
+			"echo 'checksum verification requires sha256sum, python3, or python in the container' >&2; exit 127",
+		quoted, pyQuoted, quoted, pyQuoted, quoted,
+	)
+}
+
+func (c *Client) computeRemoteSingleFileSHA256(ctx context.Context, namespace, podName, container, remotePath string) (string, error) {
+	cs, cfg, err := c.clientset()
+	if err != nil {
+		return "", err
+	}
+	var stdout, stderr bytes.Buffer
+	cmd := []string{"sh", "-lc", buildRemoteSingleFileSHA256Command(remotePath)}
+	if err := c.execStream(ctx, cs, cfg, namespace, podName, container, cmd, nil, &stdout, &stderr, false); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return "", fmt.Errorf("compute remote sha256: %w: %s", err, msg)
+		}
+		return "", fmt.Errorf("compute remote sha256: %w", err)
+	}
+	sum := strings.ToLower(strings.TrimSpace(stdout.String()))
+	if len(sum) != 64 {
+		return "", fmt.Errorf("compute remote sha256: unexpected output %q", sum)
+	}
+	return sum, nil
 }
 
 func parseVerifiedRemoteSingleFileChecksum(raw string) (string, error) {
@@ -1639,11 +1705,19 @@ func (c *Client) CopyFromPodInContainerVerifiedWithProgress(ctx context.Context,
 		return err
 	}
 	if state.AlreadyComplete {
-		rc, err := openRemoteVerifiedSingleFileRangeForCopy(ctx, c, namespace, podName, container, remotePath, info.Size, verifier.SumHex)
+		// Local file already matches the remote size; we just need the
+		// remote SHA-256 to confirm. Use the dedicated hash-only remote
+		// command instead of streaming the whole file back, which would
+		// otherwise re-read GBs of remote data only to discard the bytes.
+		remoteSum, err := computeRemoteSingleFileSHA256ForCopy(ctx, c, namespace, podName, container, remotePath)
 		if err != nil {
 			return err
 		}
-		return rc.Close()
+		localSum := strings.ToLower(verifier.SumHex())
+		if localSum != remoteSum {
+			return fmt.Errorf("%w: remote %s local %s", errChecksumMismatch, remoteSum, localSum)
+		}
+		return nil
 	}
 	if state.ResumeOffset > 0 && prog.OnResume != nil {
 		prog.OnResume(state.ResumeOffset)
