@@ -208,6 +208,85 @@ func TestBuildInteractiveLoginScriptWithBashDoesNotSourceZshrc(t *testing.T) {
 	}
 }
 
+func TestZshBootstrapScriptIsRobustToSpecialPathChars(t *testing.T) {
+	// The bootstrap must round-trip a workspace path containing shell
+	// metacharacters without corrupting the generated ~/.zshrc.
+	// We don't embed the path in the script body any more — it goes
+	// through $OKDEV_WORKSPACE at runtime — so the script content
+	// itself must not depend on the literal path.
+	for _, workspace := range []string{
+		"/workspace/demo",
+		"/workspace/with space",
+		"/workspace/with$dollar",
+		"/workspace/with'quote",
+	} {
+		script := zshBootstrapScript(workspace, "/bin/zsh")
+		if !strings.Contains(script, `"$OKDEV_WORKSPACE/.okdev/zshrc"`) {
+			t.Fatalf("workspace %q: expected stub to reference $OKDEV_WORKSPACE, got %s", workspace, script)
+		}
+		// The literal workspace path must NOT appear in the script
+		// itself, otherwise we are still subject to quoting bugs.
+		if strings.Contains(script, workspace) {
+			t.Fatalf("workspace %q: expected path to be resolved via env var, not embedded literally: %s", workspace, script)
+		}
+		// Quick sanity: feed the script through `sh -n` to catch syntax
+		// errors introduced by future edits.
+		cmd := exec.Command("sh", "-n")
+		cmd.Stdin = strings.NewReader(script)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("workspace %q: sh -n rejected zsh bootstrap: %v\nscript: %s\nstderr: %s", workspace, err, script, out)
+		}
+	}
+}
+
+func TestShellDriftWarningScriptFires(t *testing.T) {
+	// Run the warning fragment with a missing OKDEV_SHELL path and confirm
+	// it prints to stderr. This catches regressions where the warning is
+	// silently dropped (the original sin of resolveInteractiveShell).
+	script := shellDriftWarningScript("/bin/bash")
+	if script == "" {
+		t.Fatal("expected drift warning script to be non-empty")
+	}
+	cmd := exec.Command("sh", "-c", "OKDEV_SHELL=/definitely/missing/zsh; export OKDEV_SHELL; "+script)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run drift warning: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "OKDEV_SHELL=/definitely/missing/zsh is not executable") {
+		t.Fatalf("expected drift warning on stderr, got: %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "falling back to /bin/bash") {
+		t.Fatalf("expected drift warning to name the fallback, got: %q", stderr.String())
+	}
+}
+
+func TestShellDriftWarningScriptSilentWhenShellExists(t *testing.T) {
+	script := shellDriftWarningScript("/bin/bash")
+	cmd := exec.Command("sh", "-c", "OKDEV_SHELL=/bin/sh; export OKDEV_SHELL; "+script)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run drift warning: %v", err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no warning when shell is executable, got: %q", stderr.String())
+	}
+}
+
+func TestShellDriftWarningScriptSilentWhenUnset(t *testing.T) {
+	script := shellDriftWarningScript("/bin/bash")
+	cmd := exec.Command("sh", "-c", "unset OKDEV_SHELL; "+script)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run drift warning: %v", err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no warning when OKDEV_SHELL unset, got: %q", stderr.String())
+	}
+}
+
 func TestBuildInteractiveLoginScriptSkipsTmuxWhenDisabled(t *testing.T) {
 	script := buildInteractiveLoginScript(
 		map[string]string{"OKDEV_NO_TMUX": "1"},
