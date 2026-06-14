@@ -28,7 +28,7 @@ func TestBuildWorkloadSnapshotPod(t *testing.T) {
 			},
 		},
 	}
-	snap := BuildWorkloadSnapshot(cfg, "/workspace", "dev", true, "echo bye", "", "")
+	snap := BuildWorkloadSnapshot(cfg, "/workspace", "dev", true, "", "echo bye", "", "")
 	if snap.Version != "v1" {
 		t.Fatalf("expected version v1, got %s", snap.Version)
 	}
@@ -75,8 +75,8 @@ func TestWorkloadSnapshotHashIncludesSidecarResources(t *testing.T) {
 			},
 		},
 	}
-	snap1 := BuildWorkloadSnapshot(cfg1, "/workspace", "dev", false, "", "", "")
-	snap2 := BuildWorkloadSnapshot(cfg2, "/workspace", "dev", false, "", "", "")
+	snap1 := BuildWorkloadSnapshot(cfg1, "/workspace", "dev", false, "", "", "", "")
+	snap2 := BuildWorkloadSnapshot(cfg2, "/workspace", "dev", false, "", "", "", "")
 	h1, _ := snap1.SHA256()
 	h2, _ := snap2.SHA256()
 	if h1 == h2 {
@@ -103,12 +103,36 @@ func TestBuildWorkloadSnapshotExcludesNonWorkloadFields(t *testing.T) {
 			Sync:     SyncSpec{Paths: []string{"src/"}},
 		},
 	}
-	snap1 := BuildWorkloadSnapshot(cfg1, "/workspace", "dev", false, "", "", "")
-	snap2 := BuildWorkloadSnapshot(cfg2, "/workspace", "dev", false, "", "", "")
+	snap1 := BuildWorkloadSnapshot(cfg1, "/workspace", "dev", false, "", "", "", "")
+	snap2 := BuildWorkloadSnapshot(cfg2, "/workspace", "dev", false, "", "", "", "")
 	h1, _ := snap1.SHA256()
 	h2, _ := snap2.SHA256()
 	if h1 != h2 {
 		t.Fatal("snapshots should be equal when only non-workload fields differ")
+	}
+}
+
+func TestBuildWorkloadSnapshotShellChangeAffectsHash(t *testing.T) {
+	cfg1 := &DevEnvironment{
+		Spec: DevEnvSpec{
+			Workload: WorkloadSpec{Type: "pod"},
+			Sidecar:  SidecarSpec{Image: "img:1"},
+			SSH:      SSHSpec{Shell: ""},
+		},
+	}
+	cfg2 := &DevEnvironment{
+		Spec: DevEnvSpec{
+			Workload: WorkloadSpec{Type: "pod"},
+			Sidecar:  SidecarSpec{Image: "img:1"},
+			SSH:      SSHSpec{Shell: "/bin/zsh"},
+		},
+	}
+	snap1 := BuildWorkloadSnapshot(cfg1, "/workspace", "dev", false, "", "", "", "")
+	snap2 := BuildWorkloadSnapshot(cfg2, "/workspace", "dev", false, "/bin/zsh", "", "", "")
+	h1, _ := snap1.SHA256()
+	h2, _ := snap2.SHA256()
+	if h1 == h2 {
+		t.Fatal("expected shell changes to affect workload hash")
 	}
 }
 
@@ -142,7 +166,7 @@ func TestBuildWorkloadSnapshotGenericIncludesManifestHash(t *testing.T) {
 			Sidecar:  SidecarSpec{Image: "img:1"},
 		},
 	}
-	snap := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "job.yaml", f)
+	snap := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "", "job.yaml", f)
 	if snap.ManifestSHA256 == "" {
 		t.Fatal("expected manifest hash for job workload")
 	}
@@ -171,7 +195,7 @@ func TestBuildWorkloadSnapshotUsesEffectiveInjectForInterPodSSH(t *testing.T) {
 		},
 	}
 
-	snap := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "pytorchjob.yaml", "")
+	snap := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "", "pytorchjob.yaml", "")
 	if len(snap.Workload.Inject) != 2 {
 		t.Fatalf("expected 2 inject specs, got %d", len(snap.Workload.Inject))
 	}
@@ -187,8 +211,8 @@ func TestWorkloadSnapshotHashIgnoresManifestPath(t *testing.T) {
 			Sidecar:  SidecarSpec{Image: "img:1"},
 		},
 	}
-	snap1 := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "job.yaml", "/tmp/a/job.yaml")
-	snap2 := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "/Users/me/src/job.yaml", "/tmp/b/job.yaml")
+	snap1 := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "", "job.yaml", "/tmp/a/job.yaml")
+	snap2 := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "", "/Users/me/src/job.yaml", "/tmp/b/job.yaml")
 	snap1.ManifestSHA256 = "same"
 	snap2.ManifestSHA256 = "same"
 

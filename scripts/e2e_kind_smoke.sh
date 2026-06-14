@@ -58,6 +58,7 @@ cd "$WORKDIR"
   --dev-image ubuntu:22.04 \
   --sidecar-image "$SIDECAR_IMAGE" \
   --ssh-user root \
+  --shell /bin/zsh \
   --sync-local "$SYNC_DIR" \
   --sync-remote /workspace
 
@@ -69,6 +70,23 @@ else
   echo "ERROR: okdev init did not write a config file" >&2
   exit 1
 fi
+
+# Verify `okdev init --shell /bin/zsh` scaffolded the zsh starter files
+# alongside the config.
+ZSH_DIR="$WORKDIR/.okdev"
+for path in "$ZSH_DIR/zshrc" "$ZSH_DIR/zsh-setup.example.sh"; do
+  if [[ ! -f "$path" ]]; then
+    echo "ERROR: expected okdev init --shell /bin/zsh to scaffold $path" >&2
+    ls -la "$ZSH_DIR" >&2 || true
+    exit 1
+  fi
+done
+if ! grep -q 'shell: /bin/zsh' "$CFG_PATH"; then
+  echo "ERROR: expected scaffolded config to contain spec.ssh.shell: /bin/zsh" >&2
+  cat "$CFG_PATH" >&2
+  exit 1
+fi
+echo "okdev init --shell scaffolding verified"
 
 # Disable persistent SSH sessions for CI
 replace_all_in_file "$CFG_PATH" 'persistentSession: true' 'persistentSession: false'
@@ -167,6 +185,18 @@ if [[ "$SSH_AGENT_OUTSIDE" != *"ssh-agent-ok"* ]]; then
   echo "$SSH_AGENT_OUTSIDE" >&2
   exit 1
 fi
+# Verify the configured spec.ssh.shell was injected onto the dev container
+# as OKDEV_SHELL. ubuntu:22.04 does not ship zsh, so the interactive
+# resolver would fall back, but the env var must still be exported for the
+# drift-warning path to fire on subsequent interactive sessions.
+SHELL_ENV_OUTSIDE=$("$OKDEV_BIN" ssh "$SESSION_NAME" --setup-key --cmd 'printf "OKDEV_SHELL=%s\n" "${OKDEV_SHELL:-<unset>}"')
+if [[ "$SHELL_ENV_OUTSIDE" != *"OKDEV_SHELL=/bin/zsh"* ]]; then
+  echo "ERROR: expected dev container to have OKDEV_SHELL=/bin/zsh injected" >&2
+  echo "$SHELL_ENV_OUTSIDE" >&2
+  exit 1
+fi
+echo "spec.ssh.shell -> OKDEV_SHELL injection verified"
+
 SSH_NO_AGENT_OUTSIDE=$("$OKDEV_BIN" ssh "$SESSION_NAME" --setup-key --no-forward-agent --cmd 'if [ -z "${SSH_AUTH_SOCK:-}" ]; then echo no-agent-ok; fi')
 if [[ "$SSH_NO_AGENT_OUTSIDE" != *"no-agent-ok"* ]]; then
   echo "ERROR: expected --no-forward-agent to disable forwarding outside repo" >&2

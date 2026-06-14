@@ -11,10 +11,14 @@ import (
 var semverTagPattern = regexp.MustCompile(`^v?\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$`)
 
 func PreparePodSpec(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, sidecarResources corev1.ResourceRequirements, tmux bool, preStop string) (corev1.PodSpec, error) {
-	return PreparePodSpecForTarget(podSpec, volumes, workspaceMountPath, sidecarImage, sidecarResources, tmux, preStop, "dev")
+	return PreparePodSpecForTargetWithShell(podSpec, volumes, workspaceMountPath, sidecarImage, sidecarResources, tmux, preStop, "dev", "")
 }
 
 func PreparePodSpecForTarget(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, sidecarResources corev1.ResourceRequirements, tmux bool, preStop string, targetContainer string) (corev1.PodSpec, error) {
+	return PreparePodSpecForTargetWithShell(podSpec, volumes, workspaceMountPath, sidecarImage, sidecarResources, tmux, preStop, targetContainer, "")
+}
+
+func PreparePodSpecForTargetWithShell(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, sidecarResources corev1.ResourceRequirements, tmux bool, preStop string, targetContainer string, shell string) (corev1.PodSpec, error) {
 	if strings.TrimSpace(sidecarImage) == "" {
 		return corev1.PodSpec{}, fmt.Errorf("sidecar image cannot be empty")
 	}
@@ -80,6 +84,12 @@ func PreparePodSpecForTarget(podSpec corev1.PodSpec, volumes []corev1.Volume, wo
 			spec.Containers[targetIndex].Env = ensureEnvVar(spec.Containers[targetIndex].Env, corev1.EnvVar{
 				Name:  "OKDEV_TMUX",
 				Value: "1",
+			})
+		}
+		if strings.TrimSpace(shell) != "" {
+			spec.Containers[targetIndex].Env = ensureEnvVar(spec.Containers[targetIndex].Env, corev1.EnvVar{
+				Name:  "OKDEV_SHELL",
+				Value: shell,
 			})
 		}
 	}

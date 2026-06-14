@@ -86,6 +86,24 @@ func detectShell() string {
 	return "/bin/sh"
 }
 
+func resolveInteractiveShell(serverShell string) string {
+	if env := strings.TrimSpace(os.Getenv("OKDEV_SHELL")); env != "" {
+		if _, err := os.Stat(env); err == nil {
+			return env
+		}
+	}
+	for _, sh := range []string{"/bin/bash", "/bin/zsh", "/bin/sh"} {
+		if _, err := os.Stat(sh); err == nil {
+			return sh
+		}
+	}
+	return serverShell
+}
+
+func isZshShell(shell string) bool {
+	return strings.HasSuffix(shell, "/zsh")
+}
+
 func loadAuthorizedKeys(path string) ([]ssh.PublicKey, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -135,10 +153,11 @@ func sessionHandler(shell string) ssh.Handler {
 func buildCmd(s ssh.Session, shell string, extraEnv []string) *exec.Cmd {
 	var cmd *exec.Cmd
 	if len(s.RawCommand()) == 0 {
-		if script := interactiveLoginScript(s, shell); script != "" {
+		interactiveShell := resolveInteractiveShell(shell)
+		if script := interactiveLoginScript(s, interactiveShell); script != "" {
 			cmd = exec.Command(shell, "-lc", script)
 		} else {
-			cmd = exec.Command(shell, "-l")
+			cmd = exec.Command(interactiveShell, "-l")
 		}
 	} else {
 		cmd = exec.Command(shell, "-lc", s.RawCommand())
@@ -147,10 +166,10 @@ func buildCmd(s ssh.Session, shell string, extraEnv []string) *exec.Cmd {
 	return cmd
 }
 
-func interactiveLoginScript(s ssh.Session, shell string) string {
+func interactiveLoginScript(s ssh.Session, interactiveShell string) string {
 	return buildInteractiveLoginScript(
 		sessionEnvMap(s),
-		shell,
+		interactiveShell,
 		strings.TrimSpace(os.Getenv("OKDEV_WORKSPACE")),
 		strings.TrimSpace(os.Getenv("OKDEV_TMUX")),
 	)
@@ -165,6 +184,14 @@ func buildInteractiveLoginScript(sessionEnv map[string]string, shell, workspace,
 		parts = append(parts, fmt.Sprintf("if [ -x %s ]; then %s 2>&1 || echo 'warning: postAttach script failed' >&2; fi", postAttach, postAttach))
 	}
 
+	if zshScript := zshBootstrapScript(workspace, shell); zshScript != "" {
+		parts = append(parts, zshScript)
+	}
+
+	if driftWarn := shellDriftWarningScript(shell); driftWarn != "" {
+		parts = append(parts, driftWarn)
+	}
+
 	parts = append(parts, terminalBootstrapScript())
 
 	if tmuxFlag == "1" && sessionEnv["OKDEV_NO_TMUX"] != "1" {
@@ -173,6 +200,36 @@ func buildInteractiveLoginScript(sessionEnv map[string]string, shell, workspace,
 
 	parts = append(parts, "exec "+shellQuote(shell)+" -l")
 	return strings.Join(parts, "; ")
+}
+
+// shellDriftWarningScript emits a stderr warning when the user configured
+// spec.ssh.shell (via OKDEV_SHELL on the container) but that binary is
+// missing or non-executable — in which case resolveInteractiveShell
+// silently fell back to /bin/bash or /bin/sh. Without this warning a
+// user who set `shell: /bin/zsh` but did not install zsh in the image
+// would silently get bash and have no signal that their config was
+// ignored. The check happens inside the bootstrap so it sees the
+// actual container state rather than relying on Go's view at sshd
+// startup (which can race with lifecycle hook installs).
+func shellDriftWarningScript(resolvedShell string) string {
+	return fmt.Sprintf(`if [ -n "${OKDEV_SHELL:-}" ] && [ ! -x "$OKDEV_SHELL" ]; then printf '%%s\n' "warning: OKDEV_SHELL=$OKDEV_SHELL is not executable; falling back to %s" >&2; fi`, resolvedShell)
+}
+
+func zshBootstrapScript(workspace, shell string) string {
+	if !isZshShell(shell) || workspace == "" {
+		return ""
+	}
+	// Use OKDEV_WORKSPACE in both the existence check and the generated
+	// ~/.zshrc body so the path never has to round-trip through shell
+	// quoting. The env var is exported on the dev container by the
+	// pod-spec preparation, and exec preserves it into the user's zsh.
+	// Without this, a workspace path containing a space, `$`, or `'`
+	// would corrupt the generated .zshrc.
+	const stub = `if [ -n "${OKDEV_WORKSPACE:-}" ] && [ -f "$OKDEV_WORKSPACE/.okdev/zshrc" ]; then
+  source "$OKDEV_WORKSPACE/.okdev/zshrc"
+fi
+`
+	return fmt.Sprintf(`if [ ! -e ~/.zshrc ] && [ -f "$OKDEV_WORKSPACE/.okdev/zshrc" ]; then printf '%%s' %s > ~/.zshrc; fi`, shellQuote(stub))
 }
 
 func terminalBootstrapScript() string {
