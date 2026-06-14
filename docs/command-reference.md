@@ -156,6 +156,12 @@
 - **Multi-pod upload** (`--all`, `--pod`, `--role`, `--label`): fans out the same local source to all matched pods in parallel.
 - **Multi-pod download**: downloads from each matched pod into `<dest>/<short-pod-name>/` subdirectories.
 - Files are streamed via `cat` pipes. Directories are tar-streamed automatically.
+- Single-file downloads resume from an undersized `<dest>` or a saved `<dest>.okdev-part` from a previous attempt.
+- If a previous attempt finished streaming but failed before the final rename, rerunning `okdev cp` promotes the completed `<dest>.okdev-part` without redownloading.
+- `--verify` verifies single-file download SHA-256 after copy. It is not supported for uploads or directory downloads.
+- With `--verify`, resumed downloads hash the existing local bytes once and continue hashing the streamed remainder, so success does not require a second full local reread.
+- `--verify` currently requires `python3` or `python` in the target container to emit the remote SHA-256 during the download stream.
+- Directory and multi-pod downloads do not yet support resume.
 - On a TTY, an in-place progress line shows transferred bytes, transfer rate, and elapsed time (after a few seconds). For multi-pod copies the line aggregates across pods (e.g. `Copying to 8 pods · 3/8 done · 5 in flight · 1.2 GiB · 28.0 MiB/s · 00:42`) and surfaces a noticeably slow pod inline. Progress is suppressed on non-TTY writers (pipes, redirects, CI), so machine-readable output is unaffected.
 - `--all`: target all running pods in the session.
 - `--pod`: target specific pods by name (repeatable or comma-separated).
@@ -164,6 +170,7 @@
 - `--exclude`: exclude specific pods from the selected set (repeatable or comma-separated). Cannot be used with `--pod`.
 - `--container`: override which container to copy to/from (default: session target container).
 - `--fanout N`: maximum concurrent pod transfers (default 16).
+- `--verify`: verify single-file download SHA-256 after copy.
 - `--all`, `--pod`, `--role`, and `--label` are mutually exclusive.
 
 ### `okdev init [--workload pod|job|pytorchjob|generic] [--template <name>|<path>|<url>] [--set key=value] [--stignore-preset default|python|node|go|rust] [--force]`

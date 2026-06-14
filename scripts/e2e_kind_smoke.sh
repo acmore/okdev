@@ -339,6 +339,42 @@ if [[ "$CP_DL_CONTENT" != "cp-smoke-content" ]]; then
 fi
 echo "cp download single file verified"
 
+# Perf sanity: a ~32 MiB single-file download must complete quickly. With
+# the byte-by-byte `dd skip=N bs=1` shape of bug, even this tiny file
+# would take several minutes; with block-sized streaming it lands in a
+# second or two on kind.
+echo "Testing cp download large single file completes promptly"
+LARGE_REMOTE=/tmp/cp-large.bin
+LARGE_LOCAL="$WORKDIR/cp-large-downloaded.bin"
+LARGE_BYTES=$((32 * 1024 * 1024))
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- \
+  sh -lc "head -c $LARGE_BYTES /dev/urandom > $LARGE_REMOTE"
+START_TS=$(date +%s)
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp ":$LARGE_REMOTE" "$LARGE_LOCAL"
+END_TS=$(date +%s)
+ELAPSED=$((END_TS - START_TS))
+if [[ ! -f "$LARGE_LOCAL" ]] || [[ "$(stat -c %s "$LARGE_LOCAL" 2>/dev/null || stat -f %z "$LARGE_LOCAL")" != "$LARGE_BYTES" ]]; then
+  echo "ERROR: cp large single-file download did not produce a $LARGE_BYTES-byte file" >&2
+  exit 1
+fi
+# 30 s is generous for kind on CI hardware. A byte-by-byte regression would
+# take well over a minute even for 32 MiB.
+if (( ELAPSED > 30 )); then
+  echo "ERROR: cp large single-file download took ${ELAPSED}s, expected < 30s (suggests byte-by-byte streaming regression)" >&2
+  exit 1
+fi
+# Resume sanity: a rerun against the already-complete local file must
+# succeed quickly without redownloading.
+RESUME_START=$(date +%s)
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp ":$LARGE_REMOTE" "$LARGE_LOCAL"
+RESUME_END=$(date +%s)
+RESUME_ELAPSED=$((RESUME_END - RESUME_START))
+if (( RESUME_ELAPSED > 10 )); then
+  echo "ERROR: cp rerun against complete file took ${RESUME_ELAPSED}s, expected < 10s (resume not short-circuiting)" >&2
+  exit 1
+fi
+echo "cp large single-file download verified (${ELAPSED}s initial, ${RESUME_ELAPSED}s rerun)"
+
 echo "Testing cp download directory"
 CP_DL_DIR="$WORKDIR/cp-downloaded-dir"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp :/tmp/cp-smoke-dir "$CP_DL_DIR"
