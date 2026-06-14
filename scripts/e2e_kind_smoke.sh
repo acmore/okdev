@@ -301,6 +301,36 @@ if [[ "$EXEC_OUTPUT" != *"exec-ok"* ]]; then
 fi
 echo "exec -- verified"
 
+# exec --json: the remote command's own non-zero exit must surface as data
+# (exit field) without making okdev itself exit non-zero, and stdout must be
+# captured into the envelope. Single-pod session => single JSON object.
+echo "Testing exec --json captures remote exit as data"
+set +e
+JSON_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --json -- sh -lc 'printf "json-ok\n"; exit 3')
+JSON_STATUS=$?
+set -e
+if [[ "$JSON_STATUS" -ne 0 ]]; then
+  echo "ERROR: expected okdev exec --json to exit 0 (remote exit is data), got $JSON_STATUS" >&2
+  echo "$JSON_OUTPUT" >&2
+  exit 1
+fi
+if [[ "$JSON_OUTPUT" == \[* ]]; then
+  echo "ERROR: expected a single JSON object for a single-pod session, got an array" >&2
+  echo "$JSON_OUTPUT" >&2
+  exit 1
+fi
+if ! grep -q '"exit": 3' <<<"$JSON_OUTPUT"; then
+  echo "ERROR: expected remote exit 3 in JSON envelope" >&2
+  echo "$JSON_OUTPUT" >&2
+  exit 1
+fi
+if ! grep -q 'json-ok' <<<"$JSON_OUTPUT"; then
+  echo "ERROR: expected captured stdout 'json-ok' in JSON envelope" >&2
+  echo "$JSON_OUTPUT" >&2
+  exit 1
+fi
+echo "exec --json envelope verified"
+
 # Exit-code differentiation: a command against a session that does not exist
 # must surface the dedicated "session not found" code (74), not a generic 1.
 # The cluster is reachable here, so this isolates the not-found path from the
