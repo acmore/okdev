@@ -75,7 +75,7 @@
 
 - Opens a shell or runs a command in one or more session pods.
 - Without `-- command...`, opens an interactive shell on the pinned target pod.
-- With `-- command...`, runs the command across all running pods by default, with output prefixed by short pod name.
+- With `-- command...`, runs the command across all running pods by default, with output prefixed by short pod name on a TTY. When stdout is piped or redirected (scripts, CI, agents), the prefix is auto-suppressed so captured output is clean; pass `--no-prefix=false` to force it back on.
 - `--all` explicitly targets all session pods. This matches the existing default fanout behavior when you pass a command with no selector.
 - `--workers` targets only worker-role pods.
 - `--group <pod-a,pod-b>` targets an explicit pod group. Repeat `--group` to define multiple groups, and use either full pod names or the short names shown in `okdev status`. A pod may appear in at most one group.
@@ -103,7 +103,7 @@
 - When using `--detach`, pass the command you want okdev to launch directly. Do not add an extra `nohup ... &` inside the command string.
 - `--timeout`: per-pod command timeout (e.g., `30s`, `5m`). Pods exceeding the timeout are cancelled and reported as failed.
 - `--log-dir`: write per-pod output to `<dir>/<short-name>.log`. Streaming to stdout still happens.
-- `--no-prefix`: suppress the pod name prefix in output. Useful when targeting a single pod or piping.
+- `--no-prefix`: suppress the pod name prefix in output. Auto-enabled when stdout is not a terminal (pipe/redirect/CI); pass `--no-prefix=false` to keep the prefix in that case.
 - `--fanout N`: maximum concurrent pod executions (default 16).
 - `--pod`, `--role`, and `--label` are mutually exclusive.
 

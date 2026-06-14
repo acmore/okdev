@@ -157,7 +157,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&detach, "detach", false, "Launch command in background and return")
 	cmd.Flags().DurationVar(&timeout, "timeout", 0, "Per-pod command timeout (e.g., 30s, 5m)")
 	cmd.Flags().StringVar(&logDir, "log-dir", "", "Write per-pod logs to directory")
-	cmd.Flags().BoolVar(&noPrefix, "no-prefix", false, "Suppress pod name prefix in output")
+	cmd.Flags().BoolVar(&noPrefix, "no-prefix", false, "Suppress pod name prefix in output (auto-enabled when stdout is not a terminal)")
 	cmd.Flags().IntVar(&fanout, "fanout", pdshDefaultFanout, "Maximum concurrent pod executions")
 	cmd.Flags().BoolVar(&readyOnly, "ready-only", false, "Run only on pods that are already running (skip readiness check)")
 	cmd.Flags().BoolVar(&sequential, "sequential", false, "Run selected pods or groups one after another")
@@ -286,6 +286,20 @@ func validateMultiPodFlags(allPods bool, workers bool, podNames []string, role s
 	return nil
 }
 
+// resolveExecNoPrefix decides whether to suppress the per-pod output prefix.
+// The `[pod]` prefix is a TTY convenience for disambiguating interleaved
+// output; when stdout is piped/redirected (the scripted / agent case) it is
+// pure noise callers have to strip before parsing, so it is auto-suppressed.
+// An explicit --no-prefix=<value> always wins. The check is keyed on raw
+// isatty (isTerminalWriter), not isInteractiveWriter, so NO_COLOR / TERM=dumb
+// on a real terminal still keeps the prefix.
+func resolveExecNoPrefix(explicitlySet bool, noPrefix bool, out io.Writer) bool {
+	if explicitlySet {
+		return noPrefix
+	}
+	return !isTerminalWriter(out)
+}
+
 func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvocation, plan execTargetPlan, container string, detach bool, timeout time.Duration, logDir string, noPrefix bool, fanout int) error {
 	ctx := cmd.Context()
 	labelSel := selectorForSessionRun(cc.sessionName)
@@ -323,13 +337,16 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvo
 	if plan.parallel {
 		order = execGroupOrderParallel
 	}
+
+	effectiveNoPrefix := resolveExecNoPrefix(cmd.Flags().Changed("no-prefix"), noPrefix, cmd.OutOrStdout())
+
 	return runExecPodGroups(ctx, cc.kube, cc.namespace, groups, execGroupRunOptions{
 		Container:  targetContainer,
 		Invocation: invocation,
 		Detach:     detach,
 		Timeout:    timeout,
 		LogDir:     logDir,
-		NoPrefix:   noPrefix,
+		NoPrefix:   effectiveNoPrefix,
 		Fanout:     effectiveFanout,
 		Order:      order,
 		Stdout:     cmd.OutOrStdout(),
