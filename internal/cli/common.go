@@ -803,16 +803,42 @@ type sessionAccessReader interface {
 	ResourceExists(context.Context, string, string, string, string) (bool, error)
 }
 
+// listSessionPodsForAccess lists a session's pods, retrying once on a
+// transient cluster-contact failure (most API blips clear in under a second).
+// A transient failure that survives the retry is wrapped as
+// ErrTransientCluster so the top-level exit-code classifier can distinguish
+// "could not reach the cluster" (exit 78, retry) from "session is gone"
+// (exit 74). Permanent failures (RBAC, bad request) are returned verbatim and
+// fall through to exit 1.
+func listSessionPodsForAccess(k sessionAccessReader, namespace, sessionName string) ([]kube.PodSummary, error) {
+	selector := "okdev.io/managed=true,okdev.io/session=" + sessionName
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), sessionAccessTimeout)
+		pods, err := k.ListPods(ctx, namespace, false, selector)
+		cancel()
+		if err == nil {
+			return pods, nil
+		}
+		if !isTransientClusterError(err) {
+			return nil, err
+		}
+		lastErr = err
+		if attempt == 0 {
+			time.Sleep(sessionAccessRetryDelay)
+		}
+	}
+	return nil, fmt.Errorf("%w: %v", ErrTransientCluster, lastErr)
+}
+
 func ensureSessionAccess(opts *Options, k sessionAccessReader, namespace, sessionName string, requireExisting bool) error {
-	ctx, cancel := context.WithTimeout(context.Background(), sessionAccessTimeout)
-	defer cancel()
-	pods, err := k.ListPods(ctx, namespace, false, "okdev.io/managed=true,okdev.io/session="+sessionName)
+	pods, err := listSessionPodsForAccess(k, namespace, sessionName)
 	if err != nil {
 		return err
 	}
 	if len(pods) == 0 {
 		if requireExisting {
-			return fmt.Errorf("session %q does not exist in namespace %q", sessionName, namespace)
+			return fmt.Errorf("%w: session %q does not exist in namespace %q", ErrSessionNotFound, sessionName, namespace)
 		}
 		return nil
 	}

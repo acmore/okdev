@@ -29,6 +29,10 @@ const (
 	// Timeout for session-access and ownership checks.
 	sessionAccessTimeout = 15 * time.Second
 
+	// Backoff before retrying a transient cluster-contact failure during
+	// session resolution. Most API blips clear in well under a second.
+	sessionAccessRetryDelay = 750 * time.Millisecond
+
 	// Timeout for session-existence probes (ListPods / GetPodSummary).
 	sessionExistsTimeout = 10 * time.Second
 
