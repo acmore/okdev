@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +14,36 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
+
+// flakySessionAccessReader returns the queued errs in order (one per ListPods
+// call); once exhausted it returns pods. It records the call count so tests
+// can assert retry behavior.
+type flakySessionAccessReader struct {
+	errs  []error
+	pods  []kube.PodSummary
+	calls int
+}
+
+func (f *flakySessionAccessReader) GetPodSummary(_ context.Context, _, _ string) (*kube.PodSummary, error) {
+	return nil, nil
+}
+
+func (f *flakySessionAccessReader) ListPods(_ context.Context, _ string, _ bool, _ string) ([]kube.PodSummary, error) {
+	idx := f.calls
+	f.calls++
+	if idx < len(f.errs) {
+		return nil, f.errs[idx]
+	}
+	return f.pods, nil
+}
+
+func (f *flakySessionAccessReader) ListResources(_ context.Context, _ string, _ bool, _, _, _ string) ([]kube.ResourceSummary, error) {
+	return nil, nil
+}
+
+func (f *flakySessionAccessReader) ResourceExists(_ context.Context, _, _, _, _ string) (bool, error) {
+	return false, nil
+}
 
 type fakeSessionAccessReader struct {
 	pod            *kube.PodSummary
@@ -62,6 +93,67 @@ func TestEnsureSessionAccessRequiresExistingSessionWhenRequested(t *testing.T) {
 	err := ensureSessionAccess(&Options{}, fakeSessionAccessReader{}, "default", "old", true)
 	if err == nil || !strings.Contains(err.Error(), `session "old" does not exist in namespace "default"`) {
 		t.Fatalf("expected missing session error, got %v", err)
+	}
+	if !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("expected ErrSessionNotFound sentinel, got %v", err)
+	}
+	if code, ok := ClassifiedExitCode(err); !ok || code != ExitSessionNotFound {
+		t.Fatalf("expected exit %d for not-found, got code=%d ok=%v", ExitSessionNotFound, code, ok)
+	}
+}
+
+func TestEnsureSessionAccessRetriesTransientThenSucceeds(t *testing.T) {
+	reader := &flakySessionAccessReader{
+		errs: []error{
+			apierrors.NewServerTimeout(schema.GroupResource{Resource: "pods"}, "list", 1),
+		},
+		pods: []kube.PodSummary{{
+			Labels:      map[string]string{"okdev.io/owner": ""},
+			Annotations: map[string]string{},
+		}},
+	}
+	if err := ensureSessionAccess(&Options{}, reader, "default", "team", true); err != nil {
+		t.Fatalf("expected transient error to be retried into success, got %v", err)
+	}
+	if reader.calls != 2 {
+		t.Fatalf("expected one retry (2 calls), got %d", reader.calls)
+	}
+}
+
+func TestEnsureSessionAccessClassifiesPersistentTransientFailure(t *testing.T) {
+	reader := &flakySessionAccessReader{
+		errs: []error{
+			apierrors.NewServerTimeout(schema.GroupResource{Resource: "pods"}, "list", 1),
+			apierrors.NewServerTimeout(schema.GroupResource{Resource: "pods"}, "list", 1),
+		},
+	}
+	err := ensureSessionAccess(&Options{}, reader, "default", "team", true)
+	if !errors.Is(err, ErrTransientCluster) {
+		t.Fatalf("expected ErrTransientCluster sentinel, got %v", err)
+	}
+	if code, ok := ClassifiedExitCode(err); !ok || code != ExitTransientCluster {
+		t.Fatalf("expected exit %d for transient, got code=%d ok=%v", ExitTransientCluster, code, ok)
+	}
+	if reader.calls != 2 {
+		t.Fatalf("expected exactly one retry (2 calls), got %d", reader.calls)
+	}
+}
+
+func TestEnsureSessionAccessDoesNotRetryPermanentFailure(t *testing.T) {
+	reader := &flakySessionAccessReader{
+		errs: []error{
+			apierrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "list", errors.New("rbac")),
+		},
+	}
+	err := ensureSessionAccess(&Options{}, reader, "default", "team", true)
+	if errors.Is(err, ErrTransientCluster) || errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("permanent failure must not be classified as transient/not-found, got %v", err)
+	}
+	if _, ok := ClassifiedExitCode(err); ok {
+		t.Fatalf("permanent failure should fall through to exit 1, got classified code")
+	}
+	if reader.calls != 1 {
+		t.Fatalf("expected no retry on permanent failure (1 call), got %d", reader.calls)
 	}
 }
 

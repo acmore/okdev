@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/acmore/okdev/internal/cli"
@@ -22,6 +23,25 @@ func TestExitCodeUsesRemoteExecExitCode(t *testing.T) {
 func TestExitCodeUsesOneForGenericErrors(t *testing.T) {
 	if got := exitCode(errors.New("boom")); got != 1 {
 		t.Fatalf("expected exit code 1, got %d", got)
+	}
+}
+
+func TestExitCodeClassifiesClusterErrors(t *testing.T) {
+	if got := exitCode(fmt.Errorf("wrap: %w", cli.ErrSessionNotFound)); got != cli.ExitSessionNotFound {
+		t.Fatalf("expected session-not-found exit %d, got %d", cli.ExitSessionNotFound, got)
+	}
+	if got := exitCode(fmt.Errorf("wrap: %w", cli.ErrTransientCluster)); got != cli.ExitTransientCluster {
+		t.Fatalf("expected transient exit %d, got %d", cli.ExitTransientCluster, got)
+	}
+}
+
+func TestExitCodeRemoteExitWinsOverClusterClassification(t *testing.T) {
+	// A remote command's own non-zero exit must not be masked by cluster
+	// classification, even if a classified error is somewhere in the chain.
+	err := fmt.Errorf("%w: while contacting cluster", cli.ErrTransientCluster)
+	wrapped := utilexec.CodeExitError{Err: err, Code: 7}
+	if got := exitCode(wrapped); got != 7 {
+		t.Fatalf("expected remote exit 7 to win, got %d", got)
 	}
 }
 
