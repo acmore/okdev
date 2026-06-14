@@ -449,9 +449,9 @@ if [[ "$EXEC_JSON_STATUS" -ne 0 ]]; then
   echo "$EXEC_JSON_OUTPUT" >&2
   exit 1
 fi
-echo "$EXEC_JSON_OUTPUT" | python3 - <<'PY'
-import json, sys
-doc = json.load(sys.stdin)
+OKDEV_EXEC_JSON="$EXEC_JSON_OUTPUT" python3 - <<'PY'
+import json, os, sys
+doc = json.loads(os.environ["OKDEV_EXEC_JSON"])
 if not isinstance(doc, list):
     print(f"ERROR: expected a JSON array for a multi-pod session, got {type(doc).__name__}", file=sys.stderr)
     sys.exit(1)
