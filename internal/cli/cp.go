@@ -43,6 +43,7 @@ func newCpCmd(opts *Options) *cobra.Command {
 	var container string
 	var fanout int
 	var readyOnly bool
+	var verify bool
 
 	cmd := &cobra.Command{
 		Use:   "cp [session] <src> <dst>",
@@ -76,6 +77,9 @@ func newCpCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := validateCpMode(upload, verify); err != nil {
+				return err
+			}
 
 			// Validate local source exists for upload before connecting.
 			if upload {
@@ -98,7 +102,7 @@ func newCpCmd(opts *Options) *cobra.Command {
 			}
 
 			if multiPod {
-				return runMultiPodCp(cmd, cc, localPath, remotePath, upload, allPods, podNames, role, labels, exclude, container, fanout, readyOnly)
+				return runMultiPodCp(cmd, cc, localPath, remotePath, upload, allPods, podNames, role, labels, exclude, container, fanout, readyOnly, verify)
 			}
 
 			// Single-pod mode.
@@ -113,7 +117,7 @@ func newCpCmd(opts *Options) *cobra.Command {
 			out := cmd.OutOrStdout()
 			prog := newSinglePodProgress(out, singlePodCpMessage(localPath, remotePath, upload))
 			prog.start()
-			err = runSinglePodCpWithProgress(cmd.Context(), cc.kube, cc.namespace, target.PodName, targetContainer, localPath, remotePath, upload, out, prog)
+			err = runSinglePodCpWithProgress(cmd.Context(), cc.kube, cc.namespace, target.PodName, targetContainer, localPath, remotePath, upload, verify, out, prog)
 			prog.stop()
 			if err != nil {
 				return err
@@ -131,6 +135,7 @@ func newCpCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&container, "container", "", "Override target container")
 	cmd.Flags().IntVar(&fanout, "fanout", pdshDefaultFanout, "Maximum concurrent pod transfers")
 	cmd.Flags().BoolVar(&readyOnly, "ready-only", false, "Copy only to/from pods that are already running (skip readiness check)")
+	cmd.Flags().BoolVar(&verify, "verify", false, "Verify single-file download SHA-256 after copy")
 	return cmd
 }
 
@@ -160,18 +165,29 @@ func validateCpFlags(allPods bool, podNames []string, role string, labels []stri
 	return nil
 }
 
+func validateCpMode(upload bool, verify bool) error {
+	if upload && verify {
+		return fmt.Errorf("--verify is only supported for downloads")
+	}
+	return nil
+}
+
 func runSinglePodCp(ctx context.Context, client *kube.Client, namespace, pod, container, localPath, remotePath string, upload bool, out io.Writer) error {
-	return runSinglePodCpWithProgress(ctx, client, namespace, pod, container, localPath, remotePath, upload, out, nil)
+	return runSinglePodCpWithProgress(ctx, client, namespace, pod, container, localPath, remotePath, upload, false, out, nil)
 }
 
 // runSinglePodCpWithProgress performs a single-pod copy and, if prog is
 // non-nil, threads it through to the underlying kube methods so byte and
 // file counters are updated as data flows.
-func runSinglePodCpWithProgress(ctx context.Context, client *kube.Client, namespace, pod, container, localPath, remotePath string, upload bool, out io.Writer, prog *cpProgress) error {
+func runSinglePodCpWithProgress(ctx context.Context, client *kube.Client, namespace, pod, container, localPath, remotePath string, upload bool, verify bool, out io.Writer, prog *cpProgress) error {
 	kp := kube.CopyProgress{}
 	if prog != nil {
 		kp.OnBytes = prog.addBytes
 		kp.OnFile = prog.addFile
+		kp.OnResume = func(n int64) {
+			prog.addExistingBytes(n)
+			prog.noteResume(n)
+		}
 	}
 	if upload {
 		info, err := os.Stat(localPath)
@@ -189,6 +205,9 @@ func runSinglePodCpWithProgress(ctx context.Context, client *kube.Client, namesp
 		return err
 	}
 	if isDir {
+		if verify {
+			return fmt.Errorf("--verify is only supported for single-file downloads")
+		}
 		if err := os.MkdirAll(localPath, 0o755); err != nil {
 			return err
 		}
@@ -197,6 +216,9 @@ func runSinglePodCpWithProgress(ctx context.Context, client *kube.Client, namesp
 	targetPath, err := resolveDownloadTargetPath(localPath, "", remotePath, false, 1)
 	if err != nil {
 		return err
+	}
+	if verify {
+		return client.CopyFromPodInContainerVerifiedWithProgress(ctx, namespace, pod, container, remotePath, targetPath, kp)
 	}
 	return client.CopyFromPodInContainerWithProgress(ctx, namespace, pod, container, remotePath, targetPath, kp)
 }
@@ -266,7 +288,7 @@ func singlePodCpDoneLine(localPath, remotePath string, upload bool) string {
 	return fmt.Sprintf("Copied :%s -> %s", remotePath, localPath)
 }
 
-func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath string, upload bool, allPods bool, podNames []string, role string, labels []string, exclude []string, container string, fanout int, readyOnly bool) error {
+func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath string, upload bool, allPods bool, podNames []string, role string, labels []string, exclude []string, container string, fanout int, readyOnly bool, verify bool) error {
 	ctx := cmd.Context()
 	labelSel := selectorForSessionRun(cc.sessionName)
 	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
@@ -362,7 +384,7 @@ func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath
 
 			var cpErr error
 			if upload {
-				cpErr = runSinglePodCpWithProgress(ctx, cc.kube, cc.namespace, pod.Name, targetContainer, localPath, remotePath, true, io.Discard, prog)
+				cpErr = runSinglePodCpWithProgress(ctx, cc.kube, cc.namespace, pod.Name, targetContainer, localPath, remotePath, true, false, io.Discard, prog)
 			} else {
 				isRemoteDir, err := cc.kube.IsRemoteDir(ctx, cc.namespace, pod.Name, targetContainer, remotePath)
 				if err != nil {
@@ -374,7 +396,7 @@ func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath
 					results <- cpResult{pod: pod.Name, err: err}
 					return
 				}
-				cpErr = runSinglePodCpWithProgress(ctx, cc.kube, cc.namespace, pod.Name, targetContainer, podLocalPath, remotePath, false, io.Discard, prog)
+				cpErr = runSinglePodCpWithProgress(ctx, cc.kube, cc.namespace, pod.Name, targetContainer, podLocalPath, remotePath, false, verify, io.Discard, prog)
 			}
 			results <- cpResult{pod: pod.Name, err: cpErr}
 		}(pod)

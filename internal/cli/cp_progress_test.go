@@ -149,6 +149,26 @@ func TestSinglePodProgressIncludesFilesForDirUploads(t *testing.T) {
 	}
 }
 
+func TestSinglePodProgressCanStartFromExistingBytes(t *testing.T) {
+	p := newSinglePodProgress(io.Discard, "Copying :/model.bin → ./model.bin")
+	p.addExistingBytes(7 * 1024 * 1024)
+	p.started = time.Now().Add(-5 * time.Second)
+	msg := p.currentMessage(time.Now())
+	if !strings.Contains(msg, "7.0 MiB") {
+		t.Fatalf("expected existing-byte progress in %q", msg)
+	}
+}
+
+func TestSinglePodProgressPrintsResumeNoticeOnce(t *testing.T) {
+	var buf bytes.Buffer
+	p := newSinglePodProgress(&buf, "Copying :/model.bin → ./model.bin")
+	p.noteResume(7 * 1024 * 1024)
+	p.noteResume(7 * 1024 * 1024)
+	if count := strings.Count(buf.String(), "Resuming download from"); count != 1 {
+		t.Fatalf("resume notice count = %d, want 1", count)
+	}
+}
+
 func TestRateRollingWindow(t *testing.T) {
 	p := newSinglePodProgress(io.Discard, "x")
 	now := time.Now()

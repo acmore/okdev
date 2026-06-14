@@ -67,6 +67,7 @@ type cpProgress struct {
 	lastSample time.Time
 	lastBytes  int64
 	rateBPS    int64
+	resumeSeen atomic.Bool
 
 	started time.Time
 
@@ -113,6 +114,25 @@ func (p *cpProgress) addBytes(n int64) {
 		return
 	}
 	p.bytes.Add(n)
+}
+
+func (p *cpProgress) addExistingBytes(n int64) {
+	if p == nil || n <= 0 {
+		return
+	}
+	p.bytes.Add(n)
+	p.rateMu.Lock()
+	p.lastBytes = p.bytes.Load()
+	p.rateMu.Unlock()
+}
+
+func (p *cpProgress) noteResume(n int64) {
+	if p == nil || n <= 0 {
+		return
+	}
+	if p.resumeSeen.CompareAndSwap(false, true) {
+		p.println(fmt.Sprintf("Resuming download from %s", formatBytes(n)))
+	}
 }
 
 func (p *cpProgress) addFile() {
