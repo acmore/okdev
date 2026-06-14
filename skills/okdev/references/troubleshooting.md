@@ -78,6 +78,15 @@ Remember that local runtime state lives under:
 
 If behavior looks stale, prefer targeted cleanup or reset guidance rather than broad destructive advice.
 
+## Exit Codes And Scripting
+
+When `okdev` is driven by scripts, CI, or agents, distinguish its pre-flight exit codes:
+
+- `74` — session not found: the cluster was reachable but the session has no pods. It is genuinely gone; recreate with `okdev up`.
+- `78` — transient cluster-contact failure (API timeout, connection refused/reset, overload). okdev already retried once with backoff, so the caller should retry rather than treat the session as dead.
+
+`okdev exec --json` reports each pod's result as data (`{pod, exit, stdout, stderr}`) and exits 0 whenever the JSON document is produced — a non-zero *remote* exit does not make okdev exit non-zero. Branch on each envelope's `exit`/`error`. Only pre-flight failures (session not found / cluster unreachable) bypass JSON and surface on stderr with the 74/78 codes above.
+
 ## When To Escalate To kubectl
 
 Escalate to `kubectl` only when `okdev` output is not enough, for example:
