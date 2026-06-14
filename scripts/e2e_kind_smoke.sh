@@ -301,6 +301,26 @@ if [[ "$EXEC_OUTPUT" != *"exec-ok"* ]]; then
 fi
 echo "exec -- verified"
 
+# Exit-code differentiation: a command against a session that does not exist
+# must surface the dedicated "session not found" code (74), not a generic 1.
+# The cluster is reachable here, so this isolates the not-found path from the
+# transient-contact path (78, exercised by unit tests).
+echo "Testing exec against missing session exits 74"
+set +e
+MISSING_SESSION_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "${SESSION_NAME}-does-not-exist" exec --no-tty --no-prefix -- sh -lc 'echo should-not-run' 2>&1)
+MISSING_SESSION_STATUS=$?
+set -e
+if [[ "$MISSING_SESSION_STATUS" -ne 74 ]]; then
+  echo "ERROR: expected exec against missing session to exit 74, got $MISSING_SESSION_STATUS" >&2
+  echo "$MISSING_SESSION_OUTPUT" >&2
+  exit 1
+fi
+if [[ "$MISSING_SESSION_OUTPUT" != *"does not exist"* ]]; then
+  echo "ERROR: expected missing-session error message, got: $MISSING_SESSION_OUTPUT" >&2
+  exit 1
+fi
+echo "exec missing-session exit code 74 verified"
+
 # ---------------------------------------------------------------------------
 # File copy (okdev cp) single-pod verification
 # ---------------------------------------------------------------------------
