@@ -180,6 +180,55 @@ func TestPreparePodSpecSetsDevTmuxEnvWhenEnabled(t *testing.T) {
 	t.Fatal("expected OKDEV_TMUX=1 on dev container when tmux is enabled")
 }
 
+func TestPreparePodSpecSetsShellEnvWhenConfigured(t *testing.T) {
+	spec, err := PreparePodSpecForTargetWithShell(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", corev1.ResourceRequirements{}, false, "", "dev", "/bin/zsh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev := findContainer(spec.Containers, "dev")
+	if dev == nil {
+		t.Fatal("dev container not found")
+	}
+	for _, env := range dev.Env {
+		if env.Name == "OKDEV_SHELL" && env.Value == "/bin/zsh" {
+			return
+		}
+	}
+	t.Fatal("expected OKDEV_SHELL=/bin/zsh on dev container")
+}
+
+func TestPreparePodSpecDoesNotSetShellEnvWhenEmpty(t *testing.T) {
+	spec, err := PreparePodSpecForTargetWithShell(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", corev1.ResourceRequirements{}, false, "", "dev", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev := findContainer(spec.Containers, "dev")
+	if dev == nil {
+		t.Fatal("dev container not found")
+	}
+	for _, env := range dev.Env {
+		if env.Name == "OKDEV_SHELL" {
+			t.Fatal("expected OKDEV_SHELL to not be set when shell is empty")
+		}
+	}
+}
+
+func TestPreparePodSpecShellNotOnSidecar(t *testing.T) {
+	spec, err := PreparePodSpecForTargetWithShell(corev1.PodSpec{}, nil, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", corev1.ResourceRequirements{}, false, "", "dev", "/bin/zsh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sidecar := findContainer(spec.Containers, "okdev-sidecar")
+	if sidecar == nil {
+		t.Fatal("sidecar container not found")
+	}
+	for _, env := range sidecar.Env {
+		if env.Name == "OKDEV_SHELL" {
+			t.Fatal("expected OKDEV_SHELL to not be set on sidecar")
+		}
+	}
+}
+
 func TestPreparePodSpecForTargetUsesNamedContainer(t *testing.T) {
 	spec, err := PreparePodSpecForTarget(corev1.PodSpec{
 		Containers: []corev1.Container{

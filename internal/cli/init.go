@@ -32,6 +32,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 	var syncLocalOverride string
 	var syncRemoteOverride string
 	var sshUserOverride string
+	var shellOverride string
 	var stignorePreset string
 	var setFlags []string
 
@@ -70,6 +71,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 				SyncLocal:     syncLocalOverride,
 				SyncRemote:    syncRemoteOverride,
 				SSHUser:       sshUserOverride,
+				Shell:         shellOverride,
 			}
 			applyOverrides(vars, overrides)
 			applyWorkloadDefaults(vars)
@@ -159,6 +161,12 @@ func newInitCmd(opts *Options) *cobra.Command {
 				}
 			}
 
+			zshFiles, err := scaffoldZshFiles(abs, vars, force, cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			scaffolded = append(scaffolded, zshFiles...)
+
 			fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", abs)
 			if resolvedPreset != "" {
 				fmt.Fprintf(cmd.OutOrStdout(), "Using .stignore preset: %s\n", resolvedPreset)
@@ -188,6 +196,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&syncLocalOverride, "sync-local", "", "Local sync path")
 	cmd.Flags().StringVar(&syncRemoteOverride, "sync-remote", "", "Remote sync path")
 	cmd.Flags().StringVar(&sshUserOverride, "ssh-user", "", "SSH user")
+	cmd.Flags().StringVar(&shellOverride, "shell", "", "Shell for interactive SSH sessions (e.g., /bin/zsh)")
 	cmd.Flags().StringVar(&stignorePreset, "stignore-preset", "", "Local .stignore preset: default|python|node|go|rust")
 	cmd.Flags().StringArrayVar(&setFlags, "set", nil, "Set a template variable (repeatable: --set key=value)")
 	return cmd
@@ -642,6 +651,52 @@ func detectSTIgnorePreset(dir string) string {
 	}
 
 	return ""
+}
+
+func scaffoldZshFiles(configPath string, vars *config.TemplateVars, force bool, w io.Writer) ([]string, error) {
+	if !isZshShellPath(vars.Shell) {
+		return nil, nil
+	}
+	var wrote []string
+
+	zshrcPath := resolveInitScaffoldFilePath(configPath, ".okdev/zshrc")
+	if _, err := os.Stat(zshrcPath); err != nil || force {
+		content, err := config.RenderEmbeddedTemplate("templates/zshrc.tmpl", vars)
+		if err != nil {
+			return nil, fmt.Errorf("render zshrc template: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(zshrcPath), 0o755); err != nil {
+			return nil, fmt.Errorf("create zshrc directory: %w", err)
+		}
+		if err := os.WriteFile(zshrcPath, []byte(content), 0o644); err != nil {
+			return nil, fmt.Errorf("write zshrc: %w", err)
+		}
+		wrote = append(wrote, zshrcPath)
+	}
+
+	examplePath := resolveInitScaffoldFilePath(configPath, ".okdev/zsh-setup.example.sh")
+	if _, err := os.Stat(examplePath); err != nil || force {
+		content, err := config.RenderEmbeddedTemplate("templates/zsh-setup.example.sh.tmpl", vars)
+		if err != nil {
+			return nil, fmt.Errorf("render zsh-setup example template: %w", err)
+		}
+		if err := os.WriteFile(examplePath, []byte(content), 0o644); err != nil {
+			return nil, fmt.Errorf("write zsh-setup example: %w", err)
+		}
+		wrote = append(wrote, examplePath)
+	}
+
+	if len(wrote) > 0 {
+		fmt.Fprintln(w, "Note: spec.ssh.shell affects interactive SSH sessions only.")
+		fmt.Fprintln(w, "      zsh must exist in the image or be installed by your lifecycle hook.")
+		fmt.Fprintln(w, "      Review .okdev/zsh-setup.example.sh for oh-my-zsh/plugin setup recipes.")
+	}
+
+	return wrote, nil
+}
+
+func isZshShellPath(shell string) bool {
+	return strings.HasSuffix(strings.TrimSpace(shell), "/zsh")
 }
 
 func writeInitSTIgnore(configPath string, rendered []byte, templateRef string, stignorePreset string, force bool, projectDirs ...string) (string, bool, error) {

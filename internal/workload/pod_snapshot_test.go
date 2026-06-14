@@ -21,7 +21,7 @@ func (c *captureApplyClient) Apply(_ context.Context, _ string, manifest []byte)
 func TestPodRuntimeApplySetsLastAppliedAnnotations(t *testing.T) {
 	rt := NewPodRuntime("sess", nil, nil,
 		corev1.PodSpec{Containers: []corev1.Container{{Name: "dev", Image: "ubuntu:22.04"}}},
-		nil, "/workspace", "sidecar:1", corev1.ResourceRequirements{}, false, "", "dev",
+		nil, "/workspace", "sidecar:1", corev1.ResourceRequirements{}, false, "", "", "dev",
 	)
 	rt.LastAppliedSpecJSON = `{"version":"v1"}`
 	rt.LastAppliedSpecHash = "abc123"
@@ -48,7 +48,7 @@ func TestPodRuntimeApplySetsLastAppliedAnnotations(t *testing.T) {
 func TestPodRuntimeApplyOmitsAnnotationsWhenEmpty(t *testing.T) {
 	rt := NewPodRuntime("sess", nil, nil,
 		corev1.PodSpec{Containers: []corev1.Container{{Name: "dev", Image: "ubuntu:22.04"}}},
-		nil, "/workspace", "sidecar:1", corev1.ResourceRequirements{}, false, "", "dev",
+		nil, "/workspace", "sidecar:1", corev1.ResourceRequirements{}, false, "", "", "dev",
 	)
 
 	client := &captureApplyClient{}

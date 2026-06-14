@@ -57,6 +57,46 @@ func TestDetectShellReturnsExistingShell(t *testing.T) {
 	}
 }
 
+func TestDetectShellIgnoresOKDEVShellEnv(t *testing.T) {
+	t.Setenv("OKDEV_SHELL", "/bin/sh")
+	got := detectShell()
+	if got != "/bin/bash" && got != "/bin/sh" {
+		t.Fatalf("expected command shell fallback to ignore OKDEV_SHELL, got %q", got)
+	}
+}
+
+func TestDetectShellIgnoresNonexistentOKDEVShell(t *testing.T) {
+	t.Setenv("OKDEV_SHELL", "/definitely/missing/zsh")
+	got := detectShell()
+	if got != "/bin/bash" && got != "/bin/sh" {
+		t.Fatalf("expected command shell fallback to ignore nonexistent OKDEV_SHELL, got %q", got)
+	}
+}
+
+func TestResolveInteractiveShellUsesOKDEVShell(t *testing.T) {
+	t.Setenv("OKDEV_SHELL", "/bin/sh")
+	got := resolveInteractiveShell("/bin/bash")
+	if got != "/bin/sh" {
+		t.Fatalf("expected /bin/sh from OKDEV_SHELL, got %q", got)
+	}
+}
+
+func TestResolveInteractiveShellIgnoresNonexistentOKDEVShell(t *testing.T) {
+	t.Setenv("OKDEV_SHELL", "/definitely/missing/zsh")
+	got := resolveInteractiveShell("/bin/sh")
+	if got == "/definitely/missing/zsh" {
+		t.Fatal("expected resolveInteractiveShell to ignore nonexistent OKDEV_SHELL path")
+	}
+}
+
+func TestResolveInteractiveShellFallsBackToDetection(t *testing.T) {
+	t.Setenv("OKDEV_SHELL", "")
+	got := resolveInteractiveShell("/bin/sh")
+	if got != "/bin/bash" && got != "/bin/zsh" && got != "/bin/sh" {
+		t.Fatalf("expected a valid shell from fallback detection, got %q", got)
+	}
+}
+
 func TestLoadAuthorizedKeysMissingFileReturnsNil(t *testing.T) {
 	keys, err := loadAuthorizedKeys("/definitely/missing/authorized_keys")
 	if err != nil {
@@ -138,6 +178,112 @@ func TestBundledDevTmuxProfileUsesCtrlAPrefix(t *testing.T) {
 	}
 	if strings.Contains(text, "set -g prefix C-b") {
 		t.Fatalf("did not expect bundled tmux profile to keep Ctrl-b prefix:\n%s", text)
+	}
+}
+
+func TestBuildInteractiveLoginScriptWithZshSourcesZshrc(t *testing.T) {
+	script := buildInteractiveLoginScript(
+		map[string]string{},
+		"/bin/zsh",
+		"/workspace/demo",
+		"1",
+	)
+	if !strings.Contains(script, ".okdev/zshrc") {
+		t.Fatalf("expected zsh bootstrap to source .okdev/zshrc: %s", script)
+	}
+	if !strings.Contains(script, "exec '/bin/zsh' -l") {
+		t.Fatalf("expected login shell exec with zsh: %s", script)
+	}
+}
+
+func TestBuildInteractiveLoginScriptWithBashDoesNotSourceZshrc(t *testing.T) {
+	script := buildInteractiveLoginScript(
+		map[string]string{},
+		"/bin/bash",
+		"/workspace/demo",
+		"1",
+	)
+	if strings.Contains(script, ".okdev/zshrc") {
+		t.Fatalf("expected bash bootstrap to not source .okdev/zshrc: %s", script)
+	}
+}
+
+func TestZshBootstrapScriptIsRobustToSpecialPathChars(t *testing.T) {
+	// The bootstrap must round-trip a workspace path containing shell
+	// metacharacters without corrupting the generated ~/.zshrc.
+	// We don't embed the path in the script body any more — it goes
+	// through $OKDEV_WORKSPACE at runtime — so the script content
+	// itself must not depend on the literal path.
+	for _, workspace := range []string{
+		"/workspace/demo",
+		"/workspace/with space",
+		"/workspace/with$dollar",
+		"/workspace/with'quote",
+	} {
+		script := zshBootstrapScript(workspace, "/bin/zsh")
+		if !strings.Contains(script, `"$OKDEV_WORKSPACE/.okdev/zshrc"`) {
+			t.Fatalf("workspace %q: expected stub to reference $OKDEV_WORKSPACE, got %s", workspace, script)
+		}
+		// The literal workspace path must NOT appear in the script
+		// itself, otherwise we are still subject to quoting bugs.
+		if strings.Contains(script, workspace) {
+			t.Fatalf("workspace %q: expected path to be resolved via env var, not embedded literally: %s", workspace, script)
+		}
+		// Quick sanity: feed the script through `sh -n` to catch syntax
+		// errors introduced by future edits.
+		cmd := exec.Command("sh", "-n")
+		cmd.Stdin = strings.NewReader(script)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("workspace %q: sh -n rejected zsh bootstrap: %v\nscript: %s\nstderr: %s", workspace, err, script, out)
+		}
+	}
+}
+
+func TestShellDriftWarningScriptFires(t *testing.T) {
+	// Run the warning fragment with a missing OKDEV_SHELL path and confirm
+	// it prints to stderr. This catches regressions where the warning is
+	// silently dropped (the original sin of resolveInteractiveShell).
+	script := shellDriftWarningScript("/bin/bash")
+	if script == "" {
+		t.Fatal("expected drift warning script to be non-empty")
+	}
+	cmd := exec.Command("sh", "-c", "OKDEV_SHELL=/definitely/missing/zsh; export OKDEV_SHELL; "+script)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run drift warning: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "OKDEV_SHELL=/definitely/missing/zsh is not executable") {
+		t.Fatalf("expected drift warning on stderr, got: %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "falling back to /bin/bash") {
+		t.Fatalf("expected drift warning to name the fallback, got: %q", stderr.String())
+	}
+}
+
+func TestShellDriftWarningScriptSilentWhenShellExists(t *testing.T) {
+	script := shellDriftWarningScript("/bin/bash")
+	cmd := exec.Command("sh", "-c", "OKDEV_SHELL=/bin/sh; export OKDEV_SHELL; "+script)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run drift warning: %v", err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no warning when shell is executable, got: %q", stderr.String())
+	}
+}
+
+func TestShellDriftWarningScriptSilentWhenUnset(t *testing.T) {
+	script := shellDriftWarningScript("/bin/bash")
+	cmd := exec.Command("sh", "-c", "unset OKDEV_SHELL; "+script)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run drift warning: %v", err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no warning when OKDEV_SHELL unset, got: %q", stderr.String())
 	}
 }
 
@@ -242,10 +388,21 @@ func TestSessionEnvMap(t *testing.T) {
 func TestBuildCmdInteractiveShell(t *testing.T) {
 	t.Setenv("OKDEV_WORKSPACE", "")
 	t.Setenv("OKDEV_TMUX", "")
+	t.Setenv("OKDEV_SHELL", "")
 	cmd := buildCmd(fakeSessionCmd{}, "/bin/sh", nil)
-	want := `/bin/sh -lc if [ "${TERM:-}" = "xterm-ghostty" ]; then export TERM=xterm-256color; fi; exec '/bin/sh' -l`
-	if got := strings.Join(cmd.Args, " "); got != want {
-		t.Fatalf("unexpected interactive args: %q", got)
+	got := strings.Join(cmd.Args, " ")
+	// The bootstrap script runs via the server shell (/bin/sh -lc ...),
+	// but the final exec uses the resolved interactive shell.
+	if !strings.HasPrefix(got, "/bin/sh -lc") {
+		t.Fatalf("expected server shell /bin/sh to run the bootstrap script: %q", got)
+	}
+	if !strings.Contains(got, "xterm-ghostty") {
+		t.Fatalf("expected terminal bootstrap in script: %q", got)
+	}
+	// The final exec should use whatever resolveInteractiveShell returns.
+	resolved := resolveInteractiveShell("/bin/sh")
+	if !strings.Contains(got, "exec '"+resolved+"' -l") {
+		t.Fatalf("expected exec with resolved interactive shell %q: %q", resolved, got)
 	}
 }
 

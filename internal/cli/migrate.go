@@ -55,6 +55,9 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 			}
 
 			if len(result.Applied) == 0 {
+				if err := scaffoldMigrateZshFiles(cfgPath, cmd.OutOrStdout()); err != nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "warning: failed to scaffold zsh files: %v\n", err)
+				}
 				fmt.Fprintln(cmd.OutOrStdout(), "Config is already up to date.")
 				return nil
 			}
@@ -88,6 +91,10 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 
 			if err := os.WriteFile(cfgPath, out, 0o644); err != nil {
 				return fmt.Errorf("write migrated config %q: %w", cfgPath, err)
+			}
+
+			if err := scaffoldMigrateZshFiles(cfgPath, w); err != nil {
+				fmt.Fprintf(w, "warning: failed to scaffold zsh files: %v\n", err)
 			}
 
 			fmt.Fprintf(w, "\nWrote migrated config to %s", cfgPath)
@@ -187,6 +194,10 @@ func runMigrateTemplate(cmd *cobra.Command, cfgPath, templateRef string, setFlag
 			return fmt.Errorf("write migrated companion file %q: %w", file.path, err)
 		}
 	}
+	if err := scaffoldMigrateZshFiles(cfgPath, w); err != nil {
+		fmt.Fprintf(w, "warning: failed to scaffold zsh files: %v\n", err)
+	}
+
 	fmt.Fprintf(w, "Wrote migrated config to %s", cfgPath)
 	if !noBackup {
 		fmt.Fprintf(w, " (backup: %s.bak)", cfgPath)
@@ -405,6 +416,9 @@ func templateVarsForMigrate(cfg *config.DevEnvironment, cfgPath string) *config.
 	if sshUser := strings.TrimSpace(cfg.Spec.SSH.User); sshUser != "" {
 		vars.SSHUser = sshUser
 	}
+	if shell := strings.TrimSpace(cfg.Spec.SSH.Shell); shell != "" {
+		vars.Shell = shell
+	}
 	if sidecarImage := strings.TrimSpace(cfg.Spec.Sidecar.Image); sidecarImage != "" {
 		vars.SidecarImage = sidecarImage
 	}
@@ -481,4 +495,59 @@ func setTemplateResourceStrings(cpuOut, memoryOut *string, resources corev1.Reso
 			*memoryOut = quantity.String()
 		}
 	}
+}
+
+func scaffoldMigrateZshFiles(cfgPath string, w io.Writer) error {
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return nil
+	}
+	var cfg config.DevEnvironment
+	if err := sigs_yaml.Unmarshal(raw, &cfg); err != nil {
+		return nil
+	}
+	shell := strings.TrimSpace(cfg.Spec.SSH.Shell)
+	if !strings.HasSuffix(shell, "/zsh") {
+		return nil
+	}
+
+	okdevDir := filepath.Dir(cfgPath)
+	if filepath.Base(okdevDir) != ".okdev" {
+		okdevDir = filepath.Join(filepath.Dir(cfgPath), ".okdev")
+	}
+
+	vars := config.NewTemplateVars()
+
+	zshrcPath := filepath.Join(okdevDir, "zshrc")
+	if _, err := os.Stat(zshrcPath); os.IsNotExist(err) {
+		content, err := config.RenderEmbeddedTemplate("templates/zshrc.tmpl", vars)
+		if err != nil {
+			return fmt.Errorf("render zshrc template: %w", err)
+		}
+		if err := os.MkdirAll(okdevDir, 0o755); err != nil {
+			return fmt.Errorf("create .okdev directory: %w", err)
+		}
+		if err := os.WriteFile(zshrcPath, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("write zshrc: %w", err)
+		}
+		fmt.Fprintf(w, "Wrote %s\n", zshrcPath)
+	}
+
+	examplePath := filepath.Join(okdevDir, "zsh-setup.example.sh")
+	if _, err := os.Stat(examplePath); os.IsNotExist(err) {
+		content, err := config.RenderEmbeddedTemplate("templates/zsh-setup.example.sh.tmpl", vars)
+		if err != nil {
+			return fmt.Errorf("render zsh-setup example: %w", err)
+		}
+		if err := os.WriteFile(examplePath, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("write zsh-setup example: %w", err)
+		}
+		fmt.Fprintf(w, "Wrote %s\n", examplePath)
+	}
+
+	fmt.Fprintln(w, "Note: spec.ssh.shell affects interactive SSH sessions only.")
+	fmt.Fprintln(w, "      zsh must exist in the image or be installed by your lifecycle hook.")
+	fmt.Fprintln(w, "      Review .okdev/zsh-setup.example.sh for oh-my-zsh/plugin setup recipes.")
+
+	return nil
 }
