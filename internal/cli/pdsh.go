@@ -16,7 +16,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/connect"
+	"github.com/acmore/okdev/internal/fanout"
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/shellutil"
 	"github.com/spf13/cobra"
@@ -48,6 +50,8 @@ func newExecCmd(opts *Options) *cobra.Command {
 	var sequential bool
 	var parallel bool
 	var jsonOutput bool
+	var gatewayPod string
+	var requireAll bool
 
 	cmd := &cobra.Command{
 		Use:   "exec [session]",
@@ -118,9 +122,12 @@ func newExecCmd(opts *Options) *cobra.Command {
 			if err := validateExecJSONFlags(jsonOutput, hasCommand, detach, groups, parallel, sequential, logDir); err != nil {
 				return err
 			}
+			if err := validateExecGatewayFlags(jsonOutput, gatewayPod, requireAll); err != nil {
+				return err
+			}
 
 			if multiPod || detach {
-				return runMultiPodExec(cmd, cc, invocation, plan, container, detach, timeout, logDir, noPrefix, fanout, jsonOutput)
+				return runMultiPodExec(cmd, cc, invocation, plan, container, detach, timeout, logDir, noPrefix, fanout, jsonOutput, gatewayPod, requireAll)
 			}
 
 			// Single-pod mode (existing behavior)
@@ -166,8 +173,23 @@ func newExecCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&readyOnly, "ready-only", false, "Run only on pods that are already running (skip readiness check)")
 	cmd.Flags().BoolVar(&sequential, "sequential", false, "Run selected pods or groups one after another")
 	cmd.Flags().BoolVar(&parallel, "parallel", false, "Run explicit groups in parallel")
-	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Capture each pod's result into a JSON envelope {pod,exit,stdout,stderr}; remote exit codes become data, not okdev failures")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Capture each pod's result into a JSON envelope {pod,exit,stdout,stderr,status}; remote exit codes become data, not okdev failures")
+	cmd.Flags().StringVar(&gatewayPod, "gateway", "", "Pod to use as the in-cluster fanout gateway (requires --json and interpod SSH)")
+	cmd.Flags().BoolVar(&requireAll, "require-all", false, "Exit non-zero unless every targeted pod responded (requires --json)")
 	return cmd
+}
+
+func validateExecGatewayFlags(jsonOutput bool, gatewayPod string, requireAll bool) error {
+	if jsonOutput {
+		return nil
+	}
+	if strings.TrimSpace(gatewayPod) != "" {
+		return fmt.Errorf("--gateway requires --json")
+	}
+	if requireAll {
+		return fmt.Errorf("--require-all requires --json")
+	}
+	return nil
 }
 
 type execInvocation struct {
@@ -332,7 +354,7 @@ func resolveExecNoPrefix(explicitlySet bool, noPrefix bool, out io.Writer) bool 
 	return !isTerminalWriter(out)
 }
 
-func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvocation, plan execTargetPlan, container string, detach bool, timeout time.Duration, logDir string, noPrefix bool, fanout int, jsonOutput bool) error {
+func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvocation, plan execTargetPlan, container string, detach bool, timeout time.Duration, logDir string, noPrefix bool, fanout int, jsonOutput bool, gatewayPod string, requireAll bool) error {
 	ctx := cmd.Context()
 	labelSel := selectorForSessionRun(cc.sessionName)
 	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
@@ -356,7 +378,7 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvo
 		if effectiveFanout <= 0 {
 			effectiveFanout = pdshDefaultFanout
 		}
-		return runMultiExecJSON(ctx, cc.kube, cc.namespace, groups[0].Pods, targetContainer, invocation, timeout, effectiveFanout, cmd.OutOrStdout())
+		return runExecJSONRouted(ctx, cc.kube, cc.cfg, cc.namespace, groups[0].Pods, targetContainer, invocation, timeout, effectiveFanout, gatewayPod, requireAll, cmd.OutOrStdout(), cmd.ErrOrStderr())
 	}
 
 	if logDir != "" {
@@ -733,6 +755,56 @@ type execJSONResult struct {
 	Stdout string `json:"stdout"`
 	Stderr string `json:"stderr"`
 	Error  string `json:"error,omitempty"`
+	// Status makes per-pod delivery explicit so callers can tell "responded
+	// with empty output" from "never responded": responded | unreachable |
+	// timeout | error | missing (see internal/fanout statuses).
+	Status string `json:"status,omitempty"`
+}
+
+// runExecJSONRouted picks the fanout path for a JSON-mode exec: the gateway
+// driver (one apiserver exec, fanout over the pod network) when the session
+// supports it, or direct per-pod exec otherwise. Results always print as a
+// JSON array; with requireAll, a pod whose command outcome is unknown makes
+// the command exit non-zero after the document is emitted.
+func runExecJSONRouted(ctx context.Context, client scriptCopyClient, cfg *config.DevEnvironment, namespace string, pods []kube.PodSummary, container string, invocation execInvocation, timeout time.Duration, fanoutN int, gatewayPod string, requireAll bool, out, errOut io.Writer) error {
+	if len(pods) == 0 {
+		return errors.New("no pods selected")
+	}
+	route := fanoutRouteFromConfig(cfg, gatewayPod)
+	var results []execJSONResult
+	if useGatewayFanout(route, pods) {
+		gw, err := selectGatewayPod(pods, gatewayPod)
+		if err != nil {
+			return err
+		}
+		req, err := buildFanoutRequest(route, pods, invocation, timeout, fanoutN)
+		if err != nil {
+			return err
+		}
+		gwResults, authoritative, err := runGatewayFanout(ctx, client, namespace, gw, container, req)
+		if err != nil {
+			return err
+		}
+		if authoritative {
+			results = gwResults
+		} else {
+			fmt.Fprintf(errOut, "gateway fanout driver unavailable on %s (older sidecar?); falling back to direct exec\n", gw.Name)
+		}
+	}
+	if results == nil {
+		var err error
+		results, err = runMultiExecJSONResults(ctx, client, namespace, pods, container, invocation, timeout, fanoutN)
+		if err != nil {
+			return err
+		}
+	}
+	if err := printExecJSONResults(out, results); err != nil {
+		return err
+	}
+	if requireAll {
+		return requireAllError(results)
+	}
+	return nil
 }
 
 // runMultiExecJSON runs the command on every selected pod, capturing each pod's
@@ -743,13 +815,33 @@ type execJSONResult struct {
 // remote non-zero exits and per-pod infra errors are reported inside the
 // envelope, so agent callers get one deterministic parse path.
 func runMultiExecJSON(ctx context.Context, client scriptCopyClient, namespace string, pods []kube.PodSummary, container string, invocation execInvocation, timeout time.Duration, fanout int, out io.Writer) error {
+	results, err := runMultiExecJSONResults(ctx, client, namespace, pods, container, invocation, timeout, fanout)
+	if err != nil {
+		return err
+	}
+	return printExecJSONResults(out, results)
+}
+
+func printExecJSONResults(out io.Writer, results []execJSONResult) error {
+	// Always emit a JSON array — one envelope per pod, in selection order —
+	// even for a single resolved pod, so callers have one deterministic parse
+	// path instead of branching on object-vs-array by pod count.
+	data, err := json.MarshalIndent(results, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal exec json: %w", err)
+	}
+	_, err = fmt.Fprintln(out, string(data))
+	return err
+}
+
+func runMultiExecJSONResults(ctx context.Context, client scriptCopyClient, namespace string, pods []kube.PodSummary, container string, invocation execInvocation, timeout time.Duration, fanoutN int) ([]execJSONResult, error) {
 	if len(pods) == 0 {
-		return errors.New("no pods selected")
+		return nil, errors.New("no pods selected")
 	}
-	if fanout <= 0 {
-		fanout = pdshDefaultFanout
+	if fanoutN <= 0 {
+		fanoutN = pdshDefaultFanout
 	}
-	sem := make(chan struct{}, fanout)
+	sem := make(chan struct{}, fanoutN)
 	results := make([]execJSONResult, len(pods))
 
 	var wg sync.WaitGroup
@@ -773,6 +865,7 @@ func runMultiExecJSON(ctx context.Context, client scriptCopyClient, namespace st
 				remotePath := remoteExecScriptPath()
 				if err := client.CopyToPodInContainer(execCtx, namespace, invocation.ScriptLocalPath, pod.Name, container, remotePath); err != nil {
 					res.Exit = -1
+					res.Status = fanout.StatusError
 					res.Error = "upload script: " + collapseWhitespace(err.Error())
 					results[i] = res
 					return
@@ -786,26 +879,24 @@ func runMultiExecJSON(ctx context.Context, client scriptCopyClient, namespace st
 			res.Stderr = stderrBuf.String()
 			if err == nil {
 				res.Exit = 0
+				res.Status = fanout.StatusResponded
 			} else if kind, code := classifyPodExecFailure(err); kind == "remote-exit" {
 				res.Exit = code
+				res.Status = fanout.StatusResponded
 			} else {
 				res.Exit = -1
+				if kind == "timeout" {
+					res.Status = fanout.StatusTimeout
+				} else {
+					res.Status = fanout.StatusError
+				}
 				res.Error = collapseWhitespace(err.Error())
 			}
 			results[i] = res
 		}(i, pod)
 	}
 	wg.Wait()
-
-	// Always emit a JSON array — one envelope per pod, in selection order —
-	// even for a single resolved pod, so callers have one deterministic parse
-	// path instead of branching on object-vs-array by pod count.
-	data, err := json.MarshalIndent(results, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal exec json: %w", err)
-	}
-	_, err = fmt.Fprintln(out, string(data))
-	return err
+	return results, nil
 }
 
 func collapseWhitespace(s string) string {

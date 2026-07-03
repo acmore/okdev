@@ -325,6 +325,26 @@ spec:
 
 ---
 
+## `spec.exec`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `fanoutMode` | `string` | `auto` | How multi-pod exec fanout reaches pods: `auto`, `gateway`, or `direct` |
+
+- `auto` — use gateway fanout when interpod SSH is available (`spec.ssh.interPod: true`), every targeted pod has a pod IP, and at least 4 pods are targeted (or `--gateway` names one explicitly); otherwise direct per-pod exec.
+- `gateway` — always attempt gateway fanout for `exec --json` and `jobs list`, regardless of pod count. Falls back to direct exec when the gateway driver is unavailable (e.g. an older sidecar image).
+- `direct` — always exec into each pod through the apiserver (pre-gateway behavior).
+
+Gateway fanout routes a multi-pod `exec --json` / `jobs list` through a single session pod (the workload master when present): okdev runs the fanout driver there with one apiserver exec, and the driver reaches every other pod over the pod network via the interpod SSH channel. At high pod counts this replaces N proxied apiserver exec streams with 2, which removes the apiserver as the bottleneck that caused dropped streams and empty results. The driver ships in the sidecar image; the dev container needs no ssh client.
+
+```yaml
+spec:
+  exec:
+    fanoutMode: auto
+```
+
+---
+
 ## `spec.lifecycle`
 
 | Field | Type | Description |

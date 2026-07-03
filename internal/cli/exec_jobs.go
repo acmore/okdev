@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/acmore/okdev/internal/connect"
+	"github.com/acmore/okdev/internal/fanout"
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/output"
 )
@@ -57,8 +58,11 @@ type execJobsPodError struct {
 	Error string `json:"error"`
 }
 
-func runExecJobs(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, jobID string, fanout int, out io.Writer, jsonOutput bool) error {
-	rows, podErrors := collectDetachJobs(ctx, client, namespace, pods, container, jobID, fanout)
+func runExecJobs(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, jobID string, fanout int, out io.Writer, jsonOutput bool, route fanoutRoute) error {
+	rows, podErrors, viaGateway := collectDetachJobsViaGateway(ctx, client, namespace, route, pods, container, jobID, fanout)
+	if !viaGateway {
+		rows, podErrors = collectDetachJobs(ctx, client, namespace, pods, container, jobID, fanout)
+	}
 	jobs := groupDetachJobs(rows)
 	if jsonOutput {
 		if err := outputJSON(out, execJobsOutput{Jobs: jobs, Errors: podErrors}); err != nil {
@@ -94,6 +98,65 @@ func runExecJobs(ctx context.Context, client connect.ExecClient, namespace strin
 	return nil
 }
 
+// collectDetachJobsViaGateway lists detach jobs on all pods through the
+// in-cluster fanout gateway: one apiserver exec instead of one per pod. The
+// listing command is idempotent and read-only, so any gateway problem —
+// ineligible session, no running gateway, stale driver, driver error —
+// safely reports ok=false and lets the caller fall back to direct per-pod
+// listing.
+func collectDetachJobsViaGateway(ctx context.Context, client connect.ExecClient, namespace string, route fanoutRoute, pods []kube.PodSummary, container string, jobID string, fanoutN int) ([]execJobView, []execJobsPodError, bool) {
+	if !useGatewayFanout(route, pods) {
+		return nil, nil, false
+	}
+	gw, err := selectGatewayPod(pods, route.gatewayOverride)
+	if err != nil {
+		return nil, nil, false
+	}
+	targets := make([]fanout.Target, 0, len(pods))
+	for _, pod := range pods {
+		targets = append(targets, fanout.Target{Pod: pod.Name, Addr: pod.PodIP})
+	}
+	req := fanout.Request{
+		Version: fanout.ProtocolVersion,
+		User:    route.user,
+		KeyPath: gatewayInterPodKeyPath,
+		Port:    gatewaySSHPort,
+		Targets: targets,
+		Command: shellJoinArgv(detachJobsCommand()),
+		Fanout:  fanoutN,
+		Retries: gatewayFanoutRetries,
+	}
+	results, authoritative, err := runGatewayFanout(ctx, client, namespace, gw, container, req)
+	if err != nil || !authoritative {
+		return nil, nil, false
+	}
+	rows := make([]execJobView, 0)
+	podErrors := make([]execJobsPodError, 0)
+	for _, r := range results {
+		if r.Status != fanout.StatusResponded {
+			msg := r.Status
+			if r.Error != "" {
+				msg = r.Status + ": " + r.Error
+			}
+			podErrors = append(podErrors, execJobsPodError{Pod: r.Pod, Error: msg})
+			continue
+		}
+		if r.Exit != 0 {
+			podErrors = append(podErrors, execJobsPodError{Pod: r.Pod, Error: fmt.Sprintf("list command exited %d: %s", r.Exit, strings.TrimSpace(r.Stderr))})
+			continue
+		}
+		jobs, err := parseDetachMetadataLines(r.Stdout)
+		if err != nil {
+			podErrors = append(podErrors, execJobsPodError{Pod: r.Pod, Error: err.Error()})
+			continue
+		}
+		rows = appendDetachJobRows(rows, jobs, jobID, container)
+	}
+	sortDetachJobRows(rows)
+	sort.Slice(podErrors, func(i, j int) bool { return podErrors[i].Pod < podErrors[j].Pod })
+	return rows, podErrors, true
+}
+
 // collectDetachJobs fans out the listing command to every pod and returns
 // all successful job views plus a per-pod error list. It does NOT short-
 // circuit on the first failure: a single flaky pod should not hide jobs
@@ -124,28 +187,39 @@ func collectDetachJobs(ctx context.Context, client connect.ExecClient, namespace
 			podErrors = append(podErrors, execJobsPodError{Pod: r.pod, Error: r.err.Error()})
 			continue
 		}
-		for _, job := range r.jobs {
-			if strings.TrimSpace(jobID) != "" && job.JobID != jobID {
-				continue
-			}
-			containerLabel := job.Container
-			if strings.TrimSpace(containerLabel) == "" {
-				containerLabel = container
-			}
-			rows = append(rows, execJobView{
-				Pod:       job.Pod,
-				Container: containerLabel,
-				JobID:     job.JobID,
-				PID:       job.PID,
-				State:     job.State,
-				ExitCode:  job.ExitCode,
-				LogPath:   job.StdoutPath,
-				MetaPath:  job.MetaPath,
-				StartedAt: job.StartedAt,
-				Command:   job.Command,
-			})
-		}
+		rows = appendDetachJobRows(rows, r.jobs, jobID, container)
 	}
+	sortDetachJobRows(rows)
+	sort.Slice(podErrors, func(i, j int) bool { return podErrors[i].Pod < podErrors[j].Pod })
+	return rows, podErrors
+}
+
+func appendDetachJobRows(rows []execJobView, jobs []detachMetadata, jobID, container string) []execJobView {
+	for _, job := range jobs {
+		if strings.TrimSpace(jobID) != "" && job.JobID != jobID {
+			continue
+		}
+		containerLabel := job.Container
+		if strings.TrimSpace(containerLabel) == "" {
+			containerLabel = container
+		}
+		rows = append(rows, execJobView{
+			Pod:       job.Pod,
+			Container: containerLabel,
+			JobID:     job.JobID,
+			PID:       job.PID,
+			State:     job.State,
+			ExitCode:  job.ExitCode,
+			LogPath:   job.StdoutPath,
+			MetaPath:  job.MetaPath,
+			StartedAt: job.StartedAt,
+			Command:   job.Command,
+		})
+	}
+	return rows
+}
+
+func sortDetachJobRows(rows []execJobView) {
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].Pod != rows[j].Pod {
 			return rows[i].Pod < rows[j].Pod
@@ -155,8 +229,6 @@ func collectDetachJobs(ctx context.Context, client connect.ExecClient, namespace
 		}
 		return rows[i].JobID < rows[j].JobID
 	})
-	sort.Slice(podErrors, func(i, j int) bool { return podErrors[i].Pod < podErrors[j].Pod })
-	return rows, podErrors
 }
 
 func groupDetachJobs(rows []execJobView) []logicalExecJobView {
