@@ -366,6 +366,36 @@ func TestResolveSessionNameWithReaderInfersSessionMatchingCurrentConfig(t *testi
 	}
 }
 
+func TestResolveSessionNameWithReaderDefaultNameAnchorsOnConfigDir(t *testing.T) {
+	// With no active session and nothing to infer, the default name must be
+	// derived from the directory that owns the discovered config, not from the
+	// git/CWD basename — so running from a repo subdirectory (where git may
+	// report a different toplevel) resolves the same name as from the root.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USER", "alice")
+	repoRoot, err := session.RepoRoot()
+	if err != nil {
+		t.Fatalf("RepoRoot: %v", err)
+	}
+
+	currentConfig := filepath.Join(repoRoot, "someproj", ".okdev", "okdev.yaml")
+	cfg := &config.DevEnvironment{}
+	cfg.Metadata.Name = "someproj"
+	got, err := resolveSessionNameWithReader(&Options{
+		ConfigPath: currentConfig,
+		Owner:      "alice",
+	}, cfg, "default", true, fakeSessionAccessReader{
+		pods:           []kube.PodSummary{},
+		resourceExists: false,
+	})
+	if err != nil {
+		t.Fatalf("resolveSessionNameWithReader: %v", err)
+	}
+	if got != "someproj-alice" {
+		t.Fatalf("expected config-dir-anchored default name, got %q", got)
+	}
+}
+
 func TestResolveSessionNameWithReaderInfersSavedControllerBackedSessionWhenNoPodsExistYet(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repoRoot, err := session.RepoRoot()

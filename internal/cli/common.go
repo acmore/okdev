@@ -362,7 +362,20 @@ inferExistingSession:
 			return inferred, nil
 		}
 	}
-	return session.ResolveDefault(cfg.Spec.Session.DefaultNameTemplate)
+	return session.ResolveDefaultWithRepo(cfg.Spec.Session.DefaultNameTemplate, configRepoName(opts.ConfigPath))
+}
+
+// configRepoName returns the {{ .Repo }} component for session naming anchored on
+// the directory that owns the discovered .okdev config, so the resolved name is
+// identical whether a command runs from the repo root or a subdirectory. It
+// returns "" when no config path is known, letting callers fall back to the
+// git/CWD-derived default.
+func configRepoName(configPath string) string {
+	root := config.RootDir(configPath)
+	if strings.TrimSpace(root) == "" {
+		return ""
+	}
+	return filepath.Base(root)
 }
 
 func sessionMatchesConfigPath(sessionName, currentConfigPath string) bool {
