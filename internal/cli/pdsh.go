@@ -736,11 +736,12 @@ type execJSONResult struct {
 }
 
 // runMultiExecJSON runs the command on every selected pod, capturing each pod's
-// stdout/stderr and exit status into an envelope rather than streaming. A
-// single resolved pod emits one object; multiple pods emit an array, preserving
-// selection order. okdev exits 0 whenever the document is produced — remote
-// non-zero exits and per-pod infra errors are reported inside the envelope, so
-// agent callers get one deterministic parse path.
+// stdout/stderr and exit status into an envelope rather than streaming. Output
+// is always a JSON array with one envelope per pod in selection order — a single
+// resolved pod still emits a length-1 array — so callers never branch on
+// object-vs-array by pod count. okdev exits 0 whenever the document is produced —
+// remote non-zero exits and per-pod infra errors are reported inside the
+// envelope, so agent callers get one deterministic parse path.
 func runMultiExecJSON(ctx context.Context, client scriptCopyClient, namespace string, pods []kube.PodSummary, container string, invocation execInvocation, timeout time.Duration, fanout int, out io.Writer) error {
 	if len(pods) == 0 {
 		return errors.New("no pods selected")
@@ -796,11 +797,10 @@ func runMultiExecJSON(ctx context.Context, client scriptCopyClient, namespace st
 	}
 	wg.Wait()
 
-	var payload any = results
-	if len(results) == 1 {
-		payload = results[0]
-	}
-	data, err := json.MarshalIndent(payload, "", "  ")
+	// Always emit a JSON array — one envelope per pod, in selection order —
+	// even for a single resolved pod, so callers have one deterministic parse
+	// path instead of branching on object-vs-array by pod count.
+	data, err := json.MarshalIndent(results, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal exec json: %w", err)
 	}

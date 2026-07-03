@@ -56,7 +56,7 @@ func decodeJSONResults(t *testing.T, raw string) []execJSONResult {
 	return []execJSONResult{obj}
 }
 
-func TestRunMultiExecJSONSinglePodEmitsObject(t *testing.T) {
+func TestRunMultiExecJSONSinglePodEmitsLengthOneArray(t *testing.T) {
 	client := &jsonCaptureClient{
 		stdout: map[string]string{"pod-a": "37\n"},
 	}
@@ -65,8 +65,8 @@ func TestRunMultiExecJSONSinglePodEmitsObject(t *testing.T) {
 	if err := runMultiExecJSON(context.Background(), client, "default", pods, "", execInvocation{Argv: []string{"echo", "37"}}, 0, 4, &out); err != nil {
 		t.Fatalf("runMultiExecJSON: %v", err)
 	}
-	if strings.HasPrefix(strings.TrimSpace(out.String()), "[") {
-		t.Fatalf("expected a single object for one pod, got array: %s", out.String())
+	if !strings.HasPrefix(strings.TrimSpace(out.String()), "[") {
+		t.Fatalf("expected a length-1 array for one pod, got object: %s", out.String())
 	}
 	got := decodeJSONResults(t, out.String())
 	if len(got) != 1 || got[0].Pod != "pod-a" || got[0].Exit != 0 || got[0].Stdout != "37\n" || got[0].Stderr != "" || got[0].Error != "" {
