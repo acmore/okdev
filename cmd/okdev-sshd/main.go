@@ -31,18 +31,37 @@ func main() {
 		*shell = detectShell()
 	}
 
-	keys, err := loadAuthorizedKeys(*authorizedKeysPath)
-	if err != nil {
+	if _, err := loadAuthorizedKeys(*authorizedKeysPath); err != nil {
 		log.Fatalf("failed to load authorized keys: %v", err)
 	}
 
-	srv := newServer(fmt.Sprintf(":%d", *port), *shell, keys)
+	srv := newServerFromAuthorizedKeysFile(fmt.Sprintf(":%d", *port), *shell, *authorizedKeysPath)
 
 	log.Printf("okdev-sshd listening on :%d", *port)
 	log.Fatal(srv.ListenAndServe())
 }
 
 func newServer(addr, shell string, keys []ssh.PublicKey) *ssh.Server {
+	if keys == nil {
+		log.Printf("warning: no authorized keys found; all public key auth will be rejected")
+	}
+	return newServerWithPublicKeyHandler(addr, shell, func(ctx ssh.Context, key ssh.PublicKey) bool {
+		return publicKeyAllowed(keys, key)
+	})
+}
+
+func newServerFromAuthorizedKeysFile(addr, shell, path string) *ssh.Server {
+	return newServerWithPublicKeyHandler(addr, shell, func(ctx ssh.Context, key ssh.PublicKey) bool {
+		keys, err := loadAuthorizedKeys(path)
+		if err != nil {
+			log.Printf("failed to load authorized keys: %v", err)
+			return false
+		}
+		return publicKeyAllowed(keys, key)
+	})
+}
+
+func newServerWithPublicKeyHandler(addr, shell string, publicKeyHandler ssh.PublicKeyHandler) *ssh.Server {
 	channelHandlers := map[string]ssh.ChannelHandler{}
 	for name, handler := range ssh.DefaultChannelHandlers {
 		channelHandlers[name] = handler
@@ -61,23 +80,18 @@ func newServer(addr, shell string, keys []ssh.PublicKey) *ssh.Server {
 		},
 	}
 
-	if keys != nil {
-		srv.PublicKeyHandler = func(ctx ssh.Context, key ssh.PublicKey) bool {
-			for _, k := range keys {
-				if ssh.KeysEqual(k, key) {
-					return true
-				}
-			}
-			return false
-		}
-	} else {
-		log.Printf("warning: no authorized keys found; all public key auth will be rejected")
-		srv.PublicKeyHandler = func(ctx ssh.Context, key ssh.PublicKey) bool {
-			return false
-		}
-	}
+	srv.PublicKeyHandler = publicKeyHandler
 
 	return srv
+}
+
+func publicKeyAllowed(keys []ssh.PublicKey, key ssh.PublicKey) bool {
+	for _, k := range keys {
+		if ssh.KeysEqual(k, key) {
+			return true
+		}
+	}
+	return false
 }
 
 func detectShell() string {
