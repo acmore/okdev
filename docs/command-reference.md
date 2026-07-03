@@ -94,6 +94,7 @@ agents can react without launching a diagnostic chain on every blip:
 - `--sequential` runs selected pods one-by-one when no groups are declared (output and `--log-dir` layout are unchanged), or makes the default group-after-group ordering explicit when groups are declared.
 - `--parallel` runs declared groups in parallel. `--fanout` caps total concurrent pod executions across all groups.
 - `--script <file>` uploads a local script file and runs it across the targeted pods. In v1 this is local-file-only; `--script -` is not supported.
+- With `--script`, everything after `--` is passed to the script as positional arguments (`$1`, `$2`, … / `"$@"`): `okdev exec --script ./bench.sh -- --steps 100 --warmup 10` runs `bench.sh` on each pod with `$1=--steps $2=100 $3=--warmup $4=10`. Arguments containing spaces are preserved.
 - The `-- command...` path is non-interactive fanout execution, not a terminal session. TTY-dependent programs such as `watch`, `top`, `htop`, or full-screen TUIs are not expected to work there; use `okdev ssh` or `okdev exec` without `-- command...` to open an interactive shell first.
 - `-- command...` preserves raw argv to the remote process. If you choose `bash -lc '...'`, that remote shell layer is still yours.
 - `--script` avoids the quoting/stitching problem for non-trivial shell pipelines by uploading the file and running it remotely instead of embedding the body in a one-liner.

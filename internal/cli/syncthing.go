@@ -169,6 +169,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		watcherDelay:   cfg.Spec.Sync.Syncthing.WatcherDelaySeconds,
 		relays:         cfg.Spec.Sync.Syncthing.RelaysEnabled,
 		compression:    cfg.Spec.Sync.Syncthing.Compression,
+		versioningDays: cfg.Spec.Sync.Syncthing.EffectiveVersioningDays(),
 	}
 
 	// Signal detached-parent readiness once the local daemon is up and the
@@ -193,10 +194,10 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		mode = "bi"
 	} else {
 		folderTypeLocal, folderTypeRemote := folderTypesForMode(mode)
-		if err := configureSyncthingPeerFn(bootstrapCtx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression); err != nil {
+		if err := configureSyncthingPeerFn(bootstrapCtx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression, syncCfg.versioningDays); err != nil {
 			return fmt.Errorf("configure local syncthing: %w", err)
 		}
-		if err := configureSyncthingPeerFn(bootstrapCtx, remoteBase, remoteKey, remoteID, localID, "", folderID, pair.Remote, folderTypeRemote, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression); err != nil {
+		if err := configureSyncthingPeerFn(bootstrapCtx, remoteBase, remoteKey, remoteID, localID, "", folderID, pair.Remote, folderTypeRemote, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression, syncCfg.versioningDays); err != nil {
 			return fmt.Errorf("configure remote syncthing: %w", err)
 		}
 	}
@@ -1729,6 +1730,7 @@ type syncthingSyncConfig struct {
 	watcherDelay   int
 	relays         bool
 	compression    bool
+	versioningDays int
 }
 
 // runTwoPhaseInitialSync implements the Okteto-style two-phase sync protocol:
@@ -1744,10 +1746,10 @@ type syncthingSyncConfig struct {
 func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, localKey, localID, remoteBase, remoteKey, remoteID, peerAddr, folderID, localPath, remotePath string, sc syncthingSyncConfig) error {
 	// Phase 1: sendonly + ignoreDelete on local, receiveonly on remote.
 	fmt.Fprintln(out, "Phase 1: local-authoritative initial sync …")
-	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, peerAddr, folderID, localPath, "sendonly", sc.rescanInterval, sc.watcherDelay, true, sc.relays, sc.compression); err != nil {
+	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, peerAddr, folderID, localPath, "sendonly", sc.rescanInterval, sc.watcherDelay, true, sc.relays, sc.compression, sc.versioningDays); err != nil {
 		return fmt.Errorf("configure local (phase 1): %w", err)
 	}
-	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, "", folderID, remotePath, "receiveonly", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
+	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, "", folderID, remotePath, "receiveonly", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression, sc.versioningDays); err != nil {
 		return fmt.Errorf("configure remote (phase 1): %w", err)
 	}
 
@@ -1818,7 +1820,7 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 	// the remote before we enter bidirectional mode. Wait for convergence
 	// just like phase 1.
 	fmt.Fprintln(out, "Phase 1b: propagating local deletions …")
-	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, peerAddr, folderID, localPath, "sendonly", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
+	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, peerAddr, folderID, localPath, "sendonly", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression, sc.versioningDays); err != nil {
 		return fmt.Errorf("configure local (phase 1b): %w", err)
 	}
 	for {
@@ -1846,10 +1848,10 @@ func runTwoPhaseInitialSync(ctx context.Context, out io.Writer, localBase, local
 
 	// Phase 2: switch to sendreceive on both sides.
 	fmt.Fprintln(out, "Phase 2: switching to bidirectional sync …")
-	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, peerAddr, folderID, localPath, "sendreceive", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
+	if err := configureSyncthingPeer(ctx, localBase, localKey, localID, remoteID, peerAddr, folderID, localPath, "sendreceive", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression, sc.versioningDays); err != nil {
 		return fmt.Errorf("configure local (phase 2): %w", err)
 	}
-	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, "", folderID, remotePath, "sendreceive", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression); err != nil {
+	if err := configureSyncthingPeer(ctx, remoteBase, remoteKey, remoteID, localID, "", folderID, remotePath, "sendreceive", sc.rescanInterval, sc.watcherDelay, false, sc.relays, sc.compression, sc.versioningDays); err != nil {
 		return fmt.Errorf("configure remote (phase 2): %w", err)
 	}
 
@@ -1939,7 +1941,7 @@ func folderTypesForMode(mode string) (local, remote string) {
 	}
 }
 
-func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peerAddr, folderID, folderPath, folderType string, rescanIntervalSeconds, watcherDelaySeconds int, ignoreDelete, relaysEnabled, compression bool) error {
+func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peerAddr, folderID, folderPath, folderType string, rescanIntervalSeconds, watcherDelaySeconds int, ignoreDelete, relaysEnabled, compression bool, versioningDays int) error {
 	cfg, err := syncthingGetConfig(ctx, base, key)
 	if err != nil {
 		return err
@@ -2015,7 +2017,7 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 				return err
 			}
 			fm["devices"] = mergedDevices
-			applyManagedSyncthingFolderDefaults(fm, rescanIntervalSeconds, watcherDelaySeconds, ignoreDelete)
+			applyManagedSyncthingFolderDefaults(fm, rescanIntervalSeconds, watcherDelaySeconds, ignoreDelete, versioningDays)
 			filteredFolders = append(filteredFolders, fm)
 			foundFolder = true
 			continue
@@ -2034,7 +2036,7 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 				map[string]any{"deviceID": peerID},
 			},
 		}
-		applyManagedSyncthingFolderDefaults(folder, rescanIntervalSeconds, watcherDelaySeconds, ignoreDelete)
+		applyManagedSyncthingFolderDefaults(folder, rescanIntervalSeconds, watcherDelaySeconds, ignoreDelete, versioningDays)
 		filteredFolders = append(filteredFolders, folder)
 	}
 	cfg["folders"] = filteredFolders
@@ -2141,7 +2143,7 @@ func syncthingDeviceAddresses(peerAddr string) []any {
 	return []any{peerAddr}
 }
 
-func applyManagedSyncthingFolderDefaults(folder map[string]any, rescanIntervalSeconds, watcherDelaySeconds int, ignoreDelete bool) {
+func applyManagedSyncthingFolderDefaults(folder map[string]any, rescanIntervalSeconds, watcherDelaySeconds int, ignoreDelete bool, versioningDays int) {
 	delay := watcherDelaySeconds
 	if delay <= 0 {
 		delay = syncthingWatcherDelayS
@@ -2162,6 +2164,37 @@ func applyManagedSyncthingFolderDefaults(folder map[string]any, rescanIntervalSe
 	folder["markerName"] = "."
 	folder["useLargeBlocks"] = false
 	folder["copyRangeMethod"] = "all"
+	folder["versioning"] = managedSyncthingVersioning(versioningDays)
+}
+
+// managedSyncthingVersioning builds the folder versioning config. With
+// maxConflicts=0 (conflict copies disabled) and sendreceive folders in
+// steady state, a losing write would otherwise silently destroy the other
+// side's file — versioning archives the previous version into .stversions
+// on the side applying the change, from which it can be recovered.
+// .stversions is a syncthing-internal name and is never synced back.
+// days<=0 explicitly disables versioning (and clears it on reconfigure).
+func managedSyncthingVersioning(days int) map[string]any {
+	if days <= 0 {
+		return map[string]any{
+			"type":             "",
+			"params":           map[string]any{},
+			"cleanupIntervalS": 3600,
+			"fsPath":           "",
+			"fsType":           "basic",
+		}
+	}
+	return map[string]any{
+		"type": "staggered",
+		"params": map[string]any{
+			"cleanInterval": "3600",
+			// staggered maxAge is in seconds.
+			"maxAge": strconv.Itoa(days * 24 * 60 * 60),
+		},
+		"cleanupIntervalS": 3600,
+		"fsPath":           "",
+		"fsType":           "basic",
+	}
 }
 
 func applyManagedSyncthingGlobalDefaults(cfg map[string]any, relaysEnabled bool) {
@@ -2439,6 +2472,7 @@ type syncthingSessionConfigState struct {
 	RescanIntervalSeconds int    `json:"rescanIntervalSeconds,omitempty"`
 	RelaysEnabled         bool   `json:"relaysEnabled,omitempty"`
 	Compression           bool   `json:"compression,omitempty"`
+	VersioningDays        int    `json:"versioningDays,omitempty"`
 }
 
 func syncthingSessionConfigHash(cfg *config.DevEnvironment, localPath, remotePath string) string {
@@ -2453,6 +2487,7 @@ func syncthingSessionConfigHash(cfg *config.DevEnvironment, localPath, remotePat
 		RescanIntervalSeconds: cfg.Spec.Sync.Syncthing.RescanIntervalSeconds,
 		RelaysEnabled:         cfg.Spec.Sync.Syncthing.RelaysEnabled,
 		Compression:           cfg.Spec.Sync.Syncthing.Compression,
+		VersioningDays:        cfg.Spec.Sync.Syncthing.EffectiveVersioningDays(),
 	}
 	b, err := json.Marshal(state)
 	if err != nil {

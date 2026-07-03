@@ -120,6 +120,33 @@ func TestSetDefaults(t *testing.T) {
 	if cfg.Spec.Sidecar.Image != DefaultSidecarImageForBinaryVersion(version.Version) {
 		t.Fatalf("sidecar image default not set correctly: %q", cfg.Spec.Sidecar.Image)
 	}
+	if got := cfg.Spec.Sync.Syncthing.EffectiveVersioningDays(); got != DefaultSyncthingVersioningDays {
+		t.Fatalf("expected versioning default %d days, got %d", DefaultSyncthingVersioningDays, got)
+	}
+}
+
+func TestSyncthingVersioningDays(t *testing.T) {
+	var s SyncthingSpec
+	if got := s.EffectiveVersioningDays(); got != DefaultSyncthingVersioningDays {
+		t.Fatalf("nil should resolve to default, got %d", got)
+	}
+	zero := 0
+	s.VersioningDays = &zero
+	if got := s.EffectiveVersioningDays(); got != 0 {
+		t.Fatalf("0 should disable versioning, got %d", got)
+	}
+	seven := 7
+	s.VersioningDays = &seven
+	if got := s.EffectiveVersioningDays(); got != 7 {
+		t.Fatalf("expected 7, got %d", got)
+	}
+
+	cfg := validConfig()
+	neg := -1
+	cfg.Spec.Sync.Syncthing.VersioningDays = &neg
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "versioningDays") {
+		t.Fatalf("expected versioningDays validation error, got %v", err)
+	}
 }
 
 func TestSetDefaultsAppliesAgentConventionDefaults(t *testing.T) {
