@@ -47,6 +47,41 @@ func TestNewServerAddsPublicKeyHandlerWhenKeysProvided(t *testing.T) {
 	}
 }
 
+func TestAuthorizedKeysFileHandlerReflectsUpdates(t *testing.T) {
+	key1Line := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE9mN6e2Q2x8tQz4pT2r8j04YfGLwRoTSesFiNUFDXL9 test1"
+	key2Line := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ2uL4N6OQ9bQG6tW1c2GqU2o6L1Qm0f0g5d2sWlY4Hn test2"
+	key1, _, _, _, err := ssh.ParseAuthorizedKey([]byte(key1Line + "\n"))
+	if err != nil {
+		t.Fatalf("parse key1: %v", err)
+	}
+	key2, _, _, _, err := ssh.ParseAuthorizedKey([]byte(key2Line + "\n"))
+	if err != nil {
+		t.Fatalf("parse key2: %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "authorized_keys")
+	if err := os.WriteFile(path, []byte(key1Line+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := newServerFromAuthorizedKeysFile(":2222", "/bin/sh", path)
+	if srv.PublicKeyHandler == nil {
+		t.Fatal("expected public key handler to be configured")
+	}
+	if !srv.PublicKeyHandler(nil, key1) {
+		t.Fatal("expected original key to authenticate")
+	}
+	if srv.PublicKeyHandler(nil, key2) {
+		t.Fatal("did not expect key added later to authenticate before file update")
+	}
+
+	if err := os.WriteFile(path, []byte(key1Line+"\n"+key2Line+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !srv.PublicKeyHandler(nil, key2) {
+		t.Fatal("expected updated authorized_keys file to authenticate newly added key")
+	}
+}
+
 func TestDetectShellReturnsExistingShell(t *testing.T) {
 	got := detectShell()
 	if got != "/bin/bash" && got != "/bin/sh" {

@@ -303,7 +303,7 @@ echo "exec -- verified"
 
 # exec --json: the remote command's own non-zero exit must surface as data
 # (exit field) without making okdev itself exit non-zero, and stdout must be
-# captured into the envelope. Single-pod session => single JSON object.
+# captured into the envelope. Single-pod sessions still emit a JSON array.
 echo "Testing exec --json captures remote exit as data"
 set +e
 JSON_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --json -- sh -lc 'printf "json-ok\n"; exit 3')
@@ -314,21 +314,38 @@ if [[ "$JSON_STATUS" -ne 0 ]]; then
   echo "$JSON_OUTPUT" >&2
   exit 1
 fi
-if [[ "$JSON_OUTPUT" == \[* ]]; then
-  echo "ERROR: expected a single JSON object for a single-pod session, got an array" >&2
-  echo "$JSON_OUTPUT" >&2
-  exit 1
-fi
-if ! grep -q '"exit": 3' <<<"$JSON_OUTPUT"; then
-  echo "ERROR: expected remote exit 3 in JSON envelope" >&2
-  echo "$JSON_OUTPUT" >&2
-  exit 1
-fi
-if ! grep -q 'json-ok' <<<"$JSON_OUTPUT"; then
-  echo "ERROR: expected captured stdout 'json-ok' in JSON envelope" >&2
-  echo "$JSON_OUTPUT" >&2
-  exit 1
-fi
+OKDEV_EXEC_JSON="$JSON_OUTPUT" python3 - <<'PY'
+import json, os, sys
+
+doc = json.loads(os.environ["OKDEV_EXEC_JSON"])
+if not isinstance(doc, list):
+    print(f"ERROR: expected a JSON array for exec --json, got {type(doc).__name__}", file=sys.stderr)
+    sys.exit(1)
+if len(doc) != 1:
+    print(f"ERROR: expected a single per-pod envelope, got {len(doc)}", file=sys.stderr)
+    sys.exit(1)
+
+env = doc[0]
+for key in ("pod", "exit", "stdout", "stderr", "status"):
+    if key not in env:
+        print(f"ERROR: envelope missing key {key!r}: {env}", file=sys.stderr)
+        sys.exit(1)
+if env["exit"] != 3:
+    print(f"ERROR: expected remote exit 3 in JSON envelope, got {env['exit']}", file=sys.stderr)
+    sys.exit(1)
+if env["stdout"] != "json-ok\n":
+    print(f"ERROR: expected captured stdout 'json-ok\\n', got {env['stdout']!r}", file=sys.stderr)
+    sys.exit(1)
+if env["stderr"] != "":
+    print(f"ERROR: expected empty captured stderr, got {env['stderr']!r}", file=sys.stderr)
+    sys.exit(1)
+if env["status"] != "responded":
+    print(f"ERROR: expected status 'responded', got {env['status']!r}", file=sys.stderr)
+    sys.exit(1)
+if env.get("error"):
+    print(f"ERROR: remote non-zero exit must not set error field, got {env['error']!r}", file=sys.stderr)
+    sys.exit(1)
+PY
 echo "exec --json envelope verified"
 
 # Exit-code differentiation: a command against a session that does not exist

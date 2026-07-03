@@ -123,9 +123,9 @@ for i in $(seq 1 45); do
   OUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --json -- echo gw-ready 2>"$WORKDIR/gw-stderr.log")
   rc=$?
   set -e
-  if [[ "$rc" -eq 0 ]] && python3 - <<PY "$POD_COUNT"
-import json, sys
-results = json.loads('''$OUT''')
+  if [[ "$rc" -eq 0 ]] && OKDEV_EXEC_JSON="$OUT" python3 - "$POD_COUNT" <<'PY'
+import json, os, sys
+results = json.loads(os.environ["OKDEV_EXEC_JSON"])
 count = int(sys.argv[1])
 ok = (isinstance(results, list) and len(results) == count
       and all(r.get("status") == "responded" and r.get("exit") == 0
@@ -160,9 +160,9 @@ cat >"$WORKDIR/gw-script.sh" <<'EOF'
 printf 'script-ok arg=%s host=%s' "$1" "$(hostname)"
 EOF
 SCRIPT_OUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --json --script "$WORKDIR/gw-script.sh" -- alpha)
-python3 - <<PY "$POD_COUNT"
-import json, sys
-results = json.loads('''$SCRIPT_OUT''')
+OKDEV_SCRIPT_JSON="$SCRIPT_OUT" python3 - "$POD_COUNT" <<'PY'
+import json, os, sys
+results = json.loads(os.environ["OKDEV_SCRIPT_JSON"])
 count = int(sys.argv[1])
 assert len(results) == count, results
 hosts = set()
@@ -176,10 +176,10 @@ echo "script mode verified"
 
 echo "Verifying jobs list through the gateway route"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --detach -- sleep 60 >/dev/null
-JOBS_OUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs list -o json)
-python3 - <<PY "$POD_COUNT"
-import json, sys
-doc = json.loads('''$JOBS_OUT''')
+JOBS_OUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs list --output json)
+OKDEV_JOBS_JSON="$JOBS_OUT" python3 - "$POD_COUNT" <<'PY'
+import json, os, sys
+doc = json.loads(os.environ["OKDEV_JOBS_JSON"])
 count = int(sys.argv[1])
 assert doc.get("errors") in (None, []), doc
 jobs = doc.get("jobs") or []
@@ -191,7 +191,7 @@ echo "jobs list verified"
 echo "Breaking sshd on $FIRST_WORKER_POD and verifying --require-all fails"
 # Streaming (non-JSON) exec uses the direct apiserver path, so it still works
 # with the worker's sshd down.
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod "$FIRST_WORKER_POD" -- sh -c 'pkill -f okdev-sshd || true'
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod "$FIRST_WORKER_POD" -- sh -c 'pkill -f "[o]kdev-sshd" || true'
 sleep 1
 set +e
 REQ_OUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --json --require-all -- true 2>/dev/null)
@@ -202,9 +202,9 @@ if [[ "$REQ_RC" -eq 0 ]]; then
   echo "$REQ_OUT" >&2
   exit 1
 fi
-python3 - <<PY "$FIRST_WORKER_POD"
-import json, sys
-results = json.loads('''$REQ_OUT''')
+OKDEV_REQUIRE_JSON="$REQ_OUT" python3 - "$FIRST_WORKER_POD" <<'PY'
+import json, os, sys
+results = json.loads(os.environ["OKDEV_REQUIRE_JSON"])
 worker = sys.argv[1]
 by_pod = {r["pod"]: r for r in results}
 assert by_pod[worker]["status"] in ("unreachable", "error"), by_pod[worker]
