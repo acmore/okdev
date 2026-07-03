@@ -56,9 +56,28 @@ type DevEnvSpec struct {
 	Sync        SyncSpec         `yaml:"sync"`
 	Ports       []PortMapping    `yaml:"ports"`
 	SSH         SSHSpec          `yaml:"ssh"`
+	Exec        ExecSpec         `yaml:"exec,omitempty"`
 	Lifecycle   LifecycleSpec    `yaml:"lifecycle"`
 	Sidecar     SidecarSpec      `yaml:"sidecar"`
 	PodTemplate PodTemplateRef   `yaml:"podTemplate"`
+}
+
+// Exec fanout modes; see ExecSpec.FanoutMode.
+const (
+	ExecFanoutAuto    = "auto"
+	ExecFanoutGateway = "gateway"
+	ExecFanoutDirect  = "direct"
+)
+
+// ExecSpec controls multi-pod exec behavior.
+type ExecSpec struct {
+	// FanoutMode selects how multi-pod exec fanout reaches pods:
+	//   auto    — gateway fanout when interpod SSH is available and enough
+	//             pods are targeted; direct per-pod exec otherwise (default)
+	//   gateway — always attempt gateway fanout (falls back to direct if the
+	//             gateway driver is unavailable)
+	//   direct  — always use per-pod exec through the apiserver
+	FanoutMode string `yaml:"fanoutMode,omitempty"`
 }
 
 // TemplateRef records which template and variable values produced this config.
@@ -207,6 +226,9 @@ func (d *DevEnvironment) SetDefaults() {
 	if d.Spec.SSH.User == "" {
 		d.Spec.SSH.User = "root"
 	}
+	if strings.TrimSpace(d.Spec.Exec.FanoutMode) == "" {
+		d.Spec.Exec.FanoutMode = ExecFanoutAuto
+	}
 	if d.Spec.SSH.AutoDetectPorts == nil {
 		v := true
 		d.Spec.SSH.AutoDetectPorts = &v
@@ -308,6 +330,11 @@ func (d *DevEnvironment) Validate() error {
 	}
 	if d.Spec.Session.IdleTimeoutMinutes < 0 {
 		return errors.New("spec.session.idleTimeoutMinutes must be >= 0")
+	}
+	switch d.Spec.Exec.FanoutMode {
+	case "", ExecFanoutAuto, ExecFanoutGateway, ExecFanoutDirect:
+	default:
+		return fmt.Errorf("spec.exec.fanoutMode must be one of %s, %s, %s", ExecFanoutAuto, ExecFanoutGateway, ExecFanoutDirect)
 	}
 	if err := validateSyncPaths(d.Spec.Sync.Paths); err != nil {
 		return err

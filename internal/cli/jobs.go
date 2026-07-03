@@ -86,7 +86,7 @@ func newJobsListCmdWithUse(opts *Options, use string, short string) *cobra.Comma
 			if effectiveFanout <= 0 {
 				effectiveFanout = pdshDefaultFanout
 			}
-			return runExecJobs(cmd.Context(), cc.kube, cc.namespace, pods, targetContainer, jobID, effectiveFanout, cmd.OutOrStdout(), opts.Output == "json")
+			return runExecJobs(cmd.Context(), cc.kube, cc.namespace, pods, targetContainer, jobID, effectiveFanout, cmd.OutOrStdout(), opts.Output == "json", fanoutRouteFromConfig(cc.cfg, ""))
 		},
 	}
 	cmd.Flags().StringSliceVar(&podNames, "pod", nil, "Target specific pods by name (repeatable/comma-separated)")

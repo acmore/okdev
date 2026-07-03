@@ -37,7 +37,7 @@ agents can react without launching a diagnostic chain on every blip:
 - `okdev target show`
 - `okdev target set [--pod <name> | --role <role>]`
 - `okdev agent list`
-- `okdev exec [session] [--shell /bin/bash] [--no-tty] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--detach] [--timeout <duration>] [--log-dir <path>] [--no-prefix] [--json] [--fanout N] [-- command...]`
+- `okdev exec [session] [--shell /bin/bash] [--no-tty] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--detach] [--timeout <duration>] [--log-dir <path>] [--no-prefix] [--json] [--require-all] [--gateway <pod>] [--fanout N] [-- command...]`
 - `okdev jobs list [session] [--job-id <id>] [--container <name>] [--fanout N]`
 - `okdev jobs logs <job-id> [session] [-f|--follow] [--container <name>] [--fanout N]`
 - `okdev jobs stop <job-id> [session] [--container <name>] [--fanout N]`
@@ -117,7 +117,10 @@ agents can react without launching a diagnostic chain on every blip:
 - `--no-prefix`: suppress the pod name prefix in output. Auto-enabled when stdout is not a terminal (pipe/redirect/CI); pass `--no-prefix=false` to keep the prefix in that case.
 - `--fanout N`: maximum concurrent pod executions (default 16).
 - `--pod`, `--role`, and `--label` are mutually exclusive.
-- `--json`: capture each pod's result into a JSON envelope instead of streaming. Output is always a JSON array with one envelope per pod in selection order — a single resolved pod still emits a length-1 array, so callers never branch on object-vs-array by pod count. Each envelope is `{"pod": "<name>", "exit": N, "stdout": "...", "stderr": "..."}`, with an `"error"` field added when the command could not be run or completed (in which case `exit` is `-1`).
+- `--json`: capture each pod's result into a JSON envelope instead of streaming. Output is always a JSON array with one envelope per pod in selection order — a single resolved pod still emits a length-1 array, so callers never branch on object-vs-array by pod count. Each envelope is `{"pod": "<name>", "exit": N, "stdout": "...", "stderr": "...", "status": "..."}`, with an `"error"` field added when the command could not be run or completed (in which case `exit` is `-1`).
+  - `status` makes per-pod delivery explicit: `responded` (the command ran and reported an exit code — even a non-zero one), `unreachable` (the pod could not be reached; the command did not run), `timeout`, `error` (outcome unknown), or `missing` (no result came back for the pod). Use it to tell "responded with empty output" apart from "never responded".
+  - `--require-all` (requires `--json`): exit non-zero after emitting the JSON document unless every targeted pod's status is `responded`, listing the missing pods. A responded pod with a non-zero exit code does not fail `--require-all` — its exit code is data.
+  - With `spec.exec.fanoutMode: auto|gateway` and interpod SSH enabled, multi-pod `--json` runs route through an in-cluster gateway pod: one apiserver exec, fanout over the pod network (see `spec.exec` in the config manifest). `--gateway <pod>` picks the gateway explicitly (and enables the gateway path even below the auto threshold). If the gateway driver is unavailable (older sidecar image), okdev prints a notice on stderr and falls back to direct per-pod exec.
   - The remote command's own exit code is reported as data in `exit`, so a non-zero remote exit (e.g. `pgrep` returning 1 for no match) does **not** make `okdev` exit non-zero. `okdev` exits 0 whenever the JSON document is produced; inspect each envelope's `exit`/`error` to react. Pre-flight failures (session not found, cluster unreachable) still use stderr and the dedicated exit codes (74/78) rather than JSON.
   - `--json` requires a command (after `--` or via `--script`) and cannot be combined with `--detach`, `--group`, `--parallel`, `--sequential`, or `--log-dir`. The `[<pod>]` prefix is never applied in JSON mode.
 
@@ -129,6 +132,7 @@ agents can react without launching a diagnostic chain on every blip:
 - JSON output includes both the logical job summary and the per-pod `podStates` records.
 - State values: `running` (wrapper alive and user command in flight), `exited` (user command finished; exit code is recorded in `podStates` / JSON), and `orphaned` (metadata still says `running` but the pid has exited or been recycled - typically the wrapper was `SIGKILL`ed or the container was restarted before the completion metadata could be written). Grouped text summaries render forms such as `running(1/2)`, `exited(2/2)`, and `failed(1/2)`.
 - When any pod fails to list its jobs, the command still prints the jobs it was able to collect from the healthy pods and reports the failures in a `FAILED:` footer (or an `errors` array in `--json` output); exit status is non-zero so scripts can detect partial failures.
+- With `spec.exec.fanoutMode: auto|gateway` and interpod SSH enabled, the per-pod listing routes through the in-cluster fanout gateway (one apiserver exec instead of one per pod). The listing is read-only, so any gateway problem silently falls back to direct per-pod queries.
 - `--pod`: target specific pods by name (repeatable or comma-separated).
 - `--role`: target pods by `okdev.io/workload-role` label (case-insensitive).
 - `--label`: target pods by arbitrary label `key=value` (repeatable, AND logic).

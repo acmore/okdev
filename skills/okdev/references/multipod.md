@@ -58,10 +58,23 @@ When a multi-pod session includes inter-pod SSH:
 - the participating session pods receive SSH host entries for the other session pods
 - questions about inter-pod SSH should be answered in terms of `okdev` session behavior, not generic ad hoc SSH setup
 
-There is no user-facing config field to toggle inter-pod SSH. The behavior is determined by the workload type and session setup. Consult `docs/command-reference.md` and `docs/config-manifest.md` for the current details.
+Inter-pod SSH is toggled with `spec.ssh.interPod: true`. Consult `docs/command-reference.md` and `docs/config-manifest.md` for the current details.
 
 If a user asks whether multi-pod inter-pod SSH should work, verify whether:
 
+- `spec.ssh.interPod: true` is set and the session came up (or was reconciled) after setting it
 - the workload has more than one participating pod
 - the session came up successfully
 - sidecar-related expectations for injected templates are satisfied by effective runtime behavior
+
+## Gateway Fanout
+
+With `spec.ssh.interPod: true`, multi-pod `okdev exec --json` and `okdev jobs list` route through an in-cluster gateway pod by default (`spec.exec.fanoutMode: auto`): okdev runs one apiserver exec against the gateway, and the gateway reaches every other pod over the pod network via interpod SSH. This is the reliable path for large fleets — it removes the per-pod apiserver exec streams that caused dropped/empty results at scale.
+
+Key facts when helping users:
+
+- `auto` uses the gateway when interpod SSH is on and ≥4 pods are targeted; `gateway` forces it; `direct` disables it (`spec.exec.fanoutMode`)
+- the fanout driver ships in the sidecar image; the dev container does not need an ssh client
+- per-pod envelope `status` (`responded`/`unreachable`/`timeout`/`error`/`missing`) tells "empty output" apart from "no response"; `--require-all` turns any non-responding pod into a non-zero okdev exit
+- an older sidecar image (no fanout driver) makes okdev print a fallback notice on stderr and use direct per-pod exec; rebuild/publish the sidecar to enable the gateway path
+- for `--detach` and streaming (non-`--json`) runs the direct per-pod path is still used
