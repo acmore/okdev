@@ -176,7 +176,7 @@ echo "script mode verified"
 
 echo "Verifying jobs list through the gateway route"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --detach -- sleep 60 >/dev/null
-JOBS_OUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs list -o json)
+JOBS_OUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs list --output json)
 OKDEV_JOBS_JSON="$JOBS_OUT" python3 - "$POD_COUNT" <<'PY'
 import json, os, sys
 doc = json.loads(os.environ["OKDEV_JOBS_JSON"])
