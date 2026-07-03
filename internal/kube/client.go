@@ -2260,7 +2260,7 @@ func (c *Client) execStream(ctx context.Context, cs *kubernetes.Clientset, cfg *
 		execOpts.Container = container
 	}
 	req.VersionedParams(execOpts, scheme.ParameterCodec)
-	exec, err := remotecommand.NewSPDYExecutor(cfg, http.MethodPost, req.URL())
+	exec, err := newExecExecutor(cfg, req.URL())
 	if err != nil {
 		return err
 	}
@@ -2270,6 +2270,37 @@ func (c *Client) execStream(ctx context.Context, cs *kubernetes.Clientset, cfg *
 		Stderr: stderr,
 		Tty:    tty,
 	})
+}
+
+// newExecExecutor builds the remotecommand executor for an exec subresource
+// URL. It prefers the WebSocket executor (StreamProtocolV5, whose dedicated
+// CLOSE signal carries the process exit status far more reliably than SPDY's
+// error stream under high fan-out), falling back to the legacy SPDY executor
+// when the apiserver rejects the websocket upgrade — the same
+// primary/secondary pattern the port-forward path already uses.
+func newExecExecutor(cfg *rest.Config, url *url.URL) (remotecommand.Executor, error) {
+	spdyExec, err := remotecommand.NewSPDYExecutor(cfg, http.MethodPost, url)
+	if err != nil {
+		return nil, err
+	}
+	wsExec, err := remotecommand.NewWebSocketExecutor(cfg, http.MethodGet, url.String())
+	if err != nil {
+		return spdyExec, nil
+	}
+	fallbackExec, err := remotecommand.NewFallbackExecutor(wsExec, spdyExec, isExecFallbackError)
+	if err != nil {
+		return spdyExec, nil
+	}
+	return fallbackExec, nil
+}
+
+// isExecFallbackError reports whether a websocket exec attempt failed in a way
+// that warrants retrying over SPDY: the apiserver (or an HTTPS proxy in the
+// path) rejected the websocket upgrade itself. Errors from the running stream
+// (including the remote command's exit status) must NOT fall back, or a
+// command could execute twice.
+func isExecFallbackError(err error) bool {
+	return httpstream.IsUpgradeFailure(err) || httpstream.IsHTTPSProxyError(err)
 }
 
 func (c *Client) portForwardURL(cs *kubernetes.Clientset, namespace, pod string) (*url.URL, error) {
