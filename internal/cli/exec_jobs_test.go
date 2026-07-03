@@ -77,7 +77,7 @@ func TestRunExecJobsRendersPartialFailureFooter(t *testing.T) {
 		{Name: "okdev-sess-worker-1", Phase: "Running"},
 	}
 	var out bytes.Buffer
-	err := runExecJobs(context.Background(), client, "default", pods, "dev", "", pdshDefaultFanout, &out, false)
+	err := runExecJobs(context.Background(), client, "default", pods, "dev", "", pdshDefaultFanout, &out, false, fanoutRoute{})
 	if err == nil {
 		t.Fatal("expected error reflecting partial failure")
 	}
@@ -110,7 +110,7 @@ func TestRunExecJobs(t *testing.T) {
 		{Name: "okdev-sess-worker-1", Phase: "Running"},
 	}
 	var out bytes.Buffer
-	if err := runExecJobs(context.Background(), client, "default", pods, "dev", "", pdshDefaultFanout, &out, false); err != nil {
+	if err := runExecJobs(context.Background(), client, "default", pods, "dev", "", pdshDefaultFanout, &out, false, fanoutRoute{}); err != nil {
 		t.Fatalf("runExecJobs: %v", err)
 	}
 	got := out.String()
@@ -134,7 +134,7 @@ func TestRunExecJobsJSONGroupsLogicalJobs(t *testing.T) {
 		{Name: "okdev-sess-worker-1", Phase: "Running"},
 	}
 	var out bytes.Buffer
-	if err := runExecJobs(context.Background(), client, "default", pods, "dev", "", pdshDefaultFanout, &out, true); err != nil {
+	if err := runExecJobs(context.Background(), client, "default", pods, "dev", "", pdshDefaultFanout, &out, true, fanoutRoute{}); err != nil {
 		t.Fatalf("runExecJobs: %v", err)
 	}
 	got := out.String()
