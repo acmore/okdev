@@ -261,7 +261,7 @@ func TestFanoutIntegrationBinaryAndMultilineOutputSurvivesFraming(t *testing.T) 
 	req.Port = port
 	// Output includes newlines, a fake frame prefix, and non-UTF8 bytes: none
 	// of it may corrupt frame parsing.
-	req.Command = `printf 'line1\nline2\n__OKDEV_F1__ not-a-frame\n'; printf '\xff\xfe'`
+	req.Command = `printf 'line1\nline2\n__OKDEV_F1__ not-a-frame\n'; printf '\377\376'`
 
 	stream, _, code := runFanoutRequest(t, req)
 	if code != 0 {
