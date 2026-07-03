@@ -191,7 +191,7 @@ echo "jobs list verified"
 echo "Breaking sshd on $FIRST_WORKER_POD and verifying --require-all fails"
 # Streaming (non-JSON) exec uses the direct apiserver path, so it still works
 # with the worker's sshd down.
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod "$FIRST_WORKER_POD" -- sh -c 'pkill -f okdev-sshd || true'
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod "$FIRST_WORKER_POD" -- sh -c 'pkill -f "[o]kdev-sshd" || true'
 sleep 1
 set +e
 REQ_OUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --json --require-all -- true 2>/dev/null)
