@@ -137,7 +137,10 @@ func runFanoutTarget(ctx context.Context, req *fanout.Request, target fanout.Tar
 	}
 	defer session.Close()
 
-	var stdoutBuf, stderrBuf bytes.Buffer
+	// lockedBuffer, not bytes.Buffer: on the timeout/cancel paths the ssh
+	// session's internal copier goroutines may still be writing when we
+	// read the partial output.
+	var stdoutBuf, stderrBuf lockedBuffer
 	session.Stdout = &stdoutBuf
 	session.Stderr = &stderrBuf
 
@@ -228,6 +231,27 @@ func expandHome(path string) string {
 		return path
 	}
 	return home + path[1:]
+}
+
+// lockedBuffer is a mutex-guarded bytes.Buffer whose contents can be read
+// safely while the ssh session's copier goroutines may still be writing
+// (timeout/cancel paths). Bytes returns a copy so callers never alias the
+// live buffer.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf.Bytes()...)
 }
 
 // syncWriter serializes whole-frame writes from concurrent goroutines.
