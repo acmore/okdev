@@ -78,6 +78,43 @@ func TestResolveDefaultTemplateOmitsBranch(t *testing.T) {
 	}
 }
 
+func TestResolveDefaultWithRepoOverridesCWDBasename(t *testing.T) {
+	tmp := t.TempDir()
+	repo := filepath.Join(tmp, "repo")
+	// A subdirectory whose basename would otherwise poison the derived name.
+	subdir := filepath.Join(repo, "results", "2026-07-02")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	origWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origWd) })
+	if err := os.Chdir(subdir); err != nil {
+		t.Fatal(err)
+	}
+	resetRepoRootCache()
+	t.Setenv("HOME", filepath.Join(tmp, "home"))
+	t.Setenv("USER", "alice")
+
+	// Without an override, the name is derived from the CWD basename (no git
+	// repo here, so RepoRoot falls back to the working directory).
+	bare, err := ResolveDefault("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bare != "2026-07-02-alice" {
+		t.Fatalf("expected CWD-derived fallback %q, got %q", "2026-07-02-alice", bare)
+	}
+
+	// With the config-directory basename supplied, the override wins.
+	name, err := ResolveDefaultWithRepo("", filepath.Base(repo))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "repo-alice" {
+		t.Fatalf("unexpected resolved default name %q", name)
+	}
+}
+
 func TestResolveDefaultIgnoresActiveSession(t *testing.T) {
 	tmp := t.TempDir()
 	repo := filepath.Join(tmp, "repo")

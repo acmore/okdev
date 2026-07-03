@@ -26,9 +26,22 @@ func Resolve(explicit string, template string) (string, error) {
 }
 
 func ResolveDefault(template string) (string, error) {
+	return ResolveDefaultWithRepo(template, "")
+}
+
+// ResolveDefaultWithRepo renders the default session name using repoOverride as
+// the {{ .Repo }} component when it is non-empty, instead of deriving the repo
+// from the git toplevel / CWD basename. Callers pass the directory that owns the
+// discovered .okdev config so the name is identical whether a command runs from
+// the repo root or a subdirectory (a nested subdir, worktree, or submodule can
+// otherwise make git report the wrong toplevel).
+func ResolveDefaultWithRepo(template string, repoOverride string) (string, error) {
 	repo, _, user, err := contextValues()
 	if err != nil {
 		return "", err
+	}
+	if strings.TrimSpace(repoOverride) != "" {
+		repo = sanitize(repoOverride)
 	}
 	if template == "" {
 		template = "{{ .Repo }}-{{ .User }}"
