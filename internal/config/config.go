@@ -25,9 +25,15 @@ func (e *MigrationEligibleError) Unwrap() error { return e.Err }
 const (
 	DefaultSyncthingVersion       = "v1.29.7"
 	DefaultSyncthingRescanSeconds = 300
-	DefaultSidecarImageRepository = "ghcr.io/acmore/okdev"
-	DefaultSidecarImageFallback   = "edge"
-	DefaultWorkspacePVCSize       = "50Gi"
+	// DefaultSyncthingVersioningDays is how long staggered file versioning
+	// keeps overwritten/deleted files in .stversions on each side of a
+	// managed folder. Versioning is the safety net against a bad write on
+	// one side silently destroying real data on the other (sendreceive
+	// folders propagate any overwrite).
+	DefaultSyncthingVersioningDays = 30
+	DefaultSidecarImageRepository  = "ghcr.io/acmore/okdev"
+	DefaultSidecarImageFallback    = "edge"
+	DefaultWorkspacePVCSize        = "50Gi"
 )
 
 var DefaultSidecarImage = DefaultSidecarImageForBinaryVersion(version.Version)
@@ -149,6 +155,20 @@ type SyncthingSpec struct {
 	WatcherDelaySeconds   int    `yaml:"watcherDelaySeconds"`
 	RelaysEnabled         bool   `yaml:"relaysEnabled"`
 	Compression           bool   `yaml:"compression"`
+	// VersioningDays controls staggered file versioning on the managed
+	// folder (both sides): files overwritten or deleted by sync are kept in
+	// .stversions for this many days. nil uses
+	// DefaultSyncthingVersioningDays; 0 disables versioning.
+	VersioningDays *int `yaml:"versioningDays,omitempty"`
+}
+
+// EffectiveVersioningDays resolves VersioningDays: nil means the default,
+// 0 means disabled.
+func (s SyncthingSpec) EffectiveVersioningDays() int {
+	if s.VersioningDays == nil {
+		return DefaultSyncthingVersioningDays
+	}
+	return *s.VersioningDays
 }
 
 type PortMapping struct {
@@ -335,6 +355,9 @@ func (d *DevEnvironment) Validate() error {
 	case "", ExecFanoutAuto, ExecFanoutGateway, ExecFanoutDirect:
 	default:
 		return fmt.Errorf("spec.exec.fanoutMode must be one of %s, %s, %s", ExecFanoutAuto, ExecFanoutGateway, ExecFanoutDirect)
+	}
+	if d.Spec.Sync.Syncthing.VersioningDays != nil && *d.Spec.Sync.Syncthing.VersioningDays < 0 {
+		return errors.New("spec.sync.syncthing.versioningDays must be >= 0")
 	}
 	if err := validateSyncPaths(d.Spec.Sync.Paths); err != nil {
 		return err

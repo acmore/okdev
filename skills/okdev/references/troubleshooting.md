@@ -32,6 +32,8 @@ Standard repair steps:
 - `okdev sync --reset`
 - `okdev up` again if the pod was recreated
 
+If a real file was overwritten by a bad write syncing across from the other side (e.g. an empty local file clobbered a pod-side result), recover the previous version from `.stversions/` at the sync root on the side that had the good copy (pod: `<remote workspace>/.stversions/`; local: `<local sync root>/.stversions/`). Versioning is on by default (`spec.sync.syncthing.versioningDays`, 30 days).
+
 Use `docs/troubleshooting.md` for current sync-specific guidance.
 
 ## Session Reuse vs Fresh Workload

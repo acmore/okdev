@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
 	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/acmore/okdev/internal/workload"
@@ -304,7 +305,7 @@ func configureSyncthingMeshHub(ctx context.Context, base, key, hubDeviceID strin
 				return err
 			}
 			fm["devices"] = mergedDevices
-			applyManagedSyncthingFolderDefaults(fm, 60, 1, false)
+			applyManagedSyncthingFolderDefaults(fm, 60, 1, false, config.DefaultSyncthingVersioningDays)
 			filteredFolders = append(filteredFolders, fm)
 			foundFolder = true
 			continue
@@ -320,7 +321,7 @@ func configureSyncthingMeshHub(ctx context.Context, base, key, hubDeviceID strin
 			"markerName": ".",
 			"devices":    folderDevices,
 		}
-		applyManagedSyncthingFolderDefaults(folder, 60, 1, false)
+		applyManagedSyncthingFolderDefaults(folder, 60, 1, false, config.DefaultSyncthingVersioningDays)
 		filteredFolders = append(filteredFolders, folder)
 	}
 	cfg["folders"] = filteredFolders
@@ -426,6 +427,7 @@ func configureAndWaitMeshReceiver(ctx context.Context, opts *Options, k *kube.Cl
 		60, 1, // rescan/watcher intervals
 		false, false, // ignoreDelete, relaysEnabled
 		false, // compression
+		config.DefaultSyncthingVersioningDays,
 	); err != nil {
 		status.Err = fmt.Errorf("configure receiver syncthing: %w", err)
 		return status

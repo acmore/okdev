@@ -31,6 +31,15 @@
 - If the session pod was recreated, rerun `okdev up` to re-bootstrap local sync against the new pod.
 - Re-run `okdev ports` if the sync connection depends on managed SSH forwarding that may have been interrupted.
 
+## Recovering A File Overwritten By Sync
+
+The managed folder is bidirectional in steady state, so a bad write on one side (e.g. an empty file from a failed `okdev exec ... > result.txt` redirect) can propagate and overwrite the real file on the other side. Versioning (on by default, `spec.sync.syncthing.versioningDays`) archives the previous version on the side that applied the incoming change:
+
+- On the pod: `<remote workspace>/.stversions/` (e.g. `/workspace/.stversions/`)
+- Locally: `<local sync root>/.stversions/`
+
+Versioned files carry a `~YYYYMMDD-HHMMSS` suffix before the extension (e.g. `results~20260703-141530.txt`). Copy the file back into place on the side that had the good copy and let sync propagate it. Versions older than `versioningDays` (default 30) are cleaned up automatically. Note versioning only protects against changes applied *by sync* — it does not version files you overwrite directly on the same machine.
+
 ## Coding Agent Setup Issues
 
 - Check configured agents and staged auth with:
