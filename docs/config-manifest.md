@@ -240,12 +240,15 @@ spec:
 | `syncthing.rescanIntervalSeconds` | `int` | `300` | Fallback full rescan interval; `0` disables periodic rescans |
 | `syncthing.relaysEnabled` | `bool` | `false` | Allow Syncthing relay fallback when direct connectivity is unavailable |
 | `syncthing.compression` | `bool` | `false` | Use Syncthing `always` compression for peer connections instead of the default `metadata` mode |
+| `syncthing.versioningDays` | `int` | `30` | Keep files overwritten or deleted by sync in `.stversions` for this many days (staggered versioning, both sides); `0` disables |
 
-**Validation:** `engine` must be `syncthing`; each `paths[]` entry must be `local:remote`.
+**Validation:** `engine` must be `syncthing`; each `paths[]` entry must be `local:remote`; `versioningDays` must be `>= 0`.
 
 Local ignore rules come from the synced workspace's `.stignore`. `okdev init` writes a starter `.stignore` for built-in templates, and `okdev up` creates one with default patterns if the local sync root does not already have one. Editing `.stignore` takes effect automatically as Syncthing notices the change, but it does not remove files that were already synced to the remote workspace. For faster initial syncs, consider ignoring large generated build outputs or local test artifacts such as `debug/`, `release/`, caches, and dataset directories when they do not need to exist remotely.
 
 The `syncthing.version` field controls the local binary on your machine. The Syncthing binary inside the sidecar comes from `spec.sidecar.image`.
+
+**File versioning (data-loss safety net).** The managed folder syncs bidirectionally in steady state, so a bad write on one side (for example an empty file created locally by a failed command redirect) propagates and overwrites the real file on the other side. With versioning enabled (the default), the side applying an incoming overwrite or deletion first archives the previous version into `.stversions/` at the sync root — on the pod under the remote workspace, locally under the local sync root — and staggered cleanup drops versions older than `versioningDays`. `.stversions` is Syncthing-internal and is never synced back. To recover a clobbered file, copy it out of `.stversions/` on the side that had the good copy (versioned names carry a `~YYYYMMDD-HHMMSS` suffix).
 
 ```yaml
 spec:
@@ -257,6 +260,7 @@ spec:
       rescanIntervalSeconds: 300
       relaysEnabled: false
       compression: false
+      versioningDays: 30
     paths:
       - .:/workspace
 ```

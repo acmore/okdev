@@ -896,7 +896,7 @@ func TestApplyManagedSyncthingFolderDefaults(t *testing.T) {
 		"id": "okdev-test",
 	}
 
-	applyManagedSyncthingFolderDefaults(folder, 300, 0, false)
+	applyManagedSyncthingFolderDefaults(folder, 300, 0, false, config.DefaultSyncthingVersioningDays)
 
 	if got := folder["fsWatcherEnabled"]; got != true {
 		t.Fatalf("expected fsWatcherEnabled=true, got %#v", got)
@@ -936,12 +936,57 @@ func TestApplyManagedSyncthingFolderDefaults(t *testing.T) {
 	}
 }
 
+func TestApplyManagedSyncthingFolderDefaultsEnablesStaggeredVersioning(t *testing.T) {
+	folder := map[string]any{
+		"id": "okdev-test",
+	}
+
+	applyManagedSyncthingFolderDefaults(folder, 300, 0, false, 30)
+
+	versioning, ok := folder["versioning"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected versioning map, got %#v", folder["versioning"])
+	}
+	if got := versioning["type"]; got != "staggered" {
+		t.Fatalf("expected staggered versioning, got %#v", got)
+	}
+	params, ok := versioning["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected versioning params map, got %#v", versioning["params"])
+	}
+	if got := params["maxAge"]; got != "2592000" { // 30 days in seconds
+		t.Fatalf("expected maxAge=2592000, got %#v", got)
+	}
+	if got := params["cleanInterval"]; got != "3600" {
+		t.Fatalf("expected cleanInterval=3600, got %#v", got)
+	}
+}
+
+func TestApplyManagedSyncthingFolderDefaultsVersioningDisabled(t *testing.T) {
+	folder := map[string]any{
+		"id": "okdev-test",
+		// A previously enabled versioning config must be cleared, not
+		// merely left alone, when the user disables it.
+		"versioning": map[string]any{"type": "staggered"},
+	}
+
+	applyManagedSyncthingFolderDefaults(folder, 300, 0, false, 0)
+
+	versioning, ok := folder["versioning"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected versioning map, got %#v", folder["versioning"])
+	}
+	if got := versioning["type"]; got != "" {
+		t.Fatalf("expected versioning cleared, got %#v", got)
+	}
+}
+
 func TestApplyManagedSyncthingFolderDefaultsCustomWatcherDelay(t *testing.T) {
 	folder := map[string]any{
 		"id": "okdev-test",
 	}
 
-	applyManagedSyncthingFolderDefaults(folder, 300, 5, false)
+	applyManagedSyncthingFolderDefaults(folder, 300, 5, false, config.DefaultSyncthingVersioningDays)
 
 	if got := folder["fsWatcherDelayS"]; got != 5 {
 		t.Fatalf("expected fsWatcherDelayS=5, got %#v", got)
@@ -953,7 +998,7 @@ func TestApplyManagedSyncthingFolderDefaultsIgnoreDelete(t *testing.T) {
 		"id": "okdev-test",
 	}
 
-	applyManagedSyncthingFolderDefaults(folder, 300, 0, true)
+	applyManagedSyncthingFolderDefaults(folder, 300, 0, true, config.DefaultSyncthingVersioningDays)
 
 	if got := folder["ignoreDelete"]; got != true {
 		t.Fatalf("expected ignoreDelete=true, got %#v", got)
@@ -1903,10 +1948,10 @@ func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, 0, false, false, false); err != nil {
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, 0, false, false, false, config.DefaultSyncthingVersioningDays); err != nil {
 		t.Fatal(err)
 	}
-	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22001", "okdev-test", "/tmp/updated", "sendonly", 120, 0, false, false, false); err != nil {
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22001", "okdev-test", "/tmp/updated", "sendonly", 120, 0, false, false, false, config.DefaultSyncthingVersioningDays); err != nil {
 		t.Fatal(err)
 	}
 	if len(putBodies) != 2 {
@@ -1988,6 +2033,20 @@ func TestConfigureSyncthingPeerAddsAndUpdatesConfig(t *testing.T) {
 	if got := folder["copyRangeMethod"]; got != "all" {
 		t.Fatalf("expected copyRangeMethod=all, got %#v", got)
 	}
+	versioning, err := syncthingObjectMap(folder["versioning"], "versioning")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := asString(versioning["type"]); got != "staggered" {
+		t.Fatalf("expected staggered versioning, got %#v", got)
+	}
+	params, err := syncthingObjectMap(versioning["params"], "versioning params")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := asString(params["maxAge"]); got != "2592000" {
+		t.Fatalf("expected versioning maxAge=2592000, got %#v", got)
+	}
 	options, err := syncthingObjectMap(cfg["options"], "options")
 	if err != nil {
 		t.Fatal(err)
@@ -2064,7 +2123,7 @@ func TestConfigureSyncthingPeerPrunesStaleManagedPeerDevices(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, 0, false, false, false); err != nil {
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, 0, false, false, false, config.DefaultSyncthingVersioningDays); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2136,7 +2195,7 @@ func TestConfigureSyncthingPeerPreservesMeshReceiverFolderPeers(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "REMOTE", "LOCAL", "", "okdev-test", "/workspace", "sendreceive", 300, 1, false, false, false); err != nil {
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "REMOTE", "LOCAL", "", "okdev-test", "/workspace", "sendreceive", 300, 1, false, false, false, config.DefaultSyncthingVersioningDays); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2527,7 +2586,7 @@ func TestConfigureSyncthingPeerCompressionAlways(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, 0, false, false, true); err != nil {
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "LOCAL", "REMOTE", "tcp://127.0.0.1:22000", "okdev-test", "/tmp/local", "sendreceive", 300, 0, false, false, true, config.DefaultSyncthingVersioningDays); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2571,7 +2630,7 @@ func TestConfigureSyncthingPeerUsesDynamicAddressWhenPeerAddrEmpty(t *testing.T)
 	}))
 	defer srv.Close()
 
-	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "REMOTE", "LOCAL", "", "okdev-test", "/tmp/remote", "receiveonly", 300, 0, false, false, false); err != nil {
+	if err := configureSyncthingPeer(context.Background(), srv.URL, "k", "REMOTE", "LOCAL", "", "okdev-test", "/tmp/remote", "receiveonly", 300, 0, false, false, false, config.DefaultSyncthingVersioningDays); err != nil {
 		t.Fatal(err)
 	}
 
