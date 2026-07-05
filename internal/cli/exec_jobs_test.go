@@ -433,6 +433,48 @@ func TestJobsListCommandLimitForWidth(t *testing.T) {
 	}
 }
 
+func TestFlattenCommandForTable(t *testing.T) {
+	// Real-world detach commands are multi-line `bash -c` strings with
+	// backslash continuations; the table must render them as one row.
+	in := "bash -c 'cd /opt/train/recipe/pretrain/script && \\\nPYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \\\nMODEL_PATH=/data/models/base-model \\\n\tpython pretrain.py'"
+	got := flattenCommandForTable(in)
+	if strings.ContainsAny(got, "\n\r\t") {
+		t.Fatalf("expected flattened single-line command, got %q", got)
+	}
+	want := "bash -c 'cd /opt/train/recipe/pretrain/script && PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True MODEL_PATH=/data/models/base-model python pretrain.py'"
+	if got != want {
+		t.Fatalf("unexpected flatten result:\n got %q\nwant %q", got, want)
+	}
+	// Newlines without continuation backslashes also collapse.
+	if got := flattenCommandForTable("echo a\necho b"); got != "echo a echo b" {
+		t.Fatalf("unexpected: %q", got)
+	}
+	if got := flattenCommandForTable("plain command"); got != "plain command" {
+		t.Fatalf("single-line commands must pass through, got %q", got)
+	}
+}
+
+func TestRunExecJobsTableRendersMultilineCommandAsOneRow(t *testing.T) {
+	meta := "{\"jobId\":\"job-a\",\"pod\":\"okdev-sess-worker-0\",\"container\":\"dev\",\"pid\":100," +
+		"\"command\":\"bash -c 'cd /x && \\\\\\nENV=1 \\\\\\npython t.py'\"," +
+		"\"startedAt\":\"2026-07-05T00:06:22Z\",\"stdoutPath\":\"/var/okdev/exec/job-a.log\",\"stderrPath\":\"/var/okdev/exec/job-a.log\",\"metaPath\":\"/var/okdev/exec/job-a.json\",\"state\":\"running\"}\n"
+	client := &fakePdshExecClient{outputs: map[string]string{"okdev-sess-worker-0": meta}}
+	pods := []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}}
+	var out bytes.Buffer
+	if err := runExecJobs(context.Background(), client, "default", pods, "dev", "", pdshDefaultFanout, &out, false, fanoutRoute{}); err != nil {
+		t.Fatalf("runExecJobs: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "bash -c 'cd /x && ENV=1 python t.py'") {
+		t.Fatalf("expected flattened command in table, got %q", got)
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "job-a") && !strings.Contains(line, "python t.py'") {
+			t.Fatalf("expected the job row to stay on one line, got %q", got)
+		}
+	}
+}
+
 func TestTruncateTableCell(t *testing.T) {
 	if got := truncateTableCell("short", 10); got != "short" {
 		t.Fatalf("unexpected: %q", got)
