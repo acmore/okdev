@@ -152,7 +152,17 @@ func (r *GenericRuntime) Delete(ctx context.Context, k DeleteClient, namespace s
 
 func (r *GenericRuntime) WaitReady(ctx context.Context, k WaitClient, namespace string, timeout time.Duration, onProgress func(kube.PodReadinessProgress)) error {
 	return waitForCandidatePodReady(ctx, k, namespace, r.selectCandidate, timeout, onProgress,
+		failFastOnPodFailureForWorkload(r.Kind()),
 		fmt.Sprintf("wait for %s workload target pod readiness timed out", r.Kind()))
+}
+
+func failFastOnPodFailureForWorkload(kind string) bool {
+	switch strings.TrimSpace(kind) {
+	case TypeJob, TypePyTorchJob:
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *GenericRuntime) SelectTarget(ctx context.Context, k TargetClient, namespace string) (TargetRef, error) {

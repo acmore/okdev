@@ -39,7 +39,7 @@ agents can react without launching a diagnostic chain on every blip:
 - `okdev agent list`
 - `okdev exec [session] [--shell /bin/bash] [--no-tty] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--detach] [--timeout <duration>] [--log-dir <path>] [--no-prefix] [--json] [--require-all] [--gateway <pod>] [--fanout N] [-- command...]`
 - `okdev jobs list [session] [--job-id <id>] [--container <name>] [--fanout N]`
-- `okdev jobs logs <job-id> [session] [-f|--follow] [--container <name>] [--fanout N]`
+- `okdev jobs logs <job-id> [session] [-f|--follow] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--fanout N]`
 - `okdev jobs stop <job-id> [session] [--container <name>] [--fanout N]`
 - `okdev jobs wait <job-id> [session] [--container <name>] [--fanout N]`
 - `okdev exec-jobs [session] [--job-id <id>] [--container <name>] [--fanout N]`
@@ -147,6 +147,10 @@ agents can react without launching a diagnostic chain on every blip:
 
 - Streams the detached job's combined stdout/stderr aggregated across all pods in the logical job.
 - Each line is prefixed by the pod short name so multi-pod output stays attributable.
+- `--pod`: stream logs from specific pods by name (repeatable or comma-separated).
+- `--role`: stream logs from pods with the matching workload role.
+- `--label`: stream logs from pods matching label selectors.
+- `--exclude`: exclude specific pods from the selected set. Cannot be used with `--pod`.
 - `-f` / `--follow`: keep following until every pod in the job reaches a terminal state.
 - If some pod logs are unavailable, okdev still streams the logs it can read and reports the missing pods in a `FAILED:` footer before returning non-zero.
 
@@ -232,6 +236,7 @@ agents can react without launching a diagnostic chain on every blip:
 - Reconciles Pod/PVC resources, updates SSH config, initializes managed forwarding/sync, then exits.
 - If the session workload already exists, `okdev up` reuses it and only reruns setup.
 - Workload resources are named per run, for example `okdev-<session>-<run-id>`; `okdev down && okdev up` creates a fresh workload name for the same session.
+- If a Job or PyTorchJob created or recreated by this `okdev up` reaches a failed pod state before readiness, okdev stops waiting, deletes that failed workload, and clears local session state. Reused existing workloads are not auto-deleted.
 - tmux-backed persistent interactive shells are enabled by default.
 - `--tmux`: explicitly enable tmux mode in the dev container.
 - `--no-tmux`: disable tmux mode for this pod.

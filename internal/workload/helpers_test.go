@@ -5,10 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/acmore/okdev/internal/kube"
+	corev1 "k8s.io/api/core/v1"
 )
 
 type retryWaitClient struct {
@@ -46,7 +48,7 @@ func TestWaitForCandidatePodReadyRetriesOnDeletedCandidate(t *testing.T) {
 		return TargetRef{PodName: "target-1"}, pods, nil
 	}
 
-	if err := waitForCandidatePodReady(context.Background(), client, "default", selectCandidate, time.Second, nil, "timed out"); err != nil {
+	if err := waitForCandidatePodReady(context.Background(), client, "default", selectCandidate, time.Second, nil, false, "timed out"); err != nil {
 		t.Fatalf("waitForCandidatePodReady: %v", err)
 	}
 	if client.calls != 2 {
@@ -82,13 +84,50 @@ func TestWaitForCandidatePodReadyWaitsForAllPods(t *testing.T) {
 		return TargetRef{PodName: "target-0"}, pods, nil
 	}
 
-	err := waitForCandidatePodReady(context.Background(), client, "default", selectCandidate, 5*time.Second, nil, "timed out")
+	err := waitForCandidatePodReady(context.Background(), client, "default", selectCandidate, 5*time.Second, nil, false, "timed out")
 	if err != nil {
 		t.Fatalf("waitForCandidatePodReady: %v", err)
 	}
 	// target-0 waited on first, then target-1 and target-2 in the remaining loop.
 	if readyCalls["target-0"] < 1 || readyCalls["target-1"] < 1 || readyCalls["target-2"] < 1 {
 		t.Fatalf("expected all pods to be waited on, got calls: %v", readyCalls)
+	}
+}
+
+func TestWaitForCandidatePodReadyFailsFastWhenAnyPodFailed(t *testing.T) {
+	client := &retryWaitClient{
+		podLister: staticPodLister{pods: []kube.PodSummary{
+			{
+				Name:   "trainer-master-0",
+				Phase:  string(corev1.PodFailed),
+				Ready:  "0/1",
+				Reason: "Error",
+				Labels: map[string]string{"okdev.io/attachable": "true"},
+			},
+			{
+				Name:   "trainer-worker-0",
+				Phase:  string(corev1.PodPending),
+				Ready:  "0/1",
+				Reason: "PodInitializing",
+				Labels: map[string]string{"okdev.io/attachable": "false"},
+			},
+		}},
+		errs: []error{errors.New("unexpected pod readiness wait")},
+	}
+	selectCandidate := func(ctx context.Context, k podLister, namespace string) (TargetRef, []kube.PodSummary, error) {
+		pods, err := k.ListPods(ctx, namespace, false, "")
+		if err != nil {
+			return TargetRef{}, nil, err
+		}
+		return TargetRef{PodName: "trainer-master-0"}, pods, nil
+	}
+
+	err := waitForCandidatePodReady(context.Background(), client, "default", selectCandidate, time.Second, nil, true, "timed out")
+	if err == nil || !strings.Contains(err.Error(), `pod "trainer-master-0" failed while waiting for workload readiness`) {
+		t.Fatalf("expected failed pod error, got %v", err)
+	}
+	if client.calls != 0 {
+		t.Fatalf("expected failed pod detection before waiting on a pod, got %d wait calls", client.calls)
 	}
 }
 

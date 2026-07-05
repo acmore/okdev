@@ -195,6 +195,26 @@ func TestWaitForDeletionAndIsPodReady(t *testing.T) {
 	}
 }
 
+func TestWaitReadyReturnsWhenCurrentPodFailed(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/namespaces/demo/pods/pod-failed" {
+			_, _ = io.WriteString(w, `{"kind":"Pod","apiVersion":"v1","metadata":{"namespace":"demo","name":"pod-failed"},"status":{"phase":"Failed","reason":"Error","containerStatuses":[{"name":"dev","ready":false,"restartCount":0}]}}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client := &Client{Context: "dev"}
+	t.Setenv("KUBECONFIG", writeTLSTestKubeconfig(t, server))
+
+	err := client.WaitReadyWithProgress(context.Background(), "demo", "pod-failed", time.Second, nil)
+	if err == nil || !strings.Contains(err.Error(), "pod/pod-failed failed while waiting for readiness") {
+		t.Fatalf("expected failed pod readiness error, got %v", err)
+	}
+}
+
 func TestDeletionWaitContextUsesDefaultTimeout(t *testing.T) {
 	previous := deletionWaitTimeout
 	deletionWaitTimeout = 20 * time.Millisecond

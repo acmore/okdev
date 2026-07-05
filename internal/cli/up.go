@@ -40,24 +40,25 @@ type upOptions struct {
 }
 
 type upState struct {
-	cmd            *cobra.Command
-	opts           *Options
-	flags          upOptions
-	ui             *upUI
-	command        *commandContext
-	ctx            context.Context
-	cancel         context.CancelFunc
-	labels         map[string]string
-	annotations    map[string]string
-	volumes        []corev1.Volume
-	syncPairs      []syncengine.Pair
-	enableTmux     bool
-	runtime        workload.Runtime
-	workloadName   string
-	runID          string
-	target         workload.TargetRef
-	previousTarget workload.TargetRef
-	reconcileKube  reconcileWaitClient
+	cmd                 *cobra.Command
+	opts                *Options
+	flags               upOptions
+	ui                  *upUI
+	command             *commandContext
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	labels              map[string]string
+	annotations         map[string]string
+	volumes             []corev1.Volume
+	syncPairs           []syncengine.Pair
+	enableTmux          bool
+	runtime             workload.Runtime
+	workloadName        string
+	runID               string
+	target              workload.TargetRef
+	previousTarget      workload.TargetRef
+	reconcileKube       reconcileWaitClient
+	teardownOnUpFailure bool
 }
 
 type workloadApplyOutcome int
@@ -134,6 +135,9 @@ func runUp(cmd *cobra.Command, opts *Options, flags upOptions) error {
 		return upDryRun(state)
 	}
 	if err := upWait(state); err != nil {
+		if shouldTeardownFailedUpWaitError(err) {
+			teardownFailedUp(state)
+		}
 		return err
 	}
 	return upSetup(state)
@@ -317,8 +321,44 @@ func upReconcile(state *upState, applyWorkload bool) error {
 	if err := state.runtime.Apply(state.ctx, state.command.kube, state.command.namespace); err != nil {
 		return err
 	}
+	state.teardownOnUpFailure = shouldTeardownOnUpFailure(reusedExisting, outcome)
 	state.ui.stepDone(state.runtime.Kind(), workloadApplyStatus(outcome))
 	return persistSessionState(state)
+}
+
+func shouldTeardownOnUpFailure(reusedExisting bool, outcome workloadApplyOutcome) bool {
+	if !reusedExisting {
+		return true
+	}
+	return outcome == workloadApplyRecreated
+}
+
+func shouldTeardownFailedUpWaitError(err error) bool {
+	return workload.IsFailedReadinessError(err)
+}
+
+func teardownFailedUp(state *upState) {
+	if state == nil || !state.teardownOnUpFailure || state.runtime == nil || state.command == nil {
+		return
+	}
+	if state.ui != nil {
+		state.ui.section("Teardown")
+		state.ui.stepRun("workload", "deleting failed workload")
+	}
+	if err := state.runtime.Delete(state.ctx, state.command.kube, state.command.namespace, true); err != nil {
+		if state.ui != nil {
+			state.ui.warnf("failed to delete failed workload: %v", err)
+		}
+		return
+	}
+	if state.ui != nil {
+		state.ui.stepDone("workload", "deleted")
+	}
+	payload := &downOutput{Cleanup: map[string]any{}}
+	if err := downCleanupLocal(state.ui, payload, state.command.sessionName); err != nil && state.ui != nil {
+		state.ui.warnf("failed to clean local session state: %v", err)
+	}
+	state.teardownOnUpFailure = false
 }
 
 func prepareReconcileApply(state *upState) (workloadApplyOutcome, error) {

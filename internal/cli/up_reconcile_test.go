@@ -495,6 +495,63 @@ func TestPrepareReconcileApplyWaitsForDeletionBarrier(t *testing.T) {
 	}
 }
 
+func TestTeardownFailedUpDeletesAppliedWorkloadAndClearsLocalState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := session.SaveActiveSession("sess-a"); err != nil {
+		t.Fatalf("SaveActiveSession: %v", err)
+	}
+	if err := persistTargetRef("sess-a", workload.TargetRef{PodName: "trainer-master-0", Container: "dev"}); err != nil {
+		t.Fatalf("persistTargetRef: %v", err)
+	}
+
+	rt := &fakeRefRuntime{kind: workload.TypePyTorchJob, apiVersion: "kubeflow.org/v1", name: "trainer"}
+	var out bytes.Buffer
+	state := &upState{
+		ctx:                 context.Background(),
+		ui:                  newUpUI(&out, io.Discard),
+		runtime:             rt,
+		teardownOnUpFailure: true,
+		workloadName:        "trainer",
+		command: &commandContext{
+			namespace:   "demo",
+			sessionName: "sess-a",
+			kube:        &kube.Client{},
+		},
+	}
+
+	teardownFailedUp(state)
+
+	if rt.deleteCall != 1 {
+		t.Fatalf("expected failed workload to be deleted once, got %d", rt.deleteCall)
+	}
+	active, err := session.LoadActiveSession()
+	if err != nil {
+		t.Fatalf("LoadActiveSession: %v", err)
+	}
+	if active != "" {
+		t.Fatalf("expected active session to be cleared, got %q", active)
+	}
+	target, err := session.LoadTarget("sess-a")
+	if err != nil {
+		t.Fatalf("LoadTarget: %v", err)
+	}
+	if target.PodName != "" {
+		t.Fatalf("expected target state to be cleared, got %+v", target)
+	}
+}
+
+func TestShouldTeardownFailedUpWaitErrorOnlyForFailedPods(t *testing.T) {
+	if !shouldTeardownFailedUpWaitError(&workload.FailedReadinessError{Pod: "trainer-master-0"}) {
+		t.Fatal("expected failed pod readiness error to trigger teardown")
+	}
+	if shouldTeardownFailedUpWaitError(context.Canceled) {
+		t.Fatal("did not expect cancellation to trigger teardown")
+	}
+	if shouldTeardownFailedUpWaitError(context.DeadlineExceeded) {
+		t.Fatal("did not expect timeout to trigger teardown")
+	}
+}
+
 func TestUpReconcilePersistsSessionStateBeforeWait(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
