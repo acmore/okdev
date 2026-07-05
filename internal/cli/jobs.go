@@ -657,7 +657,11 @@ func signalDetachJobScript(jobID string, pid, pgid int, signalName string) strin
 				"members=$(awk -v g=\"$pgid\" '{ pid=$1; line=$0; sub(/^[0-9]+ \\(.*\\) /, \"\", line); split(line, f, \" \"); if (f[1] != \"Z\" && f[3] == g) print pid }' /proc/[0-9]*/stat 2>/dev/null)\n"+
 				"for m in $members; do\n"+
 				"  if tr '\\000' '\\n' < \"/proc/$m/environ\" 2>/dev/null | grep -Fqx %s; then\n"+
-				"    if kill -%s -- \"-$pgid\" 2>/dev/null; then\n"+
+				// No `--` before the negative pgid: dash's kill builtin
+				// rejects it ("Illegal number: -"); the bare "-<pgid>"
+				// operand after the signal option works in dash, bash,
+				// zsh, and busybox ash alike.
+				"    if kill -%s \"-$pgid\" 2>/dev/null; then\n"+
 				"      echo \"signaled group ($(set -- $members; echo $#) members)\"\n"+
 				"      exit 0\n"+
 				"    fi\n"+

@@ -91,7 +91,7 @@ func TestRunJobsStopSignalsLingeringGroupAfterLeaderExit(t *testing.T) {
 	if !strings.Contains(got, "sent SIGTERM pgid=100 (signaled group (2 members))") {
 		t.Fatalf("expected group TERM line, got %q", got)
 	}
-	if len(client.execScripts) != 1 || !strings.Contains(client.execScripts[0], `kill -TERM -- "-$pgid"`) {
+	if len(client.execScripts) != 1 || !strings.Contains(client.execScripts[0], `kill -TERM "-$pgid"`) {
 		t.Fatalf("expected a single group TERM script, got %+v", client.execScripts)
 	}
 }
@@ -155,7 +155,7 @@ func TestStopRowNeedsSignalAndSettled(t *testing.T) {
 func TestSignalDetachJobScriptGroupAndFallback(t *testing.T) {
 	group := signalDetachJobScript("job-1", 100, 100, "TERM")
 	for _, want := range []string{
-		`kill -TERM -- "-$pgid"`,
+		`kill -TERM "-$pgid"`,
 		"/proc/[0-9]*/stat",
 		"OKDEV_JOB_ID=job-1",
 		// Legacy leader path stays as the fallback tail when the group is
