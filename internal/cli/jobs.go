@@ -101,6 +101,10 @@ func newJobsListCmdWithUse(opts *Options, use string, short string) *cobra.Comma
 }
 
 func newJobsLogsCmd(opts *Options) *cobra.Command {
+	var podNames []string
+	var role string
+	var labels []string
+	var exclude []string
 	var follow bool
 	var container string
 	var fanout int
@@ -122,7 +126,7 @@ func newJobsLogsCmd(opts *Options) *cobra.Command {
 			if err := ensureExistingSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 				return err
 			}
-			pods, err := selectSessionPods(cmd.Context(), cc, nil, "", nil, nil, true)
+			pods, err := selectSessionPods(cmd.Context(), cc, podNames, role, labels, exclude, true)
 			if err != nil {
 				return err
 			}
@@ -133,6 +137,10 @@ func newJobsLogsCmd(opts *Options) *cobra.Command {
 			return runJobsLogs(cmd.Context(), cc.kube, cc.namespace, pods, targetContainer, strings.TrimSpace(args[0]), fanoutOrDefault(fanout), follow, cmd.OutOrStdout())
 		},
 	}
+	cmd.Flags().StringSliceVar(&podNames, "pod", nil, "Target specific pods by name (repeatable/comma-separated)")
+	cmd.Flags().StringVar(&role, "role", "", "Target pods by workload role")
+	cmd.Flags().StringSliceVar(&labels, "label", nil, "Target pods by label key=value (repeatable)")
+	cmd.Flags().StringSliceVar(&exclude, "exclude", nil, "Exclude specific pods (repeatable/comma-separated)")
 	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "Follow logs until all pods in the job finish")
 	cmd.Flags().StringVar(&container, "container", "", "Override target container")
 	cmd.Flags().IntVar(&fanout, "fanout", pdshDefaultFanout, "Maximum concurrent pod queries")
