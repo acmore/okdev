@@ -763,6 +763,9 @@ func (c *Client) WaitReadyWithProgress(ctx context.Context, namespace, pod strin
 		}
 	}
 	emitProgress(current)
+	if current.Status.Phase == corev1.PodFailed {
+		return fmt.Errorf("pod/%s failed while waiting for readiness", pod)
+	}
 	if isPodReady(current) {
 		return nil
 	}
@@ -798,6 +801,10 @@ func (c *Client) WaitReadyWithProgress(ctx context.Context, namespace, pod strin
 					if p.DeletionTimestamp != nil {
 						watcher.Stop()
 						return fmt.Errorf("pod/%s is terminating", pod)
+					}
+					if p.Status.Phase == corev1.PodFailed {
+						watcher.Stop()
+						return fmt.Errorf("pod/%s failed while waiting for readiness", pod)
 					}
 					if isPodReady(p) {
 						watcher.Stop()

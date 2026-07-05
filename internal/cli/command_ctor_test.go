@@ -49,6 +49,9 @@ func TestCommandConstructorsExposeExpectedMetadata(t *testing.T) {
 			}
 		}
 	}
+	if cmd := newJobsLogsCmd(&Options{}); cmd.Use != "logs <job-id> [session]" || cmd.Flags().Lookup("pod") == nil || cmd.Flags().Lookup("role") == nil || cmd.Flags().Lookup("label") == nil || cmd.Flags().Lookup("exclude") == nil || cmd.Flags().Lookup("container") == nil || cmd.Flags().Lookup("fanout") == nil {
+		t.Fatalf("unexpected jobs logs command shape")
+	}
 	if cmd := newPortForwardCmd(&Options{}); cmd.Use != "port-forward [session] <local:remote>..." || cmd.Short == "" || cmd.Flags().Lookup("pod") == nil || cmd.Flags().Lookup("role") == nil || cmd.Flags().Lookup("address") == nil || cmd.Flags().Lookup("ready-only") == nil {
 		t.Fatalf("unexpected port-forward command shape")
 	}

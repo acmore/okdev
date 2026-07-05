@@ -241,6 +241,42 @@ func TestGenericRuntimeSelectTargetPrefersAttachablePods(t *testing.T) {
 	}
 }
 
+func TestGenericRuntimeWaitReadyDoesNotFailFastForGenericFailedPods(t *testing.T) {
+	rt := &GenericRuntime{
+		WorkloadKind:    TypeGeneric,
+		TargetContainer: "trainer",
+		Labels: map[string]string{
+			"okdev.io/managed":       "true",
+			"okdev.io/session":       "sess1",
+			"okdev.io/workload-type": TypeGeneric,
+		},
+	}
+	client := &fakeGenericClient{
+		pods: []kube.PodSummary{
+			{
+				Name:   "trainer-old",
+				Phase:  string(corev1.PodFailed),
+				Ready:  "0/1",
+				Reason: "Error",
+				Labels: map[string]string{"okdev.io/attachable": "false"},
+			},
+			{
+				Name:   "trainer-new",
+				Phase:  string(corev1.PodRunning),
+				Ready:  "1/1",
+				Labels: map[string]string{"okdev.io/attachable": "true"},
+			},
+		},
+	}
+
+	if err := rt.WaitReady(context.Background(), client, "default", time.Second, nil); err != nil {
+		t.Fatalf("WaitReady should ignore failed generic pods: %v", err)
+	}
+	if client.fakeWaitClient.pod != "trainer-new" {
+		t.Fatalf("expected readiness wait on replacement target, got %+v", client.fakeWaitClient)
+	}
+}
+
 func TestGenericRuntimeSelectTargetFailsWithoutAttachablePods(t *testing.T) {
 	rt := &GenericRuntime{
 		WorkloadKind:    TypeGeneric,

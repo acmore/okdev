@@ -138,6 +138,25 @@ func isReadyString(s string) bool {
 
 type candidateSelector func(ctx context.Context, k podLister, namespace string) (TargetRef, []kube.PodSummary, error)
 
+type FailedReadinessError struct {
+	Pod    string
+	Reason string
+}
+
+func (e *FailedReadinessError) Error() string {
+	pod := strings.TrimSpace(e.Pod)
+	reason := strings.TrimSpace(e.Reason)
+	if reason == "" || reason == "-" {
+		return fmt.Sprintf("pod %q failed while waiting for workload readiness", pod)
+	}
+	return fmt.Sprintf("pod %q failed while waiting for workload readiness: %s", pod, reason)
+}
+
+func IsFailedReadinessError(err error) bool {
+	var failed *FailedReadinessError
+	return errors.As(err, &failed)
+}
+
 // waitForCandidatePodReady polls for a candidate pod and waits for it to
 // become ready, then waits for all remaining pods to become ready as well.
 // Used by multi-pod runtimes where pod discovery may take time after the
@@ -149,6 +168,7 @@ func waitForCandidatePodReady(
 	selectCandidate candidateSelector,
 	timeout time.Duration,
 	onProgress func(kube.PodReadinessProgress),
+	failFastOnPodFailure bool,
 	timeoutMessage string,
 ) error {
 	deadline := time.Now().Add(timeout)
@@ -163,13 +183,19 @@ func waitForCandidatePodReady(
 				lastProgress = progress
 				haveProgress = true
 			}
+			if err := failedPodError(pods, failFastOnPodFailure); err != nil {
+				return err
+			}
 			waitTimeout := time.Until(deadline)
 			if waitTimeout <= 0 {
 				break
 			}
 			waitErr := k.WaitReadyWithProgress(ctx, namespace, target.PodName, waitTimeout, onProgress)
 			if waitErr == nil {
-				return waitForRemainingPods(ctx, k, namespace, selectCandidate, deadline, onProgress)
+				return waitForRemainingPods(ctx, k, namespace, selectCandidate, deadline, onProgress, failFastOnPodFailure)
+			}
+			if failFastOnPodFailure && failedReadinessWaitError(waitErr) {
+				return &FailedReadinessError{Pod: target.PodName}
 			}
 			if shouldRetryCandidateWait(waitErr) {
 				continue
@@ -201,6 +227,7 @@ func waitForRemainingPods(
 	selectCandidate candidateSelector,
 	deadline time.Time,
 	onProgress func(kube.PodReadinessProgress),
+	failFastOnPodFailure bool,
 ) error {
 	for {
 		remaining := time.Until(deadline)
@@ -212,9 +239,15 @@ func waitForRemainingPods(
 		if err != nil {
 			return err
 		}
+		if err := failedPodError(pods, failFastOnPodFailure); err != nil {
+			return err
+		}
 
 		var pending []kube.PodSummary
 		for _, p := range pods {
+			if !failFastOnPodFailure && strings.EqualFold(strings.TrimSpace(p.Phase), string(corev1.PodFailed)) {
+				continue
+			}
 			if !isReadyString(strings.TrimSpace(p.Ready)) {
 				pending = append(pending, p)
 			}
@@ -236,6 +269,9 @@ func waitForRemainingPods(
 		}
 		waitErr := k.WaitReadyWithProgress(ctx, namespace, pending[0].Name, waitTimeout, onProgress)
 		if waitErr != nil {
+			if failFastOnPodFailure && failedReadinessWaitError(waitErr) {
+				return &FailedReadinessError{Pod: pending[0].Name}
+			}
 			if shouldRetryCandidateWait(waitErr) {
 				continue
 			}
@@ -255,4 +291,25 @@ func shouldRetryCandidateWait(err error) bool {
 	return strings.Contains(msg, "was deleted while waiting for readiness") ||
 		strings.Contains(msg, "is terminating") ||
 		strings.Contains(msg, "not found")
+}
+
+func failedReadinessWaitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "failed while waiting for readiness")
+}
+
+func failedPodError(pods []kube.PodSummary, enabled bool) error {
+	if !enabled {
+		return nil
+	}
+	for _, p := range pods {
+		if !strings.EqualFold(strings.TrimSpace(p.Phase), string(corev1.PodFailed)) {
+			continue
+		}
+		reason := strings.TrimSpace(p.Reason)
+		return &FailedReadinessError{Pod: p.Name, Reason: reason}
+	}
+	return nil
 }
