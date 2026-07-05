@@ -276,6 +276,36 @@ func TestBuildDetailedTargetDoesNotMixSelectedPodWithStalePinnedContainer(t *tes
 	}
 }
 
+func TestBuildDetailedTargetMapsContainerIssues(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := &config.DevEnvironment{}
+	view := sessionView{
+		Session:   "sess1",
+		TargetPod: "worker-0",
+		Pods: []kube.PodSummary{{
+			Name: "worker-0",
+			ContainerIssues: []kube.ContainerIssue{{
+				Container:  "pytorch",
+				Reason:     "OOMKilled",
+				ExitCode:   137,
+				FinishedAt: time.Date(2026, 7, 5, 6, 32, 11, 0, time.UTC),
+				Current:    true,
+			}},
+		}},
+	}
+	_, pods := buildDetailedTarget(view, cfg)
+	if len(pods) != 1 || len(pods[0].ContainerIssues) != 1 {
+		t.Fatalf("expected mapped container issue, got %+v", pods)
+	}
+	issue := pods[0].ContainerIssues[0]
+	if issue.Container != "pytorch" || issue.Reason != "OOMKilled" || issue.ExitCode != 137 || !issue.Current {
+		t.Fatalf("unexpected issue %+v", issue)
+	}
+	if issue.FinishedAt != "2026-07-05T06:32:11Z" {
+		t.Fatalf("expected RFC3339 finishedAt, got %q", issue.FinishedAt)
+	}
+}
+
 func TestPrintDetailedStatusIncludesSections(t *testing.T) {
 	var out bytes.Buffer
 	printDetailedStatus(&out, detailedStatus{
@@ -303,6 +333,10 @@ func TestPrintDetailedStatusIncludesSections(t *testing.T) {
 			Mounts: []detailedStatusMount{
 				{Name: "workspace", MountPath: "/workspace", SourceType: "emptyDir", Persistence: "ephemeral"},
 				{Name: "data", MountPath: "/data", SourceType: "hostPath", Persistence: "persistent"},
+			},
+			ContainerIssues: []detailedStatusContainerIssue{
+				{Container: "pytorch", Reason: "OOMKilled", ExitCode: 137, FinishedAt: "2026-07-05T06:32:11Z", Current: true},
+				{Container: "dev", Reason: "Error", ExitCode: 1},
 			},
 		}},
 		SSH: detailedStatusSSH{
@@ -352,6 +386,8 @@ func TestPrintDetailedStatusIncludesSections(t *testing.T) {
 		"ip=10.0.0.10",
 		"node=gpu-node-a",
 		"mounts: /workspace [emptyDir, ephemeral], /data [hostPath, persistent]",
+		"container pytorch: OOMKilled (exit 137, finished 2026-07-05T06:32:11Z)",
+		"container dev: Error (exit 1) before last restart",
 		"SSH:",
 		"managed forward: running",
 		"Sync:",

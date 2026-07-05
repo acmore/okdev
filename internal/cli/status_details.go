@@ -57,18 +57,30 @@ type detailedStatusTarget struct {
 }
 
 type detailedStatusPod struct {
-	Name       string                `json:"name"`
-	Role       string                `json:"role,omitempty"`
-	Attachable bool                  `json:"attachable"`
-	Phase      string                `json:"phase"`
-	Ready      string                `json:"ready"`
-	Restarts   int32                 `json:"restarts"`
-	Reason     string                `json:"reason"`
-	Age        string                `json:"age"`
-	Selected   bool                  `json:"selected"`
-	PodIP      string                `json:"podIP,omitempty"`
-	NodeName   string                `json:"nodeName,omitempty"`
-	Mounts     []detailedStatusMount `json:"mounts,omitempty"`
+	Name            string                         `json:"name"`
+	Role            string                         `json:"role,omitempty"`
+	Attachable      bool                           `json:"attachable"`
+	Phase           string                         `json:"phase"`
+	Ready           string                         `json:"ready"`
+	Restarts        int32                          `json:"restarts"`
+	Reason          string                         `json:"reason"`
+	Age             string                         `json:"age"`
+	Selected        bool                           `json:"selected"`
+	PodIP           string                         `json:"podIP,omitempty"`
+	NodeName        string                         `json:"nodeName,omitempty"`
+	Mounts          []detailedStatusMount          `json:"mounts,omitempty"`
+	ContainerIssues []detailedStatusContainerIssue `json:"containerIssues,omitempty"`
+}
+
+// detailedStatusContainerIssue surfaces an abnormal container termination
+// (OOMKilled, Error, ...) so `ready=1/2` comes with its cause instead of
+// requiring a kubectl round-trip through containerStatuses.
+type detailedStatusContainerIssue struct {
+	Container  string `json:"container"`
+	Reason     string `json:"reason"`
+	ExitCode   int32  `json:"exitCode"`
+	FinishedAt string `json:"finishedAt,omitempty"`
+	Current    bool   `json:"current"`
 }
 
 type detailedStatusMount struct {
@@ -180,18 +192,33 @@ func buildDetailedTarget(view sessionView, cfg *config.DevEnvironment) (detailed
 
 	pods := make([]detailedStatusPod, 0, len(view.Pods))
 	for _, pod := range sortedSessionPods(view.Pods) {
+		issues := make([]detailedStatusContainerIssue, 0, len(pod.ContainerIssues))
+		for _, issue := range pod.ContainerIssues {
+			finishedAt := ""
+			if !issue.FinishedAt.IsZero() {
+				finishedAt = issue.FinishedAt.UTC().Format(time.RFC3339)
+			}
+			issues = append(issues, detailedStatusContainerIssue{
+				Container:  issue.Container,
+				Reason:     issue.Reason,
+				ExitCode:   issue.ExitCode,
+				FinishedAt: finishedAt,
+				Current:    issue.Current,
+			})
+		}
 		pods = append(pods, detailedStatusPod{
-			Name:       pod.Name,
-			Role:       strings.TrimSpace(pod.Labels["okdev.io/workload-role"]),
-			Attachable: !strings.EqualFold(strings.TrimSpace(pod.Labels["okdev.io/attachable"]), "false"),
-			Phase:      pod.Phase,
-			Ready:      pod.Ready,
-			Restarts:   pod.Restarts,
-			Reason:     pod.Reason,
-			Age:        age(pod.CreatedAt),
-			Selected:   pod.Name == view.TargetPod,
-			PodIP:      pod.PodIP,
-			NodeName:   pod.NodeName,
+			Name:            pod.Name,
+			Role:            strings.TrimSpace(pod.Labels["okdev.io/workload-role"]),
+			Attachable:      !strings.EqualFold(strings.TrimSpace(pod.Labels["okdev.io/attachable"]), "false"),
+			Phase:           pod.Phase,
+			Ready:           pod.Ready,
+			Restarts:        pod.Restarts,
+			Reason:          pod.Reason,
+			Age:             age(pod.CreatedAt),
+			Selected:        pod.Name == view.TargetPod,
+			PodIP:           pod.PodIP,
+			NodeName:        pod.NodeName,
+			ContainerIssues: issues,
 		})
 	}
 	return target, pods
@@ -545,6 +572,9 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 				fmt.Fprintf(w, "  %s\n", extra)
 			}
 		}
+		for _, issue := range pod.ContainerIssues {
+			fmt.Fprintf(w, "  %s\n", renderContainerIssueLine(issue))
+		}
 	}
 
 	fmt.Fprintln(w, "\nSSH:")
@@ -663,6 +693,20 @@ func renderMountsLine(mounts []detailedStatusMount) string {
 		parts = append(parts, fmt.Sprintf("%s [%s, %s]", mount.MountPath, mount.SourceType, mount.Persistence))
 	}
 	return "mounts: " + strings.Join(parts, ", ")
+}
+
+// renderContainerIssueLine formats one abnormal container termination, e.g.
+// "container pytorch: OOMKilled (exit 137, finished 2026-07-05T06:32:11Z)".
+func renderContainerIssueLine(issue detailedStatusContainerIssue) string {
+	line := fmt.Sprintf("container %s: %s (exit %d", issue.Container, issue.Reason, issue.ExitCode)
+	if issue.FinishedAt != "" {
+		line += ", finished " + issue.FinishedAt
+	}
+	line += ")"
+	if !issue.Current {
+		line += " before last restart"
+	}
+	return line
 }
 
 func summarizeConfiguredPorts(forwards []config.PortMapping) []string {

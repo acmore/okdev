@@ -81,6 +81,22 @@ type PodSummary struct {
 	Reason      string
 	PodIP       string
 	NodeName    string
+	// ContainerIssues carries per-container termination details (OOMKilled,
+	// Error, ...) so callers can explain a not-ready pod without re-fetching
+	// and digging through containerStatuses themselves.
+	ContainerIssues []ContainerIssue
+}
+
+// ContainerIssue describes a container that is (or last was) terminated
+// abnormally. Current reports whether the termination is the container's
+// present state (restartPolicy kept it down) as opposed to the last state
+// before a restart.
+type ContainerIssue struct {
+	Container  string
+	Reason     string // e.g. "OOMKilled", "Error"
+	ExitCode   int32
+	FinishedAt time.Time
+	Current    bool
 }
 
 type ResourceSummary struct {
@@ -901,6 +917,7 @@ type ContainerRestartInfo struct {
 	LastExitCode   int32
 	LastReason     string // e.g. "OOMKilled", "Error"
 	LastMessage    string
+	LastFinishedAt time.Time
 	CurrentWaiting string // e.g. "CrashLoopBackOff"
 }
 
@@ -922,10 +939,18 @@ func (c *Client) GetContainerRestartInfo(ctx context.Context, namespace, pod, co
 		info := &ContainerRestartInfo{
 			RestartCount: st.RestartCount,
 		}
-		if t := st.LastTerminationState.Terminated; t != nil {
-			info.LastExitCode = t.ExitCode
-			info.LastReason = t.Reason
-			info.LastMessage = t.Message
+		// Prefer the current state when the container is sitting terminated
+		// (restartPolicy did not bring it back), where LastTerminationState
+		// stays empty; fall back to the pre-restart termination otherwise.
+		term := st.State.Terminated
+		if term == nil {
+			term = st.LastTerminationState.Terminated
+		}
+		if term != nil {
+			info.LastExitCode = term.ExitCode
+			info.LastReason = terminationReason(term)
+			info.LastMessage = term.Message
+			info.LastFinishedAt = term.FinishedAt.Time
 		}
 		if w := st.State.Waiting; w != nil {
 			info.CurrentWaiting = w.Reason
@@ -2339,6 +2364,7 @@ func podSummaryFromPod(p *corev1.Pod) PodSummary {
 	totalContainers := len(p.Status.ContainerStatuses)
 	var restarts int32
 	reason := p.Status.Reason
+	var issues []ContainerIssue
 	for _, st := range p.Status.ContainerStatuses {
 		if st.Ready {
 			readyContainers++
@@ -2347,6 +2373,15 @@ func podSummaryFromPod(p *corev1.Pod) PodSummary {
 		if reason == "" && st.State.Waiting != nil && st.State.Waiting.Reason != "" {
 			reason = st.State.Waiting.Reason
 		}
+		if issue, ok := containerIssueFromStatus(st); ok {
+			issues = append(issues, issue)
+		}
+	}
+	// A container terminated by the runtime (OOMKilled, Error) explains a
+	// not-ready pod better than "-"; waiting reasons keep precedence because
+	// they describe the pod's current blocker (e.g. CrashLoopBackOff).
+	if reason == "" && len(issues) > 0 {
+		reason = issues[0].Reason
 	}
 	if reason == "" {
 		reason = "-"
@@ -2364,12 +2399,49 @@ func podSummaryFromPod(p *corev1.Pod) PodSummary {
 		CreatedAt:   p.CreationTimestamp.Time,
 		Labels:      p.Labels,
 		Annotations: p.Annotations,
-		Ready:       fmt.Sprintf("%d/%d", readyContainers, totalContainers),
-		Restarts:    restarts,
-		Reason:      reason,
-		PodIP:       p.Status.PodIP,
-		NodeName:    p.Spec.NodeName,
+		Ready:           fmt.Sprintf("%d/%d", readyContainers, totalContainers),
+		Restarts:        restarts,
+		Reason:          reason,
+		PodIP:           p.Status.PodIP,
+		NodeName:        p.Spec.NodeName,
+		ContainerIssues: issues,
 	}
+}
+
+// containerIssueFromStatus extracts an abnormal termination from a container
+// status: the current state when the container stays down, otherwise the
+// last termination before a restart. Clean exits (Completed / exit 0) are
+// not issues.
+func containerIssueFromStatus(st corev1.ContainerStatus) (ContainerIssue, bool) {
+	if t := st.State.Terminated; t != nil && terminationIsAbnormal(t) {
+		return ContainerIssue{
+			Container:  st.Name,
+			Reason:     terminationReason(t),
+			ExitCode:   t.ExitCode,
+			FinishedAt: t.FinishedAt.Time,
+			Current:    true,
+		}, true
+	}
+	if t := st.LastTerminationState.Terminated; t != nil && terminationIsAbnormal(t) {
+		return ContainerIssue{
+			Container:  st.Name,
+			Reason:     terminationReason(t),
+			ExitCode:   t.ExitCode,
+			FinishedAt: t.FinishedAt.Time,
+		}, true
+	}
+	return ContainerIssue{}, false
+}
+
+func terminationIsAbnormal(t *corev1.ContainerStateTerminated) bool {
+	return t.ExitCode != 0 || (t.Reason != "" && t.Reason != "Completed")
+}
+
+func terminationReason(t *corev1.ContainerStateTerminated) string {
+	if t.Reason != "" {
+		return t.Reason
+	}
+	return "Error"
 }
 
 func preferredContainerFromExecErr(err error) string {

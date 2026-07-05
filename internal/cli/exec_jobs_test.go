@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/acmore/okdev/internal/kube"
 )
@@ -239,10 +240,17 @@ func TestDetachJobsCommandReconcilesAndReapsTmpFiles(t *testing.T) {
 // fakeContainerExecClient routes exec results by "pod|container" so tests can
 // model a dead target container alongside a healthy sidecar.
 type fakeContainerExecClient struct {
-	mu      sync.Mutex
-	calls   []string
-	outputs map[string]string
-	errs    map[string]error
+	mu          sync.Mutex
+	calls       []string
+	outputs     map[string]string
+	errs        map[string]error
+	restartInfo map[string]*kube.ContainerRestartInfo
+}
+
+func (f *fakeContainerExecClient) GetContainerRestartInfo(ctx context.Context, namespace, pod, container string) (*kube.ContainerRestartInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.restartInfo[pod+"|"+container], nil
 }
 
 func (f *fakeContainerExecClient) ExecInteractive(ctx context.Context, namespace, pod string, tty bool, command []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) error {
@@ -311,6 +319,52 @@ func TestCollectDetachJobsDoesNotFallBackOnCommandError(t *testing.T) {
 	}
 	if len(client.calls) != 1 {
 		t.Fatalf("expected single exec attempt, got %v", client.calls)
+	}
+}
+
+func TestCollectDetachJobsErrorIncludesTerminationHint(t *testing.T) {
+	// When both the target container and the sidecar fallback fail, the pod
+	// error should say WHY the container is gone instead of a bare
+	// "container not found".
+	client := &fakeContainerExecClient{
+		errs: map[string]error{
+			"okdev-sess-worker-0|pytorch":                   errors.New(`container not found ("pytorch")`),
+			"okdev-sess-worker-0|" + syncthingContainerName: errors.New("sidecar unavailable"),
+		},
+		restartInfo: map[string]*kube.ContainerRestartInfo{
+			"okdev-sess-worker-0|pytorch": {
+				LastReason:     "OOMKilled",
+				LastExitCode:   137,
+				LastFinishedAt: time.Date(2026, 7, 5, 6, 32, 11, 0, time.UTC),
+			},
+		},
+	}
+	pods := []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}}
+	_, podErrors := collectDetachJobs(context.Background(), client, "default", pods, "pytorch", "", pdshDefaultFanout)
+	if len(podErrors) != 1 {
+		t.Fatalf("expected one pod error, got %+v", podErrors)
+	}
+	if !strings.Contains(podErrors[0].Error, `container "pytorch" terminated: OOMKilled (exit 137, finished 2026-07-05T06:32:11Z)`) {
+		t.Fatalf("expected termination hint in error, got %q", podErrors[0].Error)
+	}
+}
+
+func TestContainerUnavailableHint(t *testing.T) {
+	client := &fakeContainerExecClient{
+		restartInfo: map[string]*kube.ContainerRestartInfo{
+			"pod-1|pytorch": {LastReason: "OOMKilled", LastExitCode: 137},
+		},
+	}
+	got := containerUnavailableHint(context.Background(), client, "ns", "pod-1", "pytorch")
+	if got != `container "pytorch" terminated: OOMKilled (exit 137)` {
+		t.Fatalf("unexpected hint: %q", got)
+	}
+	if hint := containerUnavailableHint(context.Background(), client, "ns", "pod-1", "other"); hint != "" {
+		t.Fatalf("expected empty hint without termination info, got %q", hint)
+	}
+	// Clients without restart-info capability (plain ExecClient) yield "".
+	if hint := containerUnavailableHint(context.Background(), &fakePdshExecClient{}, "ns", "pod-1", "pytorch"); hint != "" {
+		t.Fatalf("expected empty hint for capability-less client, got %q", hint)
 	}
 }
 
