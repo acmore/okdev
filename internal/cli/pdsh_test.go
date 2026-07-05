@@ -84,17 +84,7 @@ func TestExcludePods(t *testing.T) {
 }
 
 func TestDetachCommand(t *testing.T) {
-	spec := detachJobSpec{
-		JobID:      "job-123",
-		Pod:        "okdev-sess-worker-0",
-		Container:  "dev",
-		Command:    "python train.py --epochs 100",
-		Argv:       []string{"python", "train.py", "--epochs", "100"},
-		StartedAt:  "2026-04-23T03:00:00Z",
-		LogPath:    "/tmp/okdev-exec/job-123.log",
-		MetaPath:   "/tmp/okdev-exec/job-123.json",
-		ScriptPath: "/tmp/okdev-exec/job-123.sh",
-	}
+	spec := newDetachJobSpec("job-123", "okdev-sess-worker-0", "dev", "python train.py --epochs 100", []string{"python", "train.py", "--epochs", "100"}, nil)
 	got := detachCommand(spec)
 	if len(got) != 3 {
 		t.Fatalf("expected shell command triplet, got %v", got)
@@ -104,17 +94,27 @@ func TestDetachCommand(t *testing.T) {
 	}
 	script := got[2]
 	for _, want := range []string{
-		"mkdir -p '/tmp/okdev-exec'",
-		"wrapper_path='/tmp/okdev-exec/job-123.sh'",
-		"cat >\"$wrapper_path\" <<'OKDEV_DETACH_WRAPPER'",
+		// The launcher prefers the shared runtime volume and falls back to
+		// the legacy /tmp dir when the volume is absent or not writable
+		// (e.g. non-root user on a user-supplied root-owned volume).
+		"dir='" + detachMetadataDir + "'",
+		"dir='" + legacyDetachMetadataDir + "'",
+		"[ ! -w \"$dir\" ]",
+		"mkdir -p \"$dir\"",
+		"wrapper_path=\"$dir\"/'job-123.sh'",
+		// The wrapper is written through sed so the dir placeholder in its
+		// baked-in paths resolves to the launcher's chosen directory.
+		"sed \"s|" + detachDirPlaceholder + "|$dir|g\" >\"$wrapper_path\" <<'OKDEV_DETACH_WRAPPER'",
 		"chmod 700 \"$wrapper_path\"",
 		"nohup sh \"$wrapper_path\" >\"$log_path\" 2>&1 &",
 		"set -- 'python' 'train.py' '--epochs' '100'",
-		"meta_path='/tmp/okdev-exec/job-123.json'",
+		"meta_path='" + detachDirPlaceholder + "/job-123.json'",
 		"rc=$?",
 		"state\":\"running\"",
 		"state\":\"exited\"",
 		"printf '%s\\n' \"$launch_json\"",
+		// The launch record echoed to the caller carries the resolved dir.
+		"s|" + detachDirPlaceholder + "|$dir|g; s/__OKDEV_DETACH_PID__/$pid/g",
 		// Launcher must block until the wrapper publishes its initial
 		// metadata so a caller-followed `okdev exec-jobs` always sees the
 		// new job.
@@ -163,9 +163,9 @@ func TestDetachCommandWithQuotes(t *testing.T) {
 		Command:    "echo 'hello world'",
 		Argv:       []string{"echo", "hello world"},
 		StartedAt:  "2026-04-23T03:00:00Z",
-		LogPath:    "/tmp/okdev-exec/job-quoted.log",
-		MetaPath:   "/tmp/okdev-exec/job-quoted.json",
-		ScriptPath: "/tmp/okdev-exec/job-quoted.sh",
+		LogPath:    detachDirPlaceholder + "/job-quoted.log",
+		MetaPath:   detachDirPlaceholder + "/job-quoted.json",
+		ScriptPath: detachDirPlaceholder + "/job-quoted.sh",
 	}
 	got := detachCommand(spec)
 	if len(got) != 3 {
@@ -337,6 +337,25 @@ func TestFilterRunningPods(t *testing.T) {
 	got := filterRunningPods(pods)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 pods, got %d", len(got))
+	}
+}
+
+func TestNewDetachJobSpecPlacesFilesOnRuntimeVolume(t *testing.T) {
+	// Detached job logs and metadata must prefer the okdev-runtime volume
+	// (shared with the sidecar) so they survive a target-container crash;
+	// /tmp is container-private overlay and dies with the container. The
+	// spec carries a placeholder dir that the launcher resolves on the pod.
+	if detachMetadataDir != "/var/okdev/exec" {
+		t.Fatalf("detach metadata dir must be on the shared runtime volume, got %q", detachMetadataDir)
+	}
+	if legacyDetachMetadataDir != "/tmp/okdev-exec" {
+		t.Fatalf("legacy detach metadata dir must stay stable for fallback/compat, got %q", legacyDetachMetadataDir)
+	}
+	spec := newDetachJobSpec("", "pod-1", "dev", "python train.py", []string{"python", "train.py"}, nil)
+	for _, p := range []string{spec.LogPath, spec.MetaPath, spec.ScriptPath} {
+		if !strings.HasPrefix(p, detachDirPlaceholder+"/") {
+			t.Fatalf("expected placeholder-dir path, got %q", p)
+		}
 	}
 }
 

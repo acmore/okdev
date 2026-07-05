@@ -171,6 +171,15 @@ func collectDetachJobs(ctx context.Context, client connect.ExecClient, namespace
 			defer func() { <-sem }()
 			var stdout bytes.Buffer
 			err := connect.RunOnContainer(ctx, client, namespace, pod.Name, container, detachJobsCommand(), false, nil, &stdout, io.Discard)
+			if err != nil && container != syncthingContainerName && isContainerUnavailableExecError(err) {
+				// The target container is gone (OOMKilled, crashed). Job
+				// metadata lives on the shared /var/okdev volume, so the
+				// always-running sidecar can still read it.
+				stdout.Reset()
+				if sideErr := connect.RunOnContainer(ctx, client, namespace, pod.Name, syncthingContainerName, detachJobsCommand(), false, nil, &stdout, io.Discard); sideErr == nil {
+					err = nil
+				}
+			}
 			if err != nil {
 				results <- podDetachJobsResult{pod: pod.Name, err: err}
 				return
@@ -314,24 +323,42 @@ func detachJobsCommand() []string {
 	// variable (rather than cmdline) is robust against PID reuse even when
 	// the job's cmdline is the arbitrary user command. The find(1) call
 	// also reaps stale .tmp files left behind by killed launchers/wrappers.
-	script := `dir='` + detachMetadataDir + `'
-[ -d "$dir" ] || exit 0
-find "$dir" -maxdepth 1 -name '*.tmp' -type f -mmin +1 -delete 2>/dev/null || true
-for f in "$dir"/*.json; do
-  [ -e "$f" ] || continue
-  contents=$(cat "$f")
-  pid=$(printf '%s' "$contents" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' | head -n1)
-  job_id=$(basename "$f" .json)
-  alive=0
-  if [ -n "$pid" ] && [ -r "/proc/$pid/environ" ]; then
-    if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -Fqx "OKDEV_JOB_ID=$job_id"; then
-      alive=1
+	// Both the current metadata dir and the legacy /tmp location are scanned
+	// so jobs launched by an older okdev remain visible after an upgrade.
+	script := `for dir in '` + detachMetadataDir + `' '` + legacyDetachMetadataDir + `'; do
+  [ -d "$dir" ] || continue
+  find "$dir" -maxdepth 1 -name '*.tmp' -type f -mmin +1 -delete 2>/dev/null || true
+  for f in "$dir"/*.json; do
+    [ -e "$f" ] || continue
+    contents=$(cat "$f")
+    pid=$(printf '%s' "$contents" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' | head -n1)
+    job_id=$(basename "$f" .json)
+    alive=0
+    if [ -n "$pid" ] && [ -r "/proc/$pid/environ" ]; then
+      if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -Fqx "OKDEV_JOB_ID=$job_id"; then
+        alive=1
+      fi
     fi
-  fi
-  printf '%s\t%s\n' "$alive" "$contents"
+    printf '%s\t%s\n' "$alive" "$contents"
+  done
 done
 `
 	return []string{"sh", "-c", script}
+}
+
+// isContainerUnavailableExecError reports whether an exec failure means the
+// container itself is gone or not running (kubelet/CRI phrasing varies), as
+// opposed to the command failing. Only then is the sidecar fallback useful.
+func isContainerUnavailableExecError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "container not found") ||
+		strings.Contains(msg, "is not running") ||
+		strings.Contains(msg, "not created or running") ||
+		strings.Contains(msg, "stopped container") ||
+		strings.Contains(msg, "container_exited")
 }
 
 func parseDetachMetadataLines(raw string) ([]detachMetadata, error) {
