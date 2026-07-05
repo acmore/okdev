@@ -9,6 +9,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/acmore/okdev/internal/connect"
 	"github.com/acmore/okdev/internal/fanout"
@@ -181,6 +182,11 @@ func collectDetachJobs(ctx context.Context, client connect.ExecClient, namespace
 				}
 			}
 			if err != nil {
+				if isContainerUnavailableExecError(err) {
+					if hint := containerUnavailableHint(ctx, client, namespace, pod.Name, container); hint != "" {
+						err = fmt.Errorf("%w; %s", err, hint)
+					}
+				}
 				results <- podDetachJobsResult{pod: pod.Name, err: err}
 				return
 			}
@@ -359,6 +365,38 @@ func isContainerUnavailableExecError(err error) bool {
 		strings.Contains(msg, "not created or running") ||
 		strings.Contains(msg, "stopped container") ||
 		strings.Contains(msg, "container_exited")
+}
+
+// containerLastStateClient is satisfied by *kube.Client; kept as a narrow
+// interface so exec paths that only hold a connect.ExecClient can probe for
+// the capability.
+type containerLastStateClient interface {
+	GetContainerRestartInfo(ctx context.Context, namespace, pod, container string) (*kube.ContainerRestartInfo, error)
+}
+
+// containerUnavailableHint explains why an exec target container is gone,
+// e.g. `container "pytorch" terminated: OOMKilled (exit 137, finished
+// 2026-07-05T06:32:11Z)`. Returns "" when the cause cannot be determined —
+// callers append it to the raw exec error, never replace it.
+func containerUnavailableHint(ctx context.Context, client any, namespace, pod, container string) string {
+	if strings.TrimSpace(container) == "" {
+		return ""
+	}
+	g, ok := client.(containerLastStateClient)
+	if !ok {
+		return ""
+	}
+	hintCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ri, err := g.GetContainerRestartInfo(hintCtx, namespace, pod, container)
+	if err != nil || ri == nil || ri.LastReason == "" {
+		return ""
+	}
+	hint := fmt.Sprintf("container %q terminated: %s (exit %d", container, ri.LastReason, ri.LastExitCode)
+	if !ri.LastFinishedAt.IsZero() {
+		hint += ", finished " + ri.LastFinishedAt.UTC().Format(time.RFC3339)
+	}
+	return hint + ")"
 }
 
 func parseDetachMetadataLines(raw string) ([]detachMetadata, error) {

@@ -58,7 +58,8 @@ agents can react without launching a diagnostic chain on every blip:
 - Shows session status for the current or selected session.
 - When `session` is provided, `okdev` can resolve the saved config from session metadata even outside the repo.
 - `--details`: prints a single-session diagnostic view with target selection, pod list, pod IP and node placement, mount persistence, sync path semantics, managed SSH state, key local paths, and target pod details.
-- Detailed JSON output includes per-pod mount metadata and a `pathSemantics` section describing which configured sync paths are shared via the workspace sync and which are expected to survive a session restart.
+- Abnormally terminated containers are surfaced per pod, e.g. `container pytorch: OOMKilled (exit 137, finished 2026-07-05T06:32:11Z)` — both the current state (container stayed down) and the last termination before a restart (suffixed `before last restart`). The pod `reason` column also falls back to the termination reason when no waiting reason applies.
+- Detailed JSON output includes per-pod mount metadata, a `containerIssues` array (`container`, `reason`, `exitCode`, `finishedAt`, `current`), and a `pathSemantics` section describing which configured sync paths are shared via the workspace sync and which are expected to survive a session restart.
 - `--details` is only valid when exactly one session is selected.
 
 ### `okdev target show`
@@ -130,6 +131,7 @@ agents can react without launching a diagnostic chain on every blip:
 - Lists detached `okdev exec --detach` jobs across the session's running pods.
 - Reads job metadata from `/var/okdev/exec/*.json` in the target container (plus the legacy `/tmp/okdev-exec/` location for jobs launched by older okdev versions).
 - If the target container is gone (e.g. OOMKilled), listing and `jobs logs` automatically retry through the `okdev-sidecar` container, which mounts the same runtime volume.
+- When a command fails because the container is gone, the error carries the termination cause when it can be determined, e.g. `container "pytorch" terminated: OOMKilled (exit 137, finished 2026-07-05T06:32:11Z)`. The same hint is appended to `okdev exec` FAILED lines and single-pod exec errors.
 - Text output is grouped by logical job id, with one row per detached launch showing job id, summarized state, pod count, earliest start time, and original command.
 - JSON output includes both the logical job summary and the per-pod `podStates` records.
 - State values: `running` (wrapper alive and user command in flight), `exited` (user command finished; exit code is recorded in `podStates` / JSON), and `orphaned` (metadata still says `running` but the pid has exited or been recycled - typically the wrapper was `SIGKILL`ed or the container was restarted before the completion metadata could be written). Grouped text summaries render forms such as `running(1/2)`, `exited(2/2)`, and `failed(1/2)`.
