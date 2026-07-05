@@ -1,6 +1,7 @@
 package kube
 
 import (
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -51,5 +52,67 @@ func TestPreparePodSpecMirrorsTargetMountsIntoSidecar(t *testing.T) {
 	}
 	if byPath["/data2"].SubPath != "sets" {
 		t.Fatalf("expected subPath preserved on mirrored mount, got %+v", byPath["/data2"])
+	}
+}
+
+func TestPreparePodSpecAutoProvisionsSyncRemoteRoots(t *testing.T) {
+	// Users configure extra sync mappings with paths only; okdev provisions
+	// an emptyDir at any remote root not already covered by a volume, and
+	// the sidecar mirror makes it servable by the remote syncthing.
+	spec := corev1.PodSpec{
+		Containers: []corev1.Container{{
+			Name:  "dev",
+			Image: "ubuntu:22.04",
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: "shared-pvc", MountPath: "/shared"},
+			},
+		}},
+	}
+	volumes := []corev1.Volume{
+		{Name: "shared-pvc", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "shared"}}},
+	}
+	prepared, err := PreparePodSpecForTargetWithShellAndSyncRoots(spec, volumes, "/workspace", "sidecar:test", corev1.ResourceRequirements{}, false, "", "dev", "", []string{
+		"/data/results",     // uncovered -> emptyDir auto-provisioned
+		"/shared/results",   // under the user PVC -> untouched
+		"/workspace/nested", // under workspace -> untouched (also overlap-rejected upstream)
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	var dev, sidecar *corev1.Container
+	for i := range prepared.Containers {
+		switch prepared.Containers[i].Name {
+		case "dev":
+			dev = &prepared.Containers[i]
+		case "okdev-sidecar":
+			sidecar = &prepared.Containers[i]
+		}
+	}
+	devPaths := map[string]string{}
+	for _, m := range dev.VolumeMounts {
+		devPaths[m.MountPath] = m.Name
+	}
+	if name := devPaths["/data/results"]; name == "" || !strings.HasPrefix(name, "okdev-sync-") {
+		t.Fatalf("expected auto-provisioned mount at /data/results, got %+v", dev.VolumeMounts)
+	}
+	if _, exists := devPaths["/shared/results"]; exists {
+		t.Fatalf("covered root must not get its own mount, got %+v", dev.VolumeMounts)
+	}
+	if _, exists := devPaths["/workspace/nested"]; exists {
+		t.Fatalf("workspace-nested root must not get its own mount, got %+v", dev.VolumeMounts)
+	}
+	volNames := map[string]bool{}
+	for _, v := range prepared.Volumes {
+		volNames[v.Name] = true
+	}
+	if !volNames[devPaths["/data/results"]] {
+		t.Fatalf("expected emptyDir volume %q in pod spec", devPaths["/data/results"])
+	}
+	sidecarPaths := map[string]bool{}
+	for _, m := range sidecar.VolumeMounts {
+		sidecarPaths[m.MountPath] = true
+	}
+	if !sidecarPaths["/data/results"] {
+		t.Fatalf("sidecar must mirror the auto-provisioned mount, got %+v", sidecar.VolumeMounts)
 	}
 }

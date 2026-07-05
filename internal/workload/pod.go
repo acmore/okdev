@@ -23,6 +23,7 @@ type PodRuntime struct {
 	Tmux                 bool
 	Shell                string
 	PreStop              string
+	SyncRemoteRoots      []string
 	TargetContainer      string
 	LastAppliedSpecJSON  string
 	LastAppliedSpecHash  string
@@ -61,7 +62,7 @@ func (r *PodRuntime) WorkloadRef() (string, string, string, error) {
 }
 
 func (r *PodRuntime) Apply(ctx context.Context, k ApplyClient, namespace string) error {
-	prepared, err := kube.PreparePodSpecForTargetWithShell(r.PodSpec, r.Volumes, r.WorkspaceMountPath, r.SidecarImage, r.SidecarResources, r.Tmux, r.PreStop, r.effectiveTargetContainer(), r.Shell)
+	prepared, err := kube.PreparePodSpecForTargetWithShellAndSyncRoots(r.PodSpec, r.Volumes, r.WorkspaceMountPath, r.SidecarImage, r.SidecarResources, r.Tmux, r.PreStop, r.effectiveTargetContainer(), r.Shell, r.SyncRemoteRoots)
 	if err != nil {
 		return err
 	}

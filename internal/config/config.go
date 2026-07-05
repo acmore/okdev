@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	agentcatalog "github.com/acmore/okdev/internal/agent"
@@ -230,6 +231,23 @@ func (p SyncPathSpec) EffectiveDirection() string {
 		return SyncDirectionBi
 	}
 	return d
+}
+
+// AdditionalSyncRemoteRoots returns the remote roots of every mapping after
+// the primary one, sorted for stable hashing. These roots may need
+// auto-provisioned volumes so the sidecar's syncthing can serve them.
+func (d *DevEnvironment) AdditionalSyncRemoteRoots() []string {
+	if len(d.Spec.Sync.Paths) <= 1 {
+		return nil
+	}
+	roots := make([]string, 0, len(d.Spec.Sync.Paths)-1)
+	for _, p := range d.Spec.Sync.Paths[1:] {
+		if root := strings.TrimSpace(p.Remote); root != "" {
+			roots = append(roots, root)
+		}
+	}
+	sort.Strings(roots)
+	return roots
 }
 
 type SyncthingSpec struct {

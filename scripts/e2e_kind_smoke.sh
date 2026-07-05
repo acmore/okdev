@@ -628,21 +628,12 @@ fi
 cp "$CFG_PATH.bak" "$CFG_PATH"
 echo "overlap rejection verified"
 
-echo "Adding a second disjoint mapping (code up, results down) on a shared volume"
+echo "Adding a second disjoint mapping (code up, results down)"
 COLLECT_DIR="$WORKDIR/collected"
 mkdir -p "$COLLECT_DIR"
-# The extra mapping's remote root must live on a volume shared with the
-# sidecar (its syncthing cannot see the dev container's overlay), so add a
-# volume + mount for /data and reconcile the pod — the sidecar mirrors the
-# target container's volume mounts.
-replace_first_in_file "$CFG_PATH" "  podTemplate:" "  volumes:
-    - name: results-vol
-      emptyDir: {}
-  podTemplate:"
-replace_first_in_file "$CFG_PATH" "          command: [\"sleep\", \"infinity\"]" "          command: [\"sleep\", \"infinity\"]
-          volumeMounts:
-            - name: results-vol
-              mountPath: /data"
+# No volume YAML needed: okdev auto-provisions an emptyDir at the extra
+# mapping's remote root and mirrors it into the sidecar. Adding the mapping
+# changes the pod spec, so plain `up` must first surface drift guidance.
 MULTI_ENTRY="- local: \"$SYNC_DIR\"
         remote: /workspace
         direction: up
@@ -652,11 +643,23 @@ MULTI_ENTRY="- local: \"$SYNC_DIR\"
 replace_first_in_file "$CFG_PATH" "- local: \"$SYNC_DIR\"
         remote: /workspace
         direction: down" "$MULTI_ENTRY"
-if ! grep -q "/data/results" "$CFG_PATH" || ! grep -q "results-vol" "$CFG_PATH"; then
-  echo "ERROR: failed to add volume or second sync mapping; config is:" >&2
+if ! grep -q "/data/results" "$CFG_PATH"; then
+  echo "ERROR: failed to add second sync mapping; config is:" >&2
   cat "$CFG_PATH" >&2
   exit 1
 fi
+
+echo "multi-mapping: plain up surfaces reconcile guidance for the new volume"
+set +e
+MULTI_DRIFT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m 2>&1)
+MULTI_DRIFT_STATUS=$?
+set -e
+if [[ "$MULTI_DRIFT_STATUS" -eq 0 ]] || [[ "$MULTI_DRIFT_OUTPUT" != *"--reconcile"* ]]; then
+  echo "ERROR: expected drift guidance when adding a sync mapping (status=$MULTI_DRIFT_STATUS)" >&2
+  echo "$MULTI_DRIFT_OUTPUT" >&2
+  exit 1
+fi
+
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --reconcile --wait-timeout 5m
 
 echo "multi-mapping: results folder flows pod -> local"
