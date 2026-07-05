@@ -377,6 +377,89 @@ func TestPodSummaryFromPodPrefersPodReason(t *testing.T) {
 	}
 }
 
+func TestPodSummaryFromPodSurfacesTerminatedContainer(t *testing.T) {
+	finished := metav1.NewTime(time.Date(2026, 7, 5, 6, 32, 11, 0, time.UTC))
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "pod"},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			ContainerStatuses: []corev1.ContainerStatus{
+				{Name: "okdev-sidecar", Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}},
+				{Name: "pytorch", Ready: false, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+					Reason:     "OOMKilled",
+					ExitCode:   137,
+					FinishedAt: finished,
+				}}},
+			},
+		},
+	}
+	summary := podSummaryFromPod(pod)
+	// A runtime-terminated container must explain the not-ready pod instead
+	// of the old "-" placeholder.
+	if summary.Reason != "OOMKilled" {
+		t.Fatalf("expected terminated reason fallback, got %+v", summary)
+	}
+	if len(summary.ContainerIssues) != 1 {
+		t.Fatalf("expected one container issue, got %+v", summary.ContainerIssues)
+	}
+	issue := summary.ContainerIssues[0]
+	if issue.Container != "pytorch" || issue.Reason != "OOMKilled" || issue.ExitCode != 137 || !issue.Current || !issue.FinishedAt.Equal(finished.Time) {
+		t.Fatalf("unexpected issue %+v", issue)
+	}
+}
+
+func TestPodSummaryFromPodReportsLastTerminationAfterRestart(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "pod"},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			ContainerStatuses: []corev1.ContainerStatus{
+				{
+					Name:         "dev",
+					Ready:        true,
+					RestartCount: 1,
+					State:        corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+					LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+						Reason:   "OOMKilled",
+						ExitCode: 137,
+					}},
+				},
+			},
+		},
+	}
+	summary := podSummaryFromPod(pod)
+	if len(summary.ContainerIssues) != 1 || summary.ContainerIssues[0].Current {
+		t.Fatalf("expected non-current issue from last termination, got %+v", summary.ContainerIssues)
+	}
+	// Reason falls back to the last termination so the crash history stays
+	// visible even after the container restarted.
+	if summary.Reason != "OOMKilled" {
+		t.Fatalf("expected last-termination reason, got %q", summary.Reason)
+	}
+}
+
+func TestPodSummaryFromPodIgnoresCleanExits(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "pod"},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodSucceeded,
+			ContainerStatuses: []corev1.ContainerStatus{
+				{Name: "dev", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{
+					Reason:   "Completed",
+					ExitCode: 0,
+				}}},
+			},
+		},
+	}
+	summary := podSummaryFromPod(pod)
+	if len(summary.ContainerIssues) != 0 {
+		t.Fatalf("clean exit must not be an issue, got %+v", summary.ContainerIssues)
+	}
+	if summary.Reason != "-" {
+		t.Fatalf("expected placeholder reason, got %q", summary.Reason)
+	}
+}
+
 func TestClientCacheKeyChangesWhenKubeconfigChanges(t *testing.T) {
 	dir := t.TempDir()
 	kubeconfig := filepath.Join(dir, "config")

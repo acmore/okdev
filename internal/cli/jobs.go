@@ -583,6 +583,11 @@ func streamDetachJobLog(ctx context.Context, client detachJobClient, namespace s
 		stderr.Reset()
 		err = client.StreamShInContainer(ctx, namespace, row.Pod, syncthingContainerName, script, writer, &stderr)
 	}
+	if err != nil && isContainerUnavailableExecError(err) {
+		if hint := containerUnavailableHint(ctx, client, namespace, row.Pod, row.Container); hint != "" {
+			err = fmt.Errorf("%w; %s", err, hint)
+		}
+	}
 	if err != nil && strings.TrimSpace(stderr.String()) != "" {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}

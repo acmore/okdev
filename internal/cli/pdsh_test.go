@@ -340,6 +340,33 @@ func TestFilterRunningPods(t *testing.T) {
 	}
 }
 
+func TestRunMultiExecFailureSummaryIncludesTerminationHint(t *testing.T) {
+	// A dead container's FAILED line should carry the termination cause
+	// (OOMKilled + exit + timestamp) instead of a bare kubelet error.
+	client := &fakeContainerExecClient{
+		errs: map[string]error{
+			"worker-0|pytorch": errors.New(`container not found ("pytorch")`),
+		},
+		restartInfo: map[string]*kube.ContainerRestartInfo{
+			"worker-0|pytorch": {
+				LastReason:     "OOMKilled",
+				LastExitCode:   137,
+				LastFinishedAt: time.Date(2026, 7, 5, 6, 32, 11, 0, time.UTC),
+			},
+		},
+	}
+	pods := []kube.PodSummary{{Name: "worker-0", Phase: "Running"}}
+	var stdout, stderr bytes.Buffer
+	sem := make(chan struct{}, 1)
+	err := runMultiExec(context.Background(), client, "default", pods, "pytorch", []string{"true"}, "", 0, true, sem, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected failure")
+	}
+	if !strings.Contains(stderr.String(), `container "pytorch" terminated: OOMKilled (exit 137, finished 2026-07-05T06:32:11Z)`) {
+		t.Fatalf("expected termination hint in FAILED summary, got %q", stderr.String())
+	}
+}
+
 func TestNewDetachJobSpecPlacesFilesOnRuntimeVolume(t *testing.T) {
 	// Detached job logs and metadata must prefer the okdev-runtime volume
 	// (shared with the sidecar) so they survive a target-container crash;

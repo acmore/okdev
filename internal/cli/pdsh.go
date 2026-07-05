@@ -166,7 +166,13 @@ func newExecCmd(opts *Options) *cobra.Command {
 			if len(execCmd) == 1 && strings.TrimSpace(execCmd[0]) == "" {
 				execCmd = []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}
 			}
-			return runConnectWithClient(cc.kube, cc.namespace, target, execCmd, !noTTY)
+			connectErr := runConnectWithClient(cc.kube, cc.namespace, target, execCmd, !noTTY)
+			if connectErr != nil && isContainerUnavailableExecError(connectErr) {
+				if hint := containerUnavailableHint(cmd.Context(), cc.kube, cc.namespace, target.PodName, target.Container); hint != "" {
+					return fmt.Errorf("%w; %s", connectErr, hint)
+				}
+			}
+			return connectErr
 		},
 	}
 	cmd.Flags().StringVar(&shell, "shell", "", "Shell to start (default auto-detects bash/sh)")
@@ -994,7 +1000,13 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 	if len(failures) > 0 {
 		parts := make([]string, 0, len(failures))
 		for _, f := range failures {
-			parts = append(parts, formatPodExecFailureSummary(f.pod, container, f.err))
+			part := formatPodExecFailureSummary(f.pod, container, f.err)
+			if isContainerUnavailableExecError(f.err) {
+				if hint := containerUnavailableHint(ctx, client, namespace, f.pod, container); hint != "" {
+					part += " " + hint
+				}
+			}
+			parts = append(parts, part)
 		}
 		fmt.Fprintf(stderr, "\nFAILED:\n%s\n", strings.Join(parts, "\n"))
 		return fmt.Errorf("%d of %d pods failed", len(failures), len(pods))
@@ -1548,7 +1560,13 @@ func runMultiExecScript(ctx context.Context, client scriptCopyClient, namespace 
 	if len(failures) > 0 {
 		parts := make([]string, 0, len(failures))
 		for _, f := range failures {
-			parts = append(parts, formatPodExecFailureSummary(f.pod, container, f.err))
+			part := formatPodExecFailureSummary(f.pod, container, f.err)
+			if isContainerUnavailableExecError(f.err) {
+				if hint := containerUnavailableHint(ctx, client, namespace, f.pod, container); hint != "" {
+					part += " " + hint
+				}
+			}
+			parts = append(parts, part)
 		}
 		fmt.Fprintf(stderr, "\nFAILED:\n%s\n", strings.Join(parts, "\n"))
 		return fmt.Errorf("%d of %d pods failed", len(failures), len(pods))
