@@ -340,6 +340,21 @@ func TestFilterRunningPods(t *testing.T) {
 	}
 }
 
+func TestNewDetachJobSpecPlacesFilesOnRuntimeVolume(t *testing.T) {
+	// Detached job logs and metadata must live on the okdev-runtime volume
+	// (shared with the sidecar) so they survive a target-container crash;
+	// /tmp is container-private overlay and dies with the container.
+	if detachMetadataDir != "/var/okdev/exec" {
+		t.Fatalf("detach metadata dir must be on the shared runtime volume, got %q", detachMetadataDir)
+	}
+	spec := newDetachJobSpec("", "pod-1", "dev", "python train.py", []string{"python", "train.py"}, nil)
+	for _, p := range []string{spec.LogPath, spec.MetaPath, spec.ScriptPath} {
+		if !strings.HasPrefix(p, detachMetadataDir+"/") {
+			t.Fatalf("expected path under %s, got %q", detachMetadataDir, p)
+		}
+	}
+}
+
 type fakePdshExecClient struct {
 	mu      sync.Mutex
 	calls   []string

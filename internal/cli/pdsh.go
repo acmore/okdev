@@ -25,7 +25,18 @@ import (
 	k8sexec "k8s.io/client-go/util/exec"
 )
 
-const detachMetadataDir = "/tmp/okdev-exec"
+// detachMetadataDir lives on the okdev-runtime emptyDir volume (mounted at
+// /var/okdev in both the target container and the okdev-sidecar), so detached
+// job logs and metadata survive a container crash (e.g. OOMKill) and remain
+// readable through the sidecar. Containers without that mount (a --container
+// override) still work: mkdir -p creates the path on the container overlay,
+// with the same lifetime as the old /tmp location.
+const detachMetadataDir = "/var/okdev/exec"
+
+// legacyDetachMetadataDir is where detached jobs launched by older okdev
+// versions keep their logs and metadata; listing scans it for compatibility.
+const legacyDetachMetadataDir = "/tmp/okdev-exec"
+
 const detachPIDPlaceholder = "__OKDEV_DETACH_PID__"
 const detachExitPlaceholder = "__OKDEV_DETACH_EXIT__"
 
@@ -1191,7 +1202,7 @@ func detachCommand(spec detachJobSpec) []string {
 		shellutil.Quote(spec.MetaPath),
 		shellutil.Quote(spec.ScriptPath),
 		shellutil.Quote(launchTemplate),
-		shellutil.Quote(detachMetadataDir),
+		shellutil.Quote(filepath.Dir(spec.MetaPath)),
 		wrapper,
 		detachPIDPlaceholder,
 	)

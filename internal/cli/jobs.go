@@ -574,6 +574,15 @@ func streamDetachJobLog(ctx context.Context, client detachJobClient, namespace s
 	writer := newPrefixedWriter(prefix, out, mu)
 	defer writer.Flush()
 	err := client.StreamShInContainer(ctx, namespace, row.Pod, row.Container, script, writer, &stderr)
+	if err != nil && row.Container != syncthingContainerName && isContainerUnavailableExecError(err) {
+		// The job's container is gone (OOMKilled, crashed). Logs under
+		// /var/okdev live on the shared runtime volume, so read them through
+		// the always-running sidecar instead. Setup failures like these
+		// happen before any output is streamed, so retrying cannot duplicate
+		// log lines.
+		stderr.Reset()
+		err = client.StreamShInContainer(ctx, namespace, row.Pod, syncthingContainerName, script, writer, &stderr)
+	}
 	if err != nil && strings.TrimSpace(stderr.String()) != "" {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
