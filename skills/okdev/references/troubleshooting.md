@@ -107,6 +107,7 @@ When `okdev` is driven by scripts, CI, or agents, distinguish its pre-flight exi
 
 - `74` — session not found: the cluster was reachable but the session has no pods. It is genuinely gone; recreate with `okdev up`.
 - `78` — transient cluster-contact failure (API timeout, connection refused/reset, overload). okdev already retried once with backoff, so the caller should retry rather than treat the session as dead.
+- `69` — fanout `okdev exec` delivery failure: at least one pod could not run the command at all (unreachable, timeout, container gone), summarized under a `FAILED:` header. A command that ran everywhere but exited non-zero on some pods is summarized under `COMMAND EXITED NON-ZERO:` and exits with the remote status (single pod) or `1` (multi-pod) — treat `69` as "investigate the pods", other non-zero as "investigate the command".
 
 `okdev exec --json` reports each pod's result as data (`{pod, exit, stdout, stderr}`) and exits 0 whenever the JSON document is produced — a non-zero *remote* exit does not make okdev exit non-zero. Branch on each envelope's `exit`/`error`. Only pre-flight failures (session not found / cluster unreachable) bypass JSON and surface on stderr with the 74/78 codes above.
 

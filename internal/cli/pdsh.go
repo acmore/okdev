@@ -1003,20 +1003,46 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 		}
 	}
 	if len(failures) > 0 {
-		parts := make([]string, 0, len(failures))
-		for _, f := range failures {
-			part := formatPodExecFailureSummary(f.pod, container, f.err)
-			if isContainerUnavailableExecError(f.err) {
-				if hint := containerUnavailableHint(ctx, client, namespace, f.pod, container); hint != "" {
-					part += " " + hint
-				}
-			}
-			parts = append(parts, part)
-		}
-		fmt.Fprintf(stderr, "\nFAILED:\n%s\n", strings.Join(parts, "\n"))
-		return fmt.Errorf("%d of %d pods failed", len(failures), len(pods))
+		return reportFanoutFailures(ctx, client, namespace, container, failures, len(pods), stderr)
 	}
 	return nil
+}
+
+// reportFanoutFailures prints the per-pod failure summary and builds the
+// command error. When every failure is the remote command merely exiting
+// non-zero (grep with no match, a failing test), the run is reported as a
+// command result — no "pods failed" framing; a single-pod run preserves the
+// remote exit status verbatim, a multi-pod run exits 1. Any delivery
+// failure (transport, timeout, container gone) keeps the FAILED framing and
+// wraps ErrExecInfraFailure so okdev exits with the dedicated infra code
+// (ExitExecInfraFailure), letting scripts and monitors tell the two apart.
+func reportFanoutFailures(ctx context.Context, client connect.ExecClient, namespace, container string, failures []podExecResult, total int, stderr io.Writer) error {
+	remoteExitOnly := true
+	parts := make([]string, 0, len(failures))
+	for _, f := range failures {
+		if kind, _ := classifyPodExecFailure(f.err); kind != "remote-exit" {
+			remoteExitOnly = false
+		}
+		part := formatPodExecFailureSummary(f.pod, container, f.err)
+		if isContainerUnavailableExecError(f.err) {
+			if hint := containerUnavailableHint(ctx, client, namespace, f.pod, container); hint != "" {
+				part += " " + hint
+			}
+		}
+		parts = append(parts, part)
+	}
+	if remoteExitOnly {
+		fmt.Fprintf(stderr, "\nCOMMAND EXITED NON-ZERO:\n%s\n", strings.Join(parts, "\n"))
+		if total == 1 {
+			// Single-pod runs keep the documented "remote exit status is
+			// always preserved" contract: wrap the pod's own ExitError so
+			// the top-level exit-code mapper propagates it verbatim.
+			return fmt.Errorf("command exited non-zero: %w", failures[0].err)
+		}
+		return fmt.Errorf("command exited non-zero on %d of %d pod(s)", len(failures), total)
+	}
+	fmt.Fprintf(stderr, "\nFAILED:\n%s\n", strings.Join(parts, "\n"))
+	return fmt.Errorf("%d of %d pods failed: %w", len(failures), total, ErrExecInfraFailure)
 }
 
 func formatPodExecFailureSummary(podName, container string, err error) string {
@@ -1588,18 +1614,7 @@ func runMultiExecScript(ctx context.Context, client scriptCopyClient, namespace 
 		}
 	}
 	if len(failures) > 0 {
-		parts := make([]string, 0, len(failures))
-		for _, f := range failures {
-			part := formatPodExecFailureSummary(f.pod, container, f.err)
-			if isContainerUnavailableExecError(f.err) {
-				if hint := containerUnavailableHint(ctx, client, namespace, f.pod, container); hint != "" {
-					part += " " + hint
-				}
-			}
-			parts = append(parts, part)
-		}
-		fmt.Fprintf(stderr, "\nFAILED:\n%s\n", strings.Join(parts, "\n"))
-		return fmt.Errorf("%d of %d pods failed", len(failures), len(pods))
+		return reportFanoutFailures(ctx, client, namespace, container, failures, len(pods), stderr)
 	}
 	return nil
 }

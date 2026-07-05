@@ -2174,6 +2174,14 @@ func syncthingOverrideFolder(ctx context.Context, base, key, folderID string) er
 	return syncthingPost(ctx, base, key, path, nil)
 }
 
+// syncthingScanFolder calls POST /rest/db/scan to force an immediate rescan
+// of the given folder, so files written moments ago are indexed without
+// waiting out the FS-watcher delay.
+func syncthingScanFolder(ctx context.Context, base, key, folderID string) error {
+	path := fmt.Sprintf("/rest/db/scan?folder=%s", url.QueryEscape(folderID))
+	return syncthingPost(ctx, base, key, path, nil)
+}
+
 // syncthingRestart calls POST /rest/system/restart to restart a Syncthing
 // instance, which is required to apply folder type changes.
 func syncthingRestart(ctx context.Context, base, key string) error {

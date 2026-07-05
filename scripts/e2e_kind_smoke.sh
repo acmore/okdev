@@ -224,6 +224,24 @@ if [[ "$SYNC_OK" != "true" ]]; then
   exit 1
 fi
 
+# okdev sync wait: the edit-run guarantee. Write a fresh local file, wait for
+# convergence, then read it remotely in one chain — no polling loop allowed.
+echo "Testing okdev sync wait edit-run guarantee"
+echo "sync-wait-payload" > "$WORKDIR/sync-wait-probe.txt"
+SYNC_WAIT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync wait --timeout 3m)
+if [[ "$SYNC_WAIT_OUTPUT" != *"Sync converged"* ]]; then
+  echo "ERROR: expected sync wait to report convergence" >&2
+  echo "Got: $SYNC_WAIT_OUTPUT" >&2
+  exit 1
+fi
+PROBE_CONTENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- cat /workspace/sync-wait-probe.txt)
+if [[ "$PROBE_CONTENT" != *"sync-wait-payload"* ]]; then
+  echo "ERROR: file written before sync wait was not visible remotely after it returned" >&2
+  echo "Got: $PROBE_CONTENT" >&2
+  exit 1
+fi
+echo "sync wait convergence guarantee verified"
+
 echo "Verifying repeated okdev up reuses active sync"
 SYNC_PID_BEFORE=""
 for i in $(seq 1 5); do
@@ -300,6 +318,26 @@ if [[ "$EXEC_OUTPUT" != *"exec-ok"* ]]; then
   exit 1
 fi
 echo "exec -- verified"
+
+# Exit semantics: a command that runs but exits non-zero is a command result
+# (COMMAND EXITED NON-ZERO framing, remote status preserved on single pod),
+# never the FAILED delivery framing or the infra exit code 69.
+echo "Testing exec exit semantics for a non-zero remote command"
+set +e
+NONZERO_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'exit 3' 2>&1)
+NONZERO_STATUS=$?
+set -e
+if [[ "$NONZERO_STATUS" -ne 3 ]]; then
+  echo "ERROR: expected single-pod exec to preserve remote exit 3, got $NONZERO_STATUS" >&2
+  echo "$NONZERO_OUTPUT" >&2
+  exit 1
+fi
+if [[ "$NONZERO_OUTPUT" != *"COMMAND EXITED NON-ZERO"* || "$NONZERO_OUTPUT" == *"FAILED:"* ]]; then
+  echo "ERROR: expected command-result framing without FAILED header" >&2
+  echo "$NONZERO_OUTPUT" >&2
+  exit 1
+fi
+echo "exec non-zero command framing and exit status verified"
 
 # exec --json: the remote command's own non-zero exit must surface as data
 # (exit field) without making okdev itself exit non-zero, and stdout must be

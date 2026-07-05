@@ -21,6 +21,11 @@ const (
 	// ExitSessionNotFound signals that the cluster was reachable but the
 	// requested session has no pods — a real "it's gone" condition.
 	ExitSessionNotFound = 74
+	// ExitExecInfraFailure signals that a fanout exec could not run the
+	// command on at least one pod (unreachable, timeout, container gone) —
+	// as opposed to the command itself exiting non-zero, which stays exit
+	// 1. Follows sysexits EX_UNAVAILABLE.
+	ExitExecInfraFailure = 69
 )
 
 // ErrSessionNotFound is returned when session resolution reaches the cluster
@@ -33,6 +38,13 @@ var ErrSessionNotFound = errors.New("session not found")
 // session that no longer exists.
 var ErrTransientCluster = errors.New("transient cluster contact failure")
 
+// ErrExecInfraFailure marks a fanout exec where at least one pod could not
+// run the command at all (transport, timeout, container gone). Wrapped into
+// the returned error so the top-level classifier maps it to
+// ExitExecInfraFailure, letting scripts tell real delivery failures apart
+// from a command that simply exited non-zero (plain exit 1).
+var ErrExecInfraFailure = errors.New("exec delivery failure")
+
 // ClassifiedExitCode maps okdev's sentinel cluster errors to their dedicated
 // exit codes. It returns ok=false for anything it does not recognize so the
 // caller can fall back to its default (e.g. a remote command's own exit code,
@@ -44,6 +56,8 @@ func ClassifiedExitCode(err error) (int, bool) {
 		return ExitSessionNotFound, true
 	case errors.Is(err, ErrTransientCluster):
 		return ExitTransientCluster, true
+	case errors.Is(err, ErrExecInfraFailure):
+		return ExitExecInfraFailure, true
 	default:
 		return 0, false
 	}
