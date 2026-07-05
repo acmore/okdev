@@ -2392,13 +2392,13 @@ func podSummaryFromPod(p *corev1.Pod) PodSummary {
 		phase = "Terminating"
 	}
 	return PodSummary{
-		Namespace:   p.Namespace,
-		Name:        p.Name,
-		Phase:       phase,
-		Deleting:    deleting,
-		CreatedAt:   p.CreationTimestamp.Time,
-		Labels:      p.Labels,
-		Annotations: p.Annotations,
+		Namespace:       p.Namespace,
+		Name:            p.Name,
+		Phase:           phase,
+		Deleting:        deleting,
+		CreatedAt:       p.CreationTimestamp.Time,
+		Labels:          p.Labels,
+		Annotations:     p.Annotations,
 		Ready:           fmt.Sprintf("%d/%d", readyContainers, totalContainers),
 		Restarts:        restarts,
 		Reason:          reason,
