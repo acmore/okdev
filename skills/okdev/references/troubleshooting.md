@@ -51,6 +51,8 @@ If the user says the workload was unexpectedly reused:
 
 Do not jump straight to deleting cluster objects manually unless `okdev` workflows are already failing.
 
+If setup (installed tools, builds) is lost after a pod recreation: that is overlay-filesystem lifetime, and the fix is `spec.lifecycle` hooks, not manual re-runs — `postCreate` (target pod, before sync; e.g. installing kubectl) and `postSync` (all pods, after code arrives; e.g. `pip install -e .`). Both re-run automatically on recreated pods because their done-markers are pod annotations that die with the pod.
+
 ## Auto-Cleared Failed Jobs / PyTorchJobs
 
 If the user's previous `okdev up` failed with a pod in `Failed` state on a `job` or `pytorchjob` workload, okdev may have already deleted that workload and cleared local session state as part of the same `okdev up`. Symptoms:
