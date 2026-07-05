@@ -85,7 +85,7 @@ func runExecJobs(ctx context.Context, client connect.ExecClient, namespace strin
 					job.SummaryState,
 					fmt.Sprintf("%d", job.Pods),
 					job.StartedAt,
-					truncateTableCell(job.Command, commandLimit),
+					truncateTableCell(flattenCommandForTable(job.Command), commandLimit),
 				})
 			}
 			output.PrintTable(out, []string{"JOB ID", "STATE", "PODS", "STARTED", "COMMAND"}, table)
@@ -364,6 +364,17 @@ func jobsListCommandLimitForWidth(termWidth int, jobs []logicalExecJobView) int 
 		limit = 16
 	}
 	return limit
+}
+
+// flattenCommandForTable renders a possibly multi-line command as a single
+// table row: shell line-continuations (`\` + newline) are joined and all
+// remaining whitespace runs collapse to single spaces. Embedded newlines
+// would otherwise break the one-row-per-job layout no matter how the length
+// is capped. JSON output keeps the raw command.
+func flattenCommandForTable(s string) string {
+	s = strings.ReplaceAll(s, "\\\r\n", " ")
+	s = strings.ReplaceAll(s, "\\\n", " ")
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func truncateTableCell(s string, limit int) string {
