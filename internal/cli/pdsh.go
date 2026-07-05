@@ -500,7 +500,11 @@ func buildExecPodGroups(sessionName string, sessionPods []kube.PodSummary, plan 
 	filtered := sessionPods
 	switch {
 	case len(plan.podNames) > 0:
-		filtered = filterPodsByName(filtered, plan.podNames)
+		selected, err := resolvePodAliases(filtered, plan.podNames)
+		if err != nil {
+			return nil, err
+		}
+		filtered = selected
 	case plan.workers:
 		filtered = filterPodsByRole(filtered, "worker")
 	case plan.role != "":
@@ -1645,28 +1649,76 @@ func filterPodsByLabels(pods []kube.PodSummary, labels []string) []kube.PodSumma
 	return out
 }
 
-func filterPodsByName(pods []kube.PodSummary, names []string) []kube.PodSummary {
-	nameSet := make(map[string]bool, len(names))
-	for _, n := range names {
-		nameSet[n] = true
+// resolvePodAliases maps requested pod names to session pods. Accepted
+// forms, in order: the full pod name, the short name shown by `okdev
+// status` (longest common prefix stripped — e.g. "master-0", "worker-1"),
+// or a unique "-<name>" suffix. Unknown or ambiguous names error instead of
+// being silently dropped.
+func resolvePodAliases(sessionPods []kube.PodSummary, names []string) ([]kube.PodSummary, error) {
+	fullNames := podSummaryNames(sessionPods)
+	shorts := shortPodNames(fullNames)
+	byAlias := make(map[string]kube.PodSummary, len(sessionPods)*2)
+	for i, pod := range sessionPods {
+		byAlias[pod.Name] = pod
+		byAlias[shorts[i]] = pod
 	}
-	out := make([]kube.PodSummary, 0)
-	for _, p := range pods {
-		if nameSet[p.Name] {
-			out = append(out, p)
+	out := make([]kube.PodSummary, 0, len(names))
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
 		}
+		pod, ok := byAlias[name]
+		if !ok {
+			var suffixMatches []kube.PodSummary
+			for _, p := range sessionPods {
+				if strings.HasSuffix(p.Name, "-"+name) {
+					suffixMatches = append(suffixMatches, p)
+				}
+			}
+			switch len(suffixMatches) {
+			case 1:
+				pod = suffixMatches[0]
+			case 0:
+				return nil, fmt.Errorf("no session pod matches %q; available: %s", name, strings.Join(shorts, ", "))
+			default:
+				return nil, fmt.Errorf("pod name %q is ambiguous: %s", name, strings.Join(podSummaryNames(suffixMatches), ", "))
+			}
+		}
+		if seen[pod.Name] {
+			continue
+		}
+		seen[pod.Name] = true
+		out = append(out, pod)
 	}
-	return out
+	return out, nil
 }
 
+// excludePods drops the named pods, accepting the same aliases as
+// resolvePodAliases (full name, status short name, "-<name>" suffix).
+// Unknown exclusions are tolerated: excluding a pod that no longer exists
+// should not fail a fanout.
 func excludePods(pods []kube.PodSummary, exclude []string) []kube.PodSummary {
+	shorts := shortPodNames(podSummaryNames(pods))
 	excludeSet := make(map[string]bool, len(exclude))
 	for _, n := range exclude {
-		excludeSet[n] = true
+		if n = strings.TrimSpace(n); n != "" {
+			excludeSet[n] = true
+		}
 	}
 	out := make([]kube.PodSummary, 0, len(pods))
-	for _, p := range pods {
-		if !excludeSet[p.Name] {
+	for i, p := range pods {
+		excluded := excludeSet[p.Name] || excludeSet[shorts[i]]
+		if !excluded {
+			for n := range excludeSet {
+				if strings.HasSuffix(p.Name, "-"+n) {
+					excluded = true
+					break
+				}
+			}
+		}
+		if !excluded {
 			out = append(out, p)
 		}
 	}

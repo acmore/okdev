@@ -46,25 +46,54 @@ func TestFilterPodsByLabels(t *testing.T) {
 	}
 }
 
-func TestFilterPodsByName(t *testing.T) {
+func TestResolvePodAliases(t *testing.T) {
 	pods := []kube.PodSummary{
-		{Name: "worker-0"},
-		{Name: "worker-1"},
-		{Name: "master-0"},
+		{Name: "trainjob-abc-master-0"},
+		{Name: "trainjob-abc-worker-0"},
+		{Name: "trainjob-abc-worker-1"},
 	}
-	got := filterPodsByName(pods, []string{"worker-0", "master-0"})
-	if len(got) != 2 {
-		t.Fatalf("expected 2 pods, got %d", len(got))
+
+	// Full names, status short names, and unique suffixes all resolve.
+	got, err := resolvePodAliases(pods, []string{"trainjob-abc-master-0", "worker-1"})
+	if err != nil || len(got) != 2 || got[0].Name != "trainjob-abc-master-0" || got[1].Name != "trainjob-abc-worker-1" {
+		t.Fatalf("unexpected resolution: %v err=%v", got, err)
+	}
+	got, err = resolvePodAliases(pods, []string{"master-0"})
+	if err != nil || len(got) != 1 || got[0].Name != "trainjob-abc-master-0" {
+		t.Fatalf("short name must resolve, got %v err=%v", got, err)
+	}
+
+	// Duplicates collapse.
+	got, err = resolvePodAliases(pods, []string{"worker-0", "trainjob-abc-worker-0"})
+	if err != nil || len(got) != 1 {
+		t.Fatalf("expected dedup, got %v err=%v", got, err)
+	}
+
+	// Unknown names error with available aliases instead of silently
+	// dropping (the old filter returned a smaller set).
+	if _, err := resolvePodAliases(pods, []string{"worker-9"}); err == nil || !strings.Contains(err.Error(), "master-0") {
+		t.Fatalf("expected unknown-name error listing aliases, got %v", err)
+	}
+
+	// Ambiguous suffixes error and list candidates.
+	if _, err := resolvePodAliases(pods, []string{"0"}); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("expected ambiguity error, got %v", err)
 	}
 }
 
-func TestFilterPodsByNameMissing(t *testing.T) {
+func TestExcludePodsAliases(t *testing.T) {
 	pods := []kube.PodSummary{
-		{Name: "worker-0"},
+		{Name: "trainjob-abc-master-0"},
+		{Name: "trainjob-abc-worker-0"},
 	}
-	got := filterPodsByName(pods, []string{"worker-0", "no-such-pod"})
-	if len(got) != 1 {
-		t.Fatalf("expected 1 pod, got %d", len(got))
+	got := excludePods(pods, []string{"worker-0"})
+	if len(got) != 1 || got[0].Name != "trainjob-abc-master-0" {
+		t.Fatalf("short-name exclusion failed: %v", got)
+	}
+	// Unknown exclusions are tolerated (pod may no longer exist).
+	got = excludePods(pods, []string{"gone-pod"})
+	if len(got) != 2 {
+		t.Fatalf("unknown exclusion must be a no-op, got %v", got)
 	}
 }
 

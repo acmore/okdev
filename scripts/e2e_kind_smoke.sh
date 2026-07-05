@@ -496,6 +496,23 @@ if [[ "$RECONCILED_IMAGE" != "ubuntu:24.04" ]]; then
 fi
 echo "Pod reconcile verified"
 
+echo "Testing okdev restart recreates the workload in one command"
+RESTART_POD_BEFORE=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
+RESTART_UID_BEFORE=$(kubectl -n "$NAMESPACE" get pod "$RESTART_POD_BEFORE" -o jsonpath='{.metadata.uid}')
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" restart --yes --wait-timeout 5m
+RESTART_POD_AFTER=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
+RESTART_UID_AFTER=$(kubectl -n "$NAMESPACE" get pod "$RESTART_POD_AFTER" -o jsonpath='{.metadata.uid}')
+if [[ "$RESTART_UID_AFTER" == "$RESTART_UID_BEFORE" ]]; then
+  echo "ERROR: expected restart to recreate the pod (uid unchanged)" >&2
+  exit 1
+fi
+RESTART_EXEC=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'echo restart-ok')
+if [[ "$RESTART_EXEC" != *"restart-ok"* ]]; then
+  echo "ERROR: exec after restart failed, got '$RESTART_EXEC'" >&2
+  exit 1
+fi
+echo "okdev restart verified"
+
 # --- Sync direction: per-path direction semantics on a live session --------
 # Covers the direction chain end-to-end: editing spec.sync.paths[].direction
 # restarts sync with new folder types on the next `okdev up` (config-hash

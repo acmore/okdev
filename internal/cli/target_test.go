@@ -111,7 +111,7 @@ func TestResolveTargetCandidateErrors(t *testing.T) {
 	if _, _, err := resolveTargetCandidate(view, "", ""); err == nil || !strings.Contains(err.Error(), "empty role") {
 		t.Fatalf("expected empty role error, got %v", err)
 	}
-	if _, _, err := resolveTargetCandidate(view, "missing-pod", ""); err == nil || !strings.Contains(err.Error(), "not found") {
+	if _, _, err := resolveTargetCandidate(view, "missing-pod", ""); err == nil || !strings.Contains(err.Error(), "no session pod matches") {
 		t.Fatalf("expected pod not found error, got %v", err)
 	}
 	if _, _, err := resolveTargetCandidate(view, "", "worker"); err == nil || !strings.Contains(err.Error(), "no pods found") {
