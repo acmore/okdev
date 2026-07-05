@@ -73,6 +73,7 @@ var (
 	runTwoPhaseInitialSyncFn            = runTwoPhaseInitialSync
 	configureSyncthingPeerFn            = configureSyncthingPeer
 	pruneManagedSessionFoldersFn        = pruneManagedSessionFolders
+	verifyRemoteRootSharedFn            = verifyRemoteRootShared
 	saveSyncthingConfigHashFn           = saveSyncthingConfigHash
 	stopOwnedLocalSyncthingFn           = stopOwnedLocalSyncthing
 	runSyncHealthLoopFn                 = runSyncHealthLoop
@@ -171,7 +172,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	if err != nil {
 		return err
 	}
-	for _, folder := range folders {
+	for i, folder := range folders {
 		if err := os.MkdirAll(folder.absLocal, 0o755); err != nil {
 			return err
 		}
@@ -180,6 +181,17 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		}
 		if _, err := execInSyncthingContainerFn(bootstrapCtx, k, namespace, pod, fmt.Sprintf("mkdir -p %s", syncengine.ShellEscape(folder.remote))); err != nil {
 			return err
+		}
+		// The sidecar's syncthing can only serve paths it can see: an
+		// additional mapping whose remote root lives on the target
+		// container's overlay filesystem would "sync" into a directory the
+		// workload never reads. Fail fast instead of silently splitting
+		// the two containers' views. The primary workspace mount is
+		// managed by okdev and needs no probe.
+		if i > 0 {
+			if err := verifyRemoteRootSharedFn(bootstrapCtx, k, namespace, pod, target.Container, folder); err != nil {
+				return err
+			}
 		}
 	}
 	primary := folders[0]
@@ -2137,6 +2149,31 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 // managed shapes "okdev-<session>" and "okdev-<session>-<8 hex>" are
 // touched, so user-defined folders (and other sessions' folders, whose
 // session name would make a longer prefix) are never removed.
+// verifyRemoteRootShared checks that a mapping's remote root is on a volume
+// shared between the okdev sidecar and the target container: the sidecar
+// writes a probe file and the target container must see it. A root on
+// either container's private overlay fails the probe.
+func verifyRemoteRootShared(ctx context.Context, k *kube.Client, namespace, pod, targetContainer string, folder syncFolder) error {
+	if k == nil {
+		return nil
+	}
+	marker := folder.remote + "/.okdev-sync-probe-" + folder.id
+	if _, err := execInSyncthingContainerFn(ctx, k, namespace, pod, fmt.Sprintf("echo shared > %s", syncengine.ShellEscape(marker))); err != nil {
+		return fmt.Errorf("write shared-volume probe for %s: %w", folder.remote, err)
+	}
+	defer func() {
+		_, _ = execInSyncthingContainerFn(ctx, k, namespace, pod, fmt.Sprintf("rm -f %s", syncengine.ShellEscape(marker)))
+	}()
+	out, err := k.ExecShInContainer(ctx, namespace, pod, targetContainer, fmt.Sprintf("cat %s 2>/dev/null || true", syncengine.ShellEscape(marker)))
+	if err != nil {
+		return fmt.Errorf("probe remote root %s from target container: %w", folder.remote, err)
+	}
+	if !strings.Contains(string(out), "shared") {
+		return fmt.Errorf("sync mapping remote root %s is not on a volume shared with the okdev sidecar; mount it via spec.volumes + podTemplate volumeMounts and re-run `okdev up --reconcile` so the sidecar picks it up", folder.remote)
+	}
+	return nil
+}
+
 func pruneManagedSessionFolders(ctx context.Context, base, key, sessionName string, keep map[string]bool) error {
 	cfg, err := syncthingGetConfig(ctx, base, key)
 	if err != nil {

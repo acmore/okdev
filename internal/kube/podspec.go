@@ -110,11 +110,7 @@ func PreparePodSpecForTargetWithShell(podSpec corev1.PodSpec, volumes []corev1.V
 				{ContainerPort: 8384, Name: "st-gui"},
 				{ContainerPort: 22000, Name: "st-sync"},
 			},
-			VolumeMounts: []corev1.VolumeMount{
-				workspaceMount,
-				{Name: "syncthing-home", MountPath: "/var/syncthing"},
-				{Name: "okdev-runtime", MountPath: "/var/okdev"},
-			},
+			VolumeMounts: sidecarVolumeMounts(workspaceMount, targetIndex, spec.Containers),
 			Env: []corev1.EnvVar{
 				{
 					Name:  "OKDEV_WORKSPACE",
@@ -207,6 +203,35 @@ func workspaceMountForSidecar(mounts []corev1.VolumeMount, fallback corev1.Volum
 		}
 	}
 	return fallback
+}
+
+// sidecarVolumeMounts assembles the sidecar's mounts: its internal volumes,
+// the workspace, plus every volume the target container mounts (at the same
+// paths). Mirroring the target's mounts is what lets sync mappings target
+// volume-backed remote roots outside the workspace — the sidecar's syncthing
+// can only serve paths it can see; anything on the target container's
+// overlay filesystem is invisible to it.
+func sidecarVolumeMounts(workspaceMount corev1.VolumeMount, targetIndex int, containers []corev1.Container) []corev1.VolumeMount {
+	mounts := []corev1.VolumeMount{
+		workspaceMount,
+		{Name: "syncthing-home", MountPath: "/var/syncthing"},
+		{Name: "okdev-runtime", MountPath: "/var/okdev"},
+	}
+	if targetIndex < 0 || targetIndex >= len(containers) {
+		return mounts
+	}
+	taken := make(map[string]bool, len(mounts))
+	for _, m := range mounts {
+		taken[m.MountPath] = true
+	}
+	for _, m := range containers[targetIndex].VolumeMounts {
+		if taken[m.MountPath] {
+			continue
+		}
+		taken[m.MountPath] = true
+		mounts = append(mounts, m)
+	}
+	return mounts
 }
 
 func ensureEnvVar(envs []corev1.EnvVar, env corev1.EnvVar) []corev1.EnvVar {

@@ -161,9 +161,13 @@ type SyncSpec struct {
 //
 //	paths:
 //	  - .:/workspace
-//	  - local: ./results
+//	  - local: ../collected
 //	    remote: /data/results
 //	    direction: down
+//
+// Mapping roots must be pairwise disjoint on both sides (validated): note
+// "../collected" above — a results directory nested inside the primary
+// mapping's local root would be rejected.
 //
 // Direction sets the syncthing folder types for this mapping's folder:
 //

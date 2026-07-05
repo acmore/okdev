@@ -628,9 +628,21 @@ fi
 cp "$CFG_PATH.bak" "$CFG_PATH"
 echo "overlap rejection verified"
 
-echo "Adding a second disjoint mapping (code up, results down)"
+echo "Adding a second disjoint mapping (code up, results down) on a shared volume"
 COLLECT_DIR="$WORKDIR/collected"
 mkdir -p "$COLLECT_DIR"
+# The extra mapping's remote root must live on a volume shared with the
+# sidecar (its syncthing cannot see the dev container's overlay), so add a
+# volume + mount for /data and reconcile the pod — the sidecar mirrors the
+# target container's volume mounts.
+replace_first_in_file "$CFG_PATH" "  podTemplate:" "  volumes:
+    - name: results-vol
+      emptyDir: {}
+  podTemplate:"
+replace_first_in_file "$CFG_PATH" "          command: [\"sleep\", \"infinity\"]" "          command: [\"sleep\", \"infinity\"]
+          volumeMounts:
+            - name: results-vol
+              mountPath: /data"
 MULTI_ENTRY="- local: \"$SYNC_DIR\"
         remote: /workspace
         direction: up
@@ -640,12 +652,12 @@ MULTI_ENTRY="- local: \"$SYNC_DIR\"
 replace_first_in_file "$CFG_PATH" "- local: \"$SYNC_DIR\"
         remote: /workspace
         direction: down" "$MULTI_ENTRY"
-if ! grep -q "/data/results" "$CFG_PATH"; then
-  echo "ERROR: failed to add second sync mapping; config is:" >&2
+if ! grep -q "/data/results" "$CFG_PATH" || ! grep -q "results-vol" "$CFG_PATH"; then
+  echo "ERROR: failed to add volume or second sync mapping; config is:" >&2
   cat "$CFG_PATH" >&2
   exit 1
 fi
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --reconcile --wait-timeout 5m
 
 echo "multi-mapping: results folder flows pod -> local"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'mkdir -p /data/results && echo multi-result > /data/results/multi.txt'

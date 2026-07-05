@@ -250,13 +250,17 @@ spec:
 ```yaml
 paths:
   - .:/workspace                     # primary: code, bidirectional
-  - local: ./collected
-    remote: /data/results
+  - local: ../collected              # sibling of the repo — local roots must
+    remote: /data/results            # not nest inside the primary mapping
     direction: down                  # pod-generated results, pod is authority
   - local: ../datasets
     remote: /data/datasets
     direction: up                    # dataset push, local is authority
 ```
+
+Note the disjoint rule applies to the **local** side too: a results directory *inside* the synced repo (e.g. `./collected` under `.`) is rejected — place it next to the repo instead, or narrow the primary mapping to a subdirectory.
+
+**Remote roots must live on a volume.** The remote side of an additional mapping must be on a volume mounted in the target container (`spec.volumes` + `podTemplate` `volumeMounts`) — okdev mirrors the target container's volume mounts into the sidecar so its syncthing can serve them. A remote root on the container's own filesystem cannot sync (the sidecar can't see it); sync startup probes this and fails with a clear error. After adding a volume for a new mapping, run `okdev up --reconcile` so the pod is recreated with the sidecar mount.
 
 **Sync direction.** `direction` applies to a mapping's whole synced folder — finer per-subpath direction inside one folder is impossible with Syncthing (ignore rules live in the directory itself; per-path folder types were rejected upstream). Pick the direction by what the folder carries:
 

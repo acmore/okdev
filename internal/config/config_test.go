@@ -275,7 +275,7 @@ func TestSyncPathSpecYAMLForms(t *testing.T) {
 	// Compact string form and structured form must both decode; the string
 	// form keeps direction empty (= bi).
 	var spec SyncSpec
-	raw := []byte("paths:\n  - .:/workspace\n  - local: ./results\n    remote: /data/results\n    direction: down\n")
+	raw := []byte("paths:\n  - .:/workspace\n  - local: ../collected\n    remote: /data/results\n    direction: down\n")
 	if err := sigsyaml.Unmarshal(raw, &spec); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestSyncPathSpecYAMLForms(t *testing.T) {
 	if spec.Paths[0].Local != "." || spec.Paths[0].Remote != "/workspace" || spec.Paths[0].Direction != "" {
 		t.Fatalf("unexpected compact entry: %+v", spec.Paths[0])
 	}
-	if spec.Paths[1].Local != "./results" || spec.Paths[1].Remote != "/data/results" || spec.Paths[1].Direction != "down" {
+	if spec.Paths[1].Local != "../collected" || spec.Paths[1].Remote != "/data/results" || spec.Paths[1].Direction != "down" {
 		t.Fatalf("unexpected structured entry: %+v", spec.Paths[1])
 	}
 
