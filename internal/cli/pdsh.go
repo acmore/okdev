@@ -25,9 +25,27 @@ import (
 	k8sexec "k8s.io/client-go/util/exec"
 )
 
-const detachMetadataDir = "/tmp/okdev-exec"
+// detachMetadataDir lives on the okdev-runtime emptyDir volume (mounted at
+// /var/okdev in both the target container and the okdev-sidecar), so detached
+// job logs and metadata survive a container crash (e.g. OOMKill) and remain
+// readable through the sidecar. Containers without that mount (a --container
+// override) still work: mkdir -p creates the path on the container overlay,
+// with the same lifetime as the old /tmp location.
+const detachMetadataDir = "/var/okdev/exec"
+
+// legacyDetachMetadataDir is where detached jobs launched by older okdev
+// versions keep their logs and metadata; listing scans it for compatibility.
+const legacyDetachMetadataDir = "/tmp/okdev-exec"
+
 const detachPIDPlaceholder = "__OKDEV_DETACH_PID__"
 const detachExitPlaceholder = "__OKDEV_DETACH_EXIT__"
+
+// detachDirPlaceholder stands in for the metadata directory in job paths and
+// JSON templates until the launcher picks the real directory on the pod:
+// detachMetadataDir when the runtime volume is writable, otherwise the legacy
+// /tmp location (e.g. a user-supplied okdev-runtime volume that a non-root
+// container user cannot write to).
+const detachDirPlaceholder = "__OKDEV_DETACH_DIR__"
 
 func newExecCmd(opts *Options) *cobra.Command {
 	var shell string
@@ -1150,12 +1168,21 @@ func detachCommand(spec detachJobSpec) []string {
 	wrapper := detachWrapperScript(spec.JobID, spec.Argv, spec.Cleanup, spec.MetaPath, runningTemplate, completionTemplate)
 	script := fmt.Sprintf(
 		"set -eu\n"+
-			"log_path=%s\n"+
-			"meta_path=%s\n"+
-			"wrapper_path=%s\n"+
+			// Prefer the shared runtime volume so logs survive a container
+			// crash; fall back to the legacy /tmp location when the volume is
+			// absent or not writable by the container user (e.g. a
+			// user-supplied okdev-runtime volume with root-only permissions).
+			"dir=%s\n"+
+			"if ! mkdir -p \"$dir\" 2>/dev/null || [ ! -w \"$dir\" ]; then\n"+
+			"  dir=%s\n"+
+			"  echo \"okdev: detach dir not writable, using $dir\" >&2\n"+
+			"  mkdir -p \"$dir\"\n"+
+			"fi\n"+
+			"log_path=\"$dir\"/%s\n"+
+			"meta_path=\"$dir\"/%s\n"+
+			"wrapper_path=\"$dir\"/%s\n"+
 			"launch_json=%s\n"+
-			"mkdir -p %s\n"+
-			"cat >\"$wrapper_path\" <<'OKDEV_DETACH_WRAPPER'\n%s\nOKDEV_DETACH_WRAPPER\n"+
+			"sed \"s|%s|$dir|g\" >\"$wrapper_path\" <<'OKDEV_DETACH_WRAPPER'\n%s\nOKDEV_DETACH_WRAPPER\n"+
 			"chmod 700 \"$wrapper_path\"\n"+
 			"nohup sh \"$wrapper_path\" >\"$log_path\" 2>&1 &\n"+
 			"wrapper_pid=$!\n"+
@@ -1186,13 +1213,16 @@ func detachCommand(spec detachJobSpec) []string {
 			"  echo 'detached job metadata missing pid' >&2\n"+
 			"  exit 1\n"+
 			"fi\n"+
-			"printf '%%s\\n' \"$launch_json\" | sed \"s/%s/$pid/g\"\n",
-		shellutil.Quote(spec.LogPath),
-		shellutil.Quote(spec.MetaPath),
-		shellutil.Quote(spec.ScriptPath),
-		shellutil.Quote(launchTemplate),
+			"printf '%%s\\n' \"$launch_json\" | sed \"s|%s|$dir|g; s/%s/$pid/g\"\n",
 		shellutil.Quote(detachMetadataDir),
+		shellutil.Quote(legacyDetachMetadataDir),
+		shellutil.Quote(filepath.Base(spec.LogPath)),
+		shellutil.Quote(filepath.Base(spec.MetaPath)),
+		shellutil.Quote(filepath.Base(spec.ScriptPath)),
+		shellutil.Quote(launchTemplate),
+		detachDirPlaceholder,
 		wrapper,
+		detachDirPlaceholder,
 		detachPIDPlaceholder,
 	)
 	return []string{"sh", "-c", script}
@@ -1282,9 +1312,12 @@ func newDetachJobSpec(jobID, pod, container, cmd string, argv []string, cleanupP
 		jobID = newDetachJobID()
 	}
 	startedAt := time.Now().UTC().Format(time.RFC3339)
-	logPath := filepath.Join(detachMetadataDir, jobID+".log")
-	metaPath := filepath.Join(detachMetadataDir, jobID+".json")
-	scriptPath := filepath.Join(detachMetadataDir, jobID+".sh")
+	// Paths carry detachDirPlaceholder; the launcher script resolves it to
+	// the real directory on the pod (runtime volume, or legacy /tmp when
+	// that volume is not writable) and seds it into the JSON templates.
+	logPath := detachDirPlaceholder + "/" + jobID + ".log"
+	metaPath := detachDirPlaceholder + "/" + jobID + ".json"
+	scriptPath := detachDirPlaceholder + "/" + jobID + ".sh"
 	return detachJobSpec{
 		JobID:      jobID,
 		Pod:        pod,

@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/acmore/okdev/internal/kube"
@@ -222,9 +225,111 @@ func TestDetachJobsCommandReconcilesAndReapsTmpFiles(t *testing.T) {
 		// Best-effort cleanup of stale temp files left by killed wrappers.
 		"-name '*.tmp'",
 		"-mmin +1",
+		// Jobs launched before the /var/okdev move must stay visible, so the
+		// scan covers both the runtime-volume dir and the legacy /tmp dir.
+		"'" + detachMetadataDir + "'",
+		"'" + legacyDetachMetadataDir + "'",
 	} {
 		if !strings.Contains(cmd[2], want) {
 			t.Fatalf("expected detach jobs command to contain %q, got %q", want, cmd[2])
+		}
+	}
+}
+
+// fakeContainerExecClient routes exec results by "pod|container" so tests can
+// model a dead target container alongside a healthy sidecar.
+type fakeContainerExecClient struct {
+	mu      sync.Mutex
+	calls   []string
+	outputs map[string]string
+	errs    map[string]error
+}
+
+func (f *fakeContainerExecClient) ExecInteractive(ctx context.Context, namespace, pod string, tty bool, command []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) error {
+	return f.ExecInteractiveInContainer(ctx, namespace, pod, "", tty, command, stdin, stdout, stderr)
+}
+
+func (f *fakeContainerExecClient) ExecInteractiveInContainer(ctx context.Context, namespace, pod, container string, tty bool, command []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) error {
+	key := pod + "|" + container
+	f.mu.Lock()
+	f.calls = append(f.calls, key)
+	output := f.outputs[key]
+	err := f.errs[key]
+	f.mu.Unlock()
+	if output != "" {
+		fmt.Fprint(stdout, output)
+	}
+	return err
+}
+
+func TestCollectDetachJobsFallsBackToSidecarWhenContainerGone(t *testing.T) {
+	// An OOMKilled target container must not hide job metadata: it lives on
+	// the shared /var/okdev volume, readable via the always-running sidecar.
+	meta := "{\"jobId\":\"job-a\",\"pod\":\"okdev-sess-worker-0\",\"container\":\"pytorch\",\"pid\":100,\"command\":\"python train.py\",\"startedAt\":\"2026-07-05T03:00:00Z\",\"stdoutPath\":\"/var/okdev/exec/job-a.log\",\"stderrPath\":\"/var/okdev/exec/job-a.log\",\"metaPath\":\"/var/okdev/exec/job-a.json\",\"state\":\"running\"}\n"
+	client := &fakeContainerExecClient{
+		outputs: map[string]string{
+			"okdev-sess-worker-0|" + syncthingContainerName: meta,
+		},
+		errs: map[string]error{
+			"okdev-sess-worker-0|pytorch": errors.New(`container not found ("pytorch")`),
+		},
+	}
+	pods := []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}}
+	rows, podErrors := collectDetachJobs(context.Background(), client, "default", pods, "pytorch", "", pdshDefaultFanout)
+	if len(podErrors) != 0 {
+		t.Fatalf("unexpected pod errors: %+v", podErrors)
+	}
+	if len(rows) != 1 || rows[0].JobID != "job-a" {
+		t.Fatalf("expected job-a via sidecar fallback, got %+v", rows)
+	}
+	// The row keeps the job's original container so stop/signal still target
+	// the recorded runtime, not the sidecar.
+	if rows[0].Container != "pytorch" {
+		t.Fatalf("expected row container pytorch, got %q", rows[0].Container)
+	}
+	wantCalls := []string{"okdev-sess-worker-0|pytorch", "okdev-sess-worker-0|" + syncthingContainerName}
+	if len(client.calls) != 2 || client.calls[0] != wantCalls[0] || client.calls[1] != wantCalls[1] {
+		t.Fatalf("expected calls %v, got %v", wantCalls, client.calls)
+	}
+}
+
+func TestCollectDetachJobsDoesNotFallBackOnCommandError(t *testing.T) {
+	// Only container-unavailable errors justify the sidecar retry; a failing
+	// list command must surface as a pod error without a second exec.
+	client := &fakeContainerExecClient{
+		errs: map[string]error{
+			"okdev-sess-worker-0|pytorch": errors.New("command terminated with exit code 2"),
+		},
+	}
+	pods := []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}}
+	rows, podErrors := collectDetachJobs(context.Background(), client, "default", pods, "pytorch", "", pdshDefaultFanout)
+	if len(rows) != 0 {
+		t.Fatalf("expected no rows, got %+v", rows)
+	}
+	if len(podErrors) != 1 || !strings.Contains(podErrors[0].Error, "exit code 2") {
+		t.Fatalf("expected exit-code pod error, got %+v", podErrors)
+	}
+	if len(client.calls) != 1 {
+		t.Fatalf("expected single exec attempt, got %v", client.calls)
+	}
+}
+
+func TestIsContainerUnavailableExecError(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{errors.New(`container not found ("pytorch")`), true},
+		{errors.New("container pytorch is not running"), true},
+		{errors.New("container is not created or running"), true},
+		{errors.New("cannot exec into a stopped container"), true},
+		{errors.New("command terminated with exit code 1"), false},
+		{errors.New("connection reset by peer"), false},
+	}
+	for _, tc := range cases {
+		if got := isContainerUnavailableExecError(tc.err); got != tc.want {
+			t.Fatalf("isContainerUnavailableExecError(%v) = %v, want %v", tc.err, got, tc.want)
 		}
 	}
 }

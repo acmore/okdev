@@ -101,6 +101,53 @@ func TestRunJobsWaitFailsOnNonZeroExit(t *testing.T) {
 	}
 }
 
+// deadContainerJobsClient wraps fakeJobsClient and fails log streams for the
+// named container, modeling an OOMKilled target while the sidecar stays up.
+type deadContainerJobsClient struct {
+	*fakeJobsClient
+	deadContainer string
+	streamMu      sync.Mutex
+	streamCalls   []string
+}
+
+func (c *deadContainerJobsClient) StreamShInContainer(ctx context.Context, namespace, pod, container, script string, stdout, stderr io.Writer) error {
+	c.streamMu.Lock()
+	c.streamCalls = append(c.streamCalls, pod+"|"+container)
+	c.streamMu.Unlock()
+	if container == c.deadContainer {
+		return fmt.Errorf("container not found (%q)", container)
+	}
+	return c.fakeJobsClient.StreamShInContainer(ctx, namespace, pod, container, script, stdout, stderr)
+}
+
+func TestRunJobsLogsFallsBackToSidecarWhenContainerGone(t *testing.T) {
+	client := &deadContainerJobsClient{
+		fakeJobsClient: &fakeJobsClient{
+			listOutputs: map[string][]string{
+				"okdev-sess-worker-0": {
+					detachMetadataJSON("job-oom", "okdev-sess-worker-0", "pytorch", 100, "orphaned", nil),
+				},
+			},
+			streamPlans: map[string]fakeJobsStreamPlan{
+				"okdev-sess-worker-0|read": {stdout: "last words\n"},
+			},
+		},
+		deadContainer: "pytorch",
+	}
+	pods := []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}}
+	var out bytes.Buffer
+	if err := runJobsLogs(context.Background(), client, "default", pods, "pytorch", "job-oom", pdshDefaultFanout, false, &out); err != nil {
+		t.Fatalf("runJobsLogs: %v", err)
+	}
+	if !strings.Contains(out.String(), "last words") {
+		t.Fatalf("expected log content via sidecar fallback, got %q", out.String())
+	}
+	wantCalls := []string{"okdev-sess-worker-0|pytorch", "okdev-sess-worker-0|" + syncthingContainerName}
+	if len(client.streamCalls) != 2 || client.streamCalls[0] != wantCalls[0] || client.streamCalls[1] != wantCalls[1] {
+		t.Fatalf("expected stream calls %v, got %v", wantCalls, client.streamCalls)
+	}
+}
+
 type fakeJobsClient struct {
 	mu              sync.Mutex
 	listOutputs     map[string][]string

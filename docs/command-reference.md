@@ -110,7 +110,7 @@ agents can react without launching a diagnostic chain on every blip:
 - `--detach`: launches the command in the background and returns immediately. Prints per-pod launch details including job id, pid, log path, and metadata path.
 - When `--log-dir` is used with multiple declared groups, logs are written into per-group subdirectories under the requested path. `--log-dir` has no effect with `--detach` (detached jobs log inside the pod).
 - Detached exec preserves argv to the remote process; it is not flattened back into a single shell string. Detached `--script` uploads a per-pod temp file, launches it, and removes that temp file after completion.
-- Detached jobs store combined stdout/stderr and JSON metadata under `/tmp/okdev-exec/` in the target container. For large outputs (training logs, profiles, dumps), prefer `--log-dir` on the caller or redirect inside your command to a session volume; `/tmp` is typically a small tmpfs and heavy writers can fill it.
+- Detached jobs store combined stdout/stderr and JSON metadata under `/var/okdev/exec/` on the shared okdev-runtime volume, so logs and metadata survive a target-container crash (e.g. OOMKill) and remain readable through the sidecar. If that directory cannot be created or written by the container user (e.g. a user-supplied root-owned volume with a non-root container), the launcher falls back to the legacy `/tmp/okdev-exec/` with a notice on stderr — same lifetime semantics as before. For large outputs (training logs, profiles, dumps), prefer `--log-dir` on the caller or redirect inside your command to a session volume; the runtime volume is a node-local emptyDir and heavy writers can fill it.
 - The `pid` returned from `--detach` is the pid of your command itself (okdev re-parents the launcher so `$!` is your program's pid after `execve`). `kill <pid>` or `okdev exec --pod <pod> -- kill <pid>` therefore targets your command, not a wrapper shell.
 - When using `--detach`, pass the command you want okdev to launch directly. Do not add an extra `nohup ... &` inside the command string.
 - `--timeout`: per-pod command timeout (e.g., `30s`, `5m`). Pods exceeding the timeout are cancelled and reported as failed.
@@ -128,7 +128,8 @@ agents can react without launching a diagnostic chain on every blip:
 ### `okdev jobs list [session]`
 
 - Lists detached `okdev exec --detach` jobs across the session's running pods.
-- Reads job metadata from `/tmp/okdev-exec/*.json` in the target container.
+- Reads job metadata from `/var/okdev/exec/*.json` in the target container (plus the legacy `/tmp/okdev-exec/` location for jobs launched by older okdev versions).
+- If the target container is gone (e.g. OOMKilled), listing and `jobs logs` automatically retry through the `okdev-sidecar` container, which mounts the same runtime volume.
 - Text output is grouped by logical job id, with one row per detached launch showing job id, summarized state, pod count, earliest start time, and original command.
 - JSON output includes both the logical job summary and the per-pod `podStates` records.
 - State values: `running` (wrapper alive and user command in flight), `exited` (user command finished; exit code is recorded in `podStates` / JSON), and `orphaned` (metadata still says `running` but the pid has exited or been recycled - typically the wrapper was `SIGKILL`ed or the container was restarted before the completion metadata could be written). Grouped text summaries render forms such as `running(1/2)`, `exited(2/2)`, and `failed(1/2)`.
@@ -152,6 +153,7 @@ agents can react without launching a diagnostic chain on every blip:
 - `--label`: stream logs from pods matching label selectors.
 - `--exclude`: exclude specific pods from the selected set. Cannot be used with `--pod`.
 - `-f` / `--follow`: keep following until every pod in the job reaches a terminal state.
+- If the job's container is gone (e.g. OOMKilled), logs are read through the `okdev-sidecar` container instead — job logs live on the shared runtime volume and survive the container.
 - If some pod logs are unavailable, okdev still streams the logs it can read and reports the missing pods in a `FAILED:` footer before returning non-zero.
 
 ### `okdev jobs wait <job-id> [session]`
