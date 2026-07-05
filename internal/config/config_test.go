@@ -440,10 +440,11 @@ func TestValidateRejectsOverlappingSyncPaths(t *testing.T) {
 		paths []SyncPathSpec
 	}{
 		{"equal locals", []SyncPathSpec{{Local: ".", Remote: "/a"}, {Local: "./", Remote: "/b"}}},
-		{"nested locals", []SyncPathSpec{{Local: ".", Remote: "/a"}, {Local: "./results", Remote: "/b"}}},
-		{"nested locals reversed", []SyncPathSpec{{Local: "./results/deep", Remote: "/a"}, {Local: "./results", Remote: "/b"}}},
+		{"extra contains primary", []SyncPathSpec{{Local: "./results/deep", Remote: "/a"}, {Local: "./results", Remote: "/b"}}},
+		{"extras nested in each other", []SyncPathSpec{{Local: ".", Remote: "/a"}, {Local: "./x", Remote: "/b"}, {Local: "./x/deep", Remote: "/c"}}},
 		{"equal remotes", []SyncPathSpec{{Local: "./a", Remote: "/workspace"}, {Local: "./b", Remote: "/workspace/"}}},
 		{"nested remotes", []SyncPathSpec{{Local: "./a", Remote: "/workspace"}, {Local: "./b", Remote: "/workspace/results"}}},
+		{"nested remote under primary even with nested local", []SyncPathSpec{{Local: ".", Remote: "/workspace"}, {Local: "./results", Remote: "/workspace/results"}}},
 	}
 	for _, tc := range cases {
 		cfg := validConfig()
@@ -452,6 +453,38 @@ func TestValidateRejectsOverlappingSyncPaths(t *testing.T) {
 		if err := cfg.Validate(); err == nil {
 			t.Fatalf("%s: expected overlap rejection", tc.name)
 		}
+	}
+}
+
+func TestValidateAllowsLocalsNestedInsidePrimary(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Sync.Paths = []SyncPathSpec{
+		{Local: ".", Remote: "/workspace"},
+		{Local: "./results", Remote: "/data/results", Direction: "down"},
+		{Local: "./datasets", Remote: "/data/sets", Direction: "up"},
+	}
+	cfg.SetDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("locals nested inside the primary root should validate, got %v", err)
+	}
+}
+
+func TestNestedLocalSyncIgnorePatterns(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Sync.Paths = []SyncPathSpec{
+		{Local: ".", Remote: "/workspace"},
+		{Local: "./results", Remote: "/data/results"},
+		{Local: "./nested/deep", Remote: "/data/deep"},
+		{Local: "../outside", Remote: "/data/outside"}, // disjoint — no pattern
+	}
+	got := cfg.NestedLocalSyncIgnorePatterns()
+	want := []string{"/nested/deep", "/results"}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("unexpected patterns: %v (want %v)", got, want)
+	}
+	cfg.Spec.Sync.Paths = cfg.Spec.Sync.Paths[:1]
+	if got := cfg.NestedLocalSyncIgnorePatterns(); len(got) != 0 {
+		t.Fatalf("single mapping must produce no patterns, got %v", got)
 	}
 }
 
