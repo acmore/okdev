@@ -49,6 +49,7 @@ For PyTorchJob questions, keep these points in mind:
 - manifests are usually generated beside `.okdev/okdev.yaml`
 - role-specific pod templates are injected from manifest paths
 - interactive targeting and sync behavior may differ between master and worker pods
+- `okdev up` fails fast if any pod enters `Failed` before readiness; if that same `okdev up` created or recreated the PyTorchJob, okdev also deletes it and clears local session state (see `references/troubleshooting.md`, "Auto-Cleared Failed Jobs / PyTorchJobs"). Reused PyTorchJobs are left in place.
 
 ## Inter-Pod SSH
 

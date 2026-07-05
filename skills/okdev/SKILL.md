@@ -25,7 +25,7 @@ Use this skill when the request involves:
 - sync behavior, session reuse, port forwards, or SSH access
 - manifest-backed workloads such as `job`, `generic`, or `pytorchjob`
 - attachable pod behavior, multi-pod sessions, or inter-pod SSH
-- exec fanout controls: pod grouping (`--group`), uploaded `--script`, background `--detach` jobs (`okdev jobs list`), or structured `--json` output
+- exec fanout controls: pod grouping (`--group`), uploaded `--script`, background `--detach` jobs (`okdev jobs list`), targeted log tailing (`okdev jobs logs <job-id> --pod/--role/--label/--exclude`), or structured `--json` output
 
 Do not use this skill for:
 
@@ -48,6 +48,7 @@ Do not use this skill for:
 - Config discovery order is: explicit `--config`, `.okdev/okdev.yaml`, `.okdev.yaml`, `okdev.yaml`.
 - `okdev up` reuses an existing session workload by default.
 - Use `okdev up --reconcile` when workload-shaping config changed and the user wants those changes applied.
+- `okdev up` on a `job` or `pytorchjob` workload fails fast when a pod enters `PodFailed` before readiness. If that run also created or recreated the workload, okdev deletes the failed workload and clears local session state — the next `okdev up` starts fresh. Workloads that were reused as-is (no create/recreate this run) are left alone. For `pod` workloads okdev also returns early on `Failed` but does not auto-delete.
 - Use `okdev sync --reset` when local/background sync state is stale but the workload itself is still the intended one.
 - `okdev ssh` is the okdev-managed interactive path; `ssh okdev-<session>` is the plain SSH host alias path. The interactive shell can be bash or zsh, and the okdev tmux prefix is `ctrl-a`.
 - For sync, SSH, and port-forward issues, `okdev status --details` is usually the first useful diagnostic.

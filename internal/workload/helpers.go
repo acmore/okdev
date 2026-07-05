@@ -294,10 +294,7 @@ func shouldRetryCandidateWait(err error) bool {
 }
 
 func failedReadinessWaitError(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(strings.ToLower(err.Error()), "failed while waiting for readiness")
+	return errors.Is(err, kube.ErrPodFailedReadiness)
 }
 
 func failedPodError(pods []kube.PodSummary, enabled bool) error {

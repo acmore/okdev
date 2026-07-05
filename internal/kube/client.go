@@ -764,7 +764,7 @@ func (c *Client) WaitReadyWithProgress(ctx context.Context, namespace, pod strin
 	}
 	emitProgress(current)
 	if current.Status.Phase == corev1.PodFailed {
-		return fmt.Errorf("pod/%s failed while waiting for readiness", pod)
+		return fmt.Errorf("pod/%s: %w", pod, ErrPodFailedReadiness)
 	}
 	if isPodReady(current) {
 		return nil
@@ -804,7 +804,7 @@ func (c *Client) WaitReadyWithProgress(ctx context.Context, namespace, pod strin
 					}
 					if p.Status.Phase == corev1.PodFailed {
 						watcher.Stop()
-						return fmt.Errorf("pod/%s failed while waiting for readiness", pod)
+						return fmt.Errorf("pod/%s: %w", pod, ErrPodFailedReadiness)
 					}
 					if isPodReady(p) {
 						watcher.Stop()
@@ -1166,6 +1166,12 @@ var computeRemoteSingleFileSHA256ForCopy = func(ctx context.Context, c *Client, 
 }
 
 var errChecksumMismatch = errors.New("checksum mismatch")
+
+// ErrPodFailedReadiness is returned by [Client.WaitReadyWithProgress] when the
+// target pod entered [corev1.PodFailed] before becoming ready. Callers that
+// need to react to failed readiness (e.g. fail-fast teardown of managed
+// workloads) should use [errors.Is] rather than matching on the error string.
+var ErrPodFailedReadiness = errors.New("pod failed while waiting for readiness")
 
 // CopyToPodInContainerWithProgress copies a single local file to remotePath
 // in the given pod/container. It optionally reports progress via prog.
