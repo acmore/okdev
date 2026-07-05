@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	agentcatalog "github.com/acmore/okdev/internal/agent"
@@ -161,9 +162,13 @@ type SyncSpec struct {
 //
 //	paths:
 //	  - .:/workspace
-//	  - local: ./results
+//	  - local: ../collected
 //	    remote: /data/results
 //	    direction: down
+//
+// Mapping roots must be pairwise disjoint on both sides (validated): note
+// "../collected" above — a results directory nested inside the primary
+// mapping's local root would be rejected.
 //
 // Direction sets the syncthing folder types for this mapping's folder:
 //
@@ -226,6 +231,23 @@ func (p SyncPathSpec) EffectiveDirection() string {
 		return SyncDirectionBi
 	}
 	return d
+}
+
+// AdditionalSyncRemoteRoots returns the remote roots of every mapping after
+// the primary one, sorted for stable hashing. These roots may need
+// auto-provisioned volumes so the sidecar's syncthing can serve them.
+func (d *DevEnvironment) AdditionalSyncRemoteRoots() []string {
+	if len(d.Spec.Sync.Paths) <= 1 {
+		return nil
+	}
+	roots := make([]string, 0, len(d.Spec.Sync.Paths)-1)
+	for _, p := range d.Spec.Sync.Paths[1:] {
+		if root := strings.TrimSpace(p.Remote); root != "" {
+			roots = append(roots, root)
+		}
+	}
+	sort.Strings(roots)
+	return roots
 }
 
 type SyncthingSpec struct {
@@ -442,9 +464,6 @@ func (d *DevEnvironment) Validate() error {
 	}
 	if err := validateSyncPaths(d.Spec.Sync.Paths); err != nil {
 		return err
-	}
-	if len(d.Spec.Sync.Paths) > 1 {
-		return errors.New("spec.sync.paths must contain at most one mapping when engine is syncthing")
 	}
 	if err := validatePortMappings(d.Spec.Ports); err != nil {
 		return err
@@ -685,7 +704,47 @@ func validateSyncPaths(paths []SyncPathSpec) error {
 			return fmt.Errorf("spec.sync.paths entry %q direction must be one of %s, %s, %s", p.Local+":"+p.Remote, SyncDirectionBi, SyncDirectionUp, SyncDirectionDown)
 		}
 	}
+	// Mappings must be disjoint on both sides. Two syncthing folders on the
+	// same root are impossible (.stignore lives in the directory, so both
+	// folders would share ignore rules), and nested roots would sync the
+	// nested subtree through two folders at once — reintroducing the
+	// overwrite hazards per-path directions exist to prevent. The check is
+	// lexical (no symlink resolution).
+	for i := 0; i < len(paths); i++ {
+		for j := i + 1; j < len(paths); j++ {
+			if syncRootsOverlap(paths[i].Local, paths[j].Local) {
+				return fmt.Errorf("spec.sync.paths local roots %q and %q overlap; mappings must be disjoint", paths[i].Local, paths[j].Local)
+			}
+			if syncRootsOverlap(paths[i].Remote, paths[j].Remote) {
+				return fmt.Errorf("spec.sync.paths remote roots %q and %q overlap; mappings must be disjoint", paths[i].Remote, paths[j].Remote)
+			}
+		}
+	}
 	return nil
+}
+
+// syncRootsOverlap reports whether two roots are equal or one contains the
+// other, comparing cleaned paths lexically.
+func syncRootsOverlap(a, b string) bool {
+	a = filepath.Clean(strings.TrimSpace(a))
+	b = filepath.Clean(strings.TrimSpace(b))
+	if a == b {
+		return true
+	}
+	return pathContains(a, b) || pathContains(b, a)
+}
+
+func pathContains(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		// Mixed absolute/relative roots cannot be compared lexically;
+		// treat them as disjoint.
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
 }
 
 func validatePortMappings(ports []PortMapping) error {

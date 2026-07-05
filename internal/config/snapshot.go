@@ -30,6 +30,12 @@ type LastAppliedWorkloadSpec struct {
 	PreStop            string                      `json:"preStop"`
 	ManifestPath       string                      `json:"manifestPath,omitempty"`
 	ManifestSHA256     string                      `json:"manifestSHA256,omitempty"`
+	// SyncRemoteRoots are the remote roots of additional sync mappings.
+	// They shape the pod spec (auto-provisioned volumes + sidecar mounts),
+	// so adding or removing a mapping must surface as workload drift and
+	// prompt a reconcile. omitempty keeps single-mapping sessions on the
+	// legacy snapshot hash.
+	SyncRemoteRoots []string `json:"syncRemoteRoots,omitempty"`
 }
 
 func BuildWorkloadSnapshot(cfg *DevEnvironment, workspaceMountPath, targetContainer string, tmux bool, shell string, preStop, manifestPath, manifestResolvedPath string) LastAppliedWorkloadSpec {
@@ -53,6 +59,7 @@ func BuildWorkloadSnapshot(cfg *DevEnvironment, workspaceMountPath, targetContai
 		Shell:              shell,
 		PreStop:            preStop,
 		ManifestPath:       manifestPath,
+		SyncRemoteRoots:    cfg.AdditionalSyncRemoteRoots(),
 	}
 	if manifestResolvedPath != "" {
 		hash, err := ComputeManifestSHA256(manifestResolvedPath)

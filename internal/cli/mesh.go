@@ -33,8 +33,11 @@ type meshSummary struct {
 	Receivers []meshReceiverStatus
 }
 
+// meshFolderPath returns the folder the mesh shares to receiver pods: the
+// primary (first) mapping's remote. Additional mappings stay local<->hub
+// only — datasets and result folders do not fan out to receivers.
 func meshFolderPath(syncPairs []syncengine.Pair, workspaceMountPath string) string {
-	if len(syncPairs) == 1 && strings.TrimSpace(syncPairs[0].Remote) != "" {
+	if len(syncPairs) >= 1 && strings.TrimSpace(syncPairs[0].Remote) != "" {
 		return syncPairs[0].Remote
 	}
 	return workspaceMountPath

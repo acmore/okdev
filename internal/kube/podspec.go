@@ -1,6 +1,8 @@
 package kube
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strings"
@@ -19,6 +21,16 @@ func PreparePodSpecForTarget(podSpec corev1.PodSpec, volumes []corev1.Volume, wo
 }
 
 func PreparePodSpecForTargetWithShell(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, sidecarResources corev1.ResourceRequirements, tmux bool, preStop string, targetContainer string, shell string) (corev1.PodSpec, error) {
+	return PreparePodSpecForTargetWithShellAndSyncRoots(podSpec, volumes, workspaceMountPath, sidecarImage, sidecarResources, tmux, preStop, targetContainer, shell, nil)
+}
+
+// PreparePodSpecForTargetWithShellAndSyncRoots additionally auto-provisions
+// volumes for sync mapping remote roots: any root not already covered by a
+// target-container volume mount gets an emptyDir mounted at that exact path
+// (and mirrored into the sidecar), so users configure extra sync mappings
+// without writing any volume YAML. Roots covered by an existing mount (for
+// example a user PVC) are left alone.
+func PreparePodSpecForTargetWithShellAndSyncRoots(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, sidecarResources corev1.ResourceRequirements, tmux bool, preStop string, targetContainer string, shell string, syncRemoteRoots []string) (corev1.PodSpec, error) {
 	if strings.TrimSpace(sidecarImage) == "" {
 		return corev1.PodSpec{}, fmt.Errorf("sidecar image cannot be empty")
 	}
@@ -94,6 +106,24 @@ func PreparePodSpecForTargetWithShell(podSpec corev1.PodSpec, volumes []corev1.V
 		}
 	}
 
+	if targetIndex >= 0 {
+		for _, root := range syncRemoteRoots {
+			root = strings.TrimSpace(root)
+			if root == "" || syncRootCoveredByMounts(root, spec.Containers[targetIndex].VolumeMounts) {
+				continue
+			}
+			name := syncAutoVolumeName(root)
+			spec.Volumes = ensureVolume(spec.Volumes, corev1.Volume{
+				Name:         name,
+				VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+			})
+			spec.Containers[targetIndex].VolumeMounts = ensureVolumeMount(spec.Containers[targetIndex].VolumeMounts, corev1.VolumeMount{
+				Name:      name,
+				MountPath: root,
+			})
+		}
+	}
+
 	InjectPreStopForTarget(spec, preStop, targetContainer)
 
 	if !hasContainer(spec.Containers, "okdev-sidecar") {
@@ -110,11 +140,7 @@ func PreparePodSpecForTargetWithShell(podSpec corev1.PodSpec, volumes []corev1.V
 				{ContainerPort: 8384, Name: "st-gui"},
 				{ContainerPort: 22000, Name: "st-sync"},
 			},
-			VolumeMounts: []corev1.VolumeMount{
-				workspaceMount,
-				{Name: "syncthing-home", MountPath: "/var/syncthing"},
-				{Name: "okdev-runtime", MountPath: "/var/okdev"},
-			},
+			VolumeMounts: sidecarVolumeMounts(workspaceMount, targetIndex, spec.Containers),
 			Env: []corev1.EnvVar{
 				{
 					Name:  "OKDEV_WORKSPACE",
@@ -200,6 +226,24 @@ func ensureVolumeMount(mounts []corev1.VolumeMount, vm corev1.VolumeMount) []cor
 	return append(mounts, vm)
 }
 
+// syncRootCoveredByMounts reports whether root already lives under one of
+// the container's volume mounts.
+func syncRootCoveredByMounts(root string, mounts []corev1.VolumeMount) bool {
+	for _, m := range mounts {
+		if root == m.MountPath || strings.HasPrefix(root, m.MountPath+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// syncAutoVolumeName derives a stable volume name for an auto-provisioned
+// sync remote root.
+func syncAutoVolumeName(root string) string {
+	sum := sha256.Sum256([]byte(root))
+	return "okdev-sync-" + hex.EncodeToString(sum[:4])
+}
+
 func workspaceMountForSidecar(mounts []corev1.VolumeMount, fallback corev1.VolumeMount) corev1.VolumeMount {
 	for _, mount := range mounts {
 		if mount.Name == fallback.Name && mount.MountPath == fallback.MountPath {
@@ -207,6 +251,35 @@ func workspaceMountForSidecar(mounts []corev1.VolumeMount, fallback corev1.Volum
 		}
 	}
 	return fallback
+}
+
+// sidecarVolumeMounts assembles the sidecar's mounts: its internal volumes,
+// the workspace, plus every volume the target container mounts (at the same
+// paths). Mirroring the target's mounts is what lets sync mappings target
+// volume-backed remote roots outside the workspace — the sidecar's syncthing
+// can only serve paths it can see; anything on the target container's
+// overlay filesystem is invisible to it.
+func sidecarVolumeMounts(workspaceMount corev1.VolumeMount, targetIndex int, containers []corev1.Container) []corev1.VolumeMount {
+	mounts := []corev1.VolumeMount{
+		workspaceMount,
+		{Name: "syncthing-home", MountPath: "/var/syncthing"},
+		{Name: "okdev-runtime", MountPath: "/var/okdev"},
+	}
+	if targetIndex < 0 || targetIndex >= len(containers) {
+		return mounts
+	}
+	taken := make(map[string]bool, len(mounts))
+	for _, m := range mounts {
+		taken[m.MountPath] = true
+	}
+	for _, m := range containers[targetIndex].VolumeMounts {
+		if taken[m.MountPath] {
+			continue
+		}
+		taken[m.MountPath] = true
+		mounts = append(mounts, m)
+	}
+	return mounts
 }
 
 func ensureEnvVar(envs []corev1.EnvVar, env corev1.EnvVar) []corev1.EnvVar {

@@ -735,7 +735,7 @@ func summarizeConfiguredSyncPaths(cfg *config.DevEnvironment, cfgPath string) []
 	}
 	lines := make([]string, 0, len(pairs))
 	for _, pair := range pairs {
-		lines = append(lines, fmt.Sprintf("%s -> %s", displayLocalSyncPath(pair.Local), pair.Remote))
+		lines = append(lines, fmt.Sprintf("%s %s %s", displayLocalSyncPath(pair.Local), syncArrow(pairModeSymbol(pair)), pair.Remote))
 	}
 	return lines
 }

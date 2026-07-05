@@ -233,7 +233,7 @@ spec:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `engine` | `string` | — | Sync engine (currently only `syncthing`) |
-| `paths` | `[]entry` | — | Sync mappings (max 1 entry). Each entry is either the compact string `local:remote`, or a mapping `{local, remote, direction}` with an optional per-path `direction` |
+| `paths` | `[]entry` | — | Sync mappings. Each entry is either the compact string `local:remote`, or a mapping `{local, remote, direction}` with an optional per-path `direction`. Multiple mappings are allowed as long as their roots are disjoint on both sides (equal or nested roots are rejected) |
 | `paths[].direction` | `string` | `bi` | Sync direction for this mapping's folder: `bi` (bidirectional), `up` (local is the authority: local sendonly, pod receiveonly), `down` (pod is the authority: pod sendonly, local receiveonly) |
 | `syncthing.version` | `string` | `v1.29.7` | Local Syncthing binary version |
 | `syncthing.autoInstall` | `bool` | `true` | Auto-install local Syncthing |
@@ -243,7 +243,24 @@ spec:
 | `syncthing.compression` | `bool` | `false` | Use Syncthing `always` compression for peer connections instead of the default `metadata` mode |
 | `syncthing.versioningDays` | `int` | `30` | Keep files overwritten or deleted by sync in `.stversions` for this many days (staggered versioning, both sides); `0` disables |
 
-**Validation:** `engine` must be `syncthing`; each `paths[]` entry must have non-empty local and remote; `direction` must be `bi`, `up`, or `down`; `versioningDays` must be `>= 0`.
+**Validation:** `engine` must be `syncthing`; each `paths[]` entry must have non-empty local and remote; `direction` must be `bi`, `up`, or `down`; mapping roots must be pairwise disjoint on both the local and the remote side (lexical check); `versioningDays` must be `>= 0`.
+
+**Multiple mappings.** Each mapping becomes its own syncthing folder with its own direction. The first entry is the **primary** mapping: it keeps the legacy folder identity (existing sessions upgrade in place), it is the folder shared to mesh receiver pods, and it is the only remote cleared by `okdev up --reset-workspace` / `okdev sync reset-remote` — additional mappings (typically datasets or results) are never touched by resets and stay local↔hub only. Removing a mapping from the config removes its folder from both syncthing instances on the next `okdev up`. A typical split:
+
+```yaml
+paths:
+  - .:/workspace                     # primary: code, bidirectional
+  - local: ../collected              # sibling of the repo — local roots must
+    remote: /data/results            # not nest inside the primary mapping
+    direction: down                  # pod-generated results, pod is authority
+  - local: ../datasets
+    remote: /data/datasets
+    direction: up                    # dataset push, local is authority
+```
+
+Note the disjoint rule applies to the **local** side too: a results directory *inside* the synced repo (e.g. `./collected` under `.`) is rejected — place it next to the repo instead, or narrow the primary mapping to a subdirectory.
+
+**Volumes are provisioned automatically.** An additional mapping's remote root must be visible to the okdev sidecar (its syncthing serves the remote side), which means it must live on a volume — a root on the container's own filesystem cannot sync. You don't need to write any volume YAML: okdev auto-provisions an emptyDir at any extra remote root not already covered by a target-container volume mount, and mirrors the target container's mounts into the sidecar. Adding or removing a mapping changes the pod spec, so the next `okdev up` asks for `--reconcile` (pod recreate). Auto-provisioned emptyDirs don't survive pod recreation — fine for both directions (`up` re-pushes from local, `down` results are mirrored locally); mount your own PVC at the root if the data must persist, and okdev will use it instead. Sync startup still probes each extra root and fails with a clear error if it is not shared with the sidecar.
 
 **Sync direction.** `direction` applies to a mapping's whole synced folder — finer per-subpath direction inside one folder is impossible with Syncthing (ignore rules live in the directory itself; per-path folder types were rejected upstream). Pick the direction by what the folder carries:
 

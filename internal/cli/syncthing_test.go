@@ -1536,6 +1536,9 @@ func TestRunSyncthingSyncMarksReadyBeforeTwoPhaseBootstrap(t *testing.T) {
 	saveSyncthingConfigHashFn = func(string, string) error { return nil }
 	stopOwnedLocalSyncthingFn = func(string, int) error { return nil }
 	runSyncHealthLoopFn = func(<-chan os.Signal, io.Writer, syncHealthChecker) {}
+	origPrune := pruneManagedSessionFoldersFn
+	pruneManagedSessionFoldersFn = func(context.Context, string, string, string, map[string]bool) error { return nil }
+	t.Cleanup(func() { pruneManagedSessionFoldersFn = origPrune })
 
 	cfg := &config.DevEnvironment{}
 	cfg.SetDefaults()
@@ -1642,6 +1645,9 @@ func TestRunSyncthingSyncMarksBootstrapCompleteBeforeHealthLoop(t *testing.T) {
 			t.Fatalf("expected bootstrap completion marker before health loop, got %v", err)
 		}
 	}
+	origPrune := pruneManagedSessionFoldersFn
+	pruneManagedSessionFoldersFn = func(context.Context, string, string, string, map[string]bool) error { return nil }
+	t.Cleanup(func() { pruneManagedSessionFoldersFn = origPrune })
 
 	cfg := &config.DevEnvironment{}
 	cfg.SetDefaults()

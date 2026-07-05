@@ -119,7 +119,6 @@ func TestSyncHelpers(t *testing.T) {
 func TestSyncStartMode(t *testing.T) {
 	cases := []struct {
 		name           string
-		direction      string
 		resetWorkspace bool
 		targetReset    bool
 		hasConfigState bool
@@ -127,39 +126,47 @@ func TestSyncStartMode(t *testing.T) {
 		active         bool
 		want           string
 	}{
-		{name: "first bootstrap", direction: "bi", hasConfigState: false, active: false, want: "two-phase"},
-		{name: "explicit reset", direction: "bi", resetWorkspace: true, hasConfigState: true, configChanged: true, active: true, want: "two-phase"},
-		{name: "target recreated", direction: "bi", targetReset: true, hasConfigState: true, active: false, want: "two-phase"},
-		{name: "config changed on active session", direction: "bi", hasConfigState: true, configChanged: true, active: true, want: "bi"},
-		{name: "daemon recovery", direction: "bi", hasConfigState: true, active: false, want: "bi"},
-		{name: "steady state", direction: "bi", hasConfigState: true, active: true, want: "bi"},
-		// Directional folders skip the two-phase bootstrap entirely: one
-		// side is already sendonly, so the final types are safe from the
-		// first start.
-		{name: "up direction fresh", direction: "up", hasConfigState: false, active: false, want: "up"},
-		{name: "up direction target reset", direction: "up", targetReset: true, hasConfigState: true, active: false, want: "up"},
-		{name: "down direction fresh", direction: "down", hasConfigState: false, active: false, want: "down"},
-		{name: "down direction steady", direction: "down", hasConfigState: true, active: true, want: "down"},
+		{name: "first bootstrap", hasConfigState: false, active: false, want: "two-phase"},
+		{name: "explicit reset", resetWorkspace: true, hasConfigState: true, configChanged: true, active: true, want: "two-phase"},
+		{name: "target recreated", targetReset: true, hasConfigState: true, active: false, want: "two-phase"},
+		// The empty mode means every mapping follows its configured
+		// direction (two-phase still applies per folder to bi mappings
+		// only, inside runSyncthingSync).
+		{name: "config changed on active session", hasConfigState: true, configChanged: true, active: true, want: ""},
+		{name: "daemon recovery", hasConfigState: true, active: false, want: ""},
+		{name: "steady state", hasConfigState: true, active: true, want: ""},
 	}
 
 	for _, tc := range cases {
-		if got := syncStartMode(tc.direction, tc.resetWorkspace, tc.targetReset, tc.hasConfigState, tc.configChanged, tc.active); got != tc.want {
+		if got := syncStartMode(tc.resetWorkspace, tc.targetReset, tc.hasConfigState, tc.configChanged, tc.active); got != tc.want {
 			t.Fatalf("%s: got %q want %q", tc.name, got, tc.want)
 		}
 	}
 }
 
 func TestSyncPairsSummary(t *testing.T) {
-	if got := syncPairsSummary(nil, "->"); got != "no paths" {
+	if got := syncPairsSummary(nil); got != "no paths" {
 		t.Fatalf("unexpected empty summary %q", got)
 	}
-	pairs := []syncengine.Pair{{Local: ".", Remote: "/remote"}}
-	if got := syncPairsSummary(pairs, "->"); !strings.Contains(got, "/remote") || !strings.Contains(got, "->") {
+	// A single mapping renders its own direction arrow.
+	pairs := []syncengine.Pair{{Local: ".", Remote: "/remote", Direction: "down"}}
+	if got := syncPairsSummary(pairs); !strings.Contains(got, "/remote") || !strings.Contains(got, "<-") {
 		t.Fatalf("unexpected single-pair summary %q", got)
 	}
 	pairs = append(pairs, syncengine.Pair{Local: "./two", Remote: "/two"})
-	if got := syncPairsSummary(pairs, "->"); got != "2 paths" {
+	if got := syncPairsSummary(pairs); got != "2 paths" {
 		t.Fatalf("unexpected multi-pair summary %q", got)
+	}
+}
+
+func TestUpSyncModeSymbol(t *testing.T) {
+	single := []syncengine.Pair{{Local: ".", Remote: "/w", Direction: "up"}}
+	if got := upSyncModeSymbol(single); got != "->" {
+		t.Fatalf("expected single-pair direction symbol, got %q", got)
+	}
+	multi := append(single, syncengine.Pair{Local: "./r", Remote: "/r", Direction: "down"})
+	if got := upSyncModeSymbol(multi); got != "<->" {
+		t.Fatalf("expected bidirectional summary symbol for multi, got %q", got)
 	}
 }
 

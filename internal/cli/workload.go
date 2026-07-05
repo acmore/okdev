@@ -32,6 +32,7 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName, workloadNa
 	snapJSON, _ := snap.JSON()
 	snapHash, _ := snap.SHA256()
 
+	syncRemoteRoots := cfg.AdditionalSyncRemoteRoots()
 	switch strings.TrimSpace(cfg.Spec.Workload.Type) {
 	case "", workload.TypePod:
 		rt := workload.NewPodRuntime(
@@ -40,6 +41,7 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName, workloadNa
 			tmux, cfg.Spec.SSH.Shell, preStop, targetContainer,
 		)
 		rt.WorkloadNameOverride = workloadName
+		rt.SyncRemoteRoots = syncRemoteRoots
 		rt.LastAppliedSpecJSON = snapJSON
 		rt.LastAppliedSpecHash = snapHash
 		return rt, nil
@@ -57,6 +59,7 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName, workloadNa
 			PreStop:              preStop,
 			TargetContainer:      targetContainer,
 			Volumes:              volumes,
+			SyncRemoteRoots:      syncRemoteRoots,
 			Labels:               labels,
 			Annotations:          annotations,
 			Inject:               cfg.EffectiveWorkloadInject(),
