@@ -306,7 +306,8 @@ agents can react without launching a diagnostic chain on every blip:
 - Advanced command. Starts detached background sync by default; use `--foreground` for sync debugging, or explicit one-way sync (`up`/`down`).
 - By default each configured mapping syncs in its own `direction` (`spec.sync.paths[].direction`, falling back to `bi`); an explicit `--mode` forces that mode onto every mapping for the invocation. See the config manifest for choosing persistent directions — `down` makes the pod the authority so local writes can never clobber pod-generated results.
 - With multiple mappings, each becomes its own syncthing folder; the first (primary) mapping is the one shared to mesh receivers, and `sync reset-remote` clears only the primary remote.
-- For default `--mode bi`, no-op when background sync is already active for the session.
+- A mapping's local root may nest inside the primary root: okdev maintains a managed block in the primary root's `.stignore` excluding it from the primary folder (written before the sync daemon starts). Removing a mapping retains the entry as a tombstone so the subtree never silently joins the primary folder; sync start prints a notice and `status --details` lists active/retained excludes.
+- Without an explicit `--mode`, no-op when background sync is already active for the session.
 - `--background`: explicitly request detached background mode.
 - `--reset`: check local-to-hub sync and mesh receiver health, then reset only what is broken. Skips the local sync teardown when the primary sync is already healthy. For sessions with mesh receivers, probes each receiver and re-runs mesh setup only when broken or disconnected receivers are found.
 - `--reset --force` / `--reset -f`: unconditionally reset without health checks.

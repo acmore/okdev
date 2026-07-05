@@ -600,19 +600,19 @@ if [[ "$REMOTE_RESULT_AFTER" != "result-data" ]]; then
 fi
 echo "sync direction down verified"
 
-# --- Multiple sync mappings: disjoint folders with per-path directions ----
-# The session currently has one mapping (direction: down). Add a second
-# disjoint mapping and verify: overlapping mappings are rejected by
-# validation, the extra folder syncs in its own direction after `okdev up`
-# (config-hash driven), and the primary mapping keeps working.
+# --- Multiple sync mappings: per-path directions, nested local roots ------
+# The session currently has one mapping (direction: down). Verify remote
+# overlap is rejected, then add a second mapping whose LOCAL root nests
+# inside the primary root (managed .stignore exclusion) while the remote
+# stays disjoint on an auto-provisioned volume.
 
-echo "Testing overlapping sync mappings are rejected"
+echo "Testing overlapping remote roots are rejected"
 cp "$CFG_PATH" "$CFG_PATH.bak"
 OVERLAP_ENTRY="- local: \"$SYNC_DIR\"
         remote: /workspace
         direction: down
-      - local: \"$SYNC_DIR/nested\"
-        remote: /data/nested"
+      - local: \"$WORKDIR/elsewhere\"
+        remote: /workspace/nested"
 replace_first_in_file "$CFG_PATH" "- local: \"$SYNC_DIR\"
         remote: /workspace
         direction: down" "$OVERLAP_ENTRY"
@@ -628,12 +628,14 @@ fi
 cp "$CFG_PATH.bak" "$CFG_PATH"
 echo "overlap rejection verified"
 
-echo "Adding a second disjoint mapping (code up, results down)"
-COLLECT_DIR="$WORKDIR/collected"
+echo "Adding a second mapping nested inside the primary local root (code up, results down)"
+COLLECT_DIR="$SYNC_DIR/collected"
 mkdir -p "$COLLECT_DIR"
-# No volume YAML needed: okdev auto-provisions an emptyDir at the extra
-# mapping's remote root and mirrors it into the sidecar. Adding the mapping
-# changes the pod spec, so plain `up` must first surface drift guidance.
+# The local root nests inside the repo — okdev excludes it from the primary
+# folder via a managed .stignore block. No volume YAML needed: okdev
+# auto-provisions an emptyDir at the extra mapping's remote root and mirrors
+# it into the sidecar. Adding the mapping changes the pod spec, so plain
+# `up` must first surface drift guidance.
 MULTI_ENTRY="- local: \"$SYNC_DIR\"
         remote: /workspace
         direction: up
@@ -693,6 +695,22 @@ if [[ "$MULTI_UP_OK" != true ]]; then
   exit 1
 fi
 
+echo "multi-mapping: nested local root is excluded from the primary folder"
+# The primary folder (direction up) must NOT carry the nested subtree to
+# the pod: the managed .stignore block excludes it, so /workspace/collected
+# never appears even though local collected/ has content.
+sleep 15
+NESTED_LEAK=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'test -e /workspace/collected && echo leaked || echo clean')
+if [[ "$NESTED_LEAK" != *"clean"* ]]; then
+  echo "ERROR: nested local root leaked through the primary folder" >&2
+  exit 1
+fi
+if ! grep -q "okdev:begin managed sync excludes" "$SYNC_DIR/.stignore" || ! grep -q "^/collected$" "$SYNC_DIR/.stignore"; then
+  echo "ERROR: expected managed exclude for /collected in primary .stignore, got:" >&2
+  cat "$SYNC_DIR/.stignore" >&2
+  exit 1
+fi
+
 echo "multi-mapping: status shows both mappings with their directions"
 MULTI_DETAILS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
 if [[ "$MULTI_DETAILS" != *"-> /workspace"* ]] || [[ "$MULTI_DETAILS" != *"<- /data/results"* ]]; then
@@ -700,7 +718,47 @@ if [[ "$MULTI_DETAILS" != *"-> /workspace"* ]] || [[ "$MULTI_DETAILS" != *"<- /d
   echo "$MULTI_DETAILS" >&2
   exit 1
 fi
+if [[ "$MULTI_DETAILS" != *"excluded from primary folder (own mappings): /collected"* ]]; then
+  echo "ERROR: expected managed exclude in status --details, got:" >&2
+  echo "$MULTI_DETAILS" >&2
+  exit 1
+fi
 echo "multiple sync mappings verified"
+
+echo "Removing the nested mapping leaves a tombstone (no silent widening)"
+SINGLE_ENTRY="- local: \"$SYNC_DIR\"
+        remote: /workspace
+        direction: up"
+replace_first_in_file "$CFG_PATH" "- local: \"$SYNC_DIR\"
+        remote: /workspace
+        direction: up
+      - local: \"$COLLECT_DIR\"
+        remote: /data/results
+        direction: down" "$SINGLE_ENTRY"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --reconcile --wait-timeout 5m
+if ! grep -q "retained after mapping removal" "$SYNC_DIR/.stignore"; then
+  echo "ERROR: expected tombstone comment in primary .stignore, got:" >&2
+  cat "$SYNC_DIR/.stignore" >&2
+  exit 1
+fi
+if [[ "$(cat "$COLLECT_DIR/multi.txt" 2>/dev/null)" != "multi-result" ]]; then
+  echo "ERROR: local files of the removed mapping must be kept" >&2
+  exit 1
+fi
+echo "tombstone-probe" > "$COLLECT_DIR/tombstone-probe.txt"
+sleep 15
+TOMB_LEAK=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'test -e /workspace/collected && echo leaked || echo clean')
+if [[ "$TOMB_LEAK" != *"clean"* ]]; then
+  echo "ERROR: removed mapping's subtree leaked into the primary folder" >&2
+  exit 1
+fi
+TOMB_DETAILS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
+if [[ "$TOMB_DETAILS" != *"retained after mapping removal): /collected"* ]]; then
+  echo "ERROR: expected retained exclude in status --details, got:" >&2
+  echo "$TOMB_DETAILS" >&2
+  exit 1
+fi
+echo "nested mapping removal verified"
 
 echo "Sync direction tests completed"
 

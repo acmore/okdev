@@ -34,6 +34,11 @@ Standard repair steps:
 
 If a real file was overwritten by a bad write syncing across from the other side (e.g. an empty local file clobbered a pod-side result), recover the previous version from `.stversions/` at the sync root on the side that had the good copy (pod: `<remote workspace>/.stversions/`; local: `<local sync root>/.stversions/`). Versioning is on by default (`spec.sync.syncthing.versioningDays`, 30 days).
 
+Before treating "changes are not syncing" as a fault, check two BY-DESIGN behaviors:
+
+- **Direction**: with `direction: up` the pod's writes never reach local; with `down` local writes never reach the pod (syncthing flags them as local additions). `okdev status --details` shows each mapping's direction arrow. This is the configured contract, not a sync failure.
+- **Managed excludes**: a directory nested inside the primary sync root that belongs to (or belonged to) its own mapping is excluded from the primary folder via the managed block in the primary root's `.stignore`. `status --details` lists active excludes and tombstones retained after a mapping was removed; deleting the entry from `.stignore` is the explicit way to fold the directory back into the primary folder.
+
 Use `docs/troubleshooting.md` for current sync-specific guidance.
 
 ## Session Reuse vs Fresh Workload

@@ -348,6 +348,8 @@ func TestPrintDetailedStatusIncludesSections(t *testing.T) {
 		Sync: detailedStatusSync{
 			Engine:             "syncthing",
 			Direction:          "down",
+			ManagedExcludes:    []string{"/results"},
+			RetainedExcludes:   []string{"/old-datasets"},
 			BackgroundStatus:   "running",
 			BackgroundPID:      123,
 			ConfiguredPaths:    []string{"/tmp/repo -> /workspace"},
@@ -393,6 +395,8 @@ func TestPrintDetailedStatusIncludesSections(t *testing.T) {
 		"managed forward: running",
 		"Sync:",
 		"direction: down (<-)",
+		"excluded from primary folder (own mappings): /results",
+		"excluded from primary folder (retained after mapping removal): /old-datasets",
 		"background: running (pid 123)",
 		"conflicts: 2",
 		"./a.sync-conflict-1",

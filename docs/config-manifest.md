@@ -250,15 +250,17 @@ spec:
 ```yaml
 paths:
   - .:/workspace                     # primary: code, bidirectional
-  - local: ../collected              # sibling of the repo — local roots must
-    remote: /data/results            # not nest inside the primary mapping
+  - local: ./collected               # nested inside the repo — allowed:
+    remote: /data/results            # okdev excludes it from the primary folder
     direction: down                  # pod-generated results, pod is authority
-  - local: ../datasets
+  - local: ../datasets               # disjoint roots work too
     remote: /data/datasets
     direction: up                    # dataset push, local is authority
 ```
 
-Note the disjoint rule applies to the **local** side too: a results directory *inside* the synced repo (e.g. `./collected` under `.`) is rejected — place it next to the repo instead, or narrow the primary mapping to a subdirectory.
+**Nested local roots.** An additional mapping's local root may live *inside* the primary mapping's local root (`./collected` under `.`). okdev maintains a managed block in the primary root's `.stignore` (`// okdev:begin/end managed sync excludes`) so the subtree travels only through its own folder — the block is written before the sync daemon starts, so the exclusion is in force from the first scan. Any other local overlap (equal roots, nesting between additional mappings, an additional root containing the primary) is rejected, and **remote roots must always be disjoint**.
+
+**Removing a mapping never widens the primary folder.** When a nested mapping is removed, its folder is pruned from both syncthing instances and local files are kept, but the `.stignore` entry is *retained* as a tombstone (with an explanatory comment) — otherwise the subtree would suddenly bulk-sync through the code channel. To fold the directory back into the primary folder, delete its line from `.stignore`. `status --details` lists both active and retained excludes.
 
 **Volumes are provisioned automatically.** An additional mapping's remote root must be visible to the okdev sidecar (its syncthing serves the remote side), which means it must live on a volume — a root on the container's own filesystem cannot sync. You don't need to write any volume YAML: okdev auto-provisions an emptyDir at any extra remote root not already covered by a target-container volume mount, and mirrors the target container's mounts into the sidecar. Adding or removing a mapping changes the pod spec, so the next `okdev up` asks for `--reconcile` (pod recreate). Auto-provisioned emptyDirs don't survive pod recreation — fine for both directions (`up` re-pushes from local, `down` results are mirrored locally); mount your own PVC at the root if the data must persist, and okdev will use it instead. Sync startup still probes each extra root and fails with a clear error if it is not shared with the sidecar.
 

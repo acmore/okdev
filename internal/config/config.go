@@ -162,13 +162,14 @@ type SyncSpec struct {
 //
 //	paths:
 //	  - .:/workspace
-//	  - local: ../collected
+//	  - local: ./collected
 //	    remote: /data/results
 //	    direction: down
 //
-// Mapping roots must be pairwise disjoint on both sides (validated): note
-// "../collected" above — a results directory nested inside the primary
-// mapping's local root would be rejected.
+// Remote roots must be pairwise disjoint (validated). Local roots may nest
+// inside the PRIMARY mapping's local root (okdev excludes the child from
+// the primary folder via a managed .stignore block); any other local
+// overlap is rejected.
 //
 // Direction sets the syncthing folder types for this mapping's folder:
 //
@@ -704,23 +705,62 @@ func validateSyncPaths(paths []SyncPathSpec) error {
 			return fmt.Errorf("spec.sync.paths entry %q direction must be one of %s, %s, %s", p.Local+":"+p.Remote, SyncDirectionBi, SyncDirectionUp, SyncDirectionDown)
 		}
 	}
-	// Mappings must be disjoint on both sides. Two syncthing folders on the
-	// same root are impossible (.stignore lives in the directory, so both
-	// folders would share ignore rules), and nested roots would sync the
-	// nested subtree through two folders at once — reintroducing the
-	// overwrite hazards per-path directions exist to prevent. The check is
-	// lexical (no symlink resolution).
+	// Remote roots must be pairwise disjoint: the sidecar's syncthing would
+	// otherwise sync a subtree through two folders at once. Local roots
+	// must be disjoint too, with ONE exception: an additional mapping's
+	// local root may nest inside the PRIMARY mapping's local root — okdev
+	// excludes it from the primary folder via a managed .stignore block, so
+	// the subtree still travels through exactly one channel. Equal roots
+	// are impossible in syncthing (.stignore lives in the directory, so two
+	// folders on one root share ignore rules). Checks are lexical (no
+	// symlink resolution).
 	for i := 0; i < len(paths); i++ {
 		for j := i + 1; j < len(paths); j++ {
-			if syncRootsOverlap(paths[i].Local, paths[j].Local) {
-				return fmt.Errorf("spec.sync.paths local roots %q and %q overlap; mappings must be disjoint", paths[i].Local, paths[j].Local)
+			if syncRootsOverlap(paths[i].Local, paths[j].Local) && !(i == 0 && syncRootNestedInside(paths[0].Local, paths[j].Local)) {
+				return fmt.Errorf("spec.sync.paths local roots %q and %q overlap; only nesting inside the primary (first) mapping's local root is supported", paths[i].Local, paths[j].Local)
 			}
 			if syncRootsOverlap(paths[i].Remote, paths[j].Remote) {
-				return fmt.Errorf("spec.sync.paths remote roots %q and %q overlap; mappings must be disjoint", paths[i].Remote, paths[j].Remote)
+				return fmt.Errorf("spec.sync.paths remote roots %q and %q overlap; remote roots must be disjoint", paths[i].Remote, paths[j].Remote)
 			}
 		}
 	}
 	return nil
+}
+
+// syncRootNestedInside reports whether child is strictly inside parent
+// (equal roots do not count).
+func syncRootNestedInside(parent, child string) bool {
+	parent = filepath.Clean(strings.TrimSpace(parent))
+	child = filepath.Clean(strings.TrimSpace(child))
+	if parent == child {
+		return false
+	}
+	return pathContains(parent, child)
+}
+
+// NestedLocalSyncIgnorePatterns returns the .stignore patterns the primary
+// folder needs so additional mappings nested inside its local root travel
+// only through their own folders: one "/rel/path" pattern per nested child,
+// sorted for stable output.
+func (d *DevEnvironment) NestedLocalSyncIgnorePatterns() []string {
+	if len(d.Spec.Sync.Paths) <= 1 {
+		return nil
+	}
+	primary := filepath.Clean(strings.TrimSpace(d.Spec.Sync.Paths[0].Local))
+	var patterns []string
+	for _, p := range d.Spec.Sync.Paths[1:] {
+		child := filepath.Clean(strings.TrimSpace(p.Local))
+		if !syncRootNestedInside(primary, child) {
+			continue
+		}
+		rel, err := filepath.Rel(primary, child)
+		if err != nil {
+			continue
+		}
+		patterns = append(patterns, "/"+filepath.ToSlash(rel))
+	}
+	sort.Strings(patterns)
+	return patterns
 }
 
 // syncRootsOverlap reports whether two roots are equal or one contains the

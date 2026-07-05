@@ -195,6 +195,18 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		}
 	}
 	primary := folders[0]
+	// Exclude nested child mappings from the primary folder BEFORE the
+	// local daemon starts: the daemon's first scan must already honor the
+	// managed block, or the child subtree leaks through the primary channel
+	// once. okdev owns the daemon lifecycle, so file-before-daemon ordering
+	// is a hard guarantee here.
+	newlyRetained, err := mergeManagedSTIgnoreBlock(primary.absLocal, cfg.NestedLocalSyncIgnorePatterns())
+	if err != nil {
+		return fmt.Errorf("update primary folder ignore rules: %w", err)
+	}
+	for _, pattern := range newlyRetained {
+		fmt.Fprintf(cmd.OutOrStdout(), "Note: %s is no longer a sync mapping; its files are kept and it stays excluded from the primary folder. Delete its entry in %s to sync it via the primary folder.\n", pattern, filepath.Join(primary.absLocal, ".stignore"))
+	}
 	localHome, err := localSyncthingHome(sessionName)
 	if err != nil {
 		return err
@@ -640,6 +652,158 @@ func waitForSyncthingBootstrapComplete(ctx context.Context, sessionName string) 
 		case <-ticker.C:
 		}
 	}
+}
+
+// Managed .stignore block markers. Syncthing's comment syntax is "//"
+// ("#..." lines would be treated as patterns, and "#include" is special).
+const (
+	managedSTIgnoreBegin     = "// okdev:begin managed sync excludes"
+	managedSTIgnoreEnd       = "// okdev:end managed sync excludes"
+	managedSTIgnoreTombstone = "// okdev: retained after mapping removal - delete the next line to sync it via the primary folder"
+)
+
+// mergeManagedSTIgnoreBlock rewrites the managed block in dir's .stignore:
+// active patterns are excluded from the primary folder (nested sync
+// mappings travel only through their own folders), and previously managed
+// patterns that are no longer active become tombstones — removing a mapping
+// must never silently widen the primary folder's scope. Content outside the
+// block is preserved verbatim. Returns the newly tombstoned patterns so the
+// caller can tell the user.
+func mergeManagedSTIgnoreBlock(dir string, active []string) ([]string, error) {
+	path := filepath.Join(dir, ".stignore")
+	var lines []string
+	raw, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		lines = strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	case os.IsNotExist(err):
+		if len(active) == 0 {
+			return nil, nil
+		}
+	default:
+		return nil, err
+	}
+
+	var before, after []string
+	var existingActive, existingTombstones []string
+	inBlock, seenBlock, tombstoneNext := false, false, false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == managedSTIgnoreBegin:
+			inBlock, seenBlock = true, true
+		case trimmed == managedSTIgnoreEnd:
+			inBlock = false
+		case inBlock:
+			if trimmed == managedSTIgnoreTombstone {
+				tombstoneNext = true
+				continue
+			}
+			if trimmed == "" || strings.HasPrefix(trimmed, "//") {
+				tombstoneNext = false
+				continue
+			}
+			if tombstoneNext {
+				existingTombstones = append(existingTombstones, trimmed)
+			} else {
+				existingActive = append(existingActive, trimmed)
+			}
+			tombstoneNext = false
+		case !seenBlock:
+			before = append(before, line)
+		default:
+			after = append(after, line)
+		}
+	}
+
+	activeSet := make(map[string]bool, len(active))
+	for _, p := range active {
+		activeSet[p] = true
+	}
+	tombstoneSet := make(map[string]bool)
+	for _, p := range existingTombstones {
+		if !activeSet[p] {
+			tombstoneSet[p] = true
+		}
+	}
+	var newlyRetained []string
+	for _, p := range existingActive {
+		if !activeSet[p] && !tombstoneSet[p] {
+			tombstoneSet[p] = true
+			newlyRetained = append(newlyRetained, p)
+		}
+	}
+	tombstones := make([]string, 0, len(tombstoneSet))
+	for p := range tombstoneSet {
+		tombstones = append(tombstones, p)
+	}
+	sort.Strings(tombstones)
+	sort.Strings(newlyRetained)
+
+	var b strings.Builder
+	for _, line := range before {
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	if len(active) > 0 || len(tombstones) > 0 {
+		b.WriteString(managedSTIgnoreBegin)
+		b.WriteString("\n")
+		for _, p := range active {
+			b.WriteString(p)
+			b.WriteString("\n")
+		}
+		for _, p := range tombstones {
+			b.WriteString(managedSTIgnoreTombstone)
+			b.WriteString("\n")
+			b.WriteString(p)
+			b.WriteString("\n")
+		}
+		b.WriteString(managedSTIgnoreEnd)
+		b.WriteString("\n")
+	}
+	for _, line := range after {
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		return nil, err
+	}
+	return newlyRetained, nil
+}
+
+// readManagedSTIgnoreBlock returns the active patterns and tombstones from
+// dir's .stignore managed block (for status visibility).
+func readManagedSTIgnoreBlock(dir string) (active, tombstones []string) {
+	raw, err := os.ReadFile(filepath.Join(dir, ".stignore"))
+	if err != nil {
+		return nil, nil
+	}
+	inBlock, tombstoneNext := false, false
+	for _, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == managedSTIgnoreBegin:
+			inBlock = true
+		case trimmed == managedSTIgnoreEnd:
+			return active, tombstones
+		case inBlock:
+			if trimmed == managedSTIgnoreTombstone {
+				tombstoneNext = true
+				continue
+			}
+			if trimmed == "" || strings.HasPrefix(trimmed, "//") {
+				tombstoneNext = false
+				continue
+			}
+			if tombstoneNext {
+				tombstones = append(tombstones, trimmed)
+			} else {
+				active = append(active, trimmed)
+			}
+			tombstoneNext = false
+		}
+	}
+	return active, tombstones
 }
 
 func writeSTIgnore(localPath string, excludes []string) error {

@@ -113,8 +113,14 @@ type detailedStatusSSH struct {
 }
 
 type detailedStatusSync struct {
-	Engine             string             `json:"engine"`
-	Direction          string             `json:"direction,omitempty"`
+	Engine    string `json:"engine"`
+	Direction string `json:"direction,omitempty"`
+	// ManagedExcludes are nested child mappings excluded from the primary
+	// folder; RetainedExcludes are tombstones kept after a mapping was
+	// removed (the subtree stays out of the primary folder until the user
+	// deletes the entry from .stignore).
+	ManagedExcludes    []string           `json:"managedExcludes,omitempty"`
+	RetainedExcludes   []string           `json:"retainedExcludes,omitempty"`
 	Health             string             `json:"health,omitempty"`
 	HealthDetail       string             `json:"healthDetail,omitempty"`
 	ConfiguredPaths    []string           `json:"configuredPaths,omitempty"`
@@ -422,13 +428,19 @@ func buildDetailedSync(sessionName string, cfg *config.DevEnvironment, cfgPath s
 		engine = "syncthing"
 	}
 	direction := ""
+	var managedExcludes, retainedExcludes []string
 	if pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.EffectiveWorkspaceMountPath(cfgPath)); err == nil && len(pairs) > 0 {
 		direction = pairs[0].Direction
+		if absPrimary, absErr := filepath.Abs(pairs[0].Local); absErr == nil {
+			managedExcludes, retainedExcludes = readManagedSTIgnoreBlock(absPrimary)
+		}
 	}
 	detail := detailedStatusSync{
-		Engine:          engine,
-		Direction:       direction,
-		ConfiguredPaths: summarizeConfiguredSyncPaths(cfg, cfgPath),
+		Engine:           engine,
+		Direction:        direction,
+		ManagedExcludes:  managedExcludes,
+		RetainedExcludes: retainedExcludes,
+		ConfiguredPaths:  summarizeConfiguredSyncPaths(cfg, cfgPath),
 	}
 	if engine != "syncthing" {
 		return detail
@@ -601,6 +613,12 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 	fmt.Fprintf(w, "- engine: %s\n", detail.Sync.Engine)
 	if detail.Sync.Direction != "" {
 		fmt.Fprintf(w, "- direction: %s (%s)\n", detail.Sync.Direction, modeSymbol(detail.Sync.Direction))
+	}
+	if len(detail.Sync.ManagedExcludes) > 0 {
+		fmt.Fprintf(w, "- excluded from primary folder (own mappings): %s\n", strings.Join(detail.Sync.ManagedExcludes, ", "))
+	}
+	if len(detail.Sync.RetainedExcludes) > 0 {
+		fmt.Fprintf(w, "- excluded from primary folder (retained after mapping removal): %s\n", strings.Join(detail.Sync.RetainedExcludes, ", "))
 	}
 	if detail.Sync.BackgroundStatus != "" {
 		status := detail.Sync.BackgroundStatus

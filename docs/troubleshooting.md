@@ -22,18 +22,23 @@
 ## Sync Failures
 
 - Validate workspace path exists and is writable in the container.
-- Isolate directionality with one-way runs: `okdev sync --mode up`, `okdev sync --mode down`.
+- Isolate directionality with one-way runs: `okdev sync --mode up`, `okdev sync --mode down` (an explicit `--mode` forces every mapping for that invocation).
 - `sync.engine=syncthing` requires local Syncthing bootstrap (handled by `okdev`) and sidecar image pull success.
-- Current Syncthing implementation supports a single `local:remote` mapping.
+- Multiple mappings are supported (each is its own syncthing folder with its own `direction`); remote roots must be disjoint, and a local root nested inside the primary root is excluded from the primary folder via the managed block in its `.stignore`.
 - If you see `ErrImagePull` / GHCR `403`, use a publicly pullable `spec.sidecar.image` or adjust registry permissions.
 - If `okdev status --details` shows stale local sync state or a stale PID file, run `okdev sync --reset`. For mesh sessions, `--reset` also probes receiver health and repairs any broken mesh connections.
 - `okdev status --details` shows live mesh health when receivers exist, including per-receiver connection and sync status.
 - If the session pod was recreated, rerun `okdev up` to re-bootstrap local sync against the new pod.
 - Re-run `okdev ports` if the sync connection depends on managed SSH forwarding that may have been interrupted.
 
+Before treating "changes are not syncing" as a fault, rule out two by-design behaviors:
+
+- **Direction contract**: with `direction: up` pod-side writes never reach local; with `down` local writes never reach the pod (syncthing marks them as local additions). `okdev status --details` shows each mapping's direction arrow.
+- **Managed excludes**: a directory that belongs to (or belonged to) its own nested mapping is excluded from the primary folder. `status --details` lists active excludes and tombstones retained after a mapping was removed; delete the entry from the primary root's `.stignore` to fold the directory back into the primary folder.
+
 ## Recovering A File Overwritten By Sync
 
-The managed folder is bidirectional in steady state, so a bad write on one side (e.g. an empty file from a failed `okdev exec ... > result.txt` redirect) can propagate and overwrite the real file on the other side. Versioning (on by default, `spec.sync.syncthing.versioningDays`) archives the previous version on the side that applied the incoming change:
+With the default `direction: bi` a folder is bidirectional in steady state, so a bad write on one side (e.g. an empty file from a failed `okdev exec ... > result.txt` redirect) can propagate and overwrite the real file on the other side. (Directional mappings — `up`/`down` — are structurally immune: the non-authoritative side's writes are never propagated.) Versioning (on by default, `spec.sync.syncthing.versioningDays`) archives the previous version on the side that applied the incoming change:
 
 - On the pod: `<remote workspace>/.stversions/` (e.g. `/workspace/.stversions/`)
 - Locally: `<local sync root>/.stversions/`
