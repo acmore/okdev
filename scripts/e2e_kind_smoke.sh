@@ -496,6 +496,112 @@ if [[ "$RECONCILED_IMAGE" != "ubuntu:24.04" ]]; then
 fi
 echo "Pod reconcile verified"
 
+# --- Sync direction: per-path direction semantics on a live session --------
+# Covers the direction chain end-to-end: editing spec.sync.paths[].direction
+# restarts sync with new folder types on the next `okdev up` (config-hash
+# driven), `up` enforces one-way local->pod, `down` makes the pod the
+# authority (a stray local write cannot clobber pod results — the NCCL
+# data-loss reproduction), and reset-workspace is rejected under `down`.
+
+echo "Switching sync direction to up"
+DIRECTION_UP_ENTRY="- local: \"$SYNC_DIR\"
+        remote: /workspace
+        direction: up"
+replace_first_in_file "$CFG_PATH" "- \"$SYNC_DIR:/workspace\"" "$DIRECTION_UP_ENTRY"
+if ! grep -q "direction: up" "$CFG_PATH"; then
+  echo "ERROR: failed to rewrite sync path entry to structured form; config is:" >&2
+  cat "$CFG_PATH" >&2
+  exit 1
+fi
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m
+DETAILS_UP=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
+if [[ "$DETAILS_UP" != *"direction: up (->)"* ]]; then
+  echo "ERROR: expected status --details to show direction up, got:" >&2
+  echo "$DETAILS_UP" >&2
+  exit 1
+fi
+
+echo "up-direction: local edits still reach the pod"
+echo "up-probe-content" > "$SYNC_DIR/up-probe.txt"
+UP_SYNC_OK=false
+for i in $(seq 1 30); do
+  REMOTE_UP=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'cat /workspace/up-probe.txt 2>/dev/null' || true)
+  if [[ "$REMOTE_UP" == "up-probe-content" ]]; then
+    UP_SYNC_OK=true
+    break
+  fi
+  sleep 2
+done
+if [[ "$UP_SYNC_OK" != true ]]; then
+  echo "ERROR: local file did not reach pod in up direction" >&2
+  exit 1
+fi
+
+echo "up-direction: pod-side writes must not flow back to local"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'echo intruder > /workspace/pod-write.txt'
+sleep 15
+if [[ -f "$SYNC_DIR/pod-write.txt" ]]; then
+  echo "ERROR: pod-side write leaked back to local in up direction" >&2
+  exit 1
+fi
+echo "sync direction up verified"
+
+echo "Switching sync direction to down"
+replace_first_in_file "$CFG_PATH" "direction: up" "direction: down"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m
+DETAILS_DOWN=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
+if [[ "$DETAILS_DOWN" != *"direction: down (<-)"* ]]; then
+  echo "ERROR: expected status --details to show direction down, got:" >&2
+  echo "$DETAILS_DOWN" >&2
+  exit 1
+fi
+
+echo "down-direction: pod-generated results flow back to local"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'echo result-data > /workspace/result.txt'
+DOWN_SYNC_OK=false
+for i in $(seq 1 30); do
+  if [[ "$(cat "$SYNC_DIR/result.txt" 2>/dev/null)" == "result-data" ]]; then
+    DOWN_SYNC_OK=true
+    break
+  fi
+  sleep 2
+done
+if [[ "$DOWN_SYNC_OK" != true ]]; then
+  echo "ERROR: pod result did not flow back to local in down direction" >&2
+  exit 1
+fi
+
+echo "down-direction: a stray local write cannot clobber the pod's result"
+# Reproduces the reported incident: a failed local redirect truncates the
+# synced copy. With the pod as authority the empty file must never
+# propagate; the pod-side result stays intact.
+: > "$SYNC_DIR/result.txt"
+sleep 15
+REMOTE_RESULT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'cat /workspace/result.txt')
+if [[ "$REMOTE_RESULT" != "result-data" ]]; then
+  echo "ERROR: pod-side result was clobbered by a local write in down direction, got '$REMOTE_RESULT'" >&2
+  exit 1
+fi
+
+echo "down-direction: --reset-workspace is rejected"
+set +e
+RESET_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --reset-workspace --wait-timeout 5m 2>&1)
+RESET_STATUS=$?
+set -e
+if [[ "$RESET_STATUS" -eq 0 ]] || [[ "$RESET_OUTPUT" != *"conflicts with sync direction"* ]]; then
+  echo "ERROR: expected --reset-workspace to be rejected under direction down (status=$RESET_STATUS)" >&2
+  echo "$RESET_OUTPUT" >&2
+  exit 1
+fi
+REMOTE_RESULT_AFTER=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'cat /workspace/result.txt')
+if [[ "$REMOTE_RESULT_AFTER" != "result-data" ]]; then
+  echo "ERROR: remote result damaged by rejected reset-workspace, got '$REMOTE_RESULT_AFTER'" >&2
+  exit 1
+fi
+echo "sync direction down verified"
+
+echo "Sync direction tests completed"
+
 # --- Detached jobs: runtime-volume logs, process-group stop, sidecar -------
 # fallback. Covers the detach chain end-to-end on a real pod: logs land on
 # the shared /var/okdev volume, `jobs stop` kills the whole process tree
