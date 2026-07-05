@@ -1079,12 +1079,8 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, str
 	}
 	configHash := ""
 	hasConfigState := false
-	if len(state.syncPairs) == 1 {
-		localPath, err := filepath.Abs(state.syncPairs[0].Local)
-		if err != nil {
-			return "", "", "", false, fmt.Errorf("resolve sync path: %w", err)
-		}
-		configHash = syncthingSessionConfigHash(state.command.cfg, localPath, state.syncPairs[0].Remote)
+	if len(state.syncPairs) > 0 {
+		configHash = syncthingSessionConfigHash(state.command.cfg, state.syncPairs)
 		stored, err := loadSyncthingTargetSessionState(state.command.sessionName)
 		if err != nil {
 			return "", "", "", false, fmt.Errorf("load syncthing config state: %w", err)
@@ -1099,18 +1095,18 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, str
 		}
 		configChanged = changed
 	}
-	direction := config.SyncDirectionBi
+	primaryDirection := config.SyncDirectionBi
 	if len(state.syncPairs) > 0 {
-		direction = state.syncPairs[0].Direction
+		primaryDirection = state.syncPairs[0].Direction
 	}
 	active := syncthingSessionActive(state.command.sessionName)
 	restartRequired := state.flags.resetWorkspace || configChanged || !active
-	startMode = syncStartMode(direction, state.flags.resetWorkspace, targetReset, hasConfigState, configChanged, active)
+	startMode = syncStartMode(state.flags.resetWorkspace, targetReset, hasConfigState, configChanged, active)
 	// Signal waitForInitialSync to probe the remote folder type for an
 	// incomplete bootstrap, reusing the port-forward it already opens. Only
-	// meaningful for bi: directional folders never run the two-phase
-	// bootstrap, so there is nothing to resume.
-	bootstrapResume = len(state.syncPairs) == 1 && hasConfigState && !state.flags.resetWorkspace && !targetReset && direction == config.SyncDirectionBi
+	// meaningful when the primary folder is bi: directional folders never
+	// run the two-phase bootstrap, so there is nothing to resume.
+	bootstrapResume = len(state.syncPairs) == 1 && hasConfigState && !state.flags.resetWorkspace && !targetReset && primaryDirection == config.SyncDirectionBi
 	if restartRequired {
 		if err := refreshSyncthingSessionProcesses(state.command.sessionName); err != nil {
 			return "", "", "", false, fmt.Errorf("refresh local syncthing session state: %w", err)
@@ -1118,22 +1114,28 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, str
 	}
 
 	if state.flags.resetWorkspace {
-		if len(state.syncPairs) != 1 {
-			return "", "", "", false, fmt.Errorf("--reset-workspace requires exactly one sync path mapping, got %d", len(state.syncPairs))
+		if len(state.syncPairs) == 0 {
+			return "", "", "", false, fmt.Errorf("--reset-workspace requires a sync path mapping")
 		}
 		state.ui.stepRun("sync", "resetting remote workspace")
 		if err := resetSyncthingSessionState(state.command.sessionName); err != nil {
 			return "", "", "", false, fmt.Errorf("reset sync state: %w", err)
 		}
+		// Only the primary mapping's remote is cleared; additional mappings
+		// keep their data (they typically carry datasets or results).
 		if err := resetRemoteWorkspace(state.ctx, state.command.kube, state.command.namespace, target.PodName, state.syncPairs[0].Remote, state.command.cfg.Spec.Sync.PreservePaths); err != nil {
 			return "", "", "", false, fmt.Errorf("clear remote workspace: %w", err)
 		}
-		state.ui.stepDone("sync", "remote workspace cleared")
+		if len(state.syncPairs) > 1 {
+			state.ui.stepDone("sync", fmt.Sprintf("remote workspace cleared (primary %s only; %d additional mapping(s) untouched)", state.syncPairs[0].Remote, len(state.syncPairs)-1))
+		} else {
+			state.ui.stepDone("sync", "remote workspace cleared")
+		}
 	}
 
 	if !restartRequired {
-		modeSym = modeSymbol(startMode)
-		syncPathSummary := syncPairsSummary(state.syncPairs, modeSym)
+		modeSym = upSyncModeSymbol(state.syncPairs)
+		syncPathSummary := syncPairsSummary(state.syncPairs)
 		summary = "already active (" + modeSym + ")"
 		state.ui.stepDone("sync", fmt.Sprintf("already active (%s), %s", modeSym, syncPathSummary))
 		return summary, modeSym, startMode, bootstrapResume, nil
@@ -1144,8 +1146,8 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, str
 	if err != nil {
 		return "", "", "", false, fmt.Errorf("start syncthing background sync: %w", err)
 	}
-	modeSym = modeSymbol(startMode)
-	syncPathSummary := syncPairsSummary(state.syncPairs, modeSym)
+	modeSym = upSyncModeSymbol(state.syncPairs)
+	syncPathSummary := syncPairsSummary(state.syncPairs)
 	if started {
 		summary = "active (" + modeSym + ")"
 		state.ui.stepDone("sync", fmt.Sprintf("active (%s), %s, logs: %s", modeSym, syncPathSummary, logPath))
@@ -1787,7 +1789,7 @@ func (u *upUI) printReadyCard(sessionName, namespace, pod, sshSummary, syncSumma
 	if len(syncPairs) > 0 {
 		fmt.Fprintln(u.out, "sync paths:")
 		for _, pair := range syncPairs {
-			fmt.Fprintf(u.out, "- %s %s %s\n", displayLocalSyncPath(pair.Local), syncArrow(syncModeSymbol), pair.Remote)
+			fmt.Fprintf(u.out, "- %s %s %s\n", displayLocalSyncPath(pair.Local), syncArrow(pairModeSymbol(pair)), pair.Remote)
 		}
 	}
 	if len(ports) > 0 {
@@ -1804,15 +1806,36 @@ func (u *upUI) printReadyCard(sessionName, namespace, pod, sshSummary, syncSumma
 	fmt.Fprintln(u.out, "- okdev down")
 }
 
-func syncPairsSummary(pairs []syncengine.Pair, syncModeSymbol string) string {
+// pairModeSymbol renders a mapping's direction arrow, defaulting the empty
+// direction to bidirectional (ParsePairs normalizes it, but callers may
+// construct pairs directly).
+func pairModeSymbol(pair syncengine.Pair) string {
+	direction := pair.Direction
+	if direction == "" {
+		direction = config.SyncDirectionBi
+	}
+	return modeSymbol(direction)
+}
+
+func syncPairsSummary(pairs []syncengine.Pair) string {
 	if len(pairs) == 0 {
 		return "no paths"
 	}
 	if len(pairs) == 1 {
 		pair := pairs[0]
-		return fmt.Sprintf("%s %s %s", displayLocalSyncPath(pair.Local), syncArrow(syncModeSymbol), pair.Remote)
+		return fmt.Sprintf("%s %s %s", displayLocalSyncPath(pair.Local), syncArrow(pairModeSymbol(pair)), pair.Remote)
 	}
 	return fmt.Sprintf("%d paths", len(pairs))
+}
+
+// upSyncModeSymbol renders the ready-card summary arrow: a single mapping
+// shows its own direction; with multiple mappings the per-path lines carry
+// the direction arrows and the summary stays bidirectional.
+func upSyncModeSymbol(pairs []syncengine.Pair) string {
+	if len(pairs) == 1 {
+		return pairModeSymbol(pairs[0])
+	}
+	return modeSymbol("bi")
 }
 
 func displayLocalSyncPath(path string) string {
@@ -1845,15 +1868,12 @@ func modeSymbol(mode string) string {
 	}
 }
 
-func syncStartMode(direction string, resetWorkspace, targetReset, hasConfigState, configChanged, active bool) string {
-	// A directional folder never needs the two-phase bootstrap: that
-	// protocol exists to protect the remote from the local side's initial
-	// emptiness before flipping both sides to sendreceive. With up/down one
-	// side is already sendonly, so the final folder types are safe from the
-	// first start.
-	if direction == config.SyncDirectionUp || direction == config.SyncDirectionDown {
-		return direction
-	}
+// syncStartMode picks how `okdev up` starts sync: "two-phase" bootstraps
+// fresh or reset sessions (applied per folder to bi mappings only —
+// directional folders never need the bootstrap since one side is already
+// sendonly), and the empty mode means every mapping follows its configured
+// direction.
+func syncStartMode(resetWorkspace, targetReset, hasConfigState, configChanged, active bool) string {
 	switch {
 	case resetWorkspace:
 		return "two-phase"
@@ -1861,12 +1881,8 @@ func syncStartMode(direction string, resetWorkspace, targetReset, hasConfigState
 		return "two-phase"
 	case !hasConfigState:
 		return "two-phase"
-	case configChanged:
-		return "bi"
-	case !active:
-		return "bi"
 	default:
-		return "bi"
+		return ""
 	}
 }
 

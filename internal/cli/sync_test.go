@@ -13,6 +13,7 @@ import (
 
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
+	syncengine "github.com/acmore/okdev/internal/sync"
 )
 
 func stubPkill(t *testing.T) {
@@ -405,50 +406,60 @@ func TestSyncthingConfigChanged(t *testing.T) {
 func TestSyncthingSessionConfigHashTracksSyncSettings(t *testing.T) {
 	cfg := &config.DevEnvironment{}
 	cfg.SetDefaults()
-	hashA := syncthingSessionConfigHash(cfg, "/tmp/local", "/workspace")
+	pairs := []syncengine.Pair{{Local: "/tmp/local", Remote: "/workspace", Direction: "bi"}}
+	hashA := syncthingSessionConfigHash(cfg, pairs)
 	if hashA == "" {
 		t.Fatal("expected non-empty sync config hash")
 	}
 
 	cfg.Spec.Sync.Syncthing.WatcherDelaySeconds = 7
-	hashB := syncthingSessionConfigHash(cfg, "/tmp/local", "/workspace")
+	hashB := syncthingSessionConfigHash(cfg, pairs)
 	if hashA == hashB {
 		t.Fatal("expected watcher delay change to affect sync config hash")
 	}
 }
 
-func TestSyncthingSessionConfigHashTracksDirection(t *testing.T) {
+func TestSyncthingSessionConfigHashTracksDirectionAndPairs(t *testing.T) {
 	cfg := &config.DevEnvironment{}
 	cfg.SetDefaults()
-	base := syncthingSessionConfigHash(cfg, "/tmp/local", "/workspace")
+	base := syncthingSessionConfigHash(cfg, []syncengine.Pair{{Local: "/tmp/local", Remote: "/workspace", Direction: "bi"}})
 
 	// Explicit "bi" hashes identically to the legacy empty value so
 	// upgrading okdev (or spelling out the default) does not force a sync
 	// restart on existing sessions.
-	cfg.Spec.Sync.Paths = []config.SyncPathSpec{{Local: ".", Remote: "/workspace", Direction: "bi"}}
-	if got := syncthingSessionConfigHash(cfg, "/tmp/local", "/workspace"); got != base {
-		t.Fatal("explicit bi direction must hash like the legacy default")
+	if got := syncthingSessionConfigHash(cfg, []syncengine.Pair{{Local: "/tmp/local", Remote: "/workspace", Direction: "bi"}}); got != base {
+		t.Fatal("bi direction must hash stably")
 	}
 
-	cfg.Spec.Sync.Paths = []config.SyncPathSpec{{Local: ".", Remote: "/workspace", Direction: "down"}}
-	if got := syncthingSessionConfigHash(cfg, "/tmp/local", "/workspace"); got == base {
+	if got := syncthingSessionConfigHash(cfg, []syncengine.Pair{{Local: "/tmp/local", Remote: "/workspace", Direction: "down"}}); got == base {
 		t.Fatal("expected direction change to affect sync config hash")
+	}
+
+	// Adding a second mapping changes the hash so the next up restarts
+	// sync and configures the new folder.
+	multi := []syncengine.Pair{
+		{Local: "/tmp/local", Remote: "/workspace", Direction: "bi"},
+		{Local: "/tmp/results", Remote: "/data/results", Direction: "down"},
+	}
+	if got := syncthingSessionConfigHash(cfg, multi); got == base {
+		t.Fatal("expected extra mapping to affect sync config hash")
 	}
 }
 
 func TestResolveSyncMode(t *testing.T) {
-	// Explicit --mode wins over the configured direction.
-	if got := resolveSyncMode(true, "up", "down"); got != "up" {
+	// Explicit --mode forces all mappings.
+	if got := resolveSyncMode(true, "up"); got != "up" {
 		t.Fatalf("explicit flag must win, got %q", got)
 	}
-	// Without the flag, spec.sync.direction applies.
-	if got := resolveSyncMode(false, "bi", "down"); got != "down" {
-		t.Fatalf("config direction must apply, got %q", got)
+	// Without the flag, the empty mode means each mapping follows its own
+	// configured direction.
+	if got := resolveSyncMode(false, "bi"); got != "" {
+		t.Fatalf("expected per-path mode, got %q", got)
 	}
 }
 
 func TestValidateSyncMode(t *testing.T) {
-	for _, ok := range []string{"up", "down", "bi", "two-phase"} {
+	for _, ok := range []string{"", "up", "down", "bi", "two-phase"} {
 		if err := validateSyncMode(ok); err != nil {
 			t.Fatalf("mode %q should validate, got %v", ok, err)
 		}

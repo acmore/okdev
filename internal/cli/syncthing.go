@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
@@ -71,6 +72,7 @@ var (
 	markSyncthingBootstrapCompleteFn    = markSyncthingBootstrapComplete
 	runTwoPhaseInitialSyncFn            = runTwoPhaseInitialSync
 	configureSyncthingPeerFn            = configureSyncthingPeer
+	pruneManagedSessionFoldersFn        = pruneManagedSessionFolders
 	saveSyncthingConfigHashFn           = saveSyncthingConfigHash
 	stopOwnedLocalSyncthingFn           = stopOwnedLocalSyncthing
 	runSyncHealthLoopFn                 = runSyncHealthLoop
@@ -78,9 +80,63 @@ var (
 	waitForSyncthingBootstrapCompleteFn = waitForSyncthingBootstrapComplete
 )
 
+// syncFolder is one resolved syncthing folder for the session: a sync pair
+// plus its stable folder ID and the mode it should run in this start.
+type syncFolder struct {
+	id       string
+	absLocal string
+	remote   string
+	mode     string // bi | up | down
+	twoPhase bool   // run the two-phase bootstrap for this folder
+}
+
+// resolveSyncFolders maps pairs to folders. mode semantics: "" follows each
+// pair's configured direction; "up"/"down"/"bi" force every folder;
+// "two-phase" bootstraps bi folders (directional folders never need the
+// bootstrap — one side is already sendonly).
+func resolveSyncFolders(sessionName, mode string, pairs []syncengine.Pair) ([]syncFolder, error) {
+	folders := make([]syncFolder, 0, len(pairs))
+	for i, pair := range pairs {
+		absLocal, err := filepath.Abs(pair.Local)
+		if err != nil {
+			return nil, err
+		}
+		// ParsePairs normalizes Direction, but be defensive for callers
+		// that construct pairs directly.
+		folderMode := pair.Direction
+		if folderMode == "" {
+			folderMode = config.SyncDirectionBi
+		}
+		if mode != "" && mode != "two-phase" {
+			folderMode = mode
+		}
+		folders = append(folders, syncFolder{
+			id:       sessionSyncFolderID(sessionName, i, pair),
+			absLocal: absLocal,
+			remote:   pair.Remote,
+			mode:     folderMode,
+			twoPhase: mode == "two-phase" && folderMode == "bi",
+		})
+	}
+	return folders, nil
+}
+
+// sessionSyncFolderID returns the syncthing folder ID for a pair. The first
+// (primary) mapping keeps the legacy "okdev-<session>" ID so existing
+// sessions and the mesh keep working; additional mappings get a stable
+// suffix derived from the pair itself, so reordering non-primary entries
+// does not reset their folders.
+func sessionSyncFolderID(sessionName string, index int, pair syncengine.Pair) string {
+	if index == 0 {
+		return "okdev-" + sessionName
+	}
+	sum := sha256.Sum256([]byte(pair.Local + "\x00" + pair.Remote))
+	return fmt.Sprintf("okdev-%s-%s", sessionName, hex.EncodeToString(sum[:4]))
+}
+
 func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironment, namespace, sessionName, mode string, pairs []syncengine.Pair, k *kube.Client) error {
-	if len(pairs) != 1 {
-		return fmt.Errorf("syncthing engine currently supports exactly one sync path mapping")
+	if len(pairs) == 0 {
+		return fmt.Errorf("no sync path mappings configured")
 	}
 
 	bootstrapCtx, cancelBootstrap, runtimeCtx := syncthingBootstrapAndRuntimeContexts(cmd.Context())
@@ -111,20 +167,22 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		}
 	}
 
-	pair := pairs[0]
-	absLocal, err := filepath.Abs(pair.Local)
+	folders, err := resolveSyncFolders(sessionName, mode, pairs)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(absLocal, 0o755); err != nil {
-		return err
+	for _, folder := range folders {
+		if err := os.MkdirAll(folder.absLocal, 0o755); err != nil {
+			return err
+		}
+		if err := writeLocalSTIgnore(folder.absLocal); err != nil {
+			return err
+		}
+		if _, err := execInSyncthingContainerFn(bootstrapCtx, k, namespace, pod, fmt.Sprintf("mkdir -p %s", syncengine.ShellEscape(folder.remote))); err != nil {
+			return err
+		}
 	}
-	if err := writeLocalSTIgnore(absLocal); err != nil {
-		return err
-	}
-	if _, err := execInSyncthingContainerFn(bootstrapCtx, k, namespace, pod, fmt.Sprintf("mkdir -p %s", syncengine.ShellEscape(pair.Remote))); err != nil {
-		return err
-	}
+	primary := folders[0]
 	localHome, err := localSyncthingHome(sessionName)
 	if err != nil {
 		return err
@@ -163,7 +221,6 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		return err
 	}
 
-	folderID := "okdev-" + sessionName
 	syncCfg := syncthingSyncConfig{
 		rescanInterval: cfg.Spec.Sync.Syncthing.RescanIntervalSeconds,
 		watcherDelay:   cfg.Spec.Sync.Syncthing.WatcherDelaySeconds,
@@ -180,41 +237,69 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		return fmt.Errorf("mark syncthing ready: %w", err)
 	}
 
-	if mode == "two-phase" {
-		// The bootstrap context has a short timeout (syncthingBootstrapTimeout).
-		// Two-phase initial sync may take much longer, so use a dedicated context.
-		twoPhaseCtx, twoPhaseCancel := context.WithTimeout(runtimeCtx, initialSyncTimeout)
-		defer twoPhaseCancel()
-		if err := runTwoPhaseInitialSyncFn(twoPhaseCtx, cmd.OutOrStdout(), localBase, localKey, localID, remoteBase, remoteKey, remoteID, localRemotePeerAddr, folderID, absLocal, pair.Remote, syncCfg); err != nil {
-			return fmt.Errorf("two-phase initial sync: %w", err)
+	ranTwoPhase := false
+	for _, folder := range folders {
+		if folder.twoPhase {
+			// The bootstrap context has a short timeout
+			// (syncthingBootstrapTimeout). Two-phase initial sync may take
+			// much longer, so use a dedicated context.
+			twoPhaseCtx, twoPhaseCancel := context.WithTimeout(runtimeCtx, initialSyncTimeout)
+			err := runTwoPhaseInitialSyncFn(twoPhaseCtx, cmd.OutOrStdout(), localBase, localKey, localID, remoteBase, remoteKey, remoteID, localRemotePeerAddr, folder.id, folder.absLocal, folder.remote, syncCfg)
+			twoPhaseCancel()
+			if err != nil {
+				return fmt.Errorf("two-phase initial sync (%s): %w", folder.id, err)
+			}
+			ranTwoPhase = true
+			continue
 		}
+		folderTypeLocal, folderTypeRemote := folderTypesForMode(folder.mode)
+		if err := configureSyncthingPeerFn(bootstrapCtx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folder.id, folder.absLocal, folderTypeLocal, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression, syncCfg.versioningDays); err != nil {
+			return fmt.Errorf("configure local syncthing (%s): %w", folder.id, err)
+		}
+		if err := configureSyncthingPeerFn(bootstrapCtx, remoteBase, remoteKey, remoteID, localID, "", folder.id, folder.remote, folderTypeRemote, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression, syncCfg.versioningDays); err != nil {
+			return fmt.Errorf("configure remote syncthing (%s): %w", folder.id, err)
+		}
+	}
+	if ranTwoPhase {
 		if err := markSyncthingBootstrapCompleteFn(sessionName); err != nil {
 			return fmt.Errorf("mark syncthing bootstrap complete: %w", err)
 		}
-		mode = "bi"
-	} else {
-		folderTypeLocal, folderTypeRemote := folderTypesForMode(mode)
-		if err := configureSyncthingPeerFn(bootstrapCtx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folderID, absLocal, folderTypeLocal, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression, syncCfg.versioningDays); err != nil {
-			return fmt.Errorf("configure local syncthing: %w", err)
-		}
-		if err := configureSyncthingPeerFn(bootstrapCtx, remoteBase, remoteKey, remoteID, localID, "", folderID, pair.Remote, folderTypeRemote, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression, syncCfg.versioningDays); err != nil {
-			return fmt.Errorf("configure remote syncthing: %w", err)
-		}
 	}
 
-	if err := saveSyncthingConfigHashFn(sessionName, syncthingSessionConfigHash(cfg, absLocal, pair.Remote)); err != nil {
+	// Mappings removed from the config leave their syncthing folders behind
+	// on both sides, silently continuing to sync; drop managed folders that
+	// no longer correspond to a configured pair.
+	keepFolderIDs := make(map[string]bool, len(folders))
+	for _, folder := range folders {
+		keepFolderIDs[folder.id] = true
+	}
+	if err := pruneManagedSessionFoldersFn(bootstrapCtx, localBase, localKey, sessionName, keepFolderIDs); err != nil {
+		return fmt.Errorf("prune stale local sync folders: %w", err)
+	}
+	if err := pruneManagedSessionFoldersFn(bootstrapCtx, remoteBase, remoteKey, sessionName, keepFolderIDs); err != nil {
+		return fmt.Errorf("prune stale remote sync folders: %w", err)
+	}
+
+	if err := saveSyncthingConfigHashFn(sessionName, syncthingSessionConfigHash(cfg, pairs)); err != nil {
 		return fmt.Errorf("persist syncthing config state: %w", err)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync active (%s) for session %s\n", mode, sessionName)
-	fmt.Fprintf(cmd.OutOrStdout(), "Local folder: %s\n", absLocal)
-	fmt.Fprintf(cmd.OutOrStdout(), "Remote folder: %s\n", pair.Remote)
+	activeLabel := "per-path"
+	if mode != "" && mode != "two-phase" {
+		activeLabel = mode
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync active (%s) for session %s\n", activeLabel, sessionName)
+	for _, folder := range folders {
+		fmt.Fprintf(cmd.OutOrStdout(), "Folder %s: %s %s %s\n", folder.id, folder.absLocal, syncArrow(modeSymbol(folder.mode)), folder.remote)
+	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Local binary: %s\n", localBinary)
 	fmt.Fprintln(cmd.OutOrStdout(), "Press Ctrl+C to stop sync tunnel and local syncthing.")
 
 	progressCtx, stopProgress := context.WithCancel(context.Background())
 	defer stopProgress()
-	go runSyncthingProgressReporter(progressCtx, cmd.OutOrStdout(), localBase, localKey, remoteBase, remoteKey, folderID, localID, remoteID, absLocal)
+	// Progress reporting covers the primary folder; additional folders
+	// converge in the background and surface through sync health/status.
+	go runSyncthingProgressReporter(progressCtx, cmd.OutOrStdout(), localBase, localKey, remoteBase, remoteKey, primary.id, localID, remoteID, primary.absLocal)
 
 	// The detached sync child should survive the parent CLI process exiting.
 	signal.Ignore(syscall.SIGHUP)
@@ -2047,6 +2132,57 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 	return nil
 }
 
+// pruneManagedSessionFolders removes this session's managed folders that are
+// not in keep from a syncthing instance's config. Only IDs of the exact
+// managed shapes "okdev-<session>" and "okdev-<session>-<8 hex>" are
+// touched, so user-defined folders (and other sessions' folders, whose
+// session name would make a longer prefix) are never removed.
+func pruneManagedSessionFolders(ctx context.Context, base, key, sessionName string, keep map[string]bool) error {
+	cfg, err := syncthingGetConfig(ctx, base, key)
+	if err != nil {
+		return err
+	}
+	changed, err := pruneManagedFoldersFromConfig(cfg, sessionName, keep)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return nil
+	}
+	return syncthingSetConfig(ctx, base, key, cfg)
+}
+
+// pruneManagedFoldersFromConfig drops this session's managed folders that
+// are not in keep, mutating cfg in place; it reports whether anything
+// changed.
+func pruneManagedFoldersFromConfig(cfg map[string]any, sessionName string, keep map[string]bool) (bool, error) {
+	folders, err := syncthingObjectArray(cfg, "folders")
+	if err != nil {
+		return false, err
+	}
+	primaryID := "okdev-" + sessionName
+	secondaryRe := regexp.MustCompile("^" + regexp.QuoteMeta(primaryID) + "-[0-9a-f]{8}$")
+	changed := false
+	out := make([]any, 0, len(folders))
+	for _, f := range folders {
+		fm, err := syncthingObjectMap(f, "folders")
+		if err != nil {
+			return false, err
+		}
+		id := asString(fm["id"])
+		managed := id == primaryID || secondaryRe.MatchString(id)
+		if managed && !keep[id] {
+			changed = true
+			continue
+		}
+		out = append(out, fm)
+	}
+	if changed {
+		cfg["folders"] = out
+	}
+	return changed, nil
+}
+
 func syncthingMergeFolderDevices(existingFolderDevices, devices any, selfID, peerID string) ([]any, error) {
 	deviceEntries, err := syncthingObjectArray(map[string]any{"devices": devices}, "devices")
 	if err != nil {
@@ -2468,31 +2604,44 @@ type syncthingSessionConfigState struct {
 	Engine     string `json:"engine"`
 	LocalPath  string `json:"localPath"`
 	RemotePath string `json:"remotePath"`
-	// Direction is part of the hash so editing spec.sync.direction makes
+	// Direction is part of the hash so editing a mapping's direction makes
 	// the next `okdev up` restart sync with the new folder types. The
-	// default "bi" is hashed as the empty legacy value to avoid a
-	// restart on upgrade for existing sessions.
-	Direction             string `json:"direction,omitempty"`
-	WatcherDelaySeconds   int    `json:"watcherDelaySeconds,omitempty"`
-	RescanIntervalSeconds int    `json:"rescanIntervalSeconds,omitempty"`
-	RelaysEnabled         bool   `json:"relaysEnabled,omitempty"`
-	Compression           bool   `json:"compression,omitempty"`
-	VersioningDays        int    `json:"versioningDays,omitempty"`
+	// default "bi" is hashed as the empty legacy value, and ExtraPairs is
+	// omitted for single-mapping sessions, so upgrading okdev does not
+	// force a restart on existing sessions.
+	Direction             string   `json:"direction,omitempty"`
+	ExtraPairs            []string `json:"extraPairs,omitempty"`
+	WatcherDelaySeconds   int      `json:"watcherDelaySeconds,omitempty"`
+	RescanIntervalSeconds int      `json:"rescanIntervalSeconds,omitempty"`
+	RelaysEnabled         bool     `json:"relaysEnabled,omitempty"`
+	Compression           bool     `json:"compression,omitempty"`
+	VersioningDays        int      `json:"versioningDays,omitempty"`
 }
 
-func syncthingSessionConfigHash(cfg *config.DevEnvironment, localPath, remotePath string) string {
-	if cfg == nil {
+func syncthingSessionConfigHash(cfg *config.DevEnvironment, pairs []syncengine.Pair) string {
+	if cfg == nil || len(pairs) == 0 {
 		return ""
 	}
+	absLocal := func(p syncengine.Pair) string {
+		if abs, err := filepath.Abs(p.Local); err == nil {
+			return abs
+		}
+		return p.Local
+	}
 	direction := ""
-	if pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, remotePath); err == nil && len(pairs) > 0 && pairs[0].Direction != config.SyncDirectionBi {
+	if pairs[0].Direction != config.SyncDirectionBi {
 		direction = pairs[0].Direction
+	}
+	var extra []string
+	for _, p := range pairs[1:] {
+		extra = append(extra, absLocal(p)+"\x00"+p.Remote+"\x00"+p.Direction)
 	}
 	state := syncthingSessionConfigState{
 		Engine:                strings.TrimSpace(cfg.Spec.Sync.Engine),
-		LocalPath:             localPath,
-		RemotePath:            remotePath,
+		LocalPath:             absLocal(pairs[0]),
+		RemotePath:            pairs[0].Remote,
 		Direction:             direction,
+		ExtraPairs:            extra,
 		WatcherDelaySeconds:   cfg.Spec.Sync.Syncthing.WatcherDelaySeconds,
 		RescanIntervalSeconds: cfg.Spec.Sync.Syncthing.RescanIntervalSeconds,
 		RelaysEnabled:         cfg.Spec.Sync.Syncthing.RelaysEnabled,

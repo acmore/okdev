@@ -600,6 +600,93 @@ if [[ "$REMOTE_RESULT_AFTER" != "result-data" ]]; then
 fi
 echo "sync direction down verified"
 
+# --- Multiple sync mappings: disjoint folders with per-path directions ----
+# The session currently has one mapping (direction: down). Add a second
+# disjoint mapping and verify: overlapping mappings are rejected by
+# validation, the extra folder syncs in its own direction after `okdev up`
+# (config-hash driven), and the primary mapping keeps working.
+
+echo "Testing overlapping sync mappings are rejected"
+cp "$CFG_PATH" "$CFG_PATH.bak"
+OVERLAP_ENTRY="- local: \"$SYNC_DIR\"
+        remote: /workspace
+        direction: down
+      - local: \"$SYNC_DIR/nested\"
+        remote: /data/nested"
+replace_first_in_file "$CFG_PATH" "- local: \"$SYNC_DIR\"
+        remote: /workspace
+        direction: down" "$OVERLAP_ENTRY"
+set +e
+VALIDATE_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" validate 2>&1)
+VALIDATE_STATUS=$?
+set -e
+if [[ "$VALIDATE_STATUS" -eq 0 ]] || [[ "$VALIDATE_OUTPUT" != *"overlap"* ]]; then
+  echo "ERROR: expected okdev validate to reject overlapping mappings (status=$VALIDATE_STATUS)" >&2
+  echo "$VALIDATE_OUTPUT" >&2
+  exit 1
+fi
+cp "$CFG_PATH.bak" "$CFG_PATH"
+echo "overlap rejection verified"
+
+echo "Adding a second disjoint mapping (code up, results down)"
+COLLECT_DIR="$WORKDIR/collected"
+mkdir -p "$COLLECT_DIR"
+MULTI_ENTRY="- local: \"$SYNC_DIR\"
+        remote: /workspace
+        direction: up
+      - local: \"$COLLECT_DIR\"
+        remote: /data/results
+        direction: down"
+replace_first_in_file "$CFG_PATH" "- local: \"$SYNC_DIR\"
+        remote: /workspace
+        direction: down" "$MULTI_ENTRY"
+if ! grep -q "/data/results" "$CFG_PATH"; then
+  echo "ERROR: failed to add second sync mapping; config is:" >&2
+  cat "$CFG_PATH" >&2
+  exit 1
+fi
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m
+
+echo "multi-mapping: results folder flows pod -> local"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'mkdir -p /data/results && echo multi-result > /data/results/multi.txt'
+MULTI_DOWN_OK=false
+for i in $(seq 1 30); do
+  if [[ "$(cat "$COLLECT_DIR/multi.txt" 2>/dev/null)" == "multi-result" ]]; then
+    MULTI_DOWN_OK=true
+    break
+  fi
+  sleep 2
+done
+if [[ "$MULTI_DOWN_OK" != true ]]; then
+  echo "ERROR: second mapping did not sync pod result to local" >&2
+  exit 1
+fi
+
+echo "multi-mapping: primary code folder still flows local -> pod"
+echo "multi-code-probe" > "$SYNC_DIR/multi-code.txt"
+MULTI_UP_OK=false
+for i in $(seq 1 30); do
+  MULTI_REMOTE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'cat /workspace/multi-code.txt 2>/dev/null' || true)
+  if [[ "$MULTI_REMOTE" == "multi-code-probe" ]]; then
+    MULTI_UP_OK=true
+    break
+  fi
+  sleep 2
+done
+if [[ "$MULTI_UP_OK" != true ]]; then
+  echo "ERROR: primary mapping stopped syncing local code to pod" >&2
+  exit 1
+fi
+
+echo "multi-mapping: status shows both mappings with their directions"
+MULTI_DETAILS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
+if [[ "$MULTI_DETAILS" != *"-> /workspace"* ]] || [[ "$MULTI_DETAILS" != *"<- /data/results"* ]]; then
+  echo "ERROR: expected per-path direction arrows in status --details, got:" >&2
+  echo "$MULTI_DETAILS" >&2
+  exit 1
+fi
+echo "multiple sync mappings verified"
+
 echo "Sync direction tests completed"
 
 # --- Detached jobs: runtime-volume logs, process-group stop, sidecar -------

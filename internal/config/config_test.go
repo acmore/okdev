@@ -422,11 +422,47 @@ func TestValidateRejectsInvalidSyncPath(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsSyncthingMultiplePaths(t *testing.T) {
+func TestValidateAllowsDisjointMultiplePaths(t *testing.T) {
 	cfg := validConfig()
-	cfg.Spec.Sync.Paths = []SyncPathSpec{{Local: "./a", Remote: "/workspace/a"}, {Local: "./b", Remote: "/workspace/b"}}
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected validation error")
+	cfg.Spec.Sync.Paths = []SyncPathSpec{
+		{Local: "./a", Remote: "/workspace/a"},
+		{Local: "./b", Remote: "/data/results", Direction: "down"},
+	}
+	cfg.SetDefaults()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("disjoint multi-path mappings should validate, got %v", err)
+	}
+}
+
+func TestValidateRejectsOverlappingSyncPaths(t *testing.T) {
+	cases := []struct {
+		name  string
+		paths []SyncPathSpec
+	}{
+		{"equal locals", []SyncPathSpec{{Local: ".", Remote: "/a"}, {Local: "./", Remote: "/b"}}},
+		{"nested locals", []SyncPathSpec{{Local: ".", Remote: "/a"}, {Local: "./results", Remote: "/b"}}},
+		{"nested locals reversed", []SyncPathSpec{{Local: "./results/deep", Remote: "/a"}, {Local: "./results", Remote: "/b"}}},
+		{"equal remotes", []SyncPathSpec{{Local: "./a", Remote: "/workspace"}, {Local: "./b", Remote: "/workspace/"}}},
+		{"nested remotes", []SyncPathSpec{{Local: "./a", Remote: "/workspace"}, {Local: "./b", Remote: "/workspace/results"}}},
+	}
+	for _, tc := range cases {
+		cfg := validConfig()
+		cfg.Spec.Sync.Paths = tc.paths
+		cfg.SetDefaults()
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("%s: expected overlap rejection", tc.name)
+		}
+	}
+}
+
+func TestSyncRootsOverlapLexicalEdges(t *testing.T) {
+	// Sibling with a shared name prefix is NOT overlap; mixed abs/relative
+	// roots cannot be compared lexically and are treated as disjoint.
+	if syncRootsOverlap("/data/a", "/data/ab") {
+		t.Fatal("prefix sibling must not count as overlap")
+	}
+	if syncRootsOverlap(".", "/data") {
+		t.Fatal("mixed abs/relative must be treated as disjoint")
 	}
 }
 

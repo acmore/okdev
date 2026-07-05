@@ -89,12 +89,16 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			mode = resolveSyncMode(cmd.Flags().Changed("mode"), mode, pairs[0].Direction)
+			mode = resolveSyncMode(cmd.Flags().Changed("mode"), mode)
 			if err := validateSyncMode(mode); err != nil {
 				return err
 			}
 			if dryRun {
-				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: sync session=%s namespace=%s engine=%s mode=%s\n", cc.sessionName, cc.namespace, engine, mode)
+				displayMode := mode
+				if displayMode == "" {
+					displayMode = "per-path"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: sync session=%s namespace=%s engine=%s mode=%s\n", cc.sessionName, cc.namespace, engine, displayMode)
 				fmt.Fprintf(cmd.OutOrStdout(), "- paths: %v\n", pairs)
 				if reset {
 					scope := "all"
@@ -145,7 +149,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				return nil
 			}
 
-			if !background && mode == "bi" && os.Getenv("OKDEV_SYNCTHING_BACKGROUND_CHILD") != "1" {
+			if !background && (mode == "" || mode == "bi") && os.Getenv("OKDEV_SYNCTHING_BACKGROUND_CHILD") != "1" {
 				if pidPath, err := syncthingPIDPath(cc.sessionName); err == nil {
 					if pid, ok := readSyncthingPID(pidPath); ok && processAlive(pid) && processLooksLikeSyncthingSync(pid) {
 						fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync already active in background for session %s\n", cc.sessionName)
@@ -171,7 +175,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&mode, "mode", "bi", "Sync mode: up|down|bi (default: spec.sync.direction, or bi)")
+	cmd.Flags().StringVar(&mode, "mode", "", "Force a sync mode for all mappings: up|down|bi (default: each mapping's configured direction)")
 	cmd.Flags().BoolVar(&background, "background", true, "Run syncthing sync as a detached background process")
 	cmd.Flags().BoolVar(&foreground, "foreground", false, "Run syncthing sync in the foreground for troubleshooting")
 	cmd.Flags().BoolVar(&reset, "reset", false, "Check sync health and reset broken components")
@@ -184,20 +188,22 @@ func newSyncCmd(opts *Options) *cobra.Command {
 	return cmd
 }
 
-// resolveSyncMode picks the effective sync mode: an explicit --mode always
-// wins; otherwise the configured spec.sync.direction applies.
-func resolveSyncMode(flagSet bool, flagMode, configDirection string) string {
+// resolveSyncMode picks the effective sync mode: an explicit --mode forces
+// every folder; otherwise the empty mode means each mapping follows its own
+// configured direction.
+func resolveSyncMode(flagSet bool, flagMode string) string {
 	if flagSet {
 		return flagMode
 	}
-	return configDirection
+	return ""
 }
 
-// validateSyncMode accepts the documented modes plus the internal
-// "two-phase" bootstrap mode that `okdev up` spawns for fresh sessions.
+// validateSyncMode accepts the documented modes plus the internal values:
+// "" (per-path directions from config) and "two-phase" (the bootstrap mode
+// `okdev up` spawns for fresh sessions).
 func validateSyncMode(mode string) error {
 	switch mode {
-	case "up", "down", "bi", "two-phase":
+	case "", "up", "down", "bi", "two-phase":
 		return nil
 	default:
 		return fmt.Errorf("invalid sync mode %q: must be one of up, down, bi", mode)
@@ -226,14 +232,17 @@ synced workspace subtree is cleared.`,
 			if err != nil {
 				return fmt.Errorf("parse sync paths: %w", err)
 			}
-			if len(pairs) != 1 {
-				return fmt.Errorf("reset-remote requires exactly one sync path mapping, got %d", len(pairs))
+			if len(pairs) == 0 {
+				return fmt.Errorf("reset-remote requires a sync path mapping")
 			}
 			if pairs[0].Direction == config.SyncDirectionDown {
 				// reset-remote clears the remote and reseeds it from local;
 				// with direction "down" the pod is the authority and local
 				// is receiveonly — the wipe would sync back as deletions.
 				return fmt.Errorf("sync reset-remote conflicts with sync direction \"down\" (the pod is the sync authority)")
+			}
+			if len(pairs) > 1 {
+				fmt.Fprintf(cmd.OutOrStdout(), "Note: only the primary mapping's remote (%s) is reset; %d additional mapping(s) are untouched.\n", pairs[0].Remote, len(pairs)-1)
 			}
 
 			target, err := resolveTargetRef(cmd.Context(), cc.opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
@@ -448,7 +457,12 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 	if opts.Verbose {
 		args = append(args, "--verbose")
 	}
-	args = append(args, "sync", "--mode", mode)
+	args = append(args, "sync")
+	if mode != "" {
+		// Empty mode means "follow each mapping's configured direction";
+		// the child re-reads the config, so no flag is needed.
+		args = append(args, "--mode", mode)
+	}
 
 	cmd := execCommand(exe, args...)
 	cmd.Env = append(os.Environ(), "OKDEV_SYNCTHING_BACKGROUND_CHILD=1")
