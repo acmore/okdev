@@ -210,8 +210,11 @@ func TestWaitReadyReturnsWhenCurrentPodFailed(t *testing.T) {
 	t.Setenv("KUBECONFIG", writeTLSTestKubeconfig(t, server))
 
 	err := client.WaitReadyWithProgress(context.Background(), "demo", "pod-failed", time.Second, nil)
-	if err == nil || !strings.Contains(err.Error(), "pod/pod-failed failed while waiting for readiness") {
-		t.Fatalf("expected failed pod readiness error, got %v", err)
+	if !errors.Is(err, ErrPodFailedReadiness) {
+		t.Fatalf("expected ErrPodFailedReadiness, got %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "pod/pod-failed") {
+		t.Fatalf("expected error message to name the failed pod, got %v", err)
 	}
 }
 
