@@ -124,13 +124,20 @@ func TestDetachCommand(t *testing.T) {
 		// clobbered by a later 'running' write from the launcher.
 		"trap 'rc=$?",
 		"' EXIT",
-		// The user command must run via `(exec CMD) &` so $! captures the
-		// pid of the user command itself (via execve), not the wrapper
-		// shell. This is the pid we report to the caller and the one that
-		// responds to `kill <pid>`.
+		// The user command runs via setsid so it leads its own process
+		// group (pgid == pid) and `jobs stop` can signal the whole tree;
+		// `(exec CMD) &` remains the fallback for images without setsid,
+		// recording pgid=0 so stop degrades to leader-only signaling.
+		"if command -v setsid >/dev/null 2>&1; then",
+		"setsid \"$@\" &",
+		"user_pgid=$user_pid",
 		"(exec \"$@\") &",
+		"user_pgid=0",
 		"user_pid=$!",
 		"wait \"$user_pid\"",
+		// Both metadata writes resolve the pgid placeholder.
+		"s/__OKDEV_DETACH_PGID__/$user_pgid/g",
+		"\"pgid\":__OKDEV_DETACH_PGID__",
 		// OKDEV_JOB_ID is exported so exec-jobs can reconcile liveness via
 		// /proc/<pid>/environ without relying on unique cmdlines.
 		"export OKDEV_JOB_ID='job-123'",

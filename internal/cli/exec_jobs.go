@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,8 @@ type execJobView struct {
 	Container string `json:"container"`
 	JobID     string `json:"jobId"`
 	PID       int    `json:"pid"`
+	PGID      int    `json:"pgid,omitempty"`
+	GroupLive int    `json:"groupLive,omitempty"`
 	State     string `json:"state"`
 	ExitCode  *int   `json:"exitCode,omitempty"`
 	LogPath   string `json:"logPath"`
@@ -74,6 +77,7 @@ func runExecJobs(ctx context.Context, client connect.ExecClient, namespace strin
 			fmt.Fprintln(out, "No detached exec jobs found")
 		}
 		if len(jobs) > 0 {
+			commandLimit := jobsListCommandLimit(out, jobs)
 			table := make([][]string, 0, len(jobs))
 			for _, job := range jobs {
 				table = append(table, []string{
@@ -81,7 +85,7 @@ func runExecJobs(ctx context.Context, client connect.ExecClient, namespace strin
 					job.SummaryState,
 					fmt.Sprintf("%d", job.Pods),
 					job.StartedAt,
-					job.Command,
+					truncateTableCell(job.Command, commandLimit),
 				})
 			}
 			output.PrintTable(out, []string{"JOB ID", "STATE", "PODS", "STARTED", "COMMAND"}, table)
@@ -223,6 +227,8 @@ func appendDetachJobRows(rows []execJobView, jobs []detachMetadata, jobID, conta
 			Container: containerLabel,
 			JobID:     job.JobID,
 			PID:       job.PID,
+			PGID:      job.PGID,
+			GroupLive: job.GroupLive,
 			State:     job.State,
 			ExitCode:  job.ExitCode,
 			LogPath:   job.StdoutPath,
@@ -322,15 +328,71 @@ func earliestStartedAt(rows []execJobView) string {
 	return earliest
 }
 
+// jobsListCommandLimit bounds the COMMAND column so long training commands
+// don't wrap table rows on a terminal. Returns 0 (no limit) for non-TTY
+// output — piped consumers get the full command; --json is the structured
+// path either way.
+func jobsListCommandLimit(out io.Writer, jobs []logicalExecJobView) int {
+	if !isTerminalFD(out) {
+		return 0
+	}
+	return jobsListCommandLimitForWidth(terminalWidth(), jobs)
+}
+
+func jobsListCommandLimitForWidth(termWidth int, jobs []logicalExecJobView) int {
+	if termWidth <= 0 {
+		return 0
+	}
+	widths := []int{len("JOB ID"), len("STATE"), len("PODS"), len("STARTED")}
+	for _, job := range jobs {
+		for i, s := range []string{job.JobID, job.SummaryState, fmt.Sprintf("%d", job.Pods), job.StartedAt} {
+			if len(s) > widths[i] {
+				widths[i] = len(s)
+			}
+		}
+	}
+	fixed := 0
+	for _, w := range widths {
+		fixed += w
+	}
+	// PrintTable joins columns with two spaces; four separators precede the
+	// COMMAND column.
+	limit := termWidth - fixed - 4*2
+	// Keep enough of the command to recognize the job even on narrow
+	// terminals; a slightly wrapped row beats an unreadable stub.
+	if limit < 16 {
+		limit = 16
+	}
+	return limit
+}
+
+func truncateTableCell(s string, limit int) string {
+	if limit <= 0 {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= limit {
+		return s
+	}
+	return string(r[:limit-1]) + "…"
+}
+
 func detachJobsCommand() []string {
-	// Each output line is "<alive>\t<json>" where <alive> is 1 if the job's
-	// pid is still running and its /proc/<pid>/environ contains the
+	// Each output line is "<alive>\t<groupLive>\t<json>". <alive> is 1 if the
+	// job's pid is still running and its /proc/<pid>/environ contains the
 	// OKDEV_JOB_ID we set in the wrapper. Matching on an environment
 	// variable (rather than cmdline) is robust against PID reuse even when
-	// the job's cmdline is the arbitrary user command. The find(1) call
-	// also reaps stale .tmp files left behind by killed launchers/wrappers.
-	// Both the current metadata dir and the legacy /tmp location are scanned
-	// so jobs launched by an older okdev remain visible after an upgrade.
+	// the job's cmdline is the arbitrary user command. <groupLive> counts
+	// live (non-zombie) processes still in the job's process group — the
+	// leader may be gone while its children (e.g. torchrun workers) linger,
+	// which is exactly what `jobs stop` must clean up. The group is
+	// identity-checked via OKDEV_JOB_ID in a member's environ (inherited by
+	// all descendants) before counting: a PGID number can only be recycled
+	// once the whole group is dead, so a mismatch means an unrelated group.
+	// The find(1) call also reaps stale .tmp files left behind by killed
+	// launchers/wrappers. Both the current metadata dir and the legacy /tmp
+	// location are scanned so jobs launched by an older okdev remain
+	// visible after an upgrade.
 	script := `for dir in '` + detachMetadataDir + `' '` + legacyDetachMetadataDir + `'; do
   [ -d "$dir" ] || continue
   find "$dir" -maxdepth 1 -name '*.tmp' -type f -mmin +1 -delete 2>/dev/null || true
@@ -338,6 +400,7 @@ func detachJobsCommand() []string {
     [ -e "$f" ] || continue
     contents=$(cat "$f")
     pid=$(printf '%s' "$contents" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' | head -n1)
+    pgid=$(printf '%s' "$contents" | sed -n 's/.*"pgid":\([0-9][0-9]*\).*/\1/p' | head -n1)
     job_id=$(basename "$f" .json)
     alive=0
     if [ -n "$pid" ] && [ -r "/proc/$pid/environ" ]; then
@@ -345,7 +408,17 @@ func detachJobsCommand() []string {
         alive=1
       fi
     fi
-    printf '%s\t%s\n' "$alive" "$contents"
+    glive=0
+    if [ -n "$pgid" ] && [ "$pgid" -gt 0 ] 2>/dev/null; then
+      members=$(awk -v g="$pgid" '{ pid=$1; line=$0; sub(/^[0-9]+ \(.*\) /, "", line); split(line, f, " "); if (f[1] != "Z" && f[3] == g) print pid }' /proc/[0-9]*/stat 2>/dev/null)
+      for m in $members; do
+        if tr '\0' '\n' < "/proc/$m/environ" 2>/dev/null | grep -Fqx "OKDEV_JOB_ID=$job_id"; then
+          glive=$(set -- $members; echo $#)
+          break
+        fi
+      done
+    fi
+    printf '%s\t%s\t%s\n' "$alive" "$glive" "$contents"
   done
 done
 `
@@ -407,12 +480,20 @@ func parseDetachMetadataLines(raw string) ([]detachMetadata, error) {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		// Lines from detachJobsCommand are "<alive>\t<json>"; tolerate
-		// raw JSON for older containers that ran a previous cli version.
+		// Lines from detachJobsCommand are "<alive>\t<groupLive>\t<json>";
+		// tolerate the older "<alive>\t<json>" shape and raw JSON so mixed
+		// cli versions against the same pod keep working.
 		alive := true
+		groupLive := 0
 		if tab := strings.IndexByte(line, '\t'); tab >= 0 {
 			alive = line[:tab] != "0"
 			line = line[tab+1:]
+			if tab2 := strings.IndexByte(line, '\t'); tab2 >= 0 {
+				if n, err := strconv.Atoi(strings.TrimSpace(line[:tab2])); err == nil && n >= 0 {
+					groupLive = n
+					line = line[tab2+1:]
+				}
+			}
 		}
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -422,6 +503,7 @@ func parseDetachMetadataLines(raw string) ([]detachMetadata, error) {
 		if err := json.Unmarshal([]byte(line), &job); err != nil {
 			return nil, fmt.Errorf("parse detach job metadata: %w", err)
 		}
+		job.GroupLive = groupLive
 		if job.JobID == "" || job.Pod == "" || job.PID <= 0 || job.MetaPath == "" {
 			return nil, errors.New("missing detach job metadata")
 		}

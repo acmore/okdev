@@ -108,7 +108,7 @@ agents can react without launching a diagnostic chain on every blip:
 - `--container`: override which container to exec into (default: session target container). Works in both modes.
 - `--script` executes the uploaded file directly when it has a shebang; otherwise it falls back to `sh <file> ...`.
 - `--shell` cannot be combined with `--script`.
-- `--detach`: launches the command in the background and returns immediately. Prints per-pod launch details including job id, pid, log path, and metadata path.
+- `--detach`: launches the command in the background and returns immediately. Prints per-pod launch details including job id, pid, log path, and metadata path. The command runs in its own process group (via `setsid`) so `okdev jobs stop` can terminate the entire process tree, not just the leader.
 - When `--log-dir` is used with multiple declared groups, logs are written into per-group subdirectories under the requested path. `--log-dir` has no effect with `--detach` (detached jobs log inside the pod).
 - Detached exec preserves argv to the remote process; it is not flattened back into a single shell string. Detached `--script` uploads a per-pod temp file, launches it, and removes that temp file after completion.
 - Detached jobs store combined stdout/stderr and JSON metadata under `/var/okdev/exec/` on the shared okdev-runtime volume, so logs and metadata survive a target-container crash (e.g. OOMKill) and remain readable through the sidecar. If that directory cannot be created or written by the container user (e.g. a user-supplied root-owned volume with a non-root container), the launcher falls back to the legacy `/tmp/okdev-exec/` with a notice on stderr — same lifetime semantics as before. For large outputs (training logs, profiles, dumps), prefer `--log-dir` on the caller or redirect inside your command to a session volume; the runtime volume is a node-local emptyDir and heavy writers can fill it.
@@ -133,7 +133,8 @@ agents can react without launching a diagnostic chain on every blip:
 - If the target container is gone (e.g. OOMKilled), listing and `jobs logs` automatically retry through the `okdev-sidecar` container, which mounts the same runtime volume.
 - When a command fails because the container is gone, the error carries the termination cause when it can be determined, e.g. `container "pytorch" terminated: OOMKilled (exit 137, finished 2026-07-05T06:32:11Z)`. The same hint is appended to `okdev exec` FAILED lines and single-pod exec errors.
 - Text output is grouped by logical job id, with one row per detached launch showing job id, summarized state, pod count, earliest start time, and original command.
-- JSON output includes both the logical job summary and the per-pod `podStates` records.
+- On a terminal the COMMAND column is truncated (with `…`) to the remaining terminal width so long training commands don't wrap rows; piped/redirected output and `--json` always carry the full command.
+- JSON output includes both the logical job summary and the per-pod `podStates` records (with `pgid` and `groupLive` — the count of live processes still in the job's process group — when available).
 - State values: `running` (wrapper alive and user command in flight), `exited` (user command finished; exit code is recorded in `podStates` / JSON), and `orphaned` (metadata still says `running` but the pid has exited or been recycled - typically the wrapper was `SIGKILL`ed or the container was restarted before the completion metadata could be written). Grouped text summaries render forms such as `running(1/2)`, `exited(2/2)`, and `failed(1/2)`.
 - When any pod fails to list its jobs, the command still prints the jobs it was able to collect from the healthy pods and reports the failures in a `FAILED:` footer (or an `errors` array in `--json` output); exit status is non-zero so scripts can detect partial failures.
 - With `spec.exec.fanoutMode: auto|gateway` and interpod SSH enabled, the per-pod listing routes through the in-cluster fanout gateway (one apiserver exec instead of one per pod). The listing is read-only, so any gateway problem silently falls back to direct per-pod queries.
@@ -167,8 +168,10 @@ agents can react without launching a diagnostic chain on every blip:
 ### `okdev jobs stop <job-id> [session]`
 
 - Stops every still-running pod in the logical job by sending `SIGTERM`, waiting 10 seconds, then sending `SIGKILL` to survivors.
-- Prints which pods were signaled during the stop flow.
-- Returns non-zero when any pod could not be queried or signaled, or if pods are still running after the stop attempt.
+- Signals the job's whole **process group** when available: detached jobs are launched via `setsid`, so children the command forked (e.g. `torchrun` workers) are signaled too — including stragglers whose leader already exited. Stop only reports success once no live group member remains, so a clean return means the process tree (and its GPU memory) is gone.
+- Group membership is verified via the job's `OKDEV_JOB_ID` environment marker before signaling, so recycled pids/pgids are never signaled by mistake. Jobs launched by older okdev versions (or in containers without `setsid`) fall back to leader-only signaling.
+- Prints which pods were signaled (`pgid=N` for group signals, `pid=N` for the fallback) during the stop flow.
+- Returns non-zero when any pod could not be queried or signaled, or if processes are still alive after the stop attempt.
 
 ### `okdev exec-jobs [session]`
 
