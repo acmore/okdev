@@ -17,6 +17,7 @@ import (
 
 	"github.com/acmore/okdev/internal/kube"
 	k8sexec "k8s.io/client-go/util/exec"
+	utilexec "k8s.io/utils/exec"
 )
 
 func TestFilterPodsByRole(t *testing.T) {
@@ -711,12 +712,47 @@ func TestRunMultiExecPartialFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for partial failure")
 	}
+	// A pure remote non-zero exit is a command result, not an okdev
+	// failure: softer framing, plain error (exit 1), no infra sentinel.
+	if !strings.Contains(err.Error(), "command exited non-zero on 1 of 2 pod(s)") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+	if errors.Is(err, ErrExecInfraFailure) {
+		t.Fatalf("remote-exit-only run must not carry the infra sentinel: %v", err)
+	}
 	got := stderr.String()
-	if !strings.Contains(got, "\nFAILED:\n") {
-		t.Fatalf("expected blank line before multiline failure header, got %q", got)
+	if !strings.Contains(got, "\nCOMMAND EXITED NON-ZERO:\n") || strings.Contains(got, "FAILED:") {
+		t.Fatalf("expected command-result framing without FAILED header, got %q", got)
 	}
 	if !strings.Contains(got, "pod=okdev-sess-worker-1 container=dev kind=remote-exit exit=1") {
 		t.Fatalf("expected classified failure summary for worker-1, got %q", got)
+	}
+}
+
+func TestRunMultiExecSinglePodPreservesRemoteExitStatus(t *testing.T) {
+	client := &fakePdshExecClient{
+		outputs: map[string]string{},
+		errs: map[string]error{
+			"okdev-sess-master-0": k8sexec.CodeExitError{Err: errors.New("command terminated with exit code 7"), Code: 7},
+		},
+	}
+	pods := []kube.PodSummary{{Name: "okdev-sess-master-0", Phase: "Running"}}
+	var stdout, stderr bytes.Buffer
+	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-lc", "exit 7"}, "", 0, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for non-zero remote exit")
+	}
+	// The documented contract: a single-pod remote exit status is preserved
+	// verbatim, so the wrapped ExitError must survive for main's exit mapper.
+	var exitErr utilexec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitStatus() != 7 {
+		t.Fatalf("expected wrapped ExitError with status 7, got %v", err)
+	}
+	if errors.Is(err, ErrExecInfraFailure) {
+		t.Fatalf("remote-exit-only run must not carry the infra sentinel: %v", err)
+	}
+	if got := stderr.String(); !strings.Contains(got, "\nCOMMAND EXITED NON-ZERO:\n") || strings.Contains(got, "FAILED:") {
+		t.Fatalf("expected command-result framing without FAILED header, got %q", got)
 	}
 }
 
@@ -1025,5 +1061,32 @@ func TestResolveExecNoPrefix(t *testing.T) {
 				t.Fatalf("resolveExecNoPrefix(%v, %v, pipe) = %v, want %v", tt.explicitlySet, tt.noPrefix, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRunMultiExecInfraFailureCarriesSentinel(t *testing.T) {
+	// Mixed remote-exit + timeout: any delivery failure keeps the FAILED
+	// framing and maps to the dedicated infra exit code so monitors can
+	// tell it apart from a command that merely exited non-zero.
+	client := &fakePdshExecClient{
+		errs: map[string]error{
+			"okdev-sess-worker-0": k8sexec.CodeExitError{Err: errors.New("command terminated with exit code 1"), Code: 1},
+			"okdev-sess-worker-1": context.DeadlineExceeded,
+		},
+	}
+	pods := []kube.PodSummary{
+		{Name: "okdev-sess-worker-0", Phase: "Running"},
+		{Name: "okdev-sess-worker-1", Phase: "Running"},
+	}
+	var stdout, stderr bytes.Buffer
+	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"true"}, "", 0, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
+	if err == nil || !errors.Is(err, ErrExecInfraFailure) {
+		t.Fatalf("expected infra sentinel, got %v", err)
+	}
+	if code, ok := ClassifiedExitCode(err); !ok || code != ExitExecInfraFailure {
+		t.Fatalf("expected exit code %d, got %d ok=%v", ExitExecInfraFailure, code, ok)
+	}
+	if !strings.Contains(stderr.String(), "FAILED:") {
+		t.Fatalf("expected FAILED framing for infra failures, got %q", stderr.String())
 	}
 }

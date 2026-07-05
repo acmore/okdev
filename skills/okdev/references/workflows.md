@@ -69,6 +69,7 @@ Default guidance:
 - `okdev status --details` shows whether sync is active
 - `okdev sync --foreground` is useful when the user needs live troubleshooting
 - `okdev sync --reset` is the standard repair path for stale local sync state
+- `okdev sync wait` blocks until every mapping has zero pending bytes both ways — use it between an edit and a run to guarantee the pod sees the latest files: `vim train.py && okdev sync wait && okdev exec -- python train.py`. It only waits; it does not start or repair sync.
 
 Result collection via sync: add a second mapping with its own direction — no volume YAML needed (okdev auto-provisions the remote volume; the next `up` asks for `--reconcile`):
 

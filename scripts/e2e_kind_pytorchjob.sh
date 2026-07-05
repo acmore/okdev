@@ -388,6 +388,26 @@ if [[ "$EXEC_ALL_LINES" -lt 3 ]]; then
 fi
 echo "exec verified ($EXEC_ALL_LINES pods responded)"
 
+# Multi-pod exit semantics: a command that runs everywhere but exits non-zero
+# is a command result — COMMAND EXITED NON-ZERO framing and exit 1, never the
+# FAILED delivery framing or the infra exit code 69.
+echo "Testing multi-pod exec exit semantics for a non-zero command"
+set +e
+EXEC_NONZERO_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'exit 3' 2>&1)
+EXEC_NONZERO_STATUS=$?
+set -e
+if [[ "$EXEC_NONZERO_STATUS" -ne 1 ]]; then
+  echo "ERROR: expected multi-pod non-zero command to exit 1, got $EXEC_NONZERO_STATUS" >&2
+  echo "$EXEC_NONZERO_OUTPUT" >&2
+  exit 1
+fi
+if [[ "$EXEC_NONZERO_OUTPUT" != *"COMMAND EXITED NON-ZERO"* || "$EXEC_NONZERO_OUTPUT" == *"FAILED:"* ]]; then
+  echo "ERROR: expected command-result framing without FAILED header" >&2
+  echo "$EXEC_NONZERO_OUTPUT" >&2
+  exit 1
+fi
+echo "multi-pod exec non-zero command framing verified"
+
 echo "Testing exec --role master -- targets only master"
 EXEC_MASTER_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --role master --no-tty -- sh -lc 'echo master-only')
 echo "$EXEC_MASTER_OUTPUT"

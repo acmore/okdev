@@ -17,10 +17,11 @@ Commands that resolve a session distinguish failure classes so scripts and
 agents can react without launching a diagnostic chain on every blip:
 
 - `0`: success.
-- non-zero from a remote command (e.g. `okdev exec -- false` → `1`, `exit 7` → `7`): the remote process's own status, always preserved.
+- non-zero from a remote command (e.g. `okdev exec -- false` → `1`, `exit 7` → `7`): the remote process's own status, preserved verbatim on single-pod runs. A multi-pod fanout where the command exited non-zero on some pods exits `1` (there is no single status to preserve).
 - `74`: the cluster was reachable but the session has no pods — it is genuinely gone.
 - `78`: a transient cluster-contact failure (API timeout, connection refused/reset, server overload). okdev already retries once with backoff before surfacing this; on `78` the caller should retry rather than treat the session as dead.
-- `1`: any other error (configuration, permissions/RBAC, a failed job result, etc.).
+- `69`: a fanout `okdev exec` could not run the command on at least one pod (unreachable, timeout, container gone) — a delivery failure, as opposed to the command itself exiting non-zero, which stays exit `1`.
+- `1`: any other error (configuration, permissions/RBAC, a failed job result, a fanout command that exited non-zero on some pods, etc.).
 
 ## Commands
 
@@ -50,6 +51,7 @@ agents can react without launching a diagnostic chain on every blip:
 - `okdev ports`
 - `okdev port-forward [session] <local:remote>... [--address <addr>[,<addr>...]] [--pod <name> | --role <role>] [--ready-only]`
 - `okdev sync [--mode up|down|bi] [--foreground] [--reset] [--dry-run]`
+- `okdev sync wait [session] [--timeout 10m]`
 - `okdev prune [--ttl-hours 72] [--all-namespaces] [--all-users] [--include-pvc] [--dry-run]`
 - `okdev migrate [--template <name>] [--set key=value] [--dry-run] [--yes]`
 - `okdev upgrade`
@@ -98,6 +100,7 @@ agents can react without launching a diagnostic chain on every blip:
 - `--parallel` runs declared groups in parallel. `--fanout` caps total concurrent pod executions across all groups.
 - `--script <file>` uploads a local script file and runs it across the targeted pods. In v1 this is local-file-only; `--script -` is not supported.
 - With `--script`, everything after `--` is passed to the script as positional arguments (`$1`, `$2`, … / `"$@"`): `okdev exec --script ./bench.sh -- --steps 100 --warmup 10` runs `bench.sh` on each pod with `$1=--steps $2=100 $3=--warmup $4=10`. Arguments containing spaces are preserved.
+- Failure framing for `-- command...` fanout: when every failing pod merely reported a non-zero exit code from the command itself, the summary is headed `COMMAND EXITED NON-ZERO:` and `okdev` exits with the remote status on a single-pod run (`exit 3` → `3`) or `1` on a multi-pod run — either way `okdev exec -- cmd && next` still short-circuits `&&` chains. When any pod could not run the command at all (unreachable, timeout, container gone), the summary is headed `FAILED:` and `okdev` exits `69`, letting scripts tell "my command failed" apart from "delivery failed" without parsing output.
 - The `-- command...` path is non-interactive fanout execution, not a terminal session. TTY-dependent programs such as `watch`, `top`, `htop`, or full-screen TUIs are not expected to work there; use `okdev ssh` or `okdev exec` without `-- command...` to open an interactive shell first.
 - `-- command...` preserves raw argv to the remote process. If you choose `bash -lc '...'`, that remote shell layer is still yours.
 - `--script` avoids the quoting/stitching problem for non-trivial shell pipelines by uploading the file and running it remotely instead of embedding the body in a one-liner.
@@ -325,6 +328,13 @@ agents can react without launching a diagnostic chain on every blip:
 - `--reset --mesh`: scope reset to mesh receivers only (skip local sync).
 - `--reset --force --local` / `--reset --force --mesh`: force reset a specific component.
 - `okdev init` writes the starter config and, for built-in templates, a starter local `.stignore` file for the initialized sync root.
+
+### `okdev sync wait [session] [--timeout 10m]`
+
+- Blocks until every configured sync mapping has zero pending bytes in **both** directions, then returns — the edit-run loop guarantee: `vim train.py && okdev sync wait && okdev exec -- python train.py`.
+- Triggers an immediate rescan on both sides before waiting, so files written moments earlier are picked up now instead of after the filesystem-watcher delay.
+- Purely a wait: it does not start or repair sync. If background sync is not running it fails fast with guidance (`okdev sync` starts it, `okdev sync --reset` repairs it).
+- Prints pending-byte progress while waiting; exits non-zero if convergence is not reached within `--timeout`.
 
 ### `okdev upgrade`
 

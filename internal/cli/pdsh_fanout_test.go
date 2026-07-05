@@ -307,7 +307,7 @@ func TestRunExecPodGroupsSurfacesGroupErrors(t *testing.T) {
 		Stdout:     &stdout,
 		Stderr:     &stderr,
 	})
-	if err == nil || err.Error() != "1 of 1 pods failed" {
+	if err == nil || err.Error() != "1 of 1 pods failed: exec delivery failure" {
 		t.Fatalf("expected verbatim single-group error, got %v", err)
 	}
 }
