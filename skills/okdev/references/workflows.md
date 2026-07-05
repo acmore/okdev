@@ -70,6 +70,19 @@ Default guidance:
 - `okdev sync --foreground` is useful when the user needs live troubleshooting
 - `okdev sync --reset` is the standard repair path for stale local sync state
 
+Result collection via sync: add a second mapping with its own direction — no volume YAML needed (okdev auto-provisions the remote volume; the next `up` asks for `--reconcile`):
+
+```yaml
+sync:
+  paths:
+    - .:/workspace                 # code (bi or up)
+    - local: ./collected           # may nest inside the repo
+      remote: /data/results
+      direction: down              # pod is the authority; local writes can't clobber results
+```
+
+Point the job's output at the mapping's remote root (`/data/results` above). This covers the hub pod; fleet-wide collection stays on `okdev jobs logs` / `okdev cp`.
+
 ## File Transfer
 
 Use:
