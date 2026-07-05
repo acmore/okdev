@@ -227,7 +227,7 @@ fi
 # okdev sync wait: the edit-run guarantee. Write a fresh local file, wait for
 # convergence, then read it remotely in one chain — no polling loop allowed.
 echo "Testing okdev sync wait edit-run guarantee"
-echo "sync-wait-payload" > "$WORKDIR/sync-wait-probe.txt"
+echo "sync-wait-payload" > "$SYNC_DIR/sync-wait-probe.txt"
 SYNC_WAIT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync wait --timeout 3m)
 if [[ "$SYNC_WAIT_OUTPUT" != *"Sync converged"* ]]; then
   echo "ERROR: expected sync wait to report convergence" >&2
