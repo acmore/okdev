@@ -277,6 +277,25 @@ func TestGenericRuntimeWaitReadyDoesNotFailFastForGenericFailedPods(t *testing.T
 	}
 }
 
+func TestFailFastOnPodFailureForWorkloadIgnoresCase(t *testing.T) {
+	cases := map[string]bool{
+		"job":         true,
+		"Job":         true,
+		"pytorchjob":  true,
+		"PyTorchJob":  true,
+		" pytorchjob": true,
+		"generic":     false,
+		"Generic":     false,
+		"":            false,
+		"pod":         false,
+	}
+	for input, want := range cases {
+		if got := failFastOnPodFailureForWorkload(input); got != want {
+			t.Errorf("failFastOnPodFailureForWorkload(%q) = %v, want %v", input, got, want)
+		}
+	}
+}
+
 func TestGenericRuntimeSelectTargetFailsWithoutAttachablePods(t *testing.T) {
 	rt := &GenericRuntime{
 		WorkloadKind:    TypeGeneric,

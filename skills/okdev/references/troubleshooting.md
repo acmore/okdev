@@ -46,6 +46,18 @@ If the user says the workload was unexpectedly reused:
 
 Do not jump straight to deleting cluster objects manually unless `okdev` workflows are already failing.
 
+## Auto-Cleared Failed Jobs / PyTorchJobs
+
+If the user's previous `okdev up` failed with a pod in `Failed` state on a `job` or `pytorchjob` workload, okdev may have already deleted that workload and cleared local session state as part of the same `okdev up`. Symptoms:
+
+- `okdev status --details` reports the session as gone (`okdev` pre-flight exit `74`)
+- The next `okdev up` is expected to create a fresh workload, not "reconnect"
+- The failed `okdev up` output includes a `Teardown` section that names the deleted workload
+
+This auto-cleanup only fires when `okdev up` itself created or recreated the workload during that run. Workloads that were reused as-is are not auto-deleted, so `okdev up` on a pre-existing failed Job/PyTorchJob returns an error but leaves the workload in place for manual inspection.
+
+`pod` workloads also fail fast on `Failed`, but okdev does not auto-delete them — inspect with `kubectl` if the pre-flight readiness error alone is not enough.
+
 ## SSH Problems
 
 Common checks:
