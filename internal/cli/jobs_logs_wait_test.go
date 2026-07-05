@@ -263,3 +263,18 @@ func detachMetadataJSON(jobID, pod, container string, pid int, state string, exi
 	return fmt.Sprintf("{\"jobId\":\"%s\",\"pod\":\"%s\",\"container\":\"%s\",\"pid\":%d,\"command\":\"python train.py\",\"startedAt\":\"2026-05-09T10:00:00Z\",\"stdoutPath\":\"/tmp/okdev-exec/%s.log\",\"stderrPath\":\"/tmp/okdev-exec/%s.log\",\"metaPath\":\"/tmp/okdev-exec/%s.json\",\"state\":\"%s\"%s}\n",
 		jobID, pod, container, pid, jobID, jobID, jobID, state, exitPart)
 }
+
+// detachMetadataLineGroup renders the full "<alive>\t<groupLive>\t<json>"
+// scan line for a job launched with a process group.
+func detachMetadataLineGroup(jobID, pod, container string, pid, pgid int, state string, exitCode *int, alive bool, groupLive int) string {
+	exitPart := ""
+	if exitCode != nil {
+		exitPart = fmt.Sprintf(",\"exitCode\":%d", *exitCode)
+	}
+	aliveFlag := "0"
+	if alive {
+		aliveFlag = "1"
+	}
+	return fmt.Sprintf("%s\t%d\t{\"jobId\":\"%s\",\"pod\":\"%s\",\"container\":\"%s\",\"pid\":%d,\"pgid\":%d,\"command\":\"python train.py\",\"startedAt\":\"2026-05-09T10:00:00Z\",\"stdoutPath\":\"/var/okdev/exec/%s.log\",\"stderrPath\":\"/var/okdev/exec/%s.log\",\"metaPath\":\"/var/okdev/exec/%s.json\",\"state\":\"%s\"%s}\n",
+		aliveFlag, groupLive, jobID, pod, container, pid, pgid, jobID, jobID, jobID, state, exitPart)
+}

@@ -388,7 +388,7 @@ func runJobsStop(ctx context.Context, client detachJobClient, namespace string, 
 
 	signalErrors := make([]execJobsPodError, 0)
 	for _, row := range job.PodStates {
-		if row.State != "running" {
+		if !stopRowNeedsSignal(row) {
 			continue
 		}
 		result, signalErr := signalDetachJob(ctx, client, namespace, row, "TERM")
@@ -397,7 +397,7 @@ func runJobsStop(ctx context.Context, client detachJobClient, namespace string, 
 			fmt.Fprintf(out, "%s error: %v\n", prefixByPod[row.Pod], signalErr)
 			continue
 		}
-		fmt.Fprintf(out, "%s sent SIGTERM pid=%d (%s)\n", prefixByPod[row.Pod], row.PID, result)
+		fmt.Fprintf(out, "%s sent SIGTERM %s (%s)\n", prefixByPod[row.Pod], stopSignalTargetLabel(row), result)
 	}
 	for _, e := range signalErrors {
 		aggregated[e.Pod] = e.Error
@@ -412,7 +412,7 @@ func runJobsStop(ctx context.Context, client detachJobClient, namespace string, 
 	jobGone := false
 waitLoop:
 	for {
-		if allLogicalJobTerminal(current) {
+		if stopJobSettled(current) {
 			break
 		}
 		select {
@@ -447,9 +447,9 @@ waitLoop:
 	}
 
 	killErrors := make([]execJobsPodError, 0)
-	if !jobGone && !allLogicalJobTerminal(current) {
+	if !jobGone && !stopJobSettled(current) {
 		for _, row := range current.PodStates {
-			if row.State != "running" {
+			if !stopRowNeedsSignal(row) {
 				continue
 			}
 			result, signalErr := signalDetachJob(ctx, client, namespace, row, "KILL")
@@ -458,7 +458,7 @@ waitLoop:
 				fmt.Fprintf(out, "%s error: %v\n", prefixByPod[row.Pod], signalErr)
 				continue
 			}
-			fmt.Fprintf(out, "%s sent SIGKILL pid=%d (%s)\n", prefixByPod[row.Pod], row.PID, result)
+			fmt.Fprintf(out, "%s sent SIGKILL %s (%s)\n", prefixByPod[row.Pod], stopSignalTargetLabel(row), result)
 		}
 	}
 	for _, e := range killErrors {
@@ -484,7 +484,7 @@ waitLoop:
 			for _, e := range finalPodErrors {
 				aggregated[e.Pod] = e.Error
 			}
-			terminalOk = allLogicalJobTerminal(final)
+			terminalOk = stopJobSettled(final)
 			current = final
 		}
 	}
@@ -536,6 +536,36 @@ func jobPodNames(job logicalExecJobView) []string {
 		names = append(names, row.Pod)
 	}
 	return names
+}
+
+// stopRowNeedsSignal reports whether `jobs stop` should signal this pod's
+// record: the job still runs, or the leader exited but verified group
+// members linger (torchrun children holding GPU memory).
+func stopRowNeedsSignal(row execJobView) bool {
+	return row.State == "running" || (row.PGID > 0 && row.GroupLive > 0)
+}
+
+// stopJobSettled is `jobs stop`'s terminal criterion: every pod record is
+// terminal AND no live group members remain. Stricter than
+// allLogicalJobTerminal (used by logs/wait), which only tracks the leader's
+// metadata state.
+func stopJobSettled(job logicalExecJobView) bool {
+	if len(job.PodStates) == 0 {
+		return false
+	}
+	for _, row := range job.PodStates {
+		if stopRowNeedsSignal(row) {
+			return false
+		}
+	}
+	return true
+}
+
+func stopSignalTargetLabel(row execJobView) string {
+	if row.PGID > 0 {
+		return fmt.Sprintf("pgid=%d", row.PGID)
+	}
+	return fmt.Sprintf("pid=%d", row.PID)
 }
 
 func allLogicalJobTerminal(job logicalExecJobView) bool {
@@ -605,15 +635,46 @@ func followDetachJobLogScript(logPath string) string {
 }
 
 func signalDetachJob(ctx context.Context, client detachJobClient, namespace string, row execJobView, signalName string) (string, error) {
-	out, err := client.ExecShInContainer(ctx, namespace, row.Pod, row.Container, signalDetachJobScript(row.JobID, row.PID, signalName))
+	out, err := client.ExecShInContainer(ctx, namespace, row.Pod, row.Container, signalDetachJobScript(row.JobID, row.PID, row.PGID, signalName))
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
 }
 
-func signalDetachJobScript(jobID string, pid int, signalName string) string {
-	return fmt.Sprintf(
+// signalDetachJobScript signals a detached job. With a process group (pgid >
+// 0) it signals the whole group — covering children like torchrun workers
+// whose leader may already be dead — after verifying via OKDEV_JOB_ID in a
+// member's environ that the group still belongs to this job (a PGID number
+// cannot be recycled while any member lives). Without a group, or when the
+// group is already empty, it falls through to the legacy leader-only path.
+func signalDetachJobScript(jobID string, pid, pgid int, signalName string) string {
+	quotedJobEnv := shellQuote("OKDEV_JOB_ID=" + jobID)
+	groupPrelude := ""
+	if pgid > 0 {
+		groupPrelude = fmt.Sprintf(
+			"pgid=%d\n"+
+				"members=$(awk -v g=\"$pgid\" '{ pid=$1; line=$0; sub(/^[0-9]+ \\(.*\\) /, \"\", line); split(line, f, \" \"); if (f[1] != \"Z\" && f[3] == g) print pid }' /proc/[0-9]*/stat 2>/dev/null)\n"+
+				"for m in $members; do\n"+
+				"  if tr '\\000' '\\n' < \"/proc/$m/environ\" 2>/dev/null | grep -Fqx %s; then\n"+
+				// No `--` before the negative pgid: dash's kill builtin
+				// rejects it ("Illegal number: -"); the bare "-<pgid>"
+				// operand after the signal option works in dash, bash,
+				// zsh, and busybox ash alike.
+				"    if kill -%s \"-$pgid\" 2>/dev/null; then\n"+
+				"      echo \"signaled group ($(set -- $members; echo $#) members)\"\n"+
+				"      exit 0\n"+
+				"    fi\n"+
+				"    echo not-running\n"+
+				"    exit 0\n"+
+				"  fi\n"+
+				"done\n",
+			pgid,
+			quotedJobEnv,
+			signalName,
+		)
+	}
+	return groupPrelude + fmt.Sprintf(
 		"pid=%d\n"+
 			"env_path=\"/proc/$pid/environ\"\n"+
 			"if [ ! -r \"$env_path\" ]; then\n"+
@@ -630,7 +691,7 @@ func signalDetachJobScript(jobID string, pid int, signalName string) string {
 			"fi\n"+
 			"echo not-running\n",
 		pid,
-		shellQuote("OKDEV_JOB_ID="+jobID),
+		quotedJobEnv,
 		signalName,
 	)
 }

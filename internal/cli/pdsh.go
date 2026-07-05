@@ -38,6 +38,7 @@ const detachMetadataDir = "/var/okdev/exec"
 const legacyDetachMetadataDir = "/tmp/okdev-exec"
 
 const detachPIDPlaceholder = "__OKDEV_DETACH_PID__"
+const detachPGIDPlaceholder = "__OKDEV_DETACH_PGID__"
 const detachExitPlaceholder = "__OKDEV_DETACH_EXIT__"
 
 // detachDirPlaceholder stands in for the metadata directory in job paths and
@@ -1118,10 +1119,14 @@ type detachJobSpec struct {
 }
 
 type detachMetadata struct {
-	JobID      string `json:"jobId"`
-	Pod        string `json:"pod"`
-	Container  string `json:"container"`
-	PID        int    `json:"pid"`
+	JobID     string `json:"jobId"`
+	Pod       string `json:"pod"`
+	Container string `json:"container"`
+	PID       int    `json:"pid"`
+	// PGID is the job's process group id (== PID when the wrapper launched
+	// the command via setsid); 0 for jobs from containers without setsid or
+	// launched by older okdev versions — group-wide signaling is skipped.
+	PGID       int    `json:"pgid"`
 	Command    string `json:"command"`
 	StartedAt  string `json:"startedAt"`
 	StdoutPath string `json:"stdoutPath"`
@@ -1129,6 +1134,11 @@ type detachMetadata struct {
 	MetaPath   string `json:"metaPath"`
 	State      string `json:"state"`
 	ExitCode   *int   `json:"exitCode,omitempty"`
+	// GroupLive is the count of live (non-zombie) processes still in the
+	// job's process group at scan time, verified to belong to this job via
+	// OKDEV_JOB_ID in a member's environment. Populated from the scan line
+	// prefix, not from the metadata file itself.
+	GroupLive int `json:"-"`
 }
 
 type detachLaunchInfo struct {
@@ -1279,14 +1289,29 @@ func detachWrapperScript(jobID string, argv []string, cleanupPaths []string, met
 			"export OKDEV_JOB_ID=%s\n"+
 			"set -- %s\n"+
 			"cleanup() {\n%s}\n"+
-			"(exec \"$@\") &\n"+
-			"user_pid=$!\n"+
+			// setsid puts the user command in its own process group (PGID ==
+			// its PID) so `okdev jobs stop` can signal the whole tree —
+			// torchrun's children included. The backgrounded child is not a
+			// group leader here, so setsid(2) succeeds without forking and
+			// $! is the user command's own pid after exec. Without setsid we
+			// keep the old single-process behavior and record pgid=0 so stop
+			// falls back to leader-only signaling.
+			"if command -v setsid >/dev/null 2>&1; then\n"+
+			"  setsid \"$@\" &\n"+
+			"  user_pid=$!\n"+
+			"  user_pgid=$user_pid\n"+
+			"else\n"+
+			"  echo 'okdev: setsid unavailable; job has no process group (stop signals the leader only)' >&2\n"+
+			"  (exec \"$@\") &\n"+
+			"  user_pid=$!\n"+
+			"  user_pgid=0\n"+
+			"fi\n"+
 			"if [ -z \"$user_pid\" ] || [ \"$user_pid\" -le 0 ]; then\n"+
 			"  exit 1\n"+
 			"fi\n"+
-			"printf '%%s\\n' \"$running_json\" | sed \"s/%s/$user_pid/g\" >\"$meta_tmp\" || exit 1\n"+
+			"printf '%%s\\n' \"$running_json\" | sed \"s/%s/$user_pid/g; s/%s/$user_pgid/g\" >\"$meta_tmp\" || exit 1\n"+
 			"mv \"$meta_tmp\" \"$meta_path\" || exit 1\n"+
-			"trap 'rc=$?; printf \"%%s\\n\" \"$exit_json\" | sed \"s/%s/$user_pid/g; s/%s/$rc/g\" >\"$meta_tmp\" 2>/dev/null && mv \"$meta_tmp\" \"$meta_path\" 2>/dev/null; cleanup; exit $rc' EXIT\n"+
+			"trap 'rc=$?; printf \"%%s\\n\" \"$exit_json\" | sed \"s/%s/$user_pid/g; s/%s/$user_pgid/g; s/%s/$rc/g\" >\"$meta_tmp\" 2>/dev/null && mv \"$meta_tmp\" \"$meta_path\" 2>/dev/null; cleanup; exit $rc' EXIT\n"+
 			"wait \"$user_pid\"\n",
 		shellutil.Quote(metaPath),
 		shellutil.Quote(runningTemplate),
@@ -1295,7 +1320,9 @@ func detachWrapperScript(jobID string, argv []string, cleanupPaths []string, met
 		quotedArgs,
 		cleanupLines,
 		detachPIDPlaceholder,
+		detachPGIDPlaceholder,
 		detachPIDPlaceholder,
+		detachPGIDPlaceholder,
 		detachExitPlaceholder,
 	)
 }
@@ -1305,16 +1332,15 @@ func mustDetachJSONTemplate(v any) string {
 	if err != nil {
 		panic(err)
 	}
-	out := strings.Replace(string(data), `"pid":0`, `"pid":`+detachPIDPlaceholder, 1)
+	// Replace "pgid" before "pid": the two keys share a suffix and the pgid
+	// replacement must not consume the pid occurrence.
+	out := strings.Replace(string(data), `"pgid":0`, `"pgid":`+detachPGIDPlaceholder, 1)
+	out = strings.Replace(out, `"pid":0`, `"pid":`+detachPIDPlaceholder, 1)
 	return out
 }
 
 func mustDetachJSONTemplateWithExit(v detachMetadata) string {
-	data, err := json.Marshal(v)
-	if err != nil {
-		panic(err)
-	}
-	out := strings.Replace(string(data), `"pid":0`, `"pid":`+detachPIDPlaceholder, 1)
+	out := mustDetachJSONTemplate(v)
 	out = strings.Replace(out, `"exitCode":0`, `"exitCode":`+detachExitPlaceholder, 1)
 	return out
 }

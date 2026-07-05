@@ -496,6 +496,112 @@ if [[ "$RECONCILED_IMAGE" != "ubuntu:24.04" ]]; then
 fi
 echo "Pod reconcile verified"
 
+# --- Detached jobs: runtime-volume logs, process-group stop, sidecar -------
+# fallback. Covers the detach chain end-to-end on a real pod: logs land on
+# the shared /var/okdev volume, `jobs stop` kills the whole process tree
+# (not just the leader), and logs stay readable through the sidecar after
+# the dev container dies. The container-crash step is deliberately last
+# before teardown: it leaves the dev container in CrashLoopBackOff.
+
+echo "Testing exec --detach places logs on the runtime volume"
+DETACH_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --detach -- sh -c 'sleep 7301 & sleep 7302 & wait')
+echo "$DETACH_OUTPUT"
+if [[ "$DETACH_OUTPUT" != *"log=/var/okdev/exec/"* ]]; then
+  echo "ERROR: expected detach log under /var/okdev/exec, got: $DETACH_OUTPUT" >&2
+  exit 1
+fi
+TREE_JOB_ID=$(printf '%s\n' "$DETACH_OUTPUT" | sed -n 's/.*job_id=\([^ ]*\).*/\1/p' | head -n1)
+if [[ -z "$TREE_JOB_ID" ]]; then
+  echo "ERROR: could not extract detach job id from: $DETACH_OUTPUT" >&2
+  exit 1
+fi
+echo "detach on runtime volume verified (job $TREE_JOB_ID)"
+
+echo "Testing jobs list reports the live process group"
+JOBS_JSON=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" --output json jobs list)
+OKDEV_JOBS_JSON="$JOBS_JSON" OKDEV_TREE_JOB_ID="$TREE_JOB_ID" python3 - <<'PY'
+import json, os, sys
+
+doc = json.loads(os.environ["OKDEV_JOBS_JSON"])
+job_id = os.environ["OKDEV_TREE_JOB_ID"]
+jobs = [j for j in doc.get("jobs", []) if j.get("jobId") == job_id]
+if not jobs:
+    print(f"ERROR: job {job_id} missing from jobs list: {doc}", file=sys.stderr)
+    sys.exit(1)
+job = jobs[0]
+if not job.get("state", "").startswith("running"):
+    print(f"ERROR: expected running state, got {job}", file=sys.stderr)
+    sys.exit(1)
+row = job["podStates"][0]
+if row.get("pgid", 0) <= 0:
+    print(f"ERROR: expected pgid > 0 (setsid group), got {row}", file=sys.stderr)
+    sys.exit(1)
+# Leader sh plus the two background sleeps.
+if row.get("groupLive", 0) < 3:
+    print(f"ERROR: expected >=3 live group members, got {row}", file=sys.stderr)
+    sys.exit(1)
+PY
+echo "jobs list process group verified"
+
+echo "Testing jobs stop kills the whole process tree"
+STOP_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs stop "$TREE_JOB_ID")
+echo "$STOP_OUTPUT"
+if [[ "$STOP_OUTPUT" != *"pgid="* ]]; then
+  echo "ERROR: expected group signal (pgid=...) in stop output, got: $STOP_OUTPUT" >&2
+  exit 1
+fi
+LEFTOVER=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'n=0; for d in /proc/[0-9]*/cmdline; do c=$(tr "\0" " " < "$d" 2>/dev/null || true); case "$c" in "sleep 7301 "|"sleep 7302 ") n=$((n+1)) ;; esac; done; echo "leftover=$n"')
+if [[ "$LEFTOVER" != *"leftover=0"* ]]; then
+  echo "ERROR: expected no surviving group processes after stop, got: $LEFTOVER" >&2
+  exit 1
+fi
+echo "jobs group stop verified"
+
+echo "Testing detached job logs survive dev-container death via sidecar"
+MARKER_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --detach -- sh -c 'echo sidecar-fallback-marker; exec sleep 7303')
+MARKER_JOB_ID=$(printf '%s\n' "$MARKER_OUTPUT" | sed -n 's/.*job_id=\([^ ]*\).*/\1/p' | head -n1)
+if [[ -z "$MARKER_JOB_ID" ]]; then
+  echo "ERROR: could not extract marker job id from: $MARKER_OUTPUT" >&2
+  exit 1
+fi
+LOGS_HEALTHY=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs logs "$MARKER_JOB_ID")
+if [[ "$LOGS_HEALTHY" != *"sidecar-fallback-marker"* ]]; then
+  echo "ERROR: expected marker in healthy-container job logs, got: $LOGS_HEALTHY" >&2
+  exit 1
+fi
+
+echo "Crashing dev container into CrashLoopBackOff"
+CRASH_POD_NAME=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
+DEV_WAITING_JSONPATH='{.status.containerStatuses[?(@.name=="dev")].state.waiting.reason}'
+CRASHED=0
+for attempt in $(seq 1 30); do
+  REASON=$(kubectl -n "$NAMESPACE" get pod "$CRASH_POD_NAME" -o jsonpath="$DEV_WAITING_JSONPATH" 2>/dev/null || true)
+  if [[ "$REASON" == "CrashLoopBackOff" ]]; then
+    CRASHED=1
+    break
+  fi
+  # Kill the dev container's main process (sleep infinity, from the config
+  # template). The exec session dies with the container, so tolerate
+  # errors; kubelet escalates to CrashLoopBackOff after repeated crashes.
+  "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'for d in /proc/[0-9]*/cmdline; do if [ "$(tr "\0" " " < "$d" 2>/dev/null)" = "sleep infinity " ]; then p=${d%/cmdline}; kill -9 "${p#/proc/}" 2>/dev/null || true; fi; done' >/dev/null 2>&1 || true
+  sleep 2
+done
+if [[ "$CRASHED" -ne 1 ]]; then
+  echo "ERROR: dev container did not enter CrashLoopBackOff" >&2
+  kubectl -n "$NAMESPACE" get pod "$CRASH_POD_NAME" -o jsonpath='{.status.containerStatuses}' >&2 || true
+  exit 1
+fi
+echo "dev container crashed (CrashLoopBackOff)"
+
+LOGS_FALLBACK=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs logs "$MARKER_JOB_ID")
+if [[ "$LOGS_FALLBACK" != *"sidecar-fallback-marker"* ]]; then
+  echo "ERROR: expected marker via sidecar log fallback, got: $LOGS_FALLBACK" >&2
+  exit 1
+fi
+echo "sidecar log fallback verified"
+
+echo "Detached job tests completed"
+
 echo "Testing explicit okdev down"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes
 assert_no_local_sync_processes "$SESSION_NAME" "$SYNC_HOME"

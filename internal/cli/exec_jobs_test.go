@@ -221,8 +221,12 @@ func TestDetachJobsCommandReconcilesAndReapsTmpFiles(t *testing.T) {
 		"alive=1",
 		"alive=0",
 		"grep -Fqx \"OKDEV_JOB_ID=$job_id\"",
-		// Per-line output is "<alive>\t<json>".
-		"printf '%s\\t%s\\n' \"$alive\" \"$contents\"",
+		// Per-line output is "<alive>\t<groupLive>\t<json>".
+		"printf '%s\\t%s\\t%s\\n' \"$alive\" \"$glive\" \"$contents\"",
+		// Group liveness: count non-zombie members of the job's process
+		// group, identity-checked via the inherited OKDEV_JOB_ID env var.
+		`"pgid":\([0-9][0-9]*\)`,
+		"/proc/[0-9]*/stat",
 		// Best-effort cleanup of stale temp files left by killed wrappers.
 		"-name '*.tmp'",
 		"-mmin +1",
@@ -385,6 +389,59 @@ func TestIsContainerUnavailableExecError(t *testing.T) {
 		if got := isContainerUnavailableExecError(tc.err); got != tc.want {
 			t.Fatalf("isContainerUnavailableExecError(%v) = %v, want %v", tc.err, got, tc.want)
 		}
+	}
+}
+
+func TestParseDetachMetadataLinesParsesGroupLive(t *testing.T) {
+	raw := "1\t3\t{\"jobId\":\"job-a\",\"pod\":\"p\",\"container\":\"dev\",\"pid\":100,\"pgid\":100,\"metaPath\":\"/var/okdev/exec/job-a.json\",\"state\":\"running\"}\n" +
+		// Older two-field lines and raw JSON must keep parsing (mixed cli
+		// versions against the same pod).
+		"0\t{\"jobId\":\"job-b\",\"pod\":\"p\",\"container\":\"dev\",\"pid\":101,\"metaPath\":\"/tmp/okdev-exec/job-b.json\",\"state\":\"running\"}\n"
+	jobs, err := parseDetachMetadataLines(raw)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("expected 2 jobs, got %+v", jobs)
+	}
+	if jobs[0].GroupLive != 3 || jobs[0].PGID != 100 {
+		t.Fatalf("expected groupLive=3 pgid=100, got %+v", jobs[0])
+	}
+	if jobs[1].GroupLive != 0 || jobs[1].State != "orphaned" {
+		t.Fatalf("expected legacy line orphaned with groupLive=0, got %+v", jobs[1])
+	}
+}
+
+func TestJobsListCommandLimitForWidth(t *testing.T) {
+	jobs := []logicalExecJobView{{
+		JobID:        "20260705T063211Z-deadbeef", // 25 chars
+		SummaryState: "running(4/4)",              // 12 chars
+		Pods:         4,
+		StartedAt:    "2026-07-05T06:32:11Z", // 20 chars
+	}}
+	// fixed = 25 + 12 + len("PODS")=4 + 20 + 4*2 = 69
+	if got := jobsListCommandLimitForWidth(120, jobs); got != 51 {
+		t.Fatalf("expected limit 51, got %d", got)
+	}
+	// Narrow terminals keep a recognizable floor instead of a useless stub.
+	if got := jobsListCommandLimitForWidth(60, jobs); got != 16 {
+		t.Fatalf("expected floor 16, got %d", got)
+	}
+	// Unknown width disables truncation.
+	if got := jobsListCommandLimitForWidth(0, jobs); got != 0 {
+		t.Fatalf("expected no limit, got %d", got)
+	}
+}
+
+func TestTruncateTableCell(t *testing.T) {
+	if got := truncateTableCell("short", 10); got != "short" {
+		t.Fatalf("unexpected: %q", got)
+	}
+	if got := truncateTableCell("torchrun --nnodes 4 --nproc-per-node 8 pretrain.py", 20); got != "torchrun --nnodes 4…" {
+		t.Fatalf("unexpected truncation: %q", got)
+	}
+	if got := truncateTableCell("anything", 0); got != "anything" {
+		t.Fatalf("limit 0 must disable truncation: %q", got)
 	}
 }
 
