@@ -304,6 +304,7 @@ agents can react without launching a diagnostic chain on every blip:
 ### `okdev sync [--mode up|down|bi] [--foreground] [--reset] [--dry-run]`
 
 - Advanced command. Starts detached background sync by default; use `--foreground` for sync debugging, or explicit one-way sync (`up`/`down`).
+- `--mode` defaults to the configured path's `direction` (`spec.sync.paths[].direction`, falling back to `bi`); an explicit flag overrides it for that invocation. See the config manifest for choosing a persistent direction — `down` makes the pod the authority so local writes can never clobber pod-generated results.
 - For default `--mode bi`, no-op when background sync is already active for the session.
 - `--background`: explicitly request detached background mode.
 - `--reset`: check local-to-hub sync and mesh receiver health, then reset only what is broken. Skips the local sync teardown when the primary sync is already healthy. For sessions with mesh receivers, probes each receiver and re-runs mesh setup only when broken or disconnected receivers are found.

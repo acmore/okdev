@@ -417,6 +417,47 @@ func TestSyncthingSessionConfigHashTracksSyncSettings(t *testing.T) {
 	}
 }
 
+func TestSyncthingSessionConfigHashTracksDirection(t *testing.T) {
+	cfg := &config.DevEnvironment{}
+	cfg.SetDefaults()
+	base := syncthingSessionConfigHash(cfg, "/tmp/local", "/workspace")
+
+	// Explicit "bi" hashes identically to the legacy empty value so
+	// upgrading okdev (or spelling out the default) does not force a sync
+	// restart on existing sessions.
+	cfg.Spec.Sync.Paths = []config.SyncPathSpec{{Local: ".", Remote: "/workspace", Direction: "bi"}}
+	if got := syncthingSessionConfigHash(cfg, "/tmp/local", "/workspace"); got != base {
+		t.Fatal("explicit bi direction must hash like the legacy default")
+	}
+
+	cfg.Spec.Sync.Paths = []config.SyncPathSpec{{Local: ".", Remote: "/workspace", Direction: "down"}}
+	if got := syncthingSessionConfigHash(cfg, "/tmp/local", "/workspace"); got == base {
+		t.Fatal("expected direction change to affect sync config hash")
+	}
+}
+
+func TestResolveSyncMode(t *testing.T) {
+	// Explicit --mode wins over the configured direction.
+	if got := resolveSyncMode(true, "up", "down"); got != "up" {
+		t.Fatalf("explicit flag must win, got %q", got)
+	}
+	// Without the flag, spec.sync.direction applies.
+	if got := resolveSyncMode(false, "bi", "down"); got != "down" {
+		t.Fatalf("config direction must apply, got %q", got)
+	}
+}
+
+func TestValidateSyncMode(t *testing.T) {
+	for _, ok := range []string{"up", "down", "bi", "two-phase"} {
+		if err := validateSyncMode(ok); err != nil {
+			t.Fatalf("mode %q should validate, got %v", ok, err)
+		}
+	}
+	if err := validateSyncMode("push"); err == nil {
+		t.Fatal("expected invalid mode to be rejected")
+	}
+}
+
 func TestProcStatIsZombie(t *testing.T) {
 	if !procStatIsZombie([]byte("123 (okdev) Z 1 2 3")) {
 		t.Fatal("expected zombie proc stat to be detected")

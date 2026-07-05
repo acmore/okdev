@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -140,11 +141,91 @@ type MetadataMap struct {
 	Labels map[string]string `yaml:"labels"`
 }
 
+// Sync directions; see SyncPathSpec.Direction.
+const (
+	SyncDirectionBi   = "bi"
+	SyncDirectionUp   = "up"
+	SyncDirectionDown = "down"
+)
+
 type SyncSpec struct {
-	Paths         []string      `yaml:"paths"`
-	PreservePaths []string      `yaml:"preservePaths"`
-	Engine        string        `yaml:"engine"`
-	Syncthing     SyncthingSpec `yaml:"syncthing"`
+	Paths         []SyncPathSpec `yaml:"paths"`
+	PreservePaths []string       `yaml:"preservePaths"`
+	Engine        string         `yaml:"engine"`
+	Syncthing     SyncthingSpec  `yaml:"syncthing"`
+}
+
+// SyncPathSpec is one local<->remote sync mapping. In YAML it accepts either
+// the compact string form "local:remote" or a mapping with an optional
+// per-path direction:
+//
+//	paths:
+//	  - .:/workspace
+//	  - local: ./results
+//	    remote: /data/results
+//	    direction: down
+//
+// Direction sets the syncthing folder types for this mapping's folder:
+//
+//	bi   — both sides sendreceive (default; either side can overwrite the
+//	       other — keep generated outputs out of the synced path)
+//	up   — local sendonly, pod receiveonly: code push-only; nothing on the
+//	       pod can alter local files
+//	down — local receiveonly, pod sendonly: the pod is the authority; a
+//	       local write can never clobber pod-side results
+//
+// Direction is per-folder by necessity: syncthing stores .stignore in the
+// directory itself, so per-path direction inside one folder is impossible
+// (per-path folder types were rejected upstream, syncthing/syncthing#8061).
+// Mesh receivers stay receiveonly regardless.
+type SyncPathSpec struct {
+	Local     string `json:"local"`
+	Remote    string `json:"remote"`
+	Direction string `json:"direction,omitempty"`
+}
+
+// UnmarshalJSON accepts the compact "local:remote" string form alongside the
+// structured mapping form. (Config decoding goes through sigs.k8s.io/yaml,
+// which converts YAML to JSON first.)
+func (p *SyncPathSpec) UnmarshalJSON(data []byte) error {
+	var compact string
+	if err := json.Unmarshal(data, &compact); err == nil {
+		parts := strings.Split(compact, ":")
+		if len(parts) != 2 {
+			return fmt.Errorf("sync path entry %q must be local:remote", compact)
+		}
+		p.Local = strings.TrimSpace(parts[0])
+		p.Remote = strings.TrimSpace(parts[1])
+		p.Direction = ""
+		return nil
+	}
+	type syncPathSpecAlias SyncPathSpec
+	var alias syncPathSpecAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	*p = SyncPathSpec(alias)
+	return nil
+}
+
+// MarshalJSON keeps the compact string form for plain bidirectional
+// mappings so round-tripped configs stay stable.
+func (p SyncPathSpec) MarshalJSON() ([]byte, error) {
+	if strings.TrimSpace(p.Direction) == "" {
+		return json.Marshal(p.Local + ":" + p.Remote)
+	}
+	type syncPathSpecAlias SyncPathSpec
+	return json.Marshal(syncPathSpecAlias(p))
+}
+
+// EffectiveDirection resolves the mapping's direction, defaulting to
+// bidirectional.
+func (p SyncPathSpec) EffectiveDirection() string {
+	d := strings.TrimSpace(p.Direction)
+	if d == "" {
+		return SyncDirectionBi
+	}
+	return d
 }
 
 type SyncthingSpec struct {
@@ -593,16 +674,15 @@ func workspaceMountPathForContainer(containers []corev1.Container, name string) 
 	return ""
 }
 
-func validateSyncPaths(paths []string) error {
+func validateSyncPaths(paths []SyncPathSpec) error {
 	for _, p := range paths {
-		parts := strings.Split(p, ":")
-		if len(parts) != 2 {
-			return fmt.Errorf("spec.sync.paths entry %q must be local:remote", p)
+		if strings.TrimSpace(p.Local) == "" || strings.TrimSpace(p.Remote) == "" {
+			return fmt.Errorf("spec.sync.paths entry %q must have non-empty local and remote", p.Local+":"+p.Remote)
 		}
-		local := strings.TrimSpace(parts[0])
-		remote := strings.TrimSpace(parts[1])
-		if local == "" || remote == "" {
-			return fmt.Errorf("spec.sync.paths entry %q must have non-empty local and remote", p)
+		switch strings.TrimSpace(p.Direction) {
+		case "", SyncDirectionBi, SyncDirectionUp, SyncDirectionDown:
+		default:
+			return fmt.Errorf("spec.sync.paths entry %q direction must be one of %s, %s, %s", p.Local+":"+p.Remote, SyncDirectionBi, SyncDirectionUp, SyncDirectionDown)
 		}
 	}
 	return nil

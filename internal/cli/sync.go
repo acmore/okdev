@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/logx"
 	"github.com/acmore/okdev/internal/session"
@@ -86,6 +87,10 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			}
 			pairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
 			if err != nil {
+				return err
+			}
+			mode = resolveSyncMode(cmd.Flags().Changed("mode"), mode, pairs[0].Direction)
+			if err := validateSyncMode(mode); err != nil {
 				return err
 			}
 			if dryRun {
@@ -166,7 +171,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&mode, "mode", "bi", "Sync mode: up|down|bi")
+	cmd.Flags().StringVar(&mode, "mode", "bi", "Sync mode: up|down|bi (default: spec.sync.direction, or bi)")
 	cmd.Flags().BoolVar(&background, "background", true, "Run syncthing sync as a detached background process")
 	cmd.Flags().BoolVar(&foreground, "foreground", false, "Run syncthing sync in the foreground for troubleshooting")
 	cmd.Flags().BoolVar(&reset, "reset", false, "Check sync health and reset broken components")
@@ -177,6 +182,26 @@ func newSyncCmd(opts *Options) *cobra.Command {
 
 	cmd.AddCommand(newSyncResetRemoteCmd(opts))
 	return cmd
+}
+
+// resolveSyncMode picks the effective sync mode: an explicit --mode always
+// wins; otherwise the configured spec.sync.direction applies.
+func resolveSyncMode(flagSet bool, flagMode, configDirection string) string {
+	if flagSet {
+		return flagMode
+	}
+	return configDirection
+}
+
+// validateSyncMode accepts the documented modes plus the internal
+// "two-phase" bootstrap mode that `okdev up` spawns for fresh sessions.
+func validateSyncMode(mode string) error {
+	switch mode {
+	case "up", "down", "bi", "two-phase":
+		return nil
+	default:
+		return fmt.Errorf("invalid sync mode %q: must be one of up, down, bi", mode)
+	}
 }
 
 func newSyncResetRemoteCmd(opts *Options) *cobra.Command {
@@ -203,6 +228,12 @@ synced workspace subtree is cleared.`,
 			}
 			if len(pairs) != 1 {
 				return fmt.Errorf("reset-remote requires exactly one sync path mapping, got %d", len(pairs))
+			}
+			if pairs[0].Direction == config.SyncDirectionDown {
+				// reset-remote clears the remote and reseeds it from local;
+				// with direction "down" the pod is the authority and local
+				// is receiveonly — the wipe would sync back as deletions.
+				return fmt.Errorf("sync reset-remote conflicts with sync direction \"down\" (the pod is the sync authority)")
 			}
 
 			target, err := resolveTargetRef(cmd.Context(), cc.opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)

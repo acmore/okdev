@@ -175,6 +175,13 @@ func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, e
 	if err != nil {
 		return nil, err
 	}
+	if flags.resetWorkspace && len(syncPairs) > 0 && syncPairs[0].Direction == config.SyncDirectionDown {
+		// reset-workspace clears the remote and reseeds it from local; with
+		// direction "down" the pod is the authority and local is
+		// receiveonly, so the combination would wipe the remote and then
+		// pull the deletions back over the local files.
+		return nil, fmt.Errorf("--reset-workspace conflicts with sync direction \"down\" (the pod is the sync authority); remove the flag or switch direction")
+	}
 	runtime, err := sessionRuntime(cc.cfg, cc.cfgPath, cc.sessionName, workloadName, labels, annotations, cc.cfg.Spec.PodTemplate.Spec, volumes, enableTmux, resolvePreStopCommand(cc.cfg, cc.cfgPath))
 	if err != nil {
 		return nil, err
@@ -1092,12 +1099,18 @@ func upSetupSync(state *upState, target workload.TargetRef) (string, string, str
 		}
 		configChanged = changed
 	}
+	direction := config.SyncDirectionBi
+	if len(state.syncPairs) > 0 {
+		direction = state.syncPairs[0].Direction
+	}
 	active := syncthingSessionActive(state.command.sessionName)
 	restartRequired := state.flags.resetWorkspace || configChanged || !active
-	startMode = syncStartMode(state.flags.resetWorkspace, targetReset, hasConfigState, configChanged, active)
+	startMode = syncStartMode(direction, state.flags.resetWorkspace, targetReset, hasConfigState, configChanged, active)
 	// Signal waitForInitialSync to probe the remote folder type for an
-	// incomplete bootstrap, reusing the port-forward it already opens.
-	bootstrapResume = len(state.syncPairs) == 1 && hasConfigState && !state.flags.resetWorkspace && !targetReset
+	// incomplete bootstrap, reusing the port-forward it already opens. Only
+	// meaningful for bi: directional folders never run the two-phase
+	// bootstrap, so there is nothing to resume.
+	bootstrapResume = len(state.syncPairs) == 1 && hasConfigState && !state.flags.resetWorkspace && !targetReset && direction == config.SyncDirectionBi
 	if restartRequired {
 		if err := refreshSyncthingSessionProcesses(state.command.sessionName); err != nil {
 			return "", "", "", false, fmt.Errorf("refresh local syncthing session state: %w", err)
@@ -1832,7 +1845,15 @@ func modeSymbol(mode string) string {
 	}
 }
 
-func syncStartMode(resetWorkspace, targetReset, hasConfigState, configChanged, active bool) string {
+func syncStartMode(direction string, resetWorkspace, targetReset, hasConfigState, configChanged, active bool) string {
+	// A directional folder never needs the two-phase bootstrap: that
+	// protocol exists to protect the remote from the local side's initial
+	// emptiness before flipping both sides to sendreceive. With up/down one
+	// side is already sendonly, so the final folder types are safe from the
+	// first start.
+	if direction == config.SyncDirectionUp || direction == config.SyncDirectionDown {
+		return direction
+	}
 	switch {
 	case resetWorkspace:
 		return "two-phase"

@@ -42,6 +42,8 @@ Multi-pod sync behavior depends on workload layout:
 
 Do not assume all pods independently sync from the local machine in the same way. Check the workload pattern first.
 
+Direction: `spec.sync.paths[].direction: bi|up|down` sets the folder direction on the local↔hub edge for that mapping (`down` = pod is the authority, local writes can never clobber pod results). It applies to the mapping's whole folder — finer per-subpath direction is impossible in Syncthing. Mesh receiver pods are always receiveonly regardless. Generated outputs belong outside the synced path either way; fetch them with `okdev cp` or `okdev jobs logs`.
+
 ## PyTorchJob
 
 For PyTorchJob questions, keep these points in mind:

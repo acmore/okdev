@@ -114,6 +114,7 @@ type detailedStatusSSH struct {
 
 type detailedStatusSync struct {
 	Engine             string             `json:"engine"`
+	Direction          string             `json:"direction,omitempty"`
 	Health             string             `json:"health,omitempty"`
 	HealthDetail       string             `json:"healthDetail,omitempty"`
 	ConfiguredPaths    []string           `json:"configuredPaths,omitempty"`
@@ -420,8 +421,13 @@ func buildDetailedSync(sessionName string, cfg *config.DevEnvironment, cfgPath s
 	if engine == "" {
 		engine = "syncthing"
 	}
+	direction := ""
+	if pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.EffectiveWorkspaceMountPath(cfgPath)); err == nil && len(pairs) > 0 {
+		direction = pairs[0].Direction
+	}
 	detail := detailedStatusSync{
 		Engine:          engine,
+		Direction:       direction,
 		ConfiguredPaths: summarizeConfiguredSyncPaths(cfg, cfgPath),
 	}
 	if engine != "syncthing" {
@@ -593,6 +599,9 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 
 	fmt.Fprintln(w, "\nSync:")
 	fmt.Fprintf(w, "- engine: %s\n", detail.Sync.Engine)
+	if detail.Sync.Direction != "" {
+		fmt.Fprintf(w, "- direction: %s (%s)\n", detail.Sync.Direction, modeSymbol(detail.Sync.Direction))
+	}
 	if detail.Sync.BackgroundStatus != "" {
 		status := detail.Sync.BackgroundStatus
 		if detail.Sync.BackgroundPID > 0 {

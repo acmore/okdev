@@ -2465,9 +2465,14 @@ func resetRemoteWorkspace(ctx context.Context, k interface {
 }
 
 type syncthingSessionConfigState struct {
-	Engine                string `json:"engine"`
-	LocalPath             string `json:"localPath"`
-	RemotePath            string `json:"remotePath"`
+	Engine     string `json:"engine"`
+	LocalPath  string `json:"localPath"`
+	RemotePath string `json:"remotePath"`
+	// Direction is part of the hash so editing spec.sync.direction makes
+	// the next `okdev up` restart sync with the new folder types. The
+	// default "bi" is hashed as the empty legacy value to avoid a
+	// restart on upgrade for existing sessions.
+	Direction             string `json:"direction,omitempty"`
 	WatcherDelaySeconds   int    `json:"watcherDelaySeconds,omitempty"`
 	RescanIntervalSeconds int    `json:"rescanIntervalSeconds,omitempty"`
 	RelaysEnabled         bool   `json:"relaysEnabled,omitempty"`
@@ -2479,10 +2484,15 @@ func syncthingSessionConfigHash(cfg *config.DevEnvironment, localPath, remotePat
 	if cfg == nil {
 		return ""
 	}
+	direction := ""
+	if pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, remotePath); err == nil && len(pairs) > 0 && pairs[0].Direction != config.SyncDirectionBi {
+		direction = pairs[0].Direction
+	}
 	state := syncthingSessionConfigState{
 		Engine:                strings.TrimSpace(cfg.Spec.Sync.Engine),
 		LocalPath:             localPath,
 		RemotePath:            remotePath,
+		Direction:             direction,
 		WatcherDelaySeconds:   cfg.Spec.Sync.Syncthing.WatcherDelaySeconds,
 		RescanIntervalSeconds: cfg.Spec.Sync.Syncthing.RescanIntervalSeconds,
 		RelaysEnabled:         cfg.Spec.Sync.Syncthing.RelaysEnabled,
