@@ -9,6 +9,7 @@ import (
 	"github.com/acmore/okdev/internal/version"
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
+	sigsyaml "sigs.k8s.io/yaml"
 )
 
 func validConfig() *DevEnvironment {
@@ -240,6 +241,74 @@ func TestValidateRejectsInvalidEngine(t *testing.T) {
 	}
 }
 
+func TestValidateSyncPathDirection(t *testing.T) {
+	for _, valid := range []string{"", "bi", "up", "down"} {
+		cfg := validConfig()
+		cfg.Spec.Sync.Paths = []SyncPathSpec{{Local: ".", Remote: "/workspace", Direction: valid}}
+		cfg.SetDefaults()
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("direction %q should be valid, got %v", valid, err)
+		}
+	}
+	for _, invalid := range []string{"push", "pull", "sendonly", "both"} {
+		cfg := validConfig()
+		cfg.Spec.Sync.Paths = []SyncPathSpec{{Local: ".", Remote: "/workspace", Direction: invalid}}
+		cfg.SetDefaults()
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("direction %q should be rejected", invalid)
+		}
+	}
+}
+
+func TestSyncPathSpecEffectiveDirection(t *testing.T) {
+	var p SyncPathSpec
+	if got := p.EffectiveDirection(); got != SyncDirectionBi {
+		t.Fatalf("expected default bi, got %q", got)
+	}
+	p.Direction = " down "
+	if got := p.EffectiveDirection(); got != SyncDirectionDown {
+		t.Fatalf("expected trimmed down, got %q", got)
+	}
+}
+
+func TestSyncPathSpecYAMLForms(t *testing.T) {
+	// Compact string form and structured form must both decode; the string
+	// form keeps direction empty (= bi).
+	var spec SyncSpec
+	raw := []byte("paths:\n  - .:/workspace\n  - local: ./results\n    remote: /data/results\n    direction: down\n")
+	if err := sigsyaml.Unmarshal(raw, &spec); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(spec.Paths) != 2 {
+		t.Fatalf("expected 2 paths, got %+v", spec.Paths)
+	}
+	if spec.Paths[0].Local != "." || spec.Paths[0].Remote != "/workspace" || spec.Paths[0].Direction != "" {
+		t.Fatalf("unexpected compact entry: %+v", spec.Paths[0])
+	}
+	if spec.Paths[1].Local != "./results" || spec.Paths[1].Remote != "/data/results" || spec.Paths[1].Direction != "down" {
+		t.Fatalf("unexpected structured entry: %+v", spec.Paths[1])
+	}
+
+	// Round-trip: plain mappings marshal back to the compact string form,
+	// directional ones keep the structured form.
+	out, err := sigsyaml.Marshal(spec.Paths)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	text := string(out)
+	if !strings.Contains(text, ".:/workspace") {
+		t.Fatalf("expected compact form in output, got %q", text)
+	}
+	if !strings.Contains(text, "direction: down") {
+		t.Fatalf("expected structured form for directional entry, got %q", text)
+	}
+
+	// Malformed compact entries fail decoding.
+	if err := sigsyaml.Unmarshal([]byte("paths:\n  - nocolon\n"), &spec); err == nil {
+		t.Fatal("expected error for entry without colon")
+	}
+}
+
 func TestValidateAllowsInterPodSSHToOverrideDisabledSidecars(t *testing.T) {
 	cfg := validConfig()
 	cfg.Spec.Workload.Type = "pytorchjob"
@@ -347,7 +416,7 @@ func TestValidateAcceptsAgentLocalPathWithTilde(t *testing.T) {
 
 func TestValidateRejectsInvalidSyncPath(t *testing.T) {
 	cfg := validConfig()
-	cfg.Spec.Sync.Paths = []string{"./local-only"}
+	cfg.Spec.Sync.Paths = []SyncPathSpec{{Local: "./local-only", Remote: ""}}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error")
 	}
@@ -355,7 +424,7 @@ func TestValidateRejectsInvalidSyncPath(t *testing.T) {
 
 func TestValidateRejectsSyncthingMultiplePaths(t *testing.T) {
 	cfg := validConfig()
-	cfg.Spec.Sync.Paths = []string{"./a:/workspace/a", "./b:/workspace/b"}
+	cfg.Spec.Sync.Paths = []SyncPathSpec{{Local: "./a", Remote: "/workspace/a"}, {Local: "./b", Remote: "/workspace/b"}}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error")
 	}

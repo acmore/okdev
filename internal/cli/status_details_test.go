@@ -65,7 +65,7 @@ func TestGatherDetailedStatusIncludesDiagnostics(t *testing.T) {
 	if err := os.WriteFile(conflictPath, []byte("conflict"), 0o644); err != nil {
 		t.Fatalf("write conflict file: %v", err)
 	}
-	cfg.Spec.Sync.Paths = []string{syncRoot + ":/workspace"}
+	cfg.Spec.Sync.Paths = []config.SyncPathSpec{{Local: syncRoot, Remote: "/workspace"}}
 	cfg.Spec.Ports = []config.PortMapping{{Name: "http", Local: 8080, Remote: 80}}
 	cfg.Spec.Agents = []config.AgentSpec{{Name: "codex", Auth: &config.AgentAuth{LocalPath: "~/.codex/auth.json"}}}
 
@@ -347,6 +347,7 @@ func TestPrintDetailedStatusIncludesSections(t *testing.T) {
 		},
 		Sync: detailedStatusSync{
 			Engine:             "syncthing",
+			Direction:          "down",
 			BackgroundStatus:   "running",
 			BackgroundPID:      123,
 			ConfiguredPaths:    []string{"/tmp/repo -> /workspace"},
@@ -391,6 +392,7 @@ func TestPrintDetailedStatusIncludesSections(t *testing.T) {
 		"SSH:",
 		"managed forward: running",
 		"Sync:",
+		"direction: down (<-)",
 		"background: running (pid 123)",
 		"conflicts: 2",
 		"./a.sync-conflict-1",

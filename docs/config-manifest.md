@@ -233,7 +233,8 @@ spec:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `engine` | `string` | — | Sync engine (currently only `syncthing`) |
-| `paths` | `[]string` | — | Mappings in `local:remote` format (max 1 entry) |
+| `paths` | `[]entry` | — | Sync mappings (max 1 entry). Each entry is either the compact string `local:remote`, or a mapping `{local, remote, direction}` with an optional per-path `direction` |
+| `paths[].direction` | `string` | `bi` | Sync direction for this mapping's folder: `bi` (bidirectional), `up` (local is the authority: local sendonly, pod receiveonly), `down` (pod is the authority: pod sendonly, local receiveonly) |
 | `syncthing.version` | `string` | `v1.29.7` | Local Syncthing binary version |
 | `syncthing.autoInstall` | `bool` | `true` | Auto-install local Syncthing |
 | `syncthing.image` | `string` | `ghcr.io/acmore/okdev:<version>` | Sidecar image (fallback: `edge`) |
@@ -242,7 +243,27 @@ spec:
 | `syncthing.compression` | `bool` | `false` | Use Syncthing `always` compression for peer connections instead of the default `metadata` mode |
 | `syncthing.versioningDays` | `int` | `30` | Keep files overwritten or deleted by sync in `.stversions` for this many days (staggered versioning, both sides); `0` disables |
 
-**Validation:** `engine` must be `syncthing`; each `paths[]` entry must be `local:remote`; `versioningDays` must be `>= 0`.
+**Validation:** `engine` must be `syncthing`; each `paths[]` entry must have non-empty local and remote; `direction` must be `bi`, `up`, or `down`; `versioningDays` must be `>= 0`.
+
+**Sync direction.** `direction` applies to a mapping's whole synced folder — finer per-subpath direction inside one folder is impossible with Syncthing (ignore rules live in the directory itself; per-path folder types were rejected upstream). Pick the direction by what the folder carries:
+
+- `bi` (default): source code you edit on both sides. Either side can overwrite the other, so **keep generated outputs (results, checkpoints, logs) out of the synced path** — write them to a non-synced location and fetch with `okdev cp` or `okdev jobs logs`. Versioning (`.stversions/`) is the safety net, not the design.
+- `up`: the folder is a code drop. Nothing the pod writes can ever touch local files; pod-side writes into the folder are flagged by Syncthing but not propagated.
+- `down`: the folder carries pod-generated results. A stray local write (for example an empty file from a failed redirect) can never clobber the pod's data. `okdev up --reset-workspace` and `okdev sync reset-remote` are rejected in this direction because they reseed the remote from local.
+
+An explicit `okdev sync --mode` overrides the configured direction for that invocation. Changing `direction` takes effect on the next `okdev up` (it restarts sync with the new folder types). Mesh receiver pods are always receiveonly regardless of direction.
+
+```yaml
+# compact form (direction defaults to bi):
+paths:
+  - .:/workspace
+
+# structured form with an explicit direction:
+paths:
+  - local: .
+    remote: /workspace
+    direction: up
+```
 
 Local ignore rules come from the synced workspace's `.stignore`. `okdev init` writes a starter `.stignore` for built-in templates, and `okdev up` creates one with default patterns if the local sync root does not already have one. Editing `.stignore` takes effect automatically as Syncthing notices the change, but it does not remove files that were already synced to the remote workspace. For faster initial syncs, consider ignoring large generated build outputs or local test artifacts such as `debug/`, `release/`, caches, and dataset directories when they do not need to exist remotely.
 

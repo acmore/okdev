@@ -119,6 +119,7 @@ func TestSyncHelpers(t *testing.T) {
 func TestSyncStartMode(t *testing.T) {
 	cases := []struct {
 		name           string
+		direction      string
 		resetWorkspace bool
 		targetReset    bool
 		hasConfigState bool
@@ -126,16 +127,23 @@ func TestSyncStartMode(t *testing.T) {
 		active         bool
 		want           string
 	}{
-		{name: "first bootstrap", hasConfigState: false, active: false, want: "two-phase"},
-		{name: "explicit reset", resetWorkspace: true, hasConfigState: true, configChanged: true, active: true, want: "two-phase"},
-		{name: "target recreated", targetReset: true, hasConfigState: true, active: false, want: "two-phase"},
-		{name: "config changed on active session", hasConfigState: true, configChanged: true, active: true, want: "bi"},
-		{name: "daemon recovery", hasConfigState: true, active: false, want: "bi"},
-		{name: "steady state", hasConfigState: true, active: true, want: "bi"},
+		{name: "first bootstrap", direction: "bi", hasConfigState: false, active: false, want: "two-phase"},
+		{name: "explicit reset", direction: "bi", resetWorkspace: true, hasConfigState: true, configChanged: true, active: true, want: "two-phase"},
+		{name: "target recreated", direction: "bi", targetReset: true, hasConfigState: true, active: false, want: "two-phase"},
+		{name: "config changed on active session", direction: "bi", hasConfigState: true, configChanged: true, active: true, want: "bi"},
+		{name: "daemon recovery", direction: "bi", hasConfigState: true, active: false, want: "bi"},
+		{name: "steady state", direction: "bi", hasConfigState: true, active: true, want: "bi"},
+		// Directional folders skip the two-phase bootstrap entirely: one
+		// side is already sendonly, so the final types are safe from the
+		// first start.
+		{name: "up direction fresh", direction: "up", hasConfigState: false, active: false, want: "up"},
+		{name: "up direction target reset", direction: "up", targetReset: true, hasConfigState: true, active: false, want: "up"},
+		{name: "down direction fresh", direction: "down", hasConfigState: false, active: false, want: "down"},
+		{name: "down direction steady", direction: "down", hasConfigState: true, active: true, want: "down"},
 	}
 
 	for _, tc := range cases {
-		if got := syncStartMode(tc.resetWorkspace, tc.targetReset, tc.hasConfigState, tc.configChanged, tc.active); got != tc.want {
+		if got := syncStartMode(tc.direction, tc.resetWorkspace, tc.targetReset, tc.hasConfigState, tc.configChanged, tc.active); got != tc.want {
 			t.Fatalf("%s: got %q want %q", tc.name, got, tc.want)
 		}
 	}

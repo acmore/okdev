@@ -91,7 +91,7 @@ func TestBuildWorkloadSnapshotExcludesNonWorkloadFields(t *testing.T) {
 			Sidecar:  SidecarSpec{Image: "img:1"},
 			Ports:    []PortMapping{{Name: "http", Local: 8080, Remote: 80}},
 			SSH:      SSHSpec{User: "alice"},
-			Sync:     SyncSpec{Paths: []string{"."}},
+			Sync:     SyncSpec{Paths: []SyncPathSpec{{Local: ".", Remote: "/workspace"}}},
 		},
 	}
 	cfg2 := &DevEnvironment{
@@ -100,7 +100,7 @@ func TestBuildWorkloadSnapshotExcludesNonWorkloadFields(t *testing.T) {
 			Sidecar:  SidecarSpec{Image: "img:1"},
 			Ports:    []PortMapping{{Name: "grpc", Local: 9090, Remote: 90}},
 			SSH:      SSHSpec{User: "bob"},
-			Sync:     SyncSpec{Paths: []string{"src/"}},
+			Sync:     SyncSpec{Paths: []SyncPathSpec{{Local: "src/", Remote: "/workspace"}}},
 		},
 	}
 	snap1 := BuildWorkloadSnapshot(cfg1, "/workspace", "dev", false, "", "", "", "")
