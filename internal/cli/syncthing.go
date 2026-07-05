@@ -249,7 +249,6 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		return fmt.Errorf("mark syncthing ready: %w", err)
 	}
 
-	ranTwoPhase := false
 	for _, folder := range folders {
 		if folder.twoPhase {
 			// The bootstrap context has a short timeout
@@ -261,7 +260,6 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 			if err != nil {
 				return fmt.Errorf("two-phase initial sync (%s): %w", folder.id, err)
 			}
-			ranTwoPhase = true
 			continue
 		}
 		folderTypeLocal, folderTypeRemote := folderTypesForMode(folder.mode)
@@ -272,7 +270,12 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 			return fmt.Errorf("configure remote syncthing (%s): %w", folder.id, err)
 		}
 	}
-	if ranTwoPhase {
+	if mode == "two-phase" {
+		// The marker signals that the bootstrap phase concluded — `okdev up`
+		// waits on this handoff whenever it requested a bootstrap. It must
+		// be written even when no folder actually ran the two-phase
+		// protocol (all mappings directional), or the caller hangs until
+		// its handoff timeout.
 		if err := markSyncthingBootstrapCompleteFn(sessionName); err != nil {
 			return fmt.Errorf("mark syncthing bootstrap complete: %w", err)
 		}

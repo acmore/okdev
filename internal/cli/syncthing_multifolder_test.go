@@ -1,10 +1,19 @@
 package cli
 
 import (
+	"context"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/acmore/okdev/internal/config"
+	"github.com/acmore/okdev/internal/kube"
 	syncengine "github.com/acmore/okdev/internal/sync"
+	"github.com/acmore/okdev/internal/workload"
+	"github.com/spf13/cobra"
 )
 
 func TestResolveSyncFoldersPerPathAndOverride(t *testing.T) {
@@ -115,5 +124,121 @@ func TestPruneManagedFoldersFromConfig(t *testing.T) {
 	changed, err = pruneManagedFoldersFromConfig(cfg, "sess", map[string]bool{"okdev-sess": true})
 	if err != nil || changed {
 		t.Fatalf("expected no-op prune, changed=%v err=%v", changed, err)
+	}
+}
+
+func TestRunSyncthingSyncMarksBootstrapCompleteWithoutBiFolders(t *testing.T) {
+	// Regression: `okdev up` waits for the bootstrap-complete handoff
+	// whenever it starts sync in two-phase mode. With only directional
+	// mappings no folder runs the two-phase protocol, but the marker must
+	// still be written or the caller hangs until its handoff timeout.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	origEnsureBinary := syncthingEnsureBinaryFn
+	origResolveTargetRef := resolveTargetRefFn
+	origExec := execInSyncthingContainerFn
+	origPF := startSyncthingPortForwardFn
+	origReadKey := readRemoteSyncthingAPIKeyFn
+	origStartLocal := startAndWaitForLocalSyncthingFn
+	origWaitAPI := waitSyncthingAPIFn
+	origDeviceID := syncthingDeviceIDFn
+	origMarkReady := markSyncthingReadyFn
+	origMarkComplete := markSyncthingBootstrapCompleteFn
+	origTwoPhase := runTwoPhaseInitialSyncFn
+	origConfigure := configureSyncthingPeerFn
+	origPrune := pruneManagedSessionFoldersFn
+	origVerify := verifyRemoteRootSharedFn
+	origSaveHash := saveSyncthingConfigHashFn
+	origStopOwned := stopOwnedLocalSyncthingFn
+	origHealth := runSyncHealthLoopFn
+	t.Cleanup(func() {
+		syncthingEnsureBinaryFn = origEnsureBinary
+		resolveTargetRefFn = origResolveTargetRef
+		execInSyncthingContainerFn = origExec
+		startSyncthingPortForwardFn = origPF
+		readRemoteSyncthingAPIKeyFn = origReadKey
+		startAndWaitForLocalSyncthingFn = origStartLocal
+		waitSyncthingAPIFn = origWaitAPI
+		syncthingDeviceIDFn = origDeviceID
+		markSyncthingReadyFn = origMarkReady
+		markSyncthingBootstrapCompleteFn = origMarkComplete
+		runTwoPhaseInitialSyncFn = origTwoPhase
+		configureSyncthingPeerFn = origConfigure
+		pruneManagedSessionFoldersFn = origPrune
+		verifyRemoteRootSharedFn = origVerify
+		saveSyncthingConfigHashFn = origSaveHash
+		stopOwnedLocalSyncthingFn = origStopOwned
+		runSyncHealthLoopFn = origHealth
+	})
+
+	syncthingEnsureBinaryFn = func(context.Context, string, bool) (string, error) { return "/tmp/syncthing", nil }
+	resolveTargetRefFn = func(context.Context, *Options, *config.DevEnvironment, string, string, targetResolverClient) (workload.TargetRef, error) {
+		return workload.TargetRef{PodName: "pod-0"}, nil
+	}
+	execInSyncthingContainerFn = func(context.Context, interface {
+		ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+	}, string, string, string) ([]byte, error) {
+		return nil, nil
+	}
+	startSyncthingPortForwardFn = func(context.Context, *Options, string, string) (context.CancelFunc, string, string, error) {
+		return func() {}, "http://remote", "tcp://127.0.0.1:22000", nil
+	}
+	readRemoteSyncthingAPIKeyFn = func(context.Context, interface {
+		ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+	}, string, string) (string, error) {
+		return "remote-key", nil
+	}
+	startAndWaitForLocalSyncthingFn = func(context.Context, string, string) (string, string, int, error) {
+		return "http://local", "local-key", 4321, nil
+	}
+	waitSyncthingAPIFn = func(context.Context, string, string, time.Duration) error { return nil }
+	syncthingDeviceIDFn = func(_ context.Context, base, _ string) (string, error) {
+		if base == "http://local" {
+			return "LOCAL", nil
+		}
+		return "REMOTE", nil
+	}
+	markSyncthingReadyFn = func(string) error { return nil }
+	twoPhaseCalls := 0
+	runTwoPhaseInitialSyncFn = func(context.Context, io.Writer, string, string, string, string, string, string, string, string, string, string, syncthingSyncConfig) error {
+		twoPhaseCalls++
+		return nil
+	}
+	configureSyncthingPeerFn = func(context.Context, string, string, string, string, string, string, string, string, int, int, bool, bool, bool, int) error {
+		return nil
+	}
+	pruneManagedSessionFoldersFn = func(context.Context, string, string, string, map[string]bool) error { return nil }
+	verifyRemoteRootSharedFn = func(context.Context, *kube.Client, string, string, string, syncFolder) error { return nil }
+	saveSyncthingConfigHashFn = func(string, string) error { return nil }
+	stopOwnedLocalSyncthingFn = func(string, int) error { return nil }
+	runSyncHealthLoopFn = func(<-chan os.Signal, io.Writer, syncHealthChecker) {}
+	completeCalls := 0
+	markSyncthingBootstrapCompleteFn = func(string) error {
+		completeCalls++
+		return nil
+	}
+
+	localA := filepath.Join(home, "code")
+	localB := filepath.Join(home, "collected")
+	cfg := &config.DevEnvironment{}
+	cfg.SetDefaults()
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	err := runSyncthingSync(cmd, &Options{}, cfg, "default", "sess-directional", "two-phase", []syncengine.Pair{
+		{Local: localA, Remote: "/workspace", Direction: "up"},
+		{Local: localB, Remote: "/data/results", Direction: "down"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("runSyncthingSync: %v", err)
+	}
+	if twoPhaseCalls != 0 {
+		t.Fatalf("directional folders must not run the two-phase protocol, got %d calls", twoPhaseCalls)
+	}
+	if completeCalls != 1 {
+		t.Fatalf("bootstrap-complete marker must be written exactly once, got %d", completeCalls)
 	}
 }
