@@ -274,6 +274,27 @@ if [[ "$SYNC_OK" != "true" ]]; then
   exit 1
 fi
 
+echo "Verifying short-name pod addressing (master-0 / worker-1)"
+SHORT_MASTER=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod master-0 --no-tty --no-prefix -- sh -lc 'hostname')
+if [[ "$SHORT_MASTER" != *"master-0"* ]]; then
+  echo "ERROR: exec --pod master-0 did not reach the master pod, got '$SHORT_MASTER'" >&2
+  exit 1
+fi
+SHORT_WORKER=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod worker-1 --no-tty --no-prefix -- sh -lc 'hostname')
+if [[ "$SHORT_WORKER" != *"worker-1"* ]]; then
+  echo "ERROR: exec --pod worker-1 did not reach worker-1, got '$SHORT_WORKER'" >&2
+  exit 1
+fi
+set +e
+SHORT_UNKNOWN=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod worker-9 --no-tty --no-prefix -- sh -lc 'true' 2>&1)
+SHORT_UNKNOWN_STATUS=$?
+set -e
+if [[ "$SHORT_UNKNOWN_STATUS" -eq 0 ]] || [[ "$SHORT_UNKNOWN" != *"no session pod matches"* ]]; then
+  echo "ERROR: unknown short name must error with guidance, got status=$SHORT_UNKNOWN_STATUS: $SHORT_UNKNOWN" >&2
+  exit 1
+fi
+echo "Short-name pod addressing verified"
+
 echo "Waiting for PyTorchJob pods before validating PVC mount layout"
 PODS_READY=false
 for i in $(seq 1 30); do

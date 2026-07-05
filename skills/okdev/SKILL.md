@@ -20,7 +20,7 @@ Primary docs:
 
 Use this skill when the request involves:
 
-- `okdev init`, `up`, `status`, `ssh`, `exec`, `cp`, `sync`, `ports`, `down`, `prune`, `jobs`
+- `okdev init`, `up`, `restart`, `status`, `ssh`, `exec`, `cp`, `sync`, `ports`, `down`, `prune`, `jobs`
 - config discovery or `.okdev.yaml` / `.okdev/okdev.yaml`
 - sync behavior, session reuse, port forwards, or SSH access
 - manifest-backed workloads such as `job`, `generic`, or `pytorchjob`
@@ -48,6 +48,8 @@ Do not use this skill for:
 - Config discovery order is: explicit `--config`, `.okdev/okdev.yaml`, `.okdev.yaml`, `okdev.yaml`.
 - `okdev up` reuses an existing session workload by default.
 - Use `okdev up --reconcile` when workload-shaping config changed and the user wants those changes applied.
+- For setup that must survive pod recreation (installed tools, builds), point users at `spec.lifecycle.postCreate` (target pod, pre-sync) and `postSync` (all pods, after code arrives) — both re-run automatically on recreated pods; do not suggest manual re-runs.
+- When a container died and the restart policy will not bring it back, `okdev restart [--yes]` is the one-command recovery: delete + recreate + full setup with the same config. Pod names change on recreation, so prefer the short-name aliases from `okdev status` (`master-0`, `worker-1`) with `--pod` — they also work for `cp`, `jobs`, and `target set`.
 - `okdev up` on a `job` or `pytorchjob` workload fails fast when a pod enters `PodFailed` before readiness. If that run also created or recreated the workload, okdev deletes the failed workload and clears local session state — the next `okdev up` starts fresh. Workloads that were reused as-is (no create/recreate this run) are left alone. For `pod` workloads okdev also returns early on `Failed` but does not auto-delete.
 - Use `okdev sync --reset` when local/background sync state is stale but the workload itself is still the intended one.
 - Sync supports multiple mappings with per-path direction (`spec.sync.paths[].direction: bi|up|down`); `down` makes the pod the authority so local writes cannot clobber results. A mapping's local root may nest inside the primary root — okdev manages the exclusion and remote volumes automatically. "Not syncing" is often the configured direction or a managed exclude, not a fault; see `references/multipod.md` and `references/troubleshooting.md`.

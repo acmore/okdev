@@ -303,7 +303,11 @@ func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath
 	case allPods:
 		// keep all
 	case len(podNames) > 0:
-		filteredPods = filterPodsByName(filteredPods, podNames)
+		selected, err := resolvePodAliases(filteredPods, podNames)
+		if err != nil {
+			return err
+		}
+		filteredPods = selected
 	case role != "":
 		filteredPods = filterPodsByRole(filteredPods, role)
 	case len(labels) > 0:

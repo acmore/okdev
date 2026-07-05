@@ -51,6 +51,7 @@ func newRootCmdWithOptions() (*cobra.Command, *Options) {
 	cmd.AddCommand(newValidateCmd(opts))
 	cmd.AddCommand(newUpCmd(opts))
 	cmd.AddCommand(newDownCmd(opts))
+	cmd.AddCommand(newRestartCmd(opts))
 	cmd.AddCommand(newStatusCmd(opts))
 	cmd.AddCommand(newListCmd(opts))
 	cmd.AddCommand(newUseCmd(opts))

@@ -183,17 +183,19 @@ func loadCurrentSessionView(cmd *cobra.Command, k *kube.Client, namespace, sessi
 func resolveTargetCandidate(view sessionView, podName, role string) (kube.PodSummary, string, error) {
 	eligible := eligibleSessionTargetPods(view.Pods)
 	if strings.TrimSpace(podName) != "" {
+		// Accept the same aliases as exec --pod: full name, status short
+		// name, or a unique "-<name>" suffix.
+		resolved, err := resolvePodAliases(view.Pods, []string{podName})
+		if err != nil {
+			return kube.PodSummary{}, "", fmt.Errorf("%v (session %s)", err, view.Session)
+		}
+		match := resolved[0]
 		for _, pod := range eligible {
-			if pod.Name == podName {
+			if pod.Name == match.Name {
 				return pod, strings.TrimSpace(pod.Labels["okdev.io/workload-role"]), nil
 			}
 		}
-		for _, pod := range view.Pods {
-			if pod.Name == podName {
-				return kube.PodSummary{}, "", fmt.Errorf("pod %q is not an attachable target in session %s", podName, view.Session)
-			}
-		}
-		return kube.PodSummary{}, "", fmt.Errorf("pod %q not found in session %s", podName, view.Session)
+		return kube.PodSummary{}, "", fmt.Errorf("pod %q is not an attachable target in session %s", match.Name, view.Session)
 	}
 	role = strings.TrimSpace(role)
 	if role == "" {

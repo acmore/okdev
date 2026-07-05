@@ -31,6 +31,8 @@ Useful guidance:
 - attachable selection matters for `okdev ssh` and interactive targeting
 - `okdev exec` is often the better tool when the user wants commands across multiple pods or specific roles
 
+Pod addressing: prefer the **short names shown by `okdev status`** (`master-0`, `worker-1`) over full hash names — `--pod` on exec/cp/jobs and `target set --pod` accept them (plus any unique `-<name>` suffix), and they stay stable across pod recreations while full names do not. `--role` selects the whole role group; short names select individual pods.
+
 If the user wants to understand why one pod is chosen, consult the command/config docs before describing the selection behavior.
 
 ## Sync Expectations

@@ -31,6 +31,7 @@ agents can react without launching a diagnostic chain on every blip:
 - `okdev validate`
 - `okdev up [--wait-timeout 10m] [--dry-run]`
 - `okdev down [session] [--delete-pvc] [--dry-run] [--wait] [--wait-timeout 2m] [--output json]`
+- `okdev restart [session] [--yes] [--wait-timeout 10m]`
 - `okdev status [session] [--all] [--all-users] [--details]`
 - `okdev list [--all-namespaces] [--all-users]`
 - `okdev use <session>`
@@ -90,6 +91,7 @@ agents can react without launching a diagnostic chain on every blip:
 - With `-- command...`, runs the command across all running pods by default, with output prefixed by short pod name on a TTY. When stdout is piped or redirected (scripts, CI, agents), the prefix is auto-suppressed so captured output is clean; pass `--no-prefix=false` to force it back on.
 - `--all` explicitly targets all session pods. This matches the existing default fanout behavior when you pass a command with no selector.
 - `--workers` targets only worker-role pods.
+- `--pod` accepts the full pod name, the short name shown by `okdev status` (e.g. `master-0`, `worker-1`), or any unique `-<name>` suffix — no need to carry the full hash name across pod recreations. Unknown or ambiguous names error out (listing the available names) instead of silently matching nothing. `--exclude` accepts the same aliases (unknown exclusions are tolerated). The same aliases work for `okdev cp --pod`, `okdev jobs ... --pod`, and `okdev target set --pod`.
 - `--group <pod-a,pod-b>` targets an explicit pod group. Repeat `--group` to define multiple groups, and use either full pod names or the short names shown in `okdev status`. A pod may appear in at most one group.
 - Declared groups run one after another by default.
 - `--sequential` runs selected pods one-by-one when no groups are declared (output and `--log-dir` layout are unchanged), or makes the default group-after-group ordering explicit when groups are declared.
@@ -260,6 +262,14 @@ agents can react without launching a diagnostic chain on every blip:
 - `--wait-timeout`: caps the total time spent waiting for workload/pod termination when `--wait` is enabled.
 - `--output json`: emits a machine-readable summary of the planned or completed deletion and local cleanup steps.
 - `--delete-pvc` remains accepted for compatibility but is ignored; `okdev` no longer manages PVC lifecycle automatically.
+
+### `okdev restart [session] [--yes] [--wait-timeout 10m]`
+
+- One-command recovery when a container died and the restart policy will not bring it back: deletes the session workload, waits for termination, resets local per-session sync state, and runs the full `up` flow against the current config.
+- PVCs and other resources referenced by `spec.volumes` are untouched; auto-provisioned sync volumes are recreated.
+- Lifecycle hooks (`postCreate`/`postSync`) re-run automatically on the fresh pods — configure them for setup that must survive recreation (installed tools, editable installs).
+- Pod names change on recreation; use the short-name aliases (`master-0`, `worker-1`) with `--pod` so scripts survive restarts.
+- Prompts for confirmation; `--yes` for scripts. `--wait-timeout` caps both the deletion wait and pod readiness.
 
 ### `okdev ssh [session] [--setup-key] [--user root] [--cmd "..."] [--no-tmux] [--forward-agent|--no-forward-agent]`
 
