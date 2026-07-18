@@ -971,100 +971,76 @@ func TestValidateMultiPodFlags(t *testing.T) {
 	}
 }
 
-func TestValidateExecFlagValuesRejectsFlagLikeValues(t *testing.T) {
+func TestValidateNoFlagLikeValues(t *testing.T) {
 	tests := []struct {
-		name      string
-		shell     string
-		script    string
-		role      string
-		container string
-		gateway   string
-		logDir    string
-		podNames  []string
-		labels    []string
-		exclude   []string
-		groups    []string
-		wantErr   string
+		name    string
+		args    []string
+		wantErr string
 	}{
 		{
 			name:    "group swallows following flag",
-			groups:  []string{"--detach"},
-			wantErr: `--group value "--detach" looks like a misplaced flag`,
+			args:    []string{"--group", "--detach"},
+			wantErr: `--group value "--detach" begins with "-"`,
 		},
 		{
-			name:     "pod swallows following flag",
-			podNames: []string{"--all"},
-			wantErr:  `--pod value "--all" looks like a misplaced flag`,
+			name:    "pod swallows following flag",
+			args:    []string{"--pod", "--all"},
+			wantErr: `--pod value "--all" begins with "-"`,
 		},
 		{
-			name:    "label swallows following flag",
-			labels:  []string{"--all"},
-			wantErr: `--label value "--all" looks like a misplaced flag`,
+			name:    "string flag swallows following flag",
+			args:    []string{"--role", "--all"},
+			wantErr: `--role value "--all" begins with "-"`,
 		},
 		{
-			name:    "exclude swallows following flag",
-			exclude: []string{"--all"},
-			wantErr: `--exclude value "--all" looks like a misplaced flag`,
+			name:    "swallowed separator gets missing-value message",
+			args:    []string{"--group", "--"},
+			wantErr: `missing value for --group`,
 		},
 		{
-			name:    "role swallows following flag",
-			role:    "--all",
-			wantErr: `--role value "--all" looks like a misplaced flag`,
+			name:    "script path hint keeps full value",
+			args:    []string{"--script", "--detach"},
+			wantErr: `"./--detach"`,
 		},
 		{
-			name:      "container swallows following flag",
-			container: "--all",
-			wantErr:   `--container value "--all" looks like a misplaced flag`,
+			name:    "log-dir path hint keeps full value",
+			args:    []string{"--log-dir", "-x"},
+			wantErr: `"./-x"`,
 		},
 		{
-			name:    "shell swallows following flag",
-			shell:   "--all",
-			wantErr: `--shell value "--all" looks like a misplaced flag`,
+			name:    "equals form also rejected",
+			args:    []string{"--group=--detach"},
+			wantErr: `--group value "--detach" begins with "-"`,
 		},
 		{
-			name:    "script swallows following flag",
-			script:  "--detach",
-			wantErr: `or if the path is intentional prefix it (e.g. ./-detach)`,
+			name:    "dash item inside comma list rejected",
+			args:    []string{"--pod", "worker-0,-1"},
+			wantErr: `--pod value "-1" begins with "-"`,
 		},
 		{
-			name:    "gateway swallows following flag",
-			gateway: "--json",
-			wantErr: `--gateway value "--json" looks like a misplaced flag`,
+			name: "defaults untouched",
+			args: []string{},
 		},
 		{
-			name:    "log-dir swallows following flag",
-			logDir:  "--json",
-			wantErr: `or if the path is intentional prefix it (e.g. ./-json)`,
+			name: "valid values pass",
+			args: []string{"--group", "master-0,worker-0", "--script", "./collect.sh", "--label", "tier=gpu", "--pod", "worker-0"},
 		},
 		{
-			name:    "single dash rejected",
-			groups:  []string{"-x"},
-			wantErr: `--group value "-x" looks like a misplaced flag`,
+			name: "dash-leading script escaped with dot-slash passes",
+			args: []string{"--script", "./-weird.sh"},
 		},
 		{
-			name: "all values empty",
-		},
-		{
-			name:      "valid values pass",
-			shell:     "bash",
-			script:    "./collect-logs.sh",
-			role:      "worker",
-			container: "main",
-			gateway:   "master-0",
-			logDir:    "./logs",
-			podNames:  []string{"worker-0", "worker-1"},
-			labels:    []string{"tier=gpu"},
-			exclude:   []string{"worker-2"},
-			groups:    []string{"master-0,worker-0", "master-1,worker-1"},
-		},
-		{
-			name:   "dash-leading script escaped with dot-slash passes",
-			script: "./-weird.sh",
+			name: "non-string flags are ignored",
+			args: []string{"--detach", "--fanout", "5"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateExecFlagValues(tt.shell, tt.script, tt.role, tt.container, tt.gateway, tt.logDir, tt.podNames, tt.labels, tt.exclude, tt.groups)
+			cmd := newExecCmd(&Options{})
+			if err := cmd.ParseFlags(tt.args); err != nil {
+				t.Fatalf("ParseFlags: %v", err)
+			}
+			err := validateNoFlagLikeValues(cmd.Flags())
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -1076,6 +1052,50 @@ func TestValidateExecFlagValuesRejectsFlagLikeValues(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+			}
+		})
+	}
+}
+
+// Regression for issue #177: the validation must win the race against
+// validateExecArgs. A swallowed "--" turns command words into session args, so
+// without Args-stage ordering the user saw "accepts at most 1 session
+// argument before --" instead of the real cause.
+func TestExecRejectsFlagLikeValuesBeforeArgsValidation(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantErr    string
+		notWantErr string
+	}{
+		{
+			name:       "forgotten group value swallows separator",
+			args:       []string{"--detach", "--group", "--", "python", "train.py"},
+			wantErr:    "missing value for --group",
+			notWantErr: "accepts at most 1 session argument",
+		},
+		{
+			name:       "group swallows following flag",
+			args:       []string{"--group", "--detach", "--", "true"},
+			wantErr:    `--group value "--detach" begins with "-"`,
+			notWantErr: "unknown pod",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newExecCmd(&Options{})
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(tt.args)
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+			}
+			if strings.Contains(err.Error(), tt.notWantErr) {
+				t.Fatalf("error %q must not contain %q", err.Error(), tt.notWantErr)
 			}
 		})
 	}
