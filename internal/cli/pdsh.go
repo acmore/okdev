@@ -103,6 +103,9 @@ func newExecCmd(opts *Options) *cobra.Command {
 		Args:              validateExecArgs,
 		ValidArgsFunction: sessionCompletionFunc(opts),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateExecFlagValues(shell, scriptPath, role, container, gatewayPod, logDir, podNames, labels, exclude, groups); err != nil {
+				return err
+			}
 			sessionArgs, commandArgs := splitExecArgs(cmd, args)
 			invocation, err := buildExecInvocation(commandArgs, scriptPath)
 			if err != nil {
@@ -281,6 +284,49 @@ type execGroupRunOptions struct {
 	Order      execGroupOrder
 	Stdout     io.Writer
 	Stderr     io.Writer
+}
+
+// rejectFlagLikeValues rejects flag values that begin with "-": pflag greedily
+// consumes the next token as a value-taking flag's value, so a misplaced flag
+// (e.g. `--group --detach`) becomes the value and later surfaces as a
+// misleading downstream error ("unknown pod", "stat: no such file", ...).
+// pathHint adds a ./-escape suggestion for flags whose values are file paths,
+// the only case where a dash-leading value can be intentional.
+func rejectFlagLikeValues(flagName string, pathHint bool, values ...string) error {
+	for _, v := range values {
+		if strings.HasPrefix(v, "-") {
+			hint := ""
+			if pathHint {
+				hint = fmt.Sprintf(", or if the path is intentional prefix it (e.g. ./%s)", strings.TrimPrefix(v, "-"))
+			}
+			return fmt.Errorf("--%s value %q looks like a misplaced flag consumed as the value; move the other flag before --%s%s", flagName, v, flagName, hint)
+		}
+	}
+	return nil
+}
+
+func validateExecFlagValues(shell, scriptPath, role, container, gatewayPod, logDir string, podNames, labels, exclude, groups []string) error {
+	for _, f := range []struct {
+		name     string
+		pathHint bool
+		values   []string
+	}{
+		{"shell", false, []string{shell}},
+		{"script", true, []string{scriptPath}},
+		{"role", false, []string{role}},
+		{"container", false, []string{container}},
+		{"gateway", false, []string{gatewayPod}},
+		{"log-dir", true, []string{logDir}},
+		{"pod", false, podNames},
+		{"label", false, labels},
+		{"exclude", false, exclude},
+		{"group", false, groups},
+	} {
+		if err := rejectFlagLikeValues(f.name, f.pathHint, f.values...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validateExecMode(shell string, invocation execInvocation) error {

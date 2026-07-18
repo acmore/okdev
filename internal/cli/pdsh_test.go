@@ -971,6 +971,116 @@ func TestValidateMultiPodFlags(t *testing.T) {
 	}
 }
 
+func TestValidateExecFlagValuesRejectsFlagLikeValues(t *testing.T) {
+	tests := []struct {
+		name      string
+		shell     string
+		script    string
+		role      string
+		container string
+		gateway   string
+		logDir    string
+		podNames  []string
+		labels    []string
+		exclude   []string
+		groups    []string
+		wantErr   string
+	}{
+		{
+			name:    "group swallows following flag",
+			groups:  []string{"--detach"},
+			wantErr: `--group value "--detach" looks like a misplaced flag`,
+		},
+		{
+			name:     "pod swallows following flag",
+			podNames: []string{"--all"},
+			wantErr:  `--pod value "--all" looks like a misplaced flag`,
+		},
+		{
+			name:    "label swallows following flag",
+			labels:  []string{"--all"},
+			wantErr: `--label value "--all" looks like a misplaced flag`,
+		},
+		{
+			name:    "exclude swallows following flag",
+			exclude: []string{"--all"},
+			wantErr: `--exclude value "--all" looks like a misplaced flag`,
+		},
+		{
+			name:    "role swallows following flag",
+			role:    "--all",
+			wantErr: `--role value "--all" looks like a misplaced flag`,
+		},
+		{
+			name:      "container swallows following flag",
+			container: "--all",
+			wantErr:   `--container value "--all" looks like a misplaced flag`,
+		},
+		{
+			name:    "shell swallows following flag",
+			shell:   "--all",
+			wantErr: `--shell value "--all" looks like a misplaced flag`,
+		},
+		{
+			name:    "script swallows following flag",
+			script:  "--detach",
+			wantErr: `or if the path is intentional prefix it (e.g. ./-detach)`,
+		},
+		{
+			name:    "gateway swallows following flag",
+			gateway: "--json",
+			wantErr: `--gateway value "--json" looks like a misplaced flag`,
+		},
+		{
+			name:    "log-dir swallows following flag",
+			logDir:  "--json",
+			wantErr: `or if the path is intentional prefix it (e.g. ./-json)`,
+		},
+		{
+			name:    "single dash rejected",
+			groups:  []string{"-x"},
+			wantErr: `--group value "-x" looks like a misplaced flag`,
+		},
+		{
+			name: "all values empty",
+		},
+		{
+			name:      "valid values pass",
+			shell:     "bash",
+			script:    "./collect-logs.sh",
+			role:      "worker",
+			container: "main",
+			gateway:   "master-0",
+			logDir:    "./logs",
+			podNames:  []string{"worker-0", "worker-1"},
+			labels:    []string{"tier=gpu"},
+			exclude:   []string{"worker-2"},
+			groups:    []string{"master-0,worker-0", "master-1,worker-1"},
+		},
+		{
+			name:   "dash-leading script escaped with dot-slash passes",
+			script: "./-weird.sh",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateExecFlagValues(tt.shell, tt.script, tt.role, tt.container, tt.gateway, tt.logDir, tt.podNames, tt.labels, tt.exclude, tt.groups)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+			}
+		})
+	}
+}
+
 func TestBuildExecPodGroupsSupportsShortNamesAndWorkers(t *testing.T) {
 	pods := []kube.PodSummary{
 		{Name: "okdev-sess-master-0", Phase: "Running", Labels: map[string]string{"okdev.io/workload-role": "Master"}},
