@@ -2,6 +2,7 @@ package logx
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -36,6 +37,14 @@ func Configure(verbose bool) {
 	// Route client-go/kubectl transport noise (for example port-forward stream
 	// resets/timeouts) into the shared okdev log instead of the interactive TTY.
 	klog.LogToStderr(false)
+	// LogToStderr(false) alone is not enough: klog still duplicates records at
+	// or above its stderrthreshold (default ERROR) onto os.Stderr, which is how
+	// client-go errors like "Websocket Ping failed" leaked into exec's terminal
+	// streams (#176). Raise the threshold so only FATAL — which aborts the
+	// process anyway — reaches stderr.
+	var klogFlags flag.FlagSet
+	klog.InitFlags(&klogFlags)
+	_ = klogFlags.Set("stderrthreshold", "FATAL")
 	writer := okdevLogWriter()
 	klog.SetOutput(writer)
 	klog.SetOutputBySeverity("INFO", writer)
