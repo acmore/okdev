@@ -45,7 +45,7 @@ Do not use this skill for:
 
 ## Quick Heuristics
 
-- Config discovery order is: explicit `--config`, `.okdev/okdev.yaml`, `.okdev.yaml`, `okdev.yaml`.
+- Config resolution: `--config` flag > `OKDEV_CONFIG` env var > walking up from cwd (`.okdev/okdev.yaml`, `.okdev.yaml`, `okdev.yaml` per dir, up to the outermost git root — submodules do not cut the walk short). Discovery cannot reach a repo that is not an ancestor of cwd: from scratch/experiment dirs use `--session <name>` (explicit, multi-session-safe) or set `OKDEV_CONFIG` (single-project loops; okdev warns if it overrides a config discoverable from cwd). Typo'd spec fields are ignored by parsing but `okdev up` warns about them with the known keys.
 - `okdev up` reuses an existing session workload by default.
 - Use `okdev up --reconcile` when workload-shaping config changed and the user wants those changes applied.
 - For setup that must survive pod recreation (installed tools, builds), point users at `spec.lifecycle.postCreate` (target pod, pre-sync) and `postSync` (all pods, after code arrives) — both re-run automatically on recreated pods; do not suggest manual re-runs. `okdev status --details` shows per-pod hook progress (`pending|running|done|failed|stale`); `stale` means an in-place container restart wiped the hook's effects and the next `okdev up` re-runs it. Automation that fans work out to all pods right after `up` should use `okdev up --wait-hooks`, which keeps converging postSync until every pod (including controller-created late arrivals) is done.

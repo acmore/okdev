@@ -354,3 +354,116 @@ func validConfigYAML(name string) string {
 		"spec:\n" +
 		"  namespace: default\n"
 }
+
+func TestResolvePathUsesEnvVarWhenNoFlag(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "custom.yaml")
+	if err := os.WriteFile(cfgPath, []byte("apiVersion: okdev.dev/v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(EnvConfigPath, cfgPath)
+	t.Chdir(t.TempDir()) // scratch cwd with no discoverable config
+
+	got, err := ResolvePath("")
+	if err != nil {
+		t.Fatalf("ResolvePath with env: %v", err)
+	}
+	if got != cfgPath {
+		t.Fatalf("expected env path %q, got %q", cfgPath, got)
+	}
+
+	// The flag always wins over the env var.
+	other := filepath.Join(dir, "flag.yaml")
+	if err := os.WriteFile(other, []byte("apiVersion: okdev.dev/v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = ResolvePath(other)
+	if err != nil || got != other {
+		t.Fatalf("flag must beat env, got %q err=%v", got, err)
+	}
+}
+
+func TestResolvePathErrorListsEscapeRoutes(t *testing.T) {
+	t.Setenv(EnvConfigPath, "")
+	t.Chdir(t.TempDir())
+	_, err := ResolvePath("")
+	if err == nil {
+		t.Fatal("expected error in empty scratch dir")
+	}
+	for _, want := range []string{"OKDEV_CONFIG", "--session"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("no-config error should mention %s, got: %v", want, err)
+		}
+	}
+}
+
+func TestDiscoverySeesThroughSubmoduleBoundary(t *testing.T) {
+	t.Setenv(EnvConfigPath, "")
+	super := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(super, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(super, ".okdev.yaml")
+	if err := os.WriteFile(cfgPath, []byte("apiVersion: okdev.dev/v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Submodule: .git is a file, config lives only at the superproject root.
+	sub := filepath.Join(super, "vendor", "lib")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, ".git"), []byte("gitdir: ../../.git/modules/lib\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(sub)
+
+	got, err := ResolvePath("")
+	if err != nil {
+		t.Fatalf("discovery from submodule: %v", err)
+	}
+	if resolved, _ := filepath.EvalSymlinks(got); resolved != mustEval(t, cfgPath) {
+		t.Fatalf("expected superproject config %q, got %q", cfgPath, got)
+	}
+}
+
+func TestEnvOverrideNoteOnlyWhenDiscoveryDiffers(t *testing.T) {
+	repo := t.TempDir()
+	repoCfg := filepath.Join(repo, ".okdev.yaml")
+	if err := os.WriteFile(repoCfg, []byte("apiVersion: okdev.dev/v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := filepath.Join(t.TempDir(), "other.yaml")
+	if err := os.WriteFile(elsewhere, []byte("apiVersion: okdev.dev/v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(EnvConfigPath, elsewhere)
+
+	// Inside the repo: env steers away from a discoverable config -> warn.
+	t.Chdir(repo)
+	resolved, err := ResolvePath("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if note := EnvOverrideNote("", resolved); !strings.Contains(note, "overrides the config discovered") {
+		t.Fatalf("expected override warning inside repo, got %q", note)
+	}
+	// Scratch dir (nothing discoverable): silent — the intended scenario.
+	t.Chdir(t.TempDir())
+	if note := EnvOverrideNote("", elsewhere); note != "" {
+		t.Fatalf("scratch-dir env use must stay silent, got %q", note)
+	}
+	// Explicit flag: silent regardless.
+	t.Chdir(repo)
+	if note := EnvOverrideNote(elsewhere, elsewhere); note != "" {
+		t.Fatalf("flag-supplied path must stay silent, got %q", note)
+	}
+}
+
+func mustEval(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}

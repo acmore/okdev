@@ -2,6 +2,17 @@
 
 okdev is configured by a single YAML manifest. Simple pod setups default to `.okdev.yaml`; manifest-backed workload setups initialized by `okdev init` default to `.okdev/okdev.yaml` with generated workload manifests beside it.
 
+## Config Resolution
+
+Priority: `-c/--config` flag > `OKDEV_CONFIG` environment variable > parent-directory discovery. Discovery walks up from the current directory checking `.okdev/okdev.yaml`, `.okdev.yaml`, then `okdev.yaml` per directory, stopping at the outermost enclosing git root — a submodule's file-shaped `.git` does not cut the walk short, so a config at the superproject root is found from inside a submodule.
+
+Discovery can only find configs on the current directory's ancestor chain. When working from a directory **outside** the repo (a scratch/experiment dir), use one of the from-anywhere addressing paths instead:
+
+- `--session <name>` resolves a saved session's config from session metadata — per-invocation and explicit, the right tool when juggling several sessions;
+- `OKDEV_CONFIG=/path/to/.okdev.yaml` — set once for a single-project loop. If the env var steers okdev away from a config that discovery *would* have found from the current directory, a warning names both paths (an exported env var silently overriding the local repo is the classic footgun); in a scratch dir it stays silent.
+
+Unrecognized `spec` fields (typos like `spec.context` for `spec.kubeContext`, or fields removed from the schema) do not fail parsing — `okdev up` warns about them, listing the known keys, so a typo cannot silently cost a debugging session.
+
 ## Skeleton
 
 ```yaml

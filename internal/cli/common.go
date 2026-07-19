@@ -72,9 +72,15 @@ func resolveCommandContext(opts *Options, resolver sessionResolver) (*commandCon
 	if err != nil {
 		return nil, err
 	}
-	cfgPath, err := config.ResolvePath(effectiveOpts.ConfigPath)
+	preResolved := effectiveOpts.ConfigPath
+	cfgPath, err := config.ResolvePath(preResolved)
 	if err != nil {
 		return nil, err
+	}
+	// Only when the env var actually supplied the path (no flag, no
+	// --session-provided config) can it be overriding discovery.
+	if note := config.EnvOverrideNote(preResolved, cfgPath); note != "" {
+		fmt.Fprintln(os.Stderr, note)
 	}
 	effectiveOpts.ConfigPath = cfgPath
 	cc := &commandContext{

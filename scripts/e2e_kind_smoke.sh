@@ -1112,6 +1112,27 @@ if [[ -f "$STREAK_FILE" ]]; then
 fi
 echo "transient-failure escalation verified (78 kept, streak marker, clear-on-success)"
 
+# Issue #172: config resolution from anywhere — OKDEV_CONFIG in a scratch
+# cwd, and a helpful no-config error naming the escape routes.
+echo "Testing OKDEV_CONFIG resolution from a scratch directory"
+SCRATCH_CWD=$(mktemp -d "${TMPDIR:-/tmp}/okdev-scratch.XXXXXX")
+ENV_STATUS=$(cd "$SCRATCH_CWD" && OKDEV_CONFIG="$CFG_PATH" "$OKDEV_BIN" --session "$SESSION_NAME" status)
+if [[ "$ENV_STATUS" != *"$SESSION_NAME"* ]]; then
+  echo "ERROR: OKDEV_CONFIG from a scratch cwd should resolve the session, got:" >&2
+  echo "$ENV_STATUS" >&2
+  exit 1
+fi
+set +e
+NOCFG_OUTPUT=$(cd "$SCRATCH_CWD" && "$OKDEV_BIN" status 2>&1)
+set -e
+if [[ "$NOCFG_OUTPUT" != *"OKDEV_CONFIG"* || "$NOCFG_OUTPUT" != *"--session"* ]]; then
+  echo "ERROR: no-config error should name the escape routes, got:" >&2
+  echo "$NOCFG_OUTPUT" >&2
+  exit 1
+fi
+rmdir "$SCRATCH_CWD"
+echo "OKDEV_CONFIG scratch-cwd resolution and no-config guidance verified"
+
 echo "Testing jobs stop kills the whole process tree"
 STOP_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs stop "$TREE_JOB_ID")
 echo "$STOP_OUTPUT"
