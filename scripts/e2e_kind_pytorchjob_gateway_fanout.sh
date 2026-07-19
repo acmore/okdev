@@ -174,6 +174,27 @@ assert len(hosts) == count, f"expected distinct per-pod output, got {hosts}"
 PY
 echo "script mode verified"
 
+# Issue #170: the sshd exec wrapper's cmdline used to contain the full command
+# string, so `pkill -f <pattern>` inside a command matched — and killed — its
+# own wrapper. The probe walks its ancestor chain via /proc and asserts no
+# okdev-owned process above the command exposes a marker embedded in the
+# command text (the payload now travels via the environment, which pkill/pgrep
+# -f never match).
+echo "Verifying no okdev wrapper exposes the command text in its cmdline (issue #170 pkill -f self-match)"
+SELFKILL_MARKER="okdev-selfkill-$$-$RANDOM"
+SELFKILL_PROBE='pid=$PPID; bad=0; while [ "$pid" -gt 1 ] 2>/dev/null; do if tr "\0" " " </proc/"$pid"/cmdline 2>/dev/null | grep -q '"$SELFKILL_MARKER"'; then bad=1; break; fi; pid=$(grep ^PPid: /proc/"$pid"/status 2>/dev/null | cut -f2); [ -n "$pid" ] || break; done; echo matchable=$bad'
+SELFKILL_OUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --json -- sh -c "$SELFKILL_PROBE")
+OKDEV_SELFKILL_JSON="$SELFKILL_OUT" python3 - "$POD_COUNT" <<'PY'
+import json, os, sys
+results = json.loads(os.environ["OKDEV_SELFKILL_JSON"])
+count = int(sys.argv[1])
+assert len(results) == count, results
+for r in results:
+    assert r["status"] == "responded" and r["exit"] == 0, r
+    assert r["stdout"].strip() == "matchable=0", r
+PY
+echo "wrapper cmdline is unmatchable by command patterns"
+
 echo "Verifying jobs list through the gateway route"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --detach -- sleep 60 >/dev/null
 JOBS_OUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs list --output json)

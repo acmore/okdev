@@ -6,8 +6,10 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -141,6 +143,42 @@ func TestFanoutIntegrationCommandAcrossServers(t *testing.T) {
 		if got := string(r.Stderr); got != "warn" {
 			t.Fatalf("%s: unexpected stderr %q", pod, got)
 		}
+	}
+}
+
+// E2E regression for issue #170: a `pkill -f <pattern>; <cleanup>` command
+// travels the full production path — driver JSON request → real SSH
+// connection → okdev-sshd sessionHandler → wrapper shell. Before the
+// env-payload change the wrapper's cmdline contained the pattern, so pkill
+// killed the wrapper itself (exit 143) and the trailing cleanup never ran.
+func TestFanoutIntegrationPkillPatternDoesNotKillWrapper(t *testing.T) {
+	if _, err := exec.LookPath("pkill"); err != nil {
+		t.Skip("pkill not available")
+	}
+	dir := t.TempDir()
+	keyPath, pub := newTestKeypair(t, dir)
+	port := startTestSSHD(t, pub)
+
+	marker := fmt.Sprintf("okdev-e2e-selfkill-%d-%d", os.Getpid(), time.Now().UnixNano())
+	req := baseRequest(keyPath, []fanout.Target{{Pod: "pod-a", Addr: "127.0.0.1"}})
+	req.Port = port
+	// pkill finds no match for the unique marker (exit 1), then the trailing
+	// cleanup must still run and set the session's final exit status to 0.
+	req.Command = fmt.Sprintf("pkill -f '%s'; printf cleanup-ran", marker)
+
+	stream, stderrOut, code := runFanoutRequest(t, req)
+	if code != 0 {
+		t.Fatalf("runFanout exit %d, stderr: %s", code, stderrOut)
+	}
+	r, ok := resultByPod(stream)["pod-a"]
+	if !ok {
+		t.Fatal("missing frame for pod-a")
+	}
+	if r.Status != fanout.StatusResponded || r.Exit != 0 {
+		t.Fatalf("expected responded/0 (wrapper survived its own pkill pattern), got %s/%d (stderr %q, err %q)", r.Status, r.Exit, string(r.Stderr), r.Error)
+	}
+	if got := string(r.Stdout); got != "cleanup-ran" {
+		t.Fatalf("trailing cleanup did not run, stdout %q", got)
 	}
 }
 
