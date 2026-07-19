@@ -25,7 +25,7 @@ Use this skill when the request involves:
 - sync behavior, session reuse, port forwards, or SSH access
 - manifest-backed workloads such as `job`, `generic`, or `pytorchjob`
 - attachable pod behavior, multi-pod sessions, or inter-pod SSH
-- exec fanout controls: pod grouping (`--group`), uploaded `--script`, background `--detach` jobs (`okdev jobs list`), targeted log tailing (`okdev jobs logs <job-id> --pod/--role/--label/--exclude --tail N --since 90s`), pattern-based process kill (`--pkill`), or structured `--json` output
+- exec fanout controls: pod grouping (`--group`), uploaded `--script`, background `--detach` jobs (`okdev jobs list`), targeted log reads (`okdev jobs logs <job-id> --pod/--role --tail N --since 90s --grep <regex> --dedup`), blocking on a job or a log pattern (`okdev jobs wait <id> [--grep <regex>]`), pattern-based process kill (`--pkill`), or structured `--json` output
 
 Do not use this skill for:
 
@@ -57,6 +57,7 @@ Do not use this skill for:
 - Sync supports multiple mappings with per-path direction (`spec.sync.paths[].direction: bi|up|down`); `down` makes the pod the authority so local writes cannot clobber results. A mapping's local root may nest inside the primary root — okdev manages the exclusion and remote volumes automatically. "Not syncing" is often the configured direction or a managed exclude, not a fault; see `references/multipod.md` and `references/troubleshooting.md`.
 - `okdev ssh` is the okdev-managed interactive path; `ssh okdev-<session>` is the plain SSH host alias path. The interactive shell can be bash or zsh, and the okdev tmux prefix is `ctrl-a`.
 - For sync, SSH, and port-forward issues, `okdev status --details` is usually the first useful diagnostic.
+- If a session vanished without an `okdev down`, plain `okdev status` appends its last known pod states and surviving cluster events (`Evicted`/`Preempted`/quota vs plain `Killing`) — read that post-mortem before recreating: resource evictions mean `okdev up` will likely fail again, cleanup deletions recreate safely. `--output json` returns it structured. Events expire ~1h, so diagnose promptly.
 - For commands across pods, prefer `okdev exec` fanout: `--group`/`--workers`/`--role`/`--label`/`--pod` to target, `--script` for non-trivial pipelines, and `--detach` + `okdev jobs list` for long background runs.
 - To kill processes by pattern, prefer `okdev exec --pkill '<pattern>' [--signal <sig>]` over a raw `exec -- pkill -f ...`: raw pkill can match the shell running the command itself (exit 143, trailing cleanup skipped) and needs the `pkill -f 'patter[n]'` bracket trick, while `--pkill` can never match okdev's exec machinery and follows the pkill exit convention (0 matched, 1 none). Detached jobs: `okdev jobs stop <job-id>` kills the whole process group.
 - `okdev exec --json` is the scripting/agent path: it always returns a JSON array of per-pod envelopes `{pod, exit, stdout, stderr, status}` and `okdev` stays exit 0 whenever the JSON is produced, so branch on each envelope's `exit`/`error`, not on okdev's process exit.
