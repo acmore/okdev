@@ -41,7 +41,7 @@ agents can react without launching a diagnostic chain on every blip:
 - `okdev agent list`
 - `okdev exec [session] [--shell /bin/bash] [--no-tty] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--detach] [--timeout <duration>] [--log-dir <path>] [--no-prefix] [--json] [--require-all] [--gateway <pod>] [--fanout N] [--pkill <pattern> [--signal <sig>]] [--require-sync] [-- command...]`
 - `okdev jobs list [session] [--job-id <id>] [--container <name>] [--fanout N]`
-- `okdev jobs logs <job-id> [session] [-f|--follow] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--fanout N]`
+- `okdev jobs logs <job-id> [session] [-f|--follow] [--tail N] [--since <dur|time>] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--fanout N]`
 - `okdev jobs stop <job-id> [session] [--container <name>] [--fanout N]`
 - `okdev jobs wait <job-id> [session] [--container <name>] [--fanout N]`
 - `okdev exec-jobs [session] [--job-id <id>] [--container <name>] [--fanout N]`
@@ -163,6 +163,9 @@ agents can react without launching a diagnostic chain on every blip:
 - `--label`: stream logs from pods matching label selectors.
 - `--exclude`: exclude specific pods from the selected set. Cannot be used with `--pod`.
 - `-f` / `--follow`: keep following until every pod in the job reaches a terminal state.
+- `--tail N`: show only the last N lines of each pod's log (`-1` = all, the default). Combines with `--follow` (`tail -n N -f`).
+- `--since <dur|RFC3339>`: skip pods whose log **file** has not changed since the cutoff (e.g. `--since 90s` in a poll loop transfers nothing from idle pods). Job logs carry no per-line timestamps, so this is a file-level activity gate — when a file has changed, the (tail-limited) current content is shown, not just the lines after the cutoff. Cannot be combined with `--follow`.
+- Reads are size-verified: the reader reports the exact byte count of the selection and okdev retries when the received stream is truncated or empty-by-drop, so `jobs logs` never silently presents a dropped exec stream as the job's output.
 - If the job's container is gone (e.g. OOMKilled), logs are read through the `okdev-sidecar` container instead — job logs live on the shared runtime volume and survive the container.
 - If some pod logs are unavailable, okdev still streams the logs it can read and reports the missing pods in a `FAILED:` footer before returning non-zero.
 

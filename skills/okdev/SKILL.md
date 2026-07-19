@@ -25,7 +25,7 @@ Use this skill when the request involves:
 - sync behavior, session reuse, port forwards, or SSH access
 - manifest-backed workloads such as `job`, `generic`, or `pytorchjob`
 - attachable pod behavior, multi-pod sessions, or inter-pod SSH
-- exec fanout controls: pod grouping (`--group`), uploaded `--script`, background `--detach` jobs (`okdev jobs list`), targeted log tailing (`okdev jobs logs <job-id> --pod/--role/--label/--exclude`), pattern-based process kill (`--pkill`), or structured `--json` output
+- exec fanout controls: pod grouping (`--group`), uploaded `--script`, background `--detach` jobs (`okdev jobs list`), targeted log tailing (`okdev jobs logs <job-id> --pod/--role/--label/--exclude --tail N --since 90s`), pattern-based process kill (`--pkill`), or structured `--json` output
 
 Do not use this skill for:
 
