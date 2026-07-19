@@ -68,7 +68,51 @@ func removedSyncIgnoreField(raw []byte) string {
 	return ""
 }
 
+// EnvConfigPath is the environment variable naming an explicit config path.
+// Priority: --config flag > OKDEV_CONFIG > parent-directory discovery — the
+// conventional layering (same as KUBECONFIG). The env var exists for callers
+// whose cwd is outside the repo (scratch/working dirs), where walking parent
+// directories can never reach the config (#172).
+const EnvConfigPath = "OKDEV_CONFIG"
+
+// EnvOverrideNote returns a warning when OKDEV_CONFIG is steering this
+// process away from a config that parent-directory discovery would have
+// found from the current directory — the classic exported-env-var footgun
+// (working in repo B while the shell still exports repo A's config). In the
+// env var's intended scenario (a scratch cwd where discovery finds nothing,
+// or finds the same file) it returns "" so token-metered agent callers pay
+// nothing per command.
+func EnvOverrideNote(flagPath, resolvedPath string) string {
+	if strings.TrimSpace(flagPath) != "" {
+		return ""
+	}
+	env := strings.TrimSpace(os.Getenv(EnvConfigPath))
+	if env == "" {
+		return ""
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	gitRoot, _ := findGitRoot(wd)
+	discovered, err := discoverInParents(wd, gitRoot, FolderFile, DefaultFile, LegacyFile)
+	if err != nil {
+		return ""
+	}
+	absDiscovered, err := filepath.Abs(discovered)
+	if err != nil {
+		return ""
+	}
+	if absDiscovered == strings.TrimSpace(resolvedPath) {
+		return ""
+	}
+	return fmt.Sprintf("warning: %s=%s overrides the config discovered from this directory (%s); unset it or pass --config if that is not intended", EnvConfigPath, env, absDiscovered)
+}
+
 func ResolvePath(configPath string) (string, error) {
+	if configPath == "" {
+		configPath = strings.TrimSpace(os.Getenv(EnvConfigPath))
+	}
 	if configPath != "" {
 		abs, err := filepath.Abs(configPath)
 		if err != nil {
@@ -89,7 +133,7 @@ func ResolvePath(configPath string) (string, error) {
 	p, err := discoverInParents(wd, gitRoot, FolderFile, DefaultFile, LegacyFile)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("no config found; create %s or pass -c/--config", DefaultFile)
+			return "", fmt.Errorf("no config found by walking up from the current directory; create %s, pass -c/--config, set %s, or address a saved session from anywhere with --session <name>", DefaultFile, EnvConfigPath)
 		}
 		return "", err
 	}
@@ -167,18 +211,29 @@ func discoverInParents(start, stopAt string, names ...string) (string, error) {
 	return "", os.ErrNotExist
 }
 
+// findGitRoot returns the outermost enclosing git boundary. A submodule's
+// .git is a file (gitdir: ...), so stopping at the nearest .git would cut
+// parent-directory config discovery off at the submodule boundary and never
+// reach a config at the superproject root (#172) — the walk therefore keeps
+// going and returns the outermost .git of either shape. A git worktree also
+// has a file-shaped .git but no enclosing repository, so it remains its own
+// boundary, exactly as before.
 func findGitRoot(start string) (string, error) {
 	current := start
+	root := ""
 	for {
 		dotgit := filepath.Join(current, ".git")
 		if _, err := os.Stat(dotgit); err == nil {
-			return current, nil
+			root = current
 		}
 		parent := filepath.Dir(current)
 		if parent == current {
 			break
 		}
 		current = parent
+	}
+	if root != "" {
+		return root, nil
 	}
 	return "", os.ErrNotExist
 }

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -157,6 +158,13 @@ func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, e
 	ui.stepDone("config", cc.cfgPath)
 	ui.stepDone("session", cc.sessionName)
 	ui.stepDone("namespace", cc.namespace)
+	// Typo'd config fields are silently ignored by the non-strict parser;
+	// surface them here at up time — the moment their absence bites (#172).
+	if raw, err := os.ReadFile(cc.cfgPath); err == nil {
+		for _, warning := range config.UnknownSpecFieldWarnings(raw) {
+			ui.warnf("%s", warning)
+		}
+	}
 	if cmd.Flags().Changed("tmux") && cmd.Flags().Changed("no-tmux") {
 		return nil, fmt.Errorf("--tmux and --no-tmux cannot be used together")
 	}
