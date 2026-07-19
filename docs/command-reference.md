@@ -288,6 +288,13 @@ agents can react without launching a diagnostic chain on every blip:
 - `--output json`: emits a machine-readable summary of the planned or completed deletion and local cleanup steps.
 - `--delete-pvc` remains accepted for compatibility but is ignored; `okdev` no longer manages PVC lifecycle automatically.
 
+### `okdev env-diff [session] [--pod <name>]`
+
+- Shows packages installed **by hand** since the session came up: diffs the pod's current inventory (dpkg/apk + pip) against a baseline `okdev up` captures right after lifecycle hooks finish. Added/changed/removed packages are listed, and additions come with a ready-to-paste `spec.lifecycle.postCreate` draft — the persistence path for changes that would otherwise vanish silently on the next pod recreation (the worst case being a missing runtime lib causing a silent perf regression, e.g. NCCL falling back to TCP).
+- The baseline lives on the pod's runtime volume: it survives in-place container restarts and dies with the pod — the same lifetime as the environment it describes. `okdev up` refreshes it whenever hooks actually ran (hook installs belong in the baseline) and otherwise only writes it where missing, so a resumed `up` cannot swallow manual drift.
+- Defaults to the target pod (where interactive debugging happens); `--pod` selects others.
+- Relatedly, `okdev exec` prints a one-line reminder when the command itself is an install (`apt-get install`, `pip install`, `conda install`, `apk add`, …): the change lands in the container overlay and needs a lifecycle hook to survive.
+
 ### `okdev restart [session] [--pod <name>] [--yes] [--wait-timeout 10m]`
 
 - One-command recovery when a container died and the restart policy will not bring it back: deletes the session workload, waits for termination, resets local per-session sync state, and runs the full `up` flow against the current config.

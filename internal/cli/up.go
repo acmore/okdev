@@ -826,12 +826,16 @@ func upSetup(state *upState) error {
 		state.ui.stepDone("host aliases", fmt.Sprintf("short-name aliases written on %d pod(s)", aliasCount))
 	}
 
+	postSyncRanThisUp := false
 	postSyncCmd := resolvePostSyncCommand(state.command.cfg, state.command.cfgPath)
 	if postSyncCmd != "" && len(state.syncPairs) > 0 {
 		state.ui.stepRun("postSync", "running on all pods with shared workspace")
 		summary, err := runPostSyncOnAllPods(state.ctx, state.command.kube, state.command.namespace, state.labels, target.Container, postSyncCmd, state.ui.warnWriter())
 		if err != nil {
 			return err
+		}
+		if summary.Ran > 0 {
+			postSyncRanThisUp = true
 		}
 		detail := fmt.Sprintf("workspace synced; ran on %d pod(s)", summary.Ran)
 		if summary.Skipped > 0 {
@@ -870,6 +874,7 @@ func upSetup(state *upState) error {
 		}
 	}
 
+	hooksRanThisUp := false
 	postCreateCmd := resolvePostCreateCommand(state.command.cfg, state.command.cfgPath)
 	if postCreateCmd != "" {
 		target, err = refreshTargetRef(state.ctx, state.opts, state.command.cfg, state.command.namespace, state.command.sessionName, state.command.kube, target)
@@ -881,11 +886,21 @@ func upSetup(state *upState) error {
 			return err
 		}
 		if ran {
+			hooksRanThisUp = true
 			state.ui.stepDone("postCreate", "completed")
 		} else {
 			state.ui.stepDone("postCreate", "already done")
 		}
 	}
+	// Package-inventory baseline for `okdev env-diff` (#175): forced right
+	// after hooks ran (their installs belong in the baseline), otherwise
+	// only written where missing so a resumed up cannot swallow manual
+	// drift into a fresh baseline.
+	baselineForce := hooksRanThisUp || postSyncRanThisUp
+	if captured := captureEnvBaselines(state.ctx, state.command.kube, state.command.namespace, state.labels, target.Container, baselineForce, state.ui.warnf); captured > 0 {
+		state.ui.stepDone("env baseline", fmt.Sprintf("package inventory captured on %d pod(s)", captured))
+	}
+
 	if state.enableTmux {
 		target, err = refreshTargetRef(state.ctx, state.opts, state.command.cfg, state.command.namespace, state.command.sessionName, state.command.kube, target)
 		if err != nil {
