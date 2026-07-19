@@ -925,6 +925,38 @@ if [[ "$SINCE_ACTIVE" != *"logline-5"* ]]; then
 fi
 echo "jobs logs full/--tail/--since verified"
 
+# Issues #188/#189: pod-side filtering — CR normalization for progress bars,
+# --grep for metric extraction, --dedup for multi-rank error spam.
+echo "Testing jobs logs --grep, --dedup, and CR normalization"
+FILTER_JOB_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --detach -- sh -c 'printf "10%%|#\r20%%|##\rbar done\n"; for i in 1 2 3; do echo "ValueError: missing weights"; done; echo "step 1 reward=0.10"; echo "step 2 reward=0.15"')
+FILTER_JOB_ID=$(printf '%s
+' "$FILTER_JOB_OUTPUT" | sed -n 's/.*job_id=\([^ ]*\).*/\1/p' | head -n1)
+if [[ -z "$FILTER_JOB_ID" ]]; then
+  echo "ERROR: could not extract filter job id from: $FILTER_JOB_OUTPUT" >&2
+  exit 1
+fi
+sleep 3
+GREP_LOGS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs logs "$FILTER_JOB_ID" --grep 'reward=' --tail 1)
+if [[ "$GREP_LOGS" != *"reward=0.15"* || "$GREP_LOGS" == *"reward=0.10"* || "$GREP_LOGS" == *"ValueError"* ]]; then
+  echo "ERROR: jobs logs --grep 'reward=' --tail 1 wrong output: $GREP_LOGS" >&2
+  exit 1
+fi
+DEDUP_LOGS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs logs "$FILTER_JOB_ID" --dedup)
+if [[ "$DEDUP_LOGS" != *"ValueError: missing weights [repeated 3x]"* ]]; then
+  echo "ERROR: jobs logs --dedup should fold repeats: $DEDUP_LOGS" >&2
+  exit 1
+fi
+if [[ $(printf '%s
+' "$DEDUP_LOGS" | grep -c "ValueError") -ne 1 ]]; then
+  echo "ERROR: jobs logs --dedup left duplicates: $DEDUP_LOGS" >&2
+  exit 1
+fi
+if [[ "$DEDUP_LOGS" != *"bar done"* ]]; then
+  echo "ERROR: CR-normalized progress line missing: $DEDUP_LOGS" >&2
+  exit 1
+fi
+echo "jobs logs --grep/--dedup/CR normalization verified"
+
 echo "Testing jobs stop kills the whole process tree"
 STOP_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs stop "$TREE_JOB_ID")
 echo "$STOP_OUTPUT"

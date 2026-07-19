@@ -111,6 +111,8 @@ func newJobsLogsCmd(opts *Options) *cobra.Command {
 	var fanout int
 	var tailLines int
 	var since string
+	var grep string
+	var dedup bool
 	cmd := &cobra.Command{
 		Use:   "logs <job-id> [session]",
 		Short: "Show detached job logs",
@@ -124,7 +126,10 @@ func newJobsLogsCmd(opts *Options) *cobra.Command {
 			if tailLines < -1 {
 				return fmt.Errorf("--tail must be -1 (all), 0, or a positive line count")
 			}
-			logOpts := jobsLogsOptions{Follow: follow, TailLines: tailLines}
+			logOpts := jobsLogsOptions{Follow: follow, TailLines: tailLines, Grep: grep, Dedup: dedup}
+			if follow && (strings.TrimSpace(grep) != "" || dedup) {
+				return fmt.Errorf("--grep and --dedup apply to snapshot reads and cannot be used with --follow")
+			}
 			if strings.TrimSpace(since) != "" {
 				if follow {
 					return fmt.Errorf("--since cannot be used with --follow")
@@ -163,12 +168,15 @@ func newJobsLogsCmd(opts *Options) *cobra.Command {
 	cmd.Flags().IntVar(&fanout, "fanout", pdshDefaultFanout, "Maximum concurrent pod queries")
 	cmd.Flags().IntVar(&tailLines, "tail", -1, "Show only the last N lines of each pod's log (-1 = all)")
 	cmd.Flags().StringVar(&since, "since", "", "Skip pods whose log file has not changed within this duration (e.g. 90s, 5m) or since an RFC3339 time; file-level gate, output is still the (tail-limited) current log")
+	cmd.Flags().StringVar(&grep, "grep", "", "Keep only lines matching this extended regex (pod-side, after CR normalization, before --tail)")
+	cmd.Flags().BoolVar(&dedup, "dedup", false, "Fold consecutive identical lines into one copy plus a [repeated Nx] count")
 	return cmd
 }
 
 // jobsLogsOptions carries the log-read shaping for jobs logs (#167): --tail
 // and --since cut the cost of high-frequency poll loops by ~2 orders of
-// magnitude versus re-fetching the whole file each round.
+// magnitude versus re-fetching the whole file each round; --grep and --dedup
+// (#188/#189) shrink what one read costs an automated caller.
 type jobsLogsOptions struct {
 	Follow    bool
 	TailLines int // -1 = whole file
@@ -176,6 +184,11 @@ type jobsLogsOptions struct {
 	// job log stream carries no per-line timestamps, so this is a
 	// file-level activity gate, not a per-line filter.
 	SinceEpoch int64
+	// Grep, when non-empty, keeps only lines matching this extended regex
+	// (applied pod-side, after CR normalization, before --tail).
+	Grep string
+	// Dedup folds consecutive identical lines into one plus a count.
+	Dedup bool
 }
 
 // parseSinceCutoff accepts a relative duration ("90s", "5m") or an absolute
@@ -665,7 +678,7 @@ func streamDetachJobLog(ctx context.Context, client detachJobClient, namespace s
 	// it against the byte count the script reported before emitting, so a
 	// dropped exec stream is retried instead of being presented as the job's
 	// (empty) output.
-	script := readDetachJobLogScript(row.LogPath, logOpts.TailLines, logOpts.SinceEpoch)
+	script := readDetachJobLogScript(row.LogPath, logOpts)
 	var lastErr error
 	for attempt := 1; attempt <= detachLogReadAttempts; attempt++ {
 		var buf, stderr bytes.Buffer
@@ -721,25 +734,51 @@ func streamDetachLogWithSidecarFallback(ctx context.Context, client detachJobCli
 // stream and retry (#167). With sinceEpoch > 0, an unchanged log file is
 // skipped entirely (okdev-log-size:0, nothing printed) — the fast path for
 // poll loops.
-func readDetachJobLogScript(logPath string, tailLines int, sinceEpoch int64) string {
+func readDetachJobLogScript(logPath string, opts jobsLogsOptions) string {
 	quoted := shellQuote(logPath)
 	var b strings.Builder
 	fmt.Fprintf(&b, "f=%s\n", quoted)
 	b.WriteString("if [ ! -f \"$f\" ]; then echo 'missing detached job log' >&2; exit 1; fi\n")
-	if sinceEpoch > 0 {
-		fmt.Fprintf(&b, "if [ \"$(stat -c %%Y \"$f\" 2>/dev/null || echo 0)\" -lt %d ]; then printf 'okdev-log-size:0\\n' >&2; exit 0; fi\n", sinceEpoch)
+	if opts.SinceEpoch > 0 {
+		fmt.Fprintf(&b, "if [ \"$(stat -c %%Y \"$f\" 2>/dev/null || echo 0)\" -lt %d ]; then printf 'okdev-log-size:0\\n' >&2; exit 0; fi\n", opts.SinceEpoch)
 	}
 	b.WriteString("tmp=$(mktemp \"${TMPDIR:-/tmp}/okdev-log.XXXXXX\") || exit 1\n")
 	b.WriteString("trap 'rm -f \"$tmp\"' EXIT\n")
-	if tailLines >= 0 {
-		fmt.Fprintf(&b, "tail -n %d \"$f\" >\"$tmp\"\n", tailLines)
-	} else {
-		b.WriteString("cat \"$f\" >\"$tmp\"\n")
-	}
+	b.WriteString(detachLogPipeline(opts) + " >\"$tmp\"\n")
 	b.WriteString("printf 'okdev-log-size:%s\\n' \"$(wc -c <\"$tmp\" | tr -d ' \\t')\" >&2\n")
 	b.WriteString("cat \"$tmp\"\n")
 	return b.String()
 }
+
+// detachLogPipeline builds the pod-side selection pipeline. Carriage returns
+// are normalized first — progress bars (tqdm) rewrite one physical line with
+// \r thousands of times, so a raw `tail -n N` would count that blob as one
+// line and then explode downstream; CRLF endings are stripped rather than
+// split. --grep then filters, --dedup folds consecutive identical lines into
+// one plus a count, and --tail takes the newest N of whatever is left, so
+// "latest N matches" composes the way poll loops expect. All commands are
+// busybox-clean (sed, grep -E, awk, tail).
+func detachLogPipeline(opts jobsLogsOptions) string {
+	stages := []string{`sed -e 's/\r$//' -e 's/\r/\n/g' "$f"`}
+	if strings.TrimSpace(opts.Grep) != "" {
+		stages = append(stages, "grep -E -- "+shellQuote(opts.Grep))
+	}
+	if opts.Dedup {
+		stages = append(stages, detachLogDedupStage)
+	}
+	if opts.TailLines >= 0 {
+		stages = append(stages, fmt.Sprintf("tail -n %d", opts.TailLines))
+	}
+	return strings.Join(stages, " | ")
+}
+
+// detachLogDedupStage collapses runs of identical lines into a single copy
+// suffixed with " [repeated Nx]" (#188): a multi-rank crash printing the same
+// exception body per worker becomes one copy plus a count.
+const detachLogDedupStage = `awk '` +
+	`NR>1 && $0==prev {n++; next} ` +
+	`{if (NR>1) {if (n>1) print prev " [repeated " n "x]"; else print prev} prev=$0; n=1} ` +
+	`END {if (NR>0) {if (n>1) print prev " [repeated " n "x]"; else print prev}}'`
 
 func followDetachJobLogScript(logPath string, tailLines int) string {
 	quoted := shellQuote(logPath)
