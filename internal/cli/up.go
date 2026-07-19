@@ -34,6 +34,7 @@ type upOptions struct {
 	tmux                   bool
 	noTmux                 bool
 	resetWorkspace         bool
+	waitHooks              bool
 	createMissingPVC       bool
 	missingPVCSize         string
 	missingPVCStorageClass string
@@ -76,6 +77,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 	var tmux bool
 	var noTmux bool
 	var resetWorkspace bool
+	var waitHooks bool
 	var createMissingPVC bool
 	var missingPVCSize string
 	var missingPVCStorageClass string
@@ -102,6 +104,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 				tmux:                   tmux,
 				noTmux:                 noTmux,
 				resetWorkspace:         resetWorkspace,
+				waitHooks:              waitHooks,
 				createMissingPVC:       createMissingPVC,
 				missingPVCSize:         missingPVCSize,
 				missingPVCStorageClass: missingPVCStorageClass,
@@ -115,6 +118,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&tmux, "tmux", false, "Enable tmux persistent shell sessions in the dev container")
 	cmd.Flags().BoolVar(&noTmux, "no-tmux", false, "Disable tmux persistent shell sessions for this pod")
 	cmd.Flags().BoolVar(&resetWorkspace, "reset-workspace", false, "Clear remote workspace and re-sync from local before starting")
+	cmd.Flags().BoolVar(&waitHooks, "wait-hooks", false, "Keep converging postSync until every session pod (including late-created ones) has completed it")
 	cmd.Flags().BoolVar(&createMissingPVC, "create-missing-pvc", false, "Create missing PVCs referenced by spec.volumes")
 	cmd.Flags().StringVar(&missingPVCSize, "missing-pvc-size", config.DefaultWorkspacePVCSize, "Size to use when creating a missing PVC")
 	cmd.Flags().StringVar(&missingPVCStorageClass, "missing-pvc-storage-class", "", "StorageClass to use when creating a missing PVC")
@@ -822,6 +826,16 @@ func upSetup(state *upState) error {
 		state.ui.stepDone("postSync", detail)
 	}
 
+	if state.flags.waitHooks && postSyncCmd != "" && len(state.syncPairs) > 0 {
+		state.ui.stepRun("wait-hooks", "converging postSync across all session pods")
+		if err := waitForPostSyncConverged(state.ctx, state.command.kube, state.command.namespace, state.labels, target.Container, postSyncCmd, state.flags.waitTimeout, state.ui.warnWriter(), func(detail string) {
+			state.ui.stepRun("wait-hooks", detail)
+		}); err != nil {
+			return fmt.Errorf("wait for hooks: %w", err)
+		}
+		state.ui.stepDone("wait-hooks", "postSync done on every pod")
+	}
+
 	if len(state.command.cfg.Spec.Agents) > 0 {
 		target, err = refreshTargetRef(state.ctx, state.opts, state.command.cfg, state.command.namespace, state.command.sessionName, state.command.kube, target)
 		if err != nil {
@@ -1253,38 +1267,58 @@ func reconcileMissingPVCs(ctx context.Context, k interface {
 	return created, nil
 }
 
-func runPostCreateIfNeeded(k *kube.Client, namespace, pod, container, command string, out io.Writer, errOut io.Writer) (bool, error) {
+type postCreateClient interface {
+	GetPodSummary(context.Context, string, string) (*kube.PodSummary, error)
+	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+	AnnotatePodMap(context.Context, string, string, map[string]string) error
+}
+
+func runPostCreateIfNeeded(k postCreateClient, namespace, pod, container, command string, out io.Writer, errOut io.Writer) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), annotationTimeout)
-	annotation, err := k.GetPodAnnotation(ctx, namespace, pod, "okdev.io/post-create-done")
+	summary, err := k.GetPodSummary(ctx, namespace, pod)
 	cancel()
 	if err != nil {
-		fmt.Fprintf(errOut, "warning: failed to read postCreate annotation: %v\n", err)
+		fmt.Fprintf(errOut, "warning: failed to read postCreate state: %v\n", err)
 	}
-	if annotation == "true" {
-		return false, nil
+	if summary != nil {
+		state, _ := computeHookState(*summary, postCreateHook, container)
+		if !hookNeedsRun(state) {
+			return false, nil
+		}
+		if state == hookStateStale {
+			fmt.Fprintf(errOut, "note: postCreate marker on %s predates the current container (in-place restart); re-running\n", pod)
+		}
 	}
 	fmt.Fprintf(out, "Running postCreate: %s\n", command)
+	annotateHook(context.Background(), k, namespace, pod, hookRunningAnnotations(postCreateHook, time.Now()), errOut)
 	runCtx, runCancel := context.WithTimeout(context.Background(), postCreateTimeout)
 	_, runErr := k.ExecShInContainer(runCtx, namespace, pod, container, command)
 	runCancel()
 	if runErr != nil {
+		annotateHook(context.Background(), k, namespace, pod, hookFailedAnnotations(postCreateHook, time.Now()), errOut)
 		return true, fmt.Errorf("postCreate failed: %w", runErr)
 	}
-	annCtx, annCancel := context.WithTimeout(context.Background(), annotationTimeout)
-	annErr := k.AnnotatePod(annCtx, namespace, pod, "okdev.io/post-create-done", "true")
-	annCancel()
-	if annErr != nil {
-		fmt.Fprintf(errOut, "warning: failed to annotate pod after postCreate: %v\n", annErr)
-	}
+	annotateHook(context.Background(), k, namespace, pod, hookDoneAnnotations(postCreateHook, time.Now()), errOut)
 	return true, nil
+}
+
+type hookAnnotator interface {
+	AnnotatePodMap(context.Context, string, string, map[string]string) error
+}
+
+func annotateHook(parent context.Context, k hookAnnotator, namespace, pod string, annotations map[string]string, errOut io.Writer) {
+	ctx, cancel := context.WithTimeout(parent, annotationTimeout)
+	defer cancel()
+	if err := k.AnnotatePodMap(ctx, namespace, pod, annotations); err != nil {
+		fmt.Fprintf(errOut, "warning: failed to annotate pod %s: %v\n", pod, err)
+	}
 }
 
 type postSyncClient interface {
 	ListPods(context.Context, string, bool, string) ([]kube.PodSummary, error)
 	GetPodSummary(context.Context, string, string) (*kube.PodSummary, error)
-	GetPodAnnotation(context.Context, string, string, string) (string, error)
 	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
-	AnnotatePod(context.Context, string, string, string, string) error
+	AnnotatePodMap(context.Context, string, string, map[string]string) error
 }
 
 type postSyncSummary struct {
@@ -1361,6 +1395,59 @@ func runPostSyncOnAllPods(ctx context.Context, k postSyncClient, namespace strin
 	return summary, nil
 }
 
+// waitForPostSyncConverged keeps re-running the postSync fanout until every
+// non-deleting session pod reports the hook done. The plain fanout only
+// covers pods listed at its start; controller-backed workloads can create
+// replacement pods moments later (operator recreation, scale-up), and those
+// would otherwise stay pending until the next okdev up.
+func waitForPostSyncConverged(ctx context.Context, k postSyncClient, namespace string, labels map[string]string, container, command string, timeout time.Duration, errOut io.Writer, onProgress func(string)) error {
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	selector := workload.DiscoveryLabelSelector(labels)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		pods, err := k.ListPods(waitCtx, namespace, false, selector)
+		if err == nil {
+			pending := pendingPostSyncPods(pods, container)
+			if len(pending) == 0 && len(pods) > 0 {
+				return nil
+			}
+			if onProgress != nil {
+				onProgress(fmt.Sprintf("waiting for postSync on %s", strings.Join(pending, ", ")))
+			}
+			// The fanout waits for its pods to reach Running and errors on a
+			// failing hook — surface that instead of retrying a broken hook.
+			if _, err := runPostSyncOnAllPods(waitCtx, k, namespace, labels, container, command, errOut); err != nil {
+				return err
+			}
+			pods, err = k.ListPods(waitCtx, namespace, false, selector)
+			if err == nil && len(pods) > 0 && len(pendingPostSyncPods(pods, container)) == 0 {
+				return nil
+			}
+		}
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("session pods did not all complete postSync within %s: %w", timeout, waitCtx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func pendingPostSyncPods(pods []kube.PodSummary, container string) []string {
+	var pending []string
+	for _, pod := range pods {
+		if pod.Deleting {
+			continue
+		}
+		if state, _ := computeHookState(pod, postSyncHook, container); state != hookStateDone {
+			pending = append(pending, pod.Name)
+		}
+	}
+	sort.Strings(pending)
+	return pending
+}
+
 // waitForPodRunning polls until the named pod reaches the Running phase
 // or the timeout expires.
 func waitForPodRunning(ctx context.Context, k postSyncClient, namespace, pod string, timeout time.Duration) error {
@@ -1390,26 +1477,29 @@ func waitForPodRunning(ctx context.Context, k postSyncClient, namespace, pod str
 
 func runPostSyncIfNeeded(parent context.Context, k postSyncClient, namespace, pod, container, command string, errOut io.Writer) (bool, error) {
 	ctx, cancel := context.WithTimeout(parent, annotationTimeout)
-	annotation, err := k.GetPodAnnotation(ctx, namespace, pod, "okdev.io/post-sync-done")
+	summary, err := k.GetPodSummary(ctx, namespace, pod)
 	cancel()
 	if err != nil {
-		fmt.Fprintf(errOut, "warning: failed to read postSync annotation on %s: %v\n", pod, err)
+		fmt.Fprintf(errOut, "warning: failed to read postSync state on %s: %v\n", pod, err)
 	}
-	if annotation == "true" {
-		return false, nil
+	if summary != nil {
+		state, _ := computeHookState(*summary, postSyncHook, container)
+		if !hookNeedsRun(state) {
+			return false, nil
+		}
+		if state == hookStateStale {
+			fmt.Fprintf(errOut, "note: postSync marker on %s predates the current container (in-place restart); re-running\n", pod)
+		}
 	}
+	annotateHook(parent, k, namespace, pod, hookRunningAnnotations(postSyncHook, time.Now()), errOut)
 	runCtx, runCancel := context.WithTimeout(parent, postSyncTimeout)
 	_, runErr := k.ExecShInContainer(runCtx, namespace, pod, container, command)
 	runCancel()
 	if runErr != nil {
+		annotateHook(parent, k, namespace, pod, hookFailedAnnotations(postSyncHook, time.Now()), errOut)
 		return true, fmt.Errorf("postSync failed on pod %s: %w", pod, runErr)
 	}
-	annCtx, annCancel := context.WithTimeout(parent, annotationTimeout)
-	annErr := k.AnnotatePod(annCtx, namespace, pod, "okdev.io/post-sync-done", "true")
-	annCancel()
-	if annErr != nil {
-		fmt.Fprintf(errOut, "warning: failed to annotate pod %s after postSync: %v\n", pod, annErr)
-	}
+	annotateHook(parent, k, namespace, pod, hookDoneAnnotations(postSyncHook, time.Now()), errOut)
 	return true, nil
 }
 

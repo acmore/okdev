@@ -13,7 +13,6 @@ import (
 type fakePostSyncClient struct {
 	mu            sync.Mutex
 	pods          []kube.PodSummary
-	annotations   map[string]string
 	execErr       map[string]error
 	execCalls     []string
 	annotateCalls []string
@@ -34,11 +33,14 @@ func (f *fakePostSyncClient) GetPodSummary(_ context.Context, _ string, pod stri
 	return nil, errors.New("pod not found")
 }
 
-func (f *fakePostSyncClient) GetPodAnnotation(_ context.Context, _ string, pod, key string) (string, error) {
-	if key != "okdev.io/post-sync-done" {
-		return "", nil
+func (f *fakePostSyncClient) AnnotatePodMap(ctx context.Context, _ string, pod string, annotations map[string]string) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	return f.annotations[pod], nil
+	f.mu.Lock()
+	f.annotateCalls = append(f.annotateCalls, pod+":"+annotations[annotationPostSyncState])
+	f.mu.Unlock()
+	return nil
 }
 
 func (f *fakePostSyncClient) ExecShInContainer(ctx context.Context, _ string, pod, _ string, _ string) ([]byte, error) {
@@ -57,23 +59,13 @@ func (f *fakePostSyncClient) ExecShInContainer(ctx context.Context, _ string, po
 	return nil, nil
 }
 
-func (f *fakePostSyncClient) AnnotatePod(_ context.Context, _ string, pod, key, value string) error {
-	f.mu.Lock()
-	f.annotateCalls = append(f.annotateCalls, pod+":"+key+"="+value)
-	f.mu.Unlock()
-	return nil
-}
-
 func TestRunPostSyncOnAllPodsSummarizesSharedWorkspaceFanout(t *testing.T) {
 	client := &fakePostSyncClient{
 		pods: []kube.PodSummary{
 			{Name: "worker-a", Phase: "Running"},
-			{Name: "worker-b", Phase: "Running"},
+			{Name: "worker-b", Phase: "Running", Annotations: map[string]string{annotationPostSyncDone: "true"}},
 			{Name: "worker-c", Phase: "Running"},
 			{Name: "worker-d", Phase: "Running", Deleting: true},
-		},
-		annotations: map[string]string{
-			"worker-b": "true",
 		},
 	}
 
@@ -98,8 +90,9 @@ func TestRunPostSyncOnAllPodsSummarizesSharedWorkspaceFanout(t *testing.T) {
 	if len(client.execCalls) != 2 {
 		t.Fatalf("expected 2 exec calls, got %#v", client.execCalls)
 	}
-	if len(client.annotateCalls) != 2 {
-		t.Fatalf("expected 2 annotate calls, got %#v", client.annotateCalls)
+	// Each ran pod annotates twice: running at start, done at completion.
+	if len(client.annotateCalls) != 4 {
+		t.Fatalf("expected 4 annotate calls, got %#v", client.annotateCalls)
 	}
 	if warnings.Len() != 0 {
 		t.Fatalf("expected no warnings, got %q", warnings.String())
@@ -108,8 +101,7 @@ func TestRunPostSyncOnAllPodsSummarizesSharedWorkspaceFanout(t *testing.T) {
 
 func TestRunPostSyncIfNeededHonorsParentCancellation(t *testing.T) {
 	client := &fakePostSyncClient{
-		pods:        []kube.PodSummary{{Name: "worker-a", Phase: "Running"}},
-		annotations: map[string]string{},
+		pods: []kube.PodSummary{{Name: "worker-a", Phase: "Running"}},
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

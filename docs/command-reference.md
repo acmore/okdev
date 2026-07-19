@@ -30,7 +30,7 @@ agents can react without launching a diagnostic chain on every blip:
 - `okdev template list [--all]`
 - `okdev template show <name>`
 - `okdev validate`
-- `okdev up [--wait-timeout 10m] [--dry-run]`
+- `okdev up [--wait-timeout 10m] [--dry-run] [--wait-hooks]`
 - `okdev down [session] [--delete-pvc] [--dry-run] [--wait] [--wait-timeout 2m] [--output json]`
 - `okdev restart [session] [--pod <name>] [--yes] [--wait-timeout 10m]`
 - `okdev status [session] [--all] [--all-users] [--details]`
@@ -62,7 +62,8 @@ agents can react without launching a diagnostic chain on every blip:
 - When `session` is provided, `okdev` can resolve the saved config from session metadata even outside the repo.
 - `--details`: prints a single-session diagnostic view with target selection, pod list, pod IP and node placement, mount persistence, sync path semantics, managed SSH state, key local paths, and target pod details.
 - Abnormally terminated containers are surfaced per pod, e.g. `container pytorch: OOMKilled (exit 137, finished 2026-07-05T06:32:11Z)` — both the current state (container stayed down) and the last termination before a restart (suffixed `before last restart`). The pod `reason` column also falls back to the termination reason when no waiting reason applies.
-- Detailed JSON output includes per-pod mount metadata, a `containerIssues` array (`container`, `reason`, `exitCode`, `finishedAt`, `current`), and a `pathSemantics` section describing which configured sync paths are shared via the workspace sync and which are expected to survive a session restart.
+- When lifecycle hooks are configured, each pod row reports their progress, e.g. `hooks: postSync done, postCreate stale (container restarted; okdev up re-runs it)`. States: `pending` (not run yet — e.g. a pod the controller recreated with no `okdev up` since), `running`, `done`, `failed`, and `stale` (the hook completed on a previous container instance; an in-place restart wiped its effects and the next `okdev up` re-runs it). `postSync` is reported on every pod, `postCreate` only on the target pod where it runs. Scripts should gate launches on `done` here instead of pod readiness — Ready says the container is up, not that the environment is installed.
+- Detailed JSON output includes per-pod mount metadata, a `hooks` array (`name`, `state`, `at`), a `containerIssues` array (`container`, `reason`, `exitCode`, `finishedAt`, `current`), and a `pathSemantics` section describing which configured sync paths are shared via the workspace sync and which are expected to survive a session restart.
 - `--details` is only valid when exactly one session is selected.
 
 ### `okdev target show`
@@ -249,7 +250,7 @@ agents can react without launching a diagnostic chain on every blip:
 - Unless `--no-backup` is set, `okdev migrate --template` writes `.bak` backups for the config and any rewritten companion files before overwriting them.
 - `--dry-run` prints the merged config and lists the companion files that would be rewritten, without writing. `--yes` skips confirmation when writing.
 
-### `okdev up [--wait-timeout 10m] [--dry-run]`
+### `okdev up [--wait-timeout 10m] [--dry-run] [--wait-hooks]`
 
 - Reconciles Pod/PVC resources, updates SSH config, initializes managed forwarding/sync, then exits.
 - If the session workload already exists, `okdev up` reuses it and only reruns setup.
@@ -259,6 +260,8 @@ agents can react without launching a diagnostic chain on every blip:
 - `--tmux`: explicitly enable tmux mode in the dev container.
 - `--no-tmux`: disable tmux mode for this pod.
 - When `sync.engine=syncthing`, `okdev up` refreshes the session's local Syncthing processes, starts background sync in bidirectional mode by default, and waits for the initial sync to converge before exiting.
+- Lifecycle hooks run synchronously inside `okdev up` and are tracked per pod: `okdev up && launch` is already hook-safe for pods that existed when the hook fanout started. A hook whose done-marker predates the container's current start (an in-place restart wiped its effects) reads as **stale** and is re-run by the next `okdev up`.
+- `--wait-hooks`: keep converging `postSync` until every session pod — including pods the controller created after the initial fanout (operator recreations, late-scheduled workers) — has completed it. Use this in automation that launches work across all pods right after `up`; without it, a pod that appeared mid-`up` completes its hooks only on the next `okdev up`.
 - `spec.ports` is materialized as SSH `LocalForward` or `RemoteForward` based on `direction`.
 
 ### `okdev down [session] [--delete-pvc] [--dry-run] [--wait] [--wait-timeout 2m] [--output json]`
@@ -286,6 +289,7 @@ agents can react without launching a diagnostic chain on every blip:
 - Requires a controller-backed workload (`job`, `pytorchjob`, `generic`); for a single-pod `pod` workload use the full `okdev restart`.
 - PyTorchJob replicas must have `restartPolicy: OnFailure` (the scaffold default) — with `Never`, the training-operator marks the whole job Failed instead of recreating a deleted member pod, so `restart --pod` refuses up front and explains the fix (`okdev up --reconcile` after changing the policy).
 - Canonical dead-worker sequence: `okdev status` (spot the broken pod) → `okdev restart --pod worker-3` → relaunch the affected rank/job.
+- `--wait-hooks`: same as on `okdev up` — after the restart, keep converging `postSync` until every session pod (including controller-created late arrivals) has completed it.
 
 ### `okdev ssh [session] [--setup-key] [--user root] [--cmd "..."] [--no-tmux] [--forward-agent|--no-forward-agent]`
 

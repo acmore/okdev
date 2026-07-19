@@ -94,8 +94,15 @@ cd "$WORKDIR"
 # The scaffold uses "dev", so patch the manifest and config.
 MANIFEST_PATH="$WORKDIR/.okdev/pytorchjob.yaml"
 replace_all_in_file "$MANIFEST_PATH" 'name: dev' 'name: pytorch'
-replace_all_in_file "$MANIFEST_PATH" 'image: # TODO: replace with your image' 'image: ubuntu:22.04'
-replace_all_in_file "$MANIFEST_PATH" 'command: ["sleep", "infinity"]' 'command: ["sh", "-lc", "apt-get update -qq && apt-get install -y -qq openssh-client >/dev/null 2>&1; trap : TERM INT; while true; do sleep 3600; done"]'
+# DEV_IMAGE can point at a pre-baked image (openssh-client installed) to
+# skip the in-container apt install on slow networks; CI uses the default.
+DEV_IMAGE="${DEV_IMAGE:-ubuntu:22.04}"
+replace_all_in_file "$MANIFEST_PATH" 'image: # TODO: replace with your image' "image: $DEV_IMAGE"
+# The loop watches for a trigger file so tests can force an in-place container
+# restart (non-zero exit + restartPolicy OnFailure) without node access.
+# The ssh-client install runs in the background so the trigger-file loop is
+# live from container start even while apt is still downloading.
+replace_all_in_file "$MANIFEST_PATH" 'command: ["sleep", "infinity"]' 'command: ["sh", "-lc", "{ command -v ssh >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq openssh-client >/dev/null 2>&1; }; } & trap : TERM INT; while [ ! -f /tmp/okdev-e2e-container-exit ]; do sleep 2; done; exit 7"]'
 python3 - <<'PY' "$MANIFEST_PATH" "$PVC_NAME" "$PVC_WORKSPACE_SUBPATH" "$SECONDARY_PVC_MOUNT"
 import pathlib, sys
 
@@ -1026,7 +1033,7 @@ if [[ "$POST_RESET_SYNC_OK" != "true" ]]; then
 fi
 
 echo "Changing controller workload spec to trigger drift detection"
-replace_all_in_file "$MANIFEST_PATH" 'image: ubuntu:22.04' 'image: ubuntu:24.04'
+replace_all_in_file "$MANIFEST_PATH" "image: $DEV_IMAGE" 'image: ubuntu:24.04'
 
 echo "Verifying non-interactive up fails with reconcile guidance"
 set +e
@@ -1152,6 +1159,76 @@ if [[ "$SURVIVOR_STATE" != *"running"* ]]; then
   exit 1
 fi
 echo "restart --pod verified (worker recreated, hooks replayed, master and its detached job untouched)"
+
+# ---------------------------------------------------------------------------
+# Hook state visibility + stale detection (in-place container restart):
+# status --details reports per-pod hook progress; a container restarted in
+# place (annotations survive, filesystem wiped) reads as stale, and okdev up
+# re-runs the hooks there.
+# ---------------------------------------------------------------------------
+
+echo "Testing hook state in status --details"
+HOOK_STATUS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
+if [[ "$HOOK_STATUS" != *"postSync done"* ]]; then
+  echo "ERROR: expected status --details to report postSync done" >&2
+  echo "$HOOK_STATUS" >&2
+  exit 1
+fi
+echo "hook state (done) verified in status"
+
+echo "Forcing an in-place container restart on the master"
+refresh_pytorchjob_pods
+MASTER_RESTARTS_BEFORE=$(kubectl -n "$NAMESPACE" get pod "$MASTER_POD" \
+  -o jsonpath='{.status.containerStatuses[?(@.name=="pytorch")].restartCount}')
+kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- touch /tmp/okdev-e2e-container-exit
+MASTER_RESTARTED=0
+for i in $(seq 1 60); do
+  RESTARTS_NOW=$(kubectl -n "$NAMESPACE" get pod "$MASTER_POD" \
+    -o jsonpath='{.status.containerStatuses[?(@.name=="pytorch")].restartCount}' 2>/dev/null || echo "")
+  RUNNING_NOW=$(kubectl -n "$NAMESPACE" get pod "$MASTER_POD" \
+    -o jsonpath='{.status.containerStatuses[?(@.name=="pytorch")].state.running.startedAt}' 2>/dev/null || echo "")
+  if [[ -n "$RESTARTS_NOW" && "$RESTARTS_NOW" -gt "${MASTER_RESTARTS_BEFORE:-0}" && -n "$RUNNING_NOW" ]]; then
+    MASTER_RESTARTED=1
+    break
+  fi
+  sleep 2
+done
+if [[ "$MASTER_RESTARTED" != "1" ]]; then
+  echo "ERROR: master container did not restart in place" >&2
+  kubectl -n "$NAMESPACE" get pod "$MASTER_POD" -o wide >&2 || true
+  exit 1
+fi
+if kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- test -f /tmp/post-sync-marker; then
+  echo "ERROR: expected the in-place restart to wipe the container filesystem" >&2
+  exit 1
+fi
+
+echo "Verifying status reports the stale hook state"
+STALE_STATUS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
+if [[ "$STALE_STATUS" != *"postSync stale"* ]]; then
+  echo "ERROR: expected status --details to report postSync stale after in-place restart" >&2
+  echo "$STALE_STATUS" >&2
+  exit 1
+fi
+echo "stale hook state verified in status"
+
+echo "Healing stale hooks via okdev up --wait-hooks"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-hooks --wait-timeout 5m
+if ! kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- test -f /tmp/post-sync-marker; then
+  echo "ERROR: postSync did not replay on the restarted container" >&2
+  exit 1
+fi
+if ! kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- test -f /tmp/post-create-marker; then
+  echo "ERROR: postCreate did not replay on the restarted container" >&2
+  exit 1
+fi
+HEALED_STATUS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
+if [[ "$HEALED_STATUS" == *"postSync stale"* || "$HEALED_STATUS" != *"postSync done"* ]]; then
+  echo "ERROR: expected hooks to read done after healing, got:" >&2
+  echo "$HEALED_STATUS" >&2
+  exit 1
+fi
+echo "stale hook healing via up --wait-hooks verified"
 
 echo "Testing explicit okdev down"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes
