@@ -246,9 +246,11 @@ func newJobsStopCmd(opts *Options) *cobra.Command {
 func newJobsWaitCmd(opts *Options) *cobra.Command {
 	var container string
 	var fanout int
+	var grep string
+	var tailLines int
 	cmd := &cobra.Command{
 		Use:   "wait <job-id> [session]",
-		Short: "Wait for a detached job to finish",
+		Short: "Wait for a detached job to finish, or for a log pattern to appear",
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 || len(args) > 2 {
 				return errors.New("requires <job-id> and optional [session]")
@@ -272,11 +274,13 @@ func newJobsWaitCmd(opts *Options) *cobra.Command {
 			if targetContainer == "" {
 				targetContainer = resolveTargetContainer(cc.cfg)
 			}
-			return runJobsWait(cmd.Context(), cc.kube, cc.namespace, pods, targetContainer, strings.TrimSpace(args[0]), fanoutOrDefault(fanout))
+			return runJobsWait(cmd.Context(), cc.kube, cc.namespace, pods, targetContainer, strings.TrimSpace(args[0]), fanoutOrDefault(fanout), jobsWaitOptions{Grep: grep, TailLines: tailLines}, cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().StringVar(&container, "container", "", "Override target container")
 	cmd.Flags().IntVar(&fanout, "fanout", pdshDefaultFanout, "Maximum concurrent pod queries")
+	cmd.Flags().StringVar(&grep, "grep", "", "Return as soon as a line matching this extended regex appears in any pod's log (instead of waiting for the job to finish)")
+	cmd.Flags().IntVar(&tailLines, "tail", 1, "With --grep: how many matching lines to print on success (-1 = all matches)")
 	return cmd
 }
 
@@ -402,9 +406,20 @@ func podErrorMap(errs []execJobsPodError) map[string]string {
 	return m
 }
 
-func runJobsWait(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container, jobID string, fanout int) error {
+// jobsWaitOptions shapes jobs wait: with Grep set, the wait returns as soon
+// as the pattern appears in any pod's log — the core monitoring primitive
+// ("return once we reach step 2 / an Error shows up", #191) — instead of
+// blocking until the job exits.
+type jobsWaitOptions struct {
+	Grep      string
+	TailLines int // matching lines to print on success (-1 = all matches)
+}
+
+func runJobsWait(ctx context.Context, client detachJobClient, namespace string, pods []kube.PodSummary, container, jobID string, fanout int, waitOpts jobsWaitOptions, out io.Writer) error {
 	ticker := time.NewTicker(detachJobPollEvery)
 	defer ticker.Stop()
+	waitForPattern := strings.TrimSpace(waitOpts.Grep) != ""
+	var lastProbeErr error
 	for {
 		job, podErrors, err := resolveLogicalDetachJob(ctx, client, namespace, pods, container, jobID, fanout)
 		if err != nil {
@@ -413,7 +428,28 @@ func runJobsWait(ctx context.Context, client connect.ExecClient, namespace strin
 		if len(podErrors) > 0 {
 			return fmt.Errorf("failed to query detached job %q on %d pod(s)", jobID, len(podErrors))
 		}
+		if waitForPattern {
+			// Probe before the terminal check so a job that exits with the
+			// pattern already in its log (including waiting for an Error)
+			// still counts as matched.
+			matched, probeErr := probeDetachJobLogPattern(ctx, client, namespace, job, waitOpts, out)
+			if probeErr != nil {
+				// Transient read failures must not abort a long wait; they
+				// only matter if the job ends without ever matching.
+				lastProbeErr = probeErr
+			}
+			if matched {
+				return nil
+			}
+		}
 		if allLogicalJobTerminal(job) {
+			if waitForPattern {
+				msg := fmt.Errorf("detached job %q finished with state %s without matching --grep %q", jobID, job.SummaryState, waitOpts.Grep)
+				if lastProbeErr != nil {
+					return fmt.Errorf("%w (last log probe error: %v)", msg, lastProbeErr)
+				}
+				return msg
+			}
 			if logicalJobFailed(job) {
 				return fmt.Errorf("detached job %q finished with state %s", jobID, job.SummaryState)
 			}
@@ -425,6 +461,34 @@ func runJobsWait(ctx context.Context, client connect.ExecClient, namespace strin
 		case <-ticker.C:
 		}
 	}
+}
+
+// probeDetachJobLogPattern greps every pod's log through the filter pipeline
+// and, on the first pod with matching lines, prints them (pod-prefixed) and
+// reports success.
+func probeDetachJobLogPattern(ctx context.Context, client detachJobClient, namespace string, job logicalExecJobView, waitOpts jobsWaitOptions, out io.Writer) (bool, error) {
+	shortNames := shortPodNames(jobPodNames(job))
+	prefixes := formatPodPrefixes(shortNames, false)
+	var lastErr error
+	for i, row := range job.PodStates {
+		content, err := readDetachJobLogVerified(ctx, client, namespace, row, jobsLogsOptions{
+			TailLines: waitOpts.TailLines,
+			Grep:      waitOpts.Grep,
+		})
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if strings.TrimSpace(content) == "" {
+			continue
+		}
+		var mu sync.Mutex
+		writer := newPrefixedWriter(prefixes[i], out, &mu)
+		_, _ = writer.Write([]byte(content))
+		writer.Flush()
+		return true, nil
+	}
+	return false, lastErr
 }
 
 func runJobsStop(ctx context.Context, client detachJobClient, namespace string, pods []kube.PodSummary, container, jobID string, fanout int, out io.Writer) error {
@@ -678,6 +742,22 @@ func streamDetachJobLog(ctx context.Context, client detachJobClient, namespace s
 	// it against the byte count the script reported before emitting, so a
 	// dropped exec stream is retried instead of being presented as the job's
 	// (empty) output.
+	content, err := readDetachJobLogVerified(ctx, client, namespace, row, logOpts)
+	if err != nil {
+		return err
+	}
+	writer := newPrefixedWriter(prefix, out, mu)
+	defer writer.Flush()
+	if _, err := writer.Write([]byte(content)); err != nil {
+		return err
+	}
+	return nil
+}
+
+// readDetachJobLogVerified performs one size-verified snapshot read of a
+// pod's job log (retrying dropped exec streams, #167) and returns the
+// selected content.
+func readDetachJobLogVerified(ctx context.Context, client detachJobClient, namespace string, row execJobView, logOpts jobsLogsOptions) (string, error) {
 	script := readDetachJobLogScript(row.LogPath, logOpts)
 	var lastErr error
 	for attempt := 1; attempt <= detachLogReadAttempts; attempt++ {
@@ -685,9 +765,9 @@ func streamDetachJobLog(ctx context.Context, client detachJobClient, namespace s
 		err := streamDetachLogWithSidecarFallback(ctx, client, namespace, row, script, &buf, &stderr)
 		if err != nil {
 			if strings.TrimSpace(stderr.String()) != "" {
-				return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+				return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 			}
-			return err
+			return "", err
 		}
 		want, ok := parseDetachLogSize(stderr.String())
 		if !ok || int64(buf.Len()) != want {
@@ -699,14 +779,9 @@ func streamDetachJobLog(ctx context.Context, client detachJobClient, namespace s
 			}
 			continue
 		}
-		writer := newPrefixedWriter(prefix, out, mu)
-		defer writer.Flush()
-		if _, err := writer.Write(buf.Bytes()); err != nil {
-			return err
-		}
-		return nil
+		return buf.String(), nil
 	}
-	return lastErr
+	return "", lastErr
 }
 
 // streamDetachLogWithSidecarFallback runs the log script in the job's
