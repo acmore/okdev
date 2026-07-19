@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
@@ -88,6 +89,16 @@ type PodSummary struct {
 	// Error, ...) so callers can explain a not-ready pod without re-fetching
 	// and digging through containerStatuses themselves.
 	ContainerIssues []ContainerIssue
+	// ContainerStarts records when each currently-running container started.
+	// A hook done-marker older than its container's start means the hook's
+	// effects were wiped by an in-place restart (annotations survive those).
+	ContainerStarts []ContainerStart
+}
+
+// ContainerStart pairs a container name with its current start time.
+type ContainerStart struct {
+	Name      string
+	StartedAt time.Time
 }
 
 // ContainerIssue describes a container that is (or last was) terminated
@@ -1025,12 +1036,21 @@ func (c *Client) TouchPodActivity(ctx context.Context, namespace, pod string) er
 }
 
 func (c *Client) AnnotatePod(ctx context.Context, namespace, pod, key, value string) error {
+	return c.AnnotatePodMap(ctx, namespace, pod, map[string]string{key: value})
+}
+
+// AnnotatePodMap sets several pod annotations in one merge patch so related
+// markers (e.g. a hook's state + timestamp) cannot be observed half-written.
+func (c *Client) AnnotatePodMap(ctx context.Context, namespace, pod string, annotations map[string]string) error {
 	cs, _, err := c.clientset()
 	if err != nil {
 		return err
 	}
-	patch := []byte(fmt.Sprintf(`{"metadata":{"annotations":{%q:%q}}}`, key, value))
-	_, err = cs.CoreV1().Pods(namespace).Patch(ctx, pod, types.MergePatchType, patch, metav1.PatchOptions{})
+	encoded, err := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": annotations}})
+	if err != nil {
+		return fmt.Errorf("encode annotation patch: %w", err)
+	}
+	_, err = cs.CoreV1().Pods(namespace).Patch(ctx, pod, types.MergePatchType, encoded, metav1.PatchOptions{})
 	return err
 }
 
@@ -2542,6 +2562,7 @@ func podSummaryFromPod(p *corev1.Pod) PodSummary {
 	var restarts int32
 	reason := p.Status.Reason
 	var issues []ContainerIssue
+	var starts []ContainerStart
 	for _, st := range p.Status.ContainerStatuses {
 		if st.Ready {
 			readyContainers++
@@ -2552,6 +2573,9 @@ func podSummaryFromPod(p *corev1.Pod) PodSummary {
 		}
 		if issue, ok := containerIssueFromStatus(st); ok {
 			issues = append(issues, issue)
+		}
+		if st.State.Running != nil {
+			starts = append(starts, ContainerStart{Name: st.Name, StartedAt: st.State.Running.StartedAt.Time})
 		}
 	}
 	// A container terminated by the runtime (OOMKilled, Error) explains a
@@ -2583,6 +2607,7 @@ func podSummaryFromPod(p *corev1.Pod) PodSummary {
 		PodIP:           p.Status.PodIP,
 		NodeName:        p.Spec.NodeName,
 		ContainerIssues: issues,
+		ContainerStarts: starts,
 	}
 }
 

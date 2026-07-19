@@ -70,6 +70,18 @@ type detailedStatusPod struct {
 	NodeName        string                         `json:"nodeName,omitempty"`
 	Mounts          []detailedStatusMount          `json:"mounts,omitempty"`
 	ContainerIssues []detailedStatusContainerIssue `json:"containerIssues,omitempty"`
+	Hooks           []detailedStatusHook           `json:"hooks,omitempty"`
+}
+
+// detailedStatusHook reports a lifecycle hook's per-pod progress so operators
+// can gate launches on hook completion instead of hand-rolling probes.
+// State is pending|running|done|failed|stale; stale means the hook completed
+// on a previous container instance (in-place restart wiped its effects) and
+// the next `okdev up` will re-run it.
+type detailedStatusHook struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
+	At    string `json:"at,omitempty"`
 }
 
 // detailedStatusContainerIssue surfaces an abnormal container termination
@@ -171,6 +183,7 @@ func gatherDetailedStatus(ctx context.Context, opts *Options, cfg *config.DevEnv
 		}
 	}
 	detail.Logs = buildDetailedLogs()
+	attachPodHookStates(&detail, view, cfg, cfgPath, target)
 	enrichDetailedStatusPods(ctx, namespace, target.SelectedContainer, &detail, client)
 	detail.PathSemantics = buildDetailedPathSemantics(cfg, cfgPath, detail.Pods, target)
 
@@ -229,6 +242,47 @@ func buildDetailedTarget(view sessionView, cfg *config.DevEnvironment) (detailed
 		})
 	}
 	return target, pods
+}
+
+// attachPodHookStates derives each pod's lifecycle-hook progress from its
+// annotations. postSync runs on every pod; postCreate only on the target pod,
+// so it is reported only there.
+func attachPodHookStates(detail *detailedStatus, view sessionView, cfg *config.DevEnvironment, cfgPath string, target detailedStatusTarget) {
+	if detail == nil || cfg == nil {
+		return
+	}
+	hasPostCreate := resolvePostCreateCommand(cfg, cfgPath) != ""
+	hasPostSync := resolvePostSyncCommand(cfg, cfgPath) != ""
+	if !hasPostCreate && !hasPostSync {
+		return
+	}
+	byName := make(map[string]kube.PodSummary, len(view.Pods))
+	for _, pod := range view.Pods {
+		byName[pod.Name] = pod
+	}
+	for i := range detail.Pods {
+		summary, ok := byName[detail.Pods[i].Name]
+		if !ok {
+			continue
+		}
+		var hooks []detailedStatusHook
+		if hasPostSync {
+			hooks = append(hooks, detailedStatusHookFrom("postSync", summary, postSyncHook, target.SelectedContainer))
+		}
+		if hasPostCreate && detail.Pods[i].Selected {
+			hooks = append(hooks, detailedStatusHookFrom("postCreate", summary, postCreateHook, target.SelectedContainer))
+		}
+		detail.Pods[i].Hooks = hooks
+	}
+}
+
+func detailedStatusHookFrom(name string, pod kube.PodSummary, hook hookAnnotations, container string) detailedStatusHook {
+	state, at := computeHookState(pod, hook, container)
+	entry := detailedStatusHook{Name: name, State: state}
+	if !at.IsZero() {
+		entry.At = at.UTC().Format(time.RFC3339)
+	}
+	return entry
 }
 
 func enrichDetailedStatusPods(ctx context.Context, namespace, container string, detail *detailedStatus, client statusDetailsClient) {
@@ -585,6 +639,7 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 			renderPodLocationLine("ip", pod.PodIP),
 			renderPodLocationLine("node", pod.NodeName),
 			renderMountsLine(pod.Mounts),
+			renderHooksLine(pod.Hooks),
 		} {
 			if extra != "" {
 				fmt.Fprintf(w, "  %s\n", extra)
@@ -720,6 +775,23 @@ func renderMountsLine(mounts []detailedStatusMount) string {
 		parts = append(parts, fmt.Sprintf("%s [%s, %s]", mount.MountPath, mount.SourceType, mount.Persistence))
 	}
 	return "mounts: " + strings.Join(parts, ", ")
+}
+
+// renderHooksLine formats per-pod hook progress, e.g.
+// "hooks: postSync done, postCreate stale (container restarted; okdev up re-runs it)".
+func renderHooksLine(hooks []detailedStatusHook) string {
+	if len(hooks) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(hooks))
+	for _, hook := range hooks {
+		part := fmt.Sprintf("%s %s", hook.Name, hook.State)
+		if hook.State == hookStateStale {
+			part += " (container restarted; okdev up re-runs it)"
+		}
+		parts = append(parts, part)
+	}
+	return "hooks: " + strings.Join(parts, ", ")
 }
 
 // renderContainerIssueLine formats one abnormal container termination, e.g.

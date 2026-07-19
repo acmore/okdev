@@ -540,3 +540,70 @@ func TestManagedSSHConfigPresent(t *testing.T) {
 		t.Fatal("expected managed ssh config block to be found")
 	}
 }
+
+func TestAttachPodHookStatesReportsPerPodProgress(t *testing.T) {
+	base := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	cfg := &config.DevEnvironment{}
+	cfg.Spec.Lifecycle.PostCreate = "install-tools"
+	cfg.Spec.Lifecycle.PostSync = "pip install -e ."
+	view := sessionView{
+		Session:   "sess1",
+		TargetPod: "master-0",
+		Pods: []kube.PodSummary{
+			{
+				Name: "master-0",
+				Annotations: map[string]string{
+					annotationPostSyncDone:    "true",
+					annotationPostSyncState:   hookStateDone,
+					annotationPostSyncAt:      base.Format(time.RFC3339),
+					annotationPostCreateDone:  "true",
+					annotationPostCreateState: hookStateDone,
+					annotationPostCreateAt:    base.Format(time.RFC3339),
+				},
+				ContainerStarts: []kube.ContainerStart{{Name: "dev", StartedAt: base.Add(-time.Hour)}},
+			},
+			{
+				// In-place restart: container newer than the done marker.
+				Name: "worker-0",
+				Annotations: map[string]string{
+					annotationPostSyncDone:  "true",
+					annotationPostSyncState: hookStateDone,
+					annotationPostSyncAt:    base.Format(time.RFC3339),
+				},
+				ContainerStarts: []kube.ContainerStart{{Name: "dev", StartedAt: base.Add(time.Hour)}},
+			},
+			{Name: "worker-1"},
+		},
+	}
+	detail := detailedStatus{}
+	target, pods := buildDetailedTarget(view, cfg)
+	detail.Pods = pods
+	attachPodHookStates(&detail, view, cfg, "", target)
+
+	byName := map[string][]detailedStatusHook{}
+	for _, pod := range detail.Pods {
+		byName[pod.Name] = pod.Hooks
+	}
+	master := byName["master-0"]
+	if len(master) != 2 || master[0].State != hookStateDone || master[1].State != hookStateDone {
+		t.Fatalf("master hooks = %+v, want postSync+postCreate done", master)
+	}
+	worker0 := byName["worker-0"]
+	if len(worker0) != 1 || worker0[0].Name != "postSync" || worker0[0].State != hookStateStale {
+		t.Fatalf("worker-0 hooks = %+v, want stale postSync only", worker0)
+	}
+	worker1 := byName["worker-1"]
+	if len(worker1) != 1 || worker1[0].State != hookStatePending {
+		t.Fatalf("worker-1 hooks = %+v, want pending postSync", worker1)
+	}
+}
+
+func TestRenderHooksLineMarksStale(t *testing.T) {
+	line := renderHooksLine([]detailedStatusHook{
+		{Name: "postSync", State: hookStateDone},
+		{Name: "postCreate", State: hookStateStale},
+	})
+	if !strings.Contains(line, "postSync done") || !strings.Contains(line, "postCreate stale (container restarted") {
+		t.Fatalf("unexpected hooks line: %q", line)
+	}
+}

@@ -19,6 +19,7 @@ func newRestartCmd(opts *Options) *cobra.Command {
 	var yes bool
 	var waitTimeout time.Duration
 	var podNames []string
+	var waitHooks bool
 
 	cmd := &cobra.Command{
 		Use:   "restart [session]",
@@ -54,7 +55,7 @@ pods, and sync re-bootstraps against the new workload.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			applySessionArg(opts, args)
 			if len(podNames) > 0 {
-				return runRestartPods(cmd, opts, podNames, yes, waitTimeout)
+				return runRestartPods(cmd, opts, podNames, yes, waitTimeout, waitHooks)
 			}
 			ui := newUpUI(cmd.OutOrStdout(), cmd.ErrOrStderr())
 			ui.section("Validate")
@@ -112,13 +113,14 @@ pods, and sync re-bootstraps against the new workload.`,
 				return err
 			}
 
-			return runUp(cmd, opts, upOptions{waitTimeout: waitTimeout})
+			return runUp(cmd, opts, upOptions{waitTimeout: waitTimeout, waitHooks: waitHooks})
 		},
 	}
 
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Skip the confirmation prompt")
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", upDefaultWaitTimeout, "Timeout for workload deletion and pod readiness")
 	cmd.Flags().StringSliceVar(&podNames, "pod", nil, "Recreate only these pods (short names ok); other pods keep running")
+	cmd.Flags().BoolVar(&waitHooks, "wait-hooks", false, "Keep converging postSync until every session pod (including late-created ones) has completed it")
 	return cmd
 }
 
@@ -126,7 +128,7 @@ pods, and sync re-bootstraps against the new workload.`,
 // delete the pod, let the controller bring it back, then re-run the
 // idempotent per-pod session setup (hooks are annotation-tracked per pod, so
 // they replay only on the fresh pods).
-func runRestartPods(cmd *cobra.Command, opts *Options, podNames []string, yes bool, waitTimeout time.Duration) error {
+func runRestartPods(cmd *cobra.Command, opts *Options, podNames []string, yes bool, waitTimeout time.Duration, waitHooks bool) error {
 	ui := newUpUI(cmd.OutOrStdout(), cmd.ErrOrStderr())
 	ui.section("Validate")
 	cc, err := resolveCommandContext(opts, resolveSessionName)
@@ -192,7 +194,7 @@ func runRestartPods(cmd *cobra.Command, opts *Options, podNames []string, yes bo
 	// Re-run the idempotent up path: readiness wait, SSH/sync reconciliation
 	// (sync state resets only if the sync hub itself was recreated), mesh,
 	// and per-pod-gated postSync/postCreate on the fresh pods.
-	return runUp(cmd, opts, upOptions{waitTimeout: waitTimeout})
+	return runUp(cmd, opts, upOptions{waitTimeout: waitTimeout, waitHooks: waitHooks})
 }
 
 type restartPodPolicyClient interface {
