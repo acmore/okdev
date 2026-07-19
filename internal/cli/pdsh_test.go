@@ -331,7 +331,7 @@ func TestRemoteExecScriptPathLivesInTmpWithStablePrefix(t *testing.T) {
 func TestDetachWrapperScriptWiresCleanup(t *testing.T) {
 	// The detach EXIT trap must invoke cleanup() so per-pod uploaded scripts
 	// are removed once the user command exits.
-	got := detachWrapperScript("job-x", []string{"echo", "hi"}, []string{"/tmp/okdev-exec-script-A"}, "/tmp/okdev-exec/job-x.json", "RUNNING", "EXITED")
+	got := detachWrapperScript("job-x", []string{"echo", "hi"}, []string{"/tmp/okdev-exec-script-A"}, "/tmp/okdev-exec/job-x.json", "RUNNING", "EXITED", nil)
 	if !strings.Contains(got, "rm -f '/tmp/okdev-exec-script-A' 2>/dev/null || true") {
 		t.Fatalf("expected cleanup line for uploaded script, got %q", got)
 	}
@@ -357,7 +357,7 @@ func TestDetachWrapperScriptIsValidShellWithAndWithoutCleanup(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			script := detachWrapperScript("job-x", []string{"echo", "hi"}, tc.cleanup, "/tmp/okdev-exec/job-x.json", "RUNNING", "EXITED")
+			script := detachWrapperScript("job-x", []string{"echo", "hi"}, tc.cleanup, "/tmp/okdev-exec/job-x.json", "RUNNING", "EXITED", nil)
 			cmd := exec.Command("sh", "-n")
 			cmd.Stdin = strings.NewReader(script)
 			var stderr bytes.Buffer
@@ -511,7 +511,7 @@ func TestRunDetachExec(t *testing.T) {
 	err := runDetachExec(context.Background(), client, "default", pods, "dev", execInvocation{
 		Argv:           []string{"python", "train.py"},
 		DisplayCommand: "python train.py",
-	}, make(chan struct{}, pdshDefaultFanout), &stdout)
+	}, false, make(chan struct{}, pdshDefaultFanout), &stdout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -549,7 +549,7 @@ func TestRunDetachExecWithError(t *testing.T) {
 	err := runDetachExec(context.Background(), client, "default", pods, "dev", execInvocation{
 		Argv:           []string{"python", "train.py"},
 		DisplayCommand: "python train.py",
-	}, make(chan struct{}, pdshDefaultFanout), &stdout)
+	}, false, make(chan struct{}, pdshDefaultFanout), &stdout)
 	if err == nil {
 		t.Fatal("expected error for partial failure")
 	}
@@ -575,7 +575,7 @@ func TestRunDetachExecRequiresLaunchMetadata(t *testing.T) {
 	err := runDetachExec(context.Background(), client, "default", pods, "dev", execInvocation{
 		Argv:           []string{"python", "train.py"},
 		DisplayCommand: "python train.py",
-	}, make(chan struct{}, pdshDefaultFanout), &stdout)
+	}, false, make(chan struct{}, pdshDefaultFanout), &stdout)
 	if err == nil {
 		t.Fatal("expected metadata parse error")
 	}
@@ -657,7 +657,7 @@ func TestRunDetachExecUploadsScriptPerPod(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := runDetachExec(context.Background(), client, "default", pods, "dev", invocation, make(chan struct{}, pdshDefaultFanout), &stdout); err != nil {
+	if err := runDetachExec(context.Background(), client, "default", pods, "dev", invocation, false, make(chan struct{}, pdshDefaultFanout), &stdout); err != nil {
 		t.Fatalf("runDetachExec: %v", err)
 	}
 	remotePath := client.uploads["okdev-sess-worker-0"]

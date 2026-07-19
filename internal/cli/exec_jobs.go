@@ -307,6 +307,12 @@ func summarizeLogicalJobState(rows []execJobView) string {
 		}
 	}
 	if running > 0 {
+		if failed > 0 {
+			// Some members died while others still run — the stranded-rank
+			// shape (#179): surviving ranks likely hang in rendezvous/NCCL
+			// holding GPU memory.
+			return fmt.Sprintf("degraded(%d running, %d failed of %d)", running, failed, total)
+		}
 		return fmt.Sprintf("running(%d/%d)", running, total)
 	}
 	if failed > 0 {

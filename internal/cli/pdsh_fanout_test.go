@@ -181,7 +181,7 @@ func TestRunDetachExecFanoutLimitsParallelism(t *testing.T) {
 
 	var stdout bytes.Buffer
 	err := runDetachExec(context.Background(), client, "default", pods, "dev",
-		execInvocation{Argv: []string{"python", "train.py"}, DisplayCommand: "python train.py"}, make(chan struct{}, 2), &stdout)
+		execInvocation{Argv: []string{"python", "train.py"}, DisplayCommand: "python train.py"}, false, make(chan struct{}, 2), &stdout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -450,7 +450,7 @@ func TestMultiExecPipelinePartialFailureWithDetach(t *testing.T) {
 
 	var stdout bytes.Buffer
 	err := runDetachExec(context.Background(), client, "default", pods, "dev",
-		execInvocation{Argv: []string{"python", "train.py"}, DisplayCommand: "python train.py"}, make(chan struct{}, pdshDefaultFanout), &stdout)
+		execInvocation{Argv: []string{"python", "train.py"}, DisplayCommand: "python train.py"}, false, make(chan struct{}, pdshDefaultFanout), &stdout)
 	if err == nil {
 		t.Fatal("expected error for partial failure")
 	}
@@ -542,7 +542,7 @@ func TestRunDetachExecCancelledContext(t *testing.T) {
 
 	var stdout bytes.Buffer
 	err := runDetachExec(ctx, client, "default", pods, "dev",
-		execInvocation{Argv: []string{"python", "train.py"}, DisplayCommand: "python train.py"}, make(chan struct{}, 2), &stdout)
+		execInvocation{Argv: []string{"python", "train.py"}, DisplayCommand: "python train.py"}, false, make(chan struct{}, 2), &stdout)
 	if err == nil {
 		t.Fatal("expected error from cancelled context")
 	}
