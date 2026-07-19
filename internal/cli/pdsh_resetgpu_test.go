@@ -122,6 +122,16 @@ func TestResetGPUScriptKillsHolderGroupAndVerifies(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = holder.Process.Kill() }()
+	// Reap the holder as soon as it dies: without this, the SIGKILLed child
+	// stays a zombie of the test process, `kill -0` in the fake nvidia-smi
+	// still succeeds, and the verify loop times out (exit 4) — exactly the
+	// CI failure this guards against. Real GPU holders are reaped by the
+	// container's init, not by okdev.
+	reaped := make(chan struct{})
+	go func() {
+		_ = holder.Wait()
+		close(reaped)
+	}()
 	if err := os.WriteFile(stateFile, []byte(strconv.Itoa(holder.Process.Pid)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -133,17 +143,12 @@ func TestResetGPUScriptKillsHolderGroupAndVerifies(t *testing.T) {
 	if !strings.Contains(stdout, "killed group") || !strings.Contains(stdout, "gpu-clear") {
 		t.Fatalf("expected group kill + verification, got %q", stdout)
 	}
-	// The holder must actually be dead.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if err := holder.Process.Signal(syscall.Signal(0)); err != nil {
-			return
-		}
-		_ = holder.Wait
-		time.Sleep(50 * time.Millisecond)
+	// The holder must actually be dead (reaped by the goroutine above).
+	select {
+	case <-reaped:
+	case <-time.After(3 * time.Second):
+		t.Fatal("holder was not reaped after --reset-gpu")
 	}
-	// Reap and re-check.
-	_ = holder.Wait()
 }
 
 func TestResetGPUScriptReportsUnmappablePidAndTimesOut(t *testing.T) {
