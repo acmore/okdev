@@ -1183,6 +1183,21 @@ func selfKillHint(failures []podExecResult, commandDisplay string) string {
 	return ""
 }
 
+// noMatchKillHint signposts the benign-cleanup case (#192): a bare pkill or
+// pgrep exits 1 when nothing matched, which is the desired outcome when the
+// processes are already gone — not a failure worth aborting on.
+func noMatchKillHint(failures []podExecResult, commandDisplay string) string {
+	if !strings.Contains(commandDisplay, "pkill") && !strings.Contains(commandDisplay, "pgrep") {
+		return ""
+	}
+	for _, f := range failures {
+		if kind, code := classifyPodExecFailure(f.err); kind == "remote-exit" && code == 1 {
+			return "hint: pkill/pgrep exit 1 when no process matched — usually benign during cleanup; use `okdev exec --pkill '<pattern>'` (0 matched / 1 none, never matches okdev's own machinery), append `|| true`, or use `--json` to treat per-pod exit codes as data"
+		}
+	}
+	return ""
+}
+
 // reportFanoutFailures prints the per-pod failure summary and builds the
 // command error. When every failure is the remote command merely exiting
 // non-zero (grep with no match, a failing test), the run is reported as a
@@ -1209,10 +1224,16 @@ func reportFanoutFailures(ctx context.Context, client connect.ExecClient, namesp
 	summary := strings.Join(parts, "\n")
 	if remoteExitOnly {
 		fmt.Fprintf(stderr, "\nCOMMAND EXITED NON-ZERO:\n%s\n", summary)
+		// Cleanup loops routinely misread a non-zero cleanup command as a pod
+		// failure (#192) — say explicitly which side produced the status.
+		fmt.Fprintln(stderr, "(the command was delivered and ran on every pod; the exit codes above are the command's own results — delivery failures report as FAILED with exit 69)")
 	} else {
 		fmt.Fprintf(stderr, "\nFAILED:\n%s\n", summary)
 	}
 	if hint := selfKillHint(failures, commandDisplay); hint != "" {
+		fmt.Fprintln(stderr, hint)
+	}
+	if hint := noMatchKillHint(failures, commandDisplay); hint != "" {
 		fmt.Fprintln(stderr, hint)
 	}
 	if remoteExitOnly {

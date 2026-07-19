@@ -424,6 +424,22 @@ if [[ "$EXEC_NONZERO_OUTPUT" != *"COMMAND EXITED NON-ZERO"* || "$EXEC_NONZERO_OU
   echo "$EXEC_NONZERO_OUTPUT" >&2
   exit 1
 fi
+if [[ "$EXEC_NONZERO_OUTPUT" != *"delivered and ran on every pod"* ]]; then
+  echo "ERROR: expected the delivered-vs-failed clarifier under the non-zero summary" >&2
+  echo "$EXEC_NONZERO_OUTPUT" >&2
+  exit 1
+fi
+# A bare pkill matching nothing exits 1 and gets the benign-cleanup signpost.
+# The pattern is bracketed so it cannot self-match the shell running it —
+# an unbracketed pattern would trip the (also correct) self-kill hint instead.
+set +e
+PKILL_NOMATCH_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'pkill -f "no-such-process-okdev-e2[e]"' 2>&1)
+set -e
+if [[ "$PKILL_NOMATCH_OUTPUT" != *"pkill/pgrep exit 1 when no process matched"* ]]; then
+  echo "ERROR: expected the no-match pkill hint, got:" >&2
+  echo "$PKILL_NOMATCH_OUTPUT" >&2
+  exit 1
+fi
 echo "multi-pod exec non-zero command framing verified"
 
 echo "Testing exec --role master -- targets only master"
