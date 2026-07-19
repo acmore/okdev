@@ -1048,6 +1048,70 @@ if [[ "$RESET_NOGPU_STATUS" -ne 3 || "$RESET_NOGPU" != *"nvidia-smi not found"* 
 fi
 echo "exec --reset-gpu verified (kill+verify, idempotent, no-gpu error)"
 
+# Issue #173: consecutive transient failures escalate the exit-78 message
+# with a machine-readable streak marker; success clears the streak. An
+# unreachable apiserver simulates the outage; the streak file is backdated so
+# the span threshold trips without real waiting.
+echo "Testing sustained transient-failure escalation"
+BROKEN_KUBECONFIG="$WORKDIR/broken-kubeconfig"
+python3 - "$KUBECONFIG_PATH" "$BROKEN_KUBECONFIG" <<'BRK'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+out = []
+for line in text.splitlines():
+    if line.strip().startswith("server:"):
+        indent = line[: len(line) - len(line.lstrip())]
+        out.append(indent + "server: https://127.0.0.1:9")
+    else:
+        out.append(line)
+open(dst, "w").write("\n".join(out) + "\n")
+BRK
+set +e
+FIRST_78=$(KUBECONFIG="$BROKEN_KUBECONFIG" "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- true 2>&1)
+FIRST_STATUS=$?
+set -e
+if [[ "$FIRST_STATUS" -ne 78 ]]; then
+  echo "ERROR: unreachable apiserver should exit 78, got $FIRST_STATUS:" >&2
+  echo "$FIRST_78" >&2
+  exit 1
+fi
+if [[ "$FIRST_78" == *"okdev-transient-streak"* ]]; then
+  echo "ERROR: first transient failure must not escalate: $FIRST_78" >&2
+  exit 1
+fi
+STREAK_FILE="$HOME_DIR/.okdev/sessions/${SESSION_NAME}/transient-streak.json"
+if [[ ! -f "$STREAK_FILE" ]]; then
+  echo "ERROR: expected transient streak file after a 78 failure" >&2
+  exit 1
+fi
+# Backdate the streak so the next failure is #3 spanning >1 minute.
+python3 - "$STREAK_FILE" <<'BACKDATE'
+import datetime, json, sys
+path = sys.argv[1]
+streak = json.load(open(path))
+first = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=120)
+streak["count"] = 2
+streak["firstAt"] = first.isoformat().replace("+00:00", "Z")
+json.dump(streak, open(path, "w"))
+BACKDATE
+set +e
+ESCALATED=$(KUBECONFIG="$BROKEN_KUBECONFIG" "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- true 2>&1)
+ESCALATED_STATUS=$?
+set -e
+if [[ "$ESCALATED_STATUS" -ne 78 || "$ESCALATED" != *"okdev-transient-streak: count=3"* || "$ESCALATED" != *"sustained network/cluster outage"* ]]; then
+  echo "ERROR: third sustained failure should escalate while keeping exit 78, got status=$ESCALATED_STATUS:" >&2
+  echo "$ESCALATED" >&2
+  exit 1
+fi
+# A successful contact clears the streak.
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- true >/dev/null
+if [[ -f "$STREAK_FILE" ]]; then
+  echo "ERROR: successful contact should clear the transient streak" >&2
+  exit 1
+fi
+echo "transient-failure escalation verified (78 kept, streak marker, clear-on-success)"
+
 echo "Testing jobs stop kills the whole process tree"
 STOP_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs stop "$TREE_JOB_ID")
 echo "$STOP_OUTPUT"
