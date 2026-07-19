@@ -149,6 +149,13 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				return nil
 			}
 
+			if os.Getenv("OKDEV_SYNCTHING_BACKGROUND_CHILD") != "1" {
+				// A pause is an explicit user decision (#174): `okdev sync`
+				// repairs broken channels but never overrides a pause.
+				if status, _ := checkSyncHealth(cc.sessionName); status == syncHealthPaused {
+					return fmt.Errorf("sync is paused for session %s; resume explicitly with `okdev sync resume`", cc.sessionName)
+				}
+			}
 			if !background && (mode == "" || mode == "bi") && os.Getenv("OKDEV_SYNCTHING_BACKGROUND_CHILD") != "1" {
 				// Health check, not just process liveness (#165): an alive
 				// but stale process must not short-circuit the run — fall
@@ -197,6 +204,8 @@ func newSyncCmd(opts *Options) *cobra.Command {
 
 	cmd.AddCommand(newSyncResetRemoteCmd(opts))
 	cmd.AddCommand(newSyncWaitCmd(opts))
+	cmd.AddCommand(newSyncPauseCmd(opts))
+	cmd.AddCommand(newSyncResumeCmd(opts))
 	return cmd
 }
 
@@ -856,4 +865,72 @@ func processLooksLikeSyncthingSync(pid int) bool {
 	}
 	cmdline := strings.ReplaceAll(string(data), "\x00", " ")
 	return strings.Contains(cmdline, "okdev") && strings.Contains(cmdline, "sync")
+}
+
+// newSyncPauseCmd freezes the sync channel so a local high-risk operation
+// (git checkout, rebase) cannot swap files under a running remote job
+// (#174). The pause flips the managed folders' paused flag on the local
+// syncthing daemon — an explicit state that sync/sync wait report distinctly
+// and that only `okdev sync resume` (or the next `okdev up`, which rebuilds
+// folder config) ends.
+func newSyncPauseCmd(opts *Options) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "pause [session]",
+		Short: "Pause sync so local file operations cannot propagate to the pod",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			applySessionArg(opts, args)
+			cc, err := resolveCommandContext(opts, resolveSessionName)
+			if err != nil {
+				return err
+			}
+			status, _ := checkSyncHealth(cc.sessionName)
+			if status == syncHealthStopped {
+				return fmt.Errorf("sync is not running for session %s; nothing to pause", cc.sessionName)
+			}
+			ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
+			defer cancel()
+			touched, err := setSessionSyncPaused(ctx, cc.sessionName, true)
+			if err != nil {
+				return fmt.Errorf("pause sync: %w", err)
+			}
+			if touched == 0 {
+				return fmt.Errorf("no managed sync folders found for session %s", cc.sessionName)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Paused %d sync folder(s) for session %s — local changes stop propagating in both directions.\nSafe to switch branches/rebase now; resume with `okdev sync resume`.\n", touched, cc.sessionName)
+			return nil
+		},
+	}
+	return cmd
+}
+
+func newSyncResumeCmd(opts *Options) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "resume [session]",
+		Short: "Resume a paused sync channel",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			applySessionArg(opts, args)
+			cc, err := resolveCommandContext(opts, resolveSessionName)
+			if err != nil {
+				return err
+			}
+			status, _ := checkSyncHealth(cc.sessionName)
+			if status == syncHealthStopped {
+				return fmt.Errorf("sync is not running for session %s; start it with `okdev sync`", cc.sessionName)
+			}
+			ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
+			defer cancel()
+			touched, err := setSessionSyncPaused(ctx, cc.sessionName, false)
+			if err != nil {
+				return fmt.Errorf("resume sync: %w", err)
+			}
+			if touched == 0 {
+				return fmt.Errorf("no managed sync folders found for session %s", cc.sessionName)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Resumed %d sync folder(s) for session %s.\nRun `okdev sync wait` to confirm pending changes have converged.\n", touched, cc.sessionName)
+			return nil
+		},
+	}
+	return cmd
 }

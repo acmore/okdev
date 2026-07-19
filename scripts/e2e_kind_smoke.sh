@@ -1133,6 +1133,45 @@ fi
 rmdir "$SCRATCH_CWD"
 echo "OKDEV_CONFIG scratch-cwd resolution and no-config guidance verified"
 
+# Issue #174: sync pause freezes the channel for local high-risk operations;
+# sync wait and plain sync must respect the pause; resume reconverges.
+echo "Testing sync pause / resume"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync pause
+set +e
+PAUSED_WAIT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync wait --timeout 10s 2>&1)
+PAUSED_WAIT_STATUS=$?
+set -e
+if [[ "$PAUSED_WAIT_STATUS" -eq 0 || "$PAUSED_WAIT" != *"paused"* || "$PAUSED_WAIT" != *"okdev sync resume"* ]]; then
+  echo "ERROR: sync wait on a paused channel must fail fast pointing at resume, got status=$PAUSED_WAIT_STATUS:" >&2
+  echo "$PAUSED_WAIT" >&2
+  exit 1
+fi
+set +e
+PAUSED_SYNC=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync 2>&1)
+PAUSED_SYNC_STATUS=$?
+set -e
+if [[ "$PAUSED_SYNC_STATUS" -eq 0 || "$PAUSED_SYNC" != *"resume explicitly"* ]]; then
+  echo "ERROR: plain okdev sync must not override a pause, got status=$PAUSED_SYNC_STATUS:" >&2
+  echo "$PAUSED_SYNC" >&2
+  exit 1
+fi
+# A file created while paused must not appear on the pod until resume.
+echo "paused-edit" > "$SYNC_DIR/paused-edit.txt"
+sleep 4
+PAUSED_REMOTE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'cat /workspace/paused-edit.txt 2>/dev/null || echo ABSENT')
+if [[ "$PAUSED_REMOTE" != *"ABSENT"* ]]; then
+  echo "ERROR: file synced while paused: $PAUSED_REMOTE" >&2
+  exit 1
+fi
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync resume
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync wait --timeout 2m
+RESUMED_REMOTE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'cat /workspace/paused-edit.txt 2>/dev/null || echo ABSENT')
+if [[ "$RESUMED_REMOTE" != *"paused-edit"* ]]; then
+  echo "ERROR: file did not sync after resume: $RESUMED_REMOTE" >&2
+  exit 1
+fi
+echo "sync pause/resume verified (frozen while paused, converged after resume)"
+
 echo "Testing jobs stop kills the whole process tree"
 STOP_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs stop "$TREE_JOB_ID")
 echo "$STOP_OUTPUT"
