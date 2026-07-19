@@ -80,6 +80,17 @@ process_commands_for_session_sync() {
 	local snapshot
 	snapshot="$(mktemp)"
 	ps ax -o pid= -o command= >"$snapshot"
+	filter_session_sync_commands "$session_name" "$snapshot"
+	rm -f "$snapshot"
+}
+
+# Prints ps-snapshot lines that run `sync` for exactly this session. The
+# session is matched as the value of --session, not as a substring — session
+# names prefix each other (e2e-ptjob vs e2e-ptjob-interpod-ssh), so a
+# substring match reports another session's sync process as a leak.
+filter_session_sync_commands() {
+	local session_name="$1"
+	local snapshot="$2"
 	python3 -c '
 import sys
 
@@ -88,10 +99,17 @@ path = sys.argv[2]
 with open(path) as f:
     lines = f.readlines()
 for line in lines:
-    if session_name in line and " sync" in line:
-        print(line, end="")
+    tokens = line.split()
+    if "sync" not in tokens:
+        continue
+    for i, tok in enumerate(tokens):
+        if tok == "--session" and i + 1 < len(tokens) and tokens[i + 1] == session_name:
+            print(line, end="")
+            break
+        if tok == "--session=" + session_name:
+            print(line, end="")
+            break
 ' "$session_name" "$snapshot"
-	rm -f "$snapshot"
 }
 
 assert_no_local_sync_processes() {

@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -643,5 +645,251 @@ func TestBuildRemoteSingleFileSHA256CommandPrefersSha256sum(t *testing.T) {
 	}
 	if !strings.Contains(got, "'/workspace/model.bin'") {
 		t.Fatalf("expected shell-quoted remote path in command, got: %s", got)
+	}
+}
+
+func runUploadScript(t *testing.T, script string, stdin io.Reader) (exitCode int, stderr string) {
+	t.Helper()
+	cmd := exec.Command("sh", "-c", script)
+	cmd.Stdin = stdin
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	err := cmd.Run()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("run upload script: %v (stderr: %s)", err, errBuf.String())
+		}
+		return exitErr.ExitCode(), errBuf.String()
+	}
+	return 0, errBuf.String()
+}
+
+func TestBuildSingleFileUploadCommandWritesAtomicallyAndAcks(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "payload.bin")
+	content := []byte("verified upload content")
+
+	code, stderr := runUploadScript(t, buildSingleFileUploadCommand(dst, int64(len(content))), bytes.NewReader(content))
+	if code != 0 {
+		t.Fatalf("script exit = %d, stderr: %s", code, stderr)
+	}
+	if n, ok := parseUploadSizeMarker(stderr, "okdev-cp-ok:"); !ok || n != int64(len(content)) {
+		t.Fatalf("expected okdev-cp-ok:%d marker, stderr: %s", len(content), stderr)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("dst content = %q, want %q", got, content)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".okdev-cp.") {
+			t.Fatalf("temp file %s left behind", e.Name())
+		}
+	}
+}
+
+func TestBuildSingleFileUploadCommandRejectsShortStream(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "payload.bin")
+	if err := os.WriteFile(dst, []byte("previous"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Feed 4 bytes while claiming 10 — the truncated-stream case.
+	code, stderr := runUploadScript(t, buildSingleFileUploadCommand(dst, 10), strings.NewReader("abcd"))
+	if code != 21 {
+		t.Fatalf("script exit = %d, want 21, stderr: %s", code, stderr)
+	}
+	if n, ok := parseUploadSizeMarker(stderr, "okdev-cp-size:"); !ok || n != 4 {
+		t.Fatalf("expected okdev-cp-size:4 marker, stderr: %s", stderr)
+	}
+	// The destination must keep its previous content on a failed upload.
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "previous" {
+		t.Fatalf("dst content = %q, want untouched %q", got, "previous")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".okdev-cp.") {
+			t.Fatalf("temp file %s left behind", e.Name())
+		}
+	}
+}
+
+func TestBuildSingleFileUploadCommandRejectsDirectoryDestination(t *testing.T) {
+	dir := t.TempDir()
+
+	code, stderr := runUploadScript(t, buildSingleFileUploadCommand(dir, 4), strings.NewReader("abcd"))
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for directory destination, stderr: %s", stderr)
+	}
+	if !strings.Contains(stderr, "is a directory") {
+		t.Fatalf("expected 'is a directory' in stderr for non-retryable classification, got: %s", stderr)
+	}
+}
+
+func TestBuildSingleFileUploadCommandPreservesExistingMode(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("mode preservation relies on GNU/busybox stat -c, exercised on linux")
+	}
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "script.sh")
+	if err := os.WriteFile(dst, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	content := []byte("#!/bin/sh\necho updated\n")
+	code, stderr := runUploadScript(t, buildSingleFileUploadCommand(dst, int64(len(content))), bytes.NewReader(content))
+	if code != 0 {
+		t.Fatalf("script exit = %d, stderr: %s", code, stderr)
+	}
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("dst mode = %o, want 755 preserved", info.Mode().Perm())
+	}
+}
+
+func TestVerifySingleFileUploadResult(t *testing.T) {
+	execFailure := errors.New("command terminated with exit code 21")
+	cases := []struct {
+		name      string
+		execErr   error
+		stderr    string
+		size      int64
+		wantNil   bool
+		retryable bool
+	}{
+		{name: "acknowledged", stderr: "okdev-cp-ok:7\n", size: 7, wantNil: true},
+		{name: "size mismatch is retryable", execErr: execFailure, stderr: "okdev-cp-size:3\n", size: 7, retryable: true},
+		{name: "fake success without ack is retryable", stderr: "", size: 7, retryable: true},
+		{name: "ack with wrong size is retryable", stderr: "okdev-cp-ok:3\n", size: 7, retryable: true},
+		{name: "directory destination is not retryable", execErr: execFailure, stderr: "okdev-cp-err: /x is a directory\n", size: 7, retryable: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := verifySingleFileUploadResult(tc.execErr, tc.stderr, tc.size, "/x")
+			if tc.wantNil {
+				if err != nil {
+					t.Fatalf("expected nil, got %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if got := isRetryableCopyStreamError(err); got != tc.retryable {
+				t.Fatalf("retryable = %v, want %v (err: %v)", got, tc.retryable, err)
+			}
+		})
+	}
+}
+
+func TestCopyToPodInContainerWithProgressRetriesDroppedStream(t *testing.T) {
+	dir := t.TempDir()
+	localPath := filepath.Join(dir, "payload.bin")
+	content := "retried upload"
+	if err := os.WriteFile(localPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prev := runPodUploadExecForCopy
+	t.Cleanup(func() { runPodUploadExecForCopy = prev })
+
+	attempts := 0
+	var received []string
+	runPodUploadExecForCopy = func(_ context.Context, _ *Client, _ string, _ string, _ string, script string, stdin io.Reader, stderr io.Writer) error {
+		attempts++
+		data, err := io.ReadAll(stdin)
+		if err != nil {
+			return err
+		}
+		received = append(received, string(data))
+		if attempts == 1 {
+			// Dropped stream: exec exits cleanly, nothing ran remotely.
+			return nil
+		}
+		fmt.Fprintf(stderr, "okdev-cp-ok:%d\n", len(data))
+		return nil
+	}
+
+	client := &Client{}
+	if err := client.CopyToPodInContainerWithProgress(context.Background(), "default", localPath, "pod-0", "dev", "/workspace/payload.bin", CopyProgress{}); err != nil {
+		t.Fatalf("CopyToPodInContainerWithProgress: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if !reflect.DeepEqual(received, []string{content, content}) {
+		t.Fatalf("received = %q, want full payload on both attempts", received)
+	}
+}
+
+func TestCopyDirToPodWithProgressRetriesMissingAck(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prev := runPodUploadExecForCopy
+	t.Cleanup(func() { runPodUploadExecForCopy = prev })
+
+	attempts := 0
+	runPodUploadExecForCopy = func(_ context.Context, _ *Client, _ string, _ string, _ string, script string, stdin io.Reader, stderr io.Writer) error {
+		attempts++
+		if _, err := io.Copy(io.Discard, stdin); err != nil {
+			return err
+		}
+		if attempts == 1 {
+			return nil
+		}
+		fmt.Fprintln(stderr, "okdev-cp-ok")
+		return nil
+	}
+
+	client := &Client{}
+	if err := client.CopyDirToPodWithProgress(context.Background(), "default", "pod-0", "dev", dir, "/workspace/dir", CopyProgress{}); err != nil {
+		t.Fatalf("CopyDirToPodWithProgress: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
+func TestCopyDirToPodOnceReportsLocalArchiveErrorAsRootCause(t *testing.T) {
+	prev := runPodUploadExecForCopy
+	t.Cleanup(func() { runPodUploadExecForCopy = prev })
+
+	runPodUploadExecForCopy = func(_ context.Context, _ *Client, _ string, _ string, _ string, script string, stdin io.Reader, stderr io.Writer) error {
+		if _, err := io.Copy(io.Discard, stdin); err != nil {
+			// Mirror a remote tar dying on the truncated archive.
+			return errors.New("command terminated with exit code 2")
+		}
+		fmt.Fprintln(stderr, "okdev-cp-ok")
+		return nil
+	}
+
+	client := &Client{}
+	err := client.CopyDirToPodWithProgress(context.Background(), "default", "pod-0", "dev", filepath.Join(t.TempDir(), "missing"), "/workspace/dir", CopyProgress{})
+	if err == nil {
+		t.Fatal("expected error for missing local directory")
+	}
+	if !strings.Contains(err.Error(), "no such file") {
+		t.Fatalf("expected local archive error as root cause, got: %v", err)
 	}
 }

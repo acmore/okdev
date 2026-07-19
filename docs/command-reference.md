@@ -196,6 +196,7 @@ agents can react without launching a diagnostic chain on every blip:
 - **Multi-pod upload** (`--all`, `--pod`, `--role`, `--label`): fans out the same local source to all matched pods in parallel.
 - **Multi-pod download**: downloads from each matched pod into `<dest>/<short-pod-name>/` subdirectories.
 - Files are streamed via `cat` pipes. Directories are tar-streamed automatically.
+- Single-file uploads are size-verified and atomic: the pod receives into a temp file next to the destination, the byte count is checked against the local size, and the file is renamed into place — readers never observe a partial file, and a dropped exec stream is retried (up to 3 attempts) instead of silently leaving a missing or truncated file. Directory uploads likewise retry until the pod acknowledges a completed extraction.
 - Single-file downloads resume from an undersized `<dest>` or a saved `<dest>.okdev-part` from a previous attempt.
 - If a previous attempt finished streaming but failed before the final rename, rerunning `okdev cp` promotes the completed `<dest>.okdev-part` without redownloading.
 - `--verify` verifies single-file download SHA-256 after copy. It is not supported for uploads or directory downloads.
