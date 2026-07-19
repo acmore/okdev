@@ -825,6 +825,10 @@ func listSessionPodsForAccess(k sessionAccessReader, namespace, sessionName stri
 		pods, err := k.ListPods(ctx, namespace, false, selector)
 		cancel()
 		if err == nil {
+			// A successful contact ends any transient-failure streak.
+			if clearErr := session.ClearTransientStreak(sessionName); clearErr != nil {
+				slog.Debug("failed to clear transient streak", "session", sessionName, "error", clearErr)
+			}
 			return pods, nil
 		}
 		if !isTransientClusterError(err) {
@@ -835,7 +839,47 @@ func listSessionPodsForAccess(k sessionAccessReader, namespace, sessionName stri
 			time.Sleep(sessionAccessRetryDelay)
 		}
 	}
-	return nil, fmt.Errorf("%w: %v", ErrTransientCluster, lastErr)
+	return nil, transientClusterFailure(sessionName, lastErr, time.Now())
+}
+
+// Escalation thresholds for consecutive transient failures (#173): three
+// rapid in-process retries are still one blip, so the streak must also span
+// real wall-clock time (poll loops call okdev every tens of seconds) before
+// the message stops saying "retry" and starts saying "sustained outage".
+const (
+	transientEscalateCount = 3
+	transientEscalateSpan  = time.Minute
+)
+
+// transientClusterFailure wraps a transient failure and, when the session has
+// been failing consecutively past the thresholds, appends an escalation with
+// a stable machine-readable marker (okdev-transient-streak). The exit code
+// stays ExitTransientCluster — the 78=retryable contract is load-bearing for
+// existing callers; the streak marker is the "stop retrying" signal.
+func transientClusterFailure(sessionName string, cause error, now time.Time) error {
+	streak, err := session.RecordTransientFailure(sessionName, now)
+	if err != nil {
+		slog.Debug("failed to record transient streak", "session", sessionName, "error", err)
+	}
+	if streak.Count >= transientEscalateCount && streak.Span() >= transientEscalateSpan {
+		return fmt.Errorf("%w: %v\nokdev-transient-streak: count=%d since=%s\nthis is the %s consecutive transient failure over %s — likely a sustained network/cluster outage rather than a blip; check connectivity (VPN, kube context, cluster health) instead of retrying",
+			ErrTransientCluster, cause, streak.Count, streak.FirstAt.UTC().Format(time.RFC3339), ordinal(streak.Count), streak.Span().Round(time.Second))
+	}
+	return fmt.Errorf("%w: %v", ErrTransientCluster, cause)
+}
+
+func ordinal(n int) string {
+	suffix := "th"
+	switch {
+	case n%100 >= 11 && n%100 <= 13:
+	case n%10 == 1:
+		suffix = "st"
+	case n%10 == 2:
+		suffix = "nd"
+	case n%10 == 3:
+		suffix = "rd"
+	}
+	return fmt.Sprintf("%d%s", n, suffix)
 }
 
 func ensureSessionAccess(opts *Options, k sessionAccessReader, namespace, sessionName string, requireExisting bool) error {
