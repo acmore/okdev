@@ -120,7 +120,7 @@ echo "Waiting for interpod sshd to accept gateway fanout on all pods"
 GW_READY=false
 for i in $(seq 1 45); do
   set +e
-  OUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --json -- echo gw-ready 2>"$WORKDIR/gw-stderr.log")
+  OUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --json -- echo gw-ready 2>"$WORKDIR/gw-stderr.log")
   rc=$?
   set -e
   if [[ "$rc" -eq 0 ]] && OKDEV_EXEC_JSON="$OUT" python3 - "$POD_COUNT" <<'PY'
@@ -152,14 +152,14 @@ fi
 echo "gateway fanout exec verified across $POD_COUNT pods (no ssh client in user image)"
 
 echo "Verifying --require-all passes on a healthy fleet"
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --json --require-all -- true >/dev/null
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --json --require-all -- true >/dev/null
 
 echo "Verifying script mode with args over the gateway"
 cat >"$WORKDIR/gw-script.sh" <<'EOF'
 #!/bin/sh
 printf 'script-ok arg=%s host=%s' "$1" "$(hostname)"
 EOF
-SCRIPT_OUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --json --script "$WORKDIR/gw-script.sh" -- alpha)
+SCRIPT_OUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --json --script "$WORKDIR/gw-script.sh" -- alpha)
 OKDEV_SCRIPT_JSON="$SCRIPT_OUT" python3 - "$POD_COUNT" <<'PY'
 import json, os, sys
 results = json.loads(os.environ["OKDEV_SCRIPT_JSON"])
@@ -183,7 +183,7 @@ echo "script mode verified"
 echo "Verifying no okdev wrapper exposes the command text in its cmdline (issue #170 pkill -f self-match)"
 SELFKILL_MARKER="okdev-selfkill-$$-$RANDOM"
 SELFKILL_PROBE='pid=$PPID; bad=0; while [ "$pid" -gt 1 ] 2>/dev/null; do if tr "\0" " " </proc/"$pid"/cmdline 2>/dev/null | grep -q '"$SELFKILL_MARKER"'; then bad=1; break; fi; pid=$(grep ^PPid: /proc/"$pid"/status 2>/dev/null | cut -f2); [ -n "$pid" ] || break; done; echo matchable=$bad'
-SELFKILL_OUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --json -- sh -c "$SELFKILL_PROBE")
+SELFKILL_OUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --json -- sh -c "$SELFKILL_PROBE")
 OKDEV_SELFKILL_JSON="$SELFKILL_OUT" python3 - "$POD_COUNT" <<'PY'
 import json, os, sys
 results = json.loads(os.environ["OKDEV_SELFKILL_JSON"])
@@ -196,7 +196,7 @@ PY
 echo "wrapper cmdline is unmatchable by command patterns"
 
 echo "Verifying jobs list through the gateway route"
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --detach -- sleep 60 >/dev/null
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --detach -- sleep 60 >/dev/null
 JOBS_OUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs list --output json)
 OKDEV_JOBS_JSON="$JOBS_OUT" python3 - "$POD_COUNT" <<'PY'
 import json, os, sys
@@ -215,7 +215,7 @@ echo "Breaking sshd on $FIRST_WORKER_POD and verifying --require-all fails"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod "$FIRST_WORKER_POD" -- sh -c 'pkill -f "[o]kdev-sshd" || true'
 sleep 1
 set +e
-REQ_OUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --json --require-all -- true 2>/dev/null)
+REQ_OUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --json --require-all -- true 2>/dev/null)
 REQ_RC=$?
 set -e
 if [[ "$REQ_RC" -eq 0 ]]; then

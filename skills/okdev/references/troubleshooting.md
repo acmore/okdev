@@ -122,7 +122,7 @@ When `okdev` is driven by scripts, CI, or agents, distinguish its pre-flight exi
 
 ## exec With pkill/kill Exits 137/143
 
-If an `okdev exec -- bash -lc 'pkill -f <pattern>; <cleanup>'` command exits 143 (SIGTERM) or 137 (SIGKILL) and the trailing cleanup did not run, the pattern most likely matched the shell running the command itself — its cmdline contains the full command string. okdev prints a stderr hint when it detects this shape. Fixes, in order of preference:
+If an `okdev exec --all -- bash -lc 'pkill -f <pattern>; <cleanup>'` command exits 143 (SIGTERM) or 137 (SIGKILL) and the trailing cleanup did not run, the pattern most likely matched the shell running the command itself — its cmdline contains the full command string. okdev prints a stderr hint when it detects this shape. Fixes, in order of preference:
 
 - `okdev exec --pkill '<pattern>' [--signal <sig>]` — same matching as `pkill -f`, but structurally unable to match okdev's exec machinery
 - `okdev jobs stop <job-id>` for detached jobs (kills the whole process group)
