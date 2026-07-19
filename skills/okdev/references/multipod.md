@@ -56,6 +56,7 @@ For PyTorchJob questions, keep these points in mind:
 - role-specific pod templates are injected from manifest paths
 - interactive targeting and sync behavior may differ between master and worker pods
 - `okdev up` fails fast if any pod enters `Failed` before readiness; if that same `okdev up` created or recreated the PyTorchJob, okdev also deletes it and clears local session state (see `references/troubleshooting.md`, "Auto-Cleared Failed Jobs / PyTorchJobs"). Reused PyTorchJobs are left in place.
+- The scaffolded replica `restartPolicy` is `OnFailure`, which shapes the recovery matrix: a **crashed/OOMKilled container** restarts in place automatically (no okdev action; but the restart wipes hook-installed tools — `status --details` shows the hook as `stale` and the next `okdev up` re-runs it); a **hung process** or **bad node** needs `okdev restart --pod <name>` (delete + controller recreates, other pods untouched); a **spec change or fully wedged session** needs the full `okdev restart`. With user manifests that set `Never`, deleting a member pod makes the operator fail the whole job — `restart --pod` refuses up front and explains the fix.
 
 ## Inter-Pod SSH
 

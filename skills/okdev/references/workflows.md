@@ -101,6 +101,7 @@ Use:
 - `--all` or `--role` to fan out copies across multiple pods
 - downloads from multiple pods are written into per-pod subdirectories
 - single-file downloads resume automatically from a partial `<dest>` or `<dest>.okdev-part`; rerun `okdev cp` to continue, and add `--verify` to check SHA-256
+- uploads are size-verified and atomic: the pod receives into a temp file, the byte count is checked, and the file is renamed into place — `okdev cp` exiting 0 means the complete file is on the pod, readers never observe a partial file, and dropped exec streams are retried automatically (no need to re-check with a follow-up `wc -c`)
 
 ## Teardown
 
