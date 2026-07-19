@@ -1404,3 +1404,61 @@ func TestRunMultiExecSelfKillHint(t *testing.T) {
 		})
 	}
 }
+
+func TestReportFanoutFailuresClarifiesDeliveredVsFailed(t *testing.T) {
+	client := &fakePdshExecClient{
+		outputs: map[string]string{},
+		errs: map[string]error{
+			"okdev-sess-worker-0": k8sexec.CodeExitError{Err: errors.New("command terminated with exit code 1"), Code: 1},
+		},
+	}
+	pods := []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}}
+	var stdout, stderr bytes.Buffer
+	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-lc", "pkill -9 -f vllm"}, "", 0, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	got := stderr.String()
+	// The clarifier ties the exit codes to the command, not pod health (#192).
+	if !strings.Contains(got, "delivered and ran on every pod") || !strings.Contains(got, "exit 69") {
+		t.Fatalf("expected delivered-vs-failed clarifier, got %q", got)
+	}
+	// A bare pkill exiting 1 gets the benign-cleanup signpost.
+	if !strings.Contains(got, "pkill/pgrep exit 1 when no process matched") || !strings.Contains(got, "--pkill") {
+		t.Fatalf("expected no-match pkill hint, got %q", got)
+	}
+}
+
+func TestNoMatchKillHintOnlyForMatchingScenarios(t *testing.T) {
+	exit1 := []podExecResult{{pod: "p", err: k8sexec.CodeExitError{Err: errors.New("command terminated with exit code 1"), Code: 1}}}
+	if hint := noMatchKillHint(exit1, "sh -lc 'grep foo file'"); hint != "" {
+		t.Fatalf("non-kill commands must not get the hint: %q", hint)
+	}
+	exit2 := []podExecResult{{pod: "p", err: k8sexec.CodeExitError{Err: errors.New("command terminated with exit code 2"), Code: 2}}}
+	if hint := noMatchKillHint(exit2, "sh -lc 'pkill -f x'"); hint != "" {
+		t.Fatalf("pkill exit 2 (error) must not get the no-match hint: %q", hint)
+	}
+	if hint := noMatchKillHint(exit1, "sh -lc 'pgrep -f x'"); hint == "" {
+		t.Fatal("pgrep exit 1 should get the hint")
+	}
+}
+
+func TestReportFanoutFailuresKeepsFailedFramingClean(t *testing.T) {
+	client := &fakePdshExecClient{
+		outputs: map[string]string{},
+		errs: map[string]error{
+			"okdev-sess-worker-0": context.DeadlineExceeded,
+		},
+	}
+	pods := []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}}
+	var stdout, stderr bytes.Buffer
+	err := runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-lc", "pkill -f x"}, "", 0, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	got := stderr.String()
+	// Delivery failures keep the FAILED framing without the delivered clarifier.
+	if !strings.Contains(got, "FAILED:") || strings.Contains(got, "delivered and ran on every pod") {
+		t.Fatalf("delivery failure must not carry the delivered clarifier, got %q", got)
+	}
+}
