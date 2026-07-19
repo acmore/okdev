@@ -1200,22 +1200,121 @@ var ErrPodFailedReadiness = errors.New("pod failed while waiting for readiness")
 
 // CopyToPodInContainerWithProgress copies a single local file to remotePath
 // in the given pod/container. It optionally reports progress via prog.
+//
+// The pod-side script receives into a temp file next to the destination,
+// verifies the byte count against the local size, and renames into place —
+// the apiserver exec stream can drop stdin while still exiting cleanly
+// (the write-side twin of #167), so an unverified `cat > path` upload can
+// silently produce a missing or truncated file. The client requires the
+// script's okdev-cp-ok acknowledgement and retries on transport errors,
+// size mismatches, and missing acknowledgements.
 func (c *Client) CopyToPodInContainerWithProgress(ctx context.Context, namespace, localPath, podName, container, remotePath string, prog CopyProgress) error {
-	cs, cfg, err := c.clientset()
-	if err != nil {
-		return err
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		lastErr = c.copyToPodSingleFileOnce(ctx, namespace, localPath, podName, container, remotePath, prog)
+		if lastErr == nil {
+			return nil
+		}
+		if !isRetryableCopyStreamError(lastErr) || attempt == 2 {
+			return lastErr
+		}
+		time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
 	}
+	return lastErr
+}
+
+func (c *Client) copyToPodSingleFileOnce(ctx context.Context, namespace, localPath, podName, container, remotePath string, prog CopyProgress) error {
 	f, err := os.Open(localPath)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
 	src := io.Reader(f)
 	if prog.OnBytes != nil {
 		src = io.TeeReader(f, byteCounterWriter(prog.OnBytes))
 	}
-	cmd := []string{"sh", "-lc", fmt.Sprintf("cat > %s", shellQuote(remotePath))}
-	return c.execStream(ctx, cs, cfg, namespace, podName, container, cmd, src, io.Discard, io.Discard, false)
+	var stderr bytes.Buffer
+	execErr := runPodUploadExecForCopy(ctx, c, namespace, podName, container, buildSingleFileUploadCommand(remotePath, info.Size()), src, &stderr)
+	return verifySingleFileUploadResult(execErr, stderr.String(), info.Size(), remotePath)
+}
+
+// runPodUploadExecForCopy runs an upload script with stdin streamed from src.
+// Package-level for test substitution, matching the *ForCopy download hooks.
+var runPodUploadExecForCopy = func(ctx context.Context, c *Client, namespace, podName, container, script string, stdin io.Reader, stderr io.Writer) error {
+	cs, cfg, err := c.clientset()
+	if err != nil {
+		return err
+	}
+	cmd := []string{"sh", "-lc", script}
+	return c.execStream(ctx, cs, cfg, namespace, podName, container, cmd, stdin, io.Discard, stderr, false)
+}
+
+// buildSingleFileUploadCommand receives stdin into a temp file next to
+// remotePath, verifies its byte count matches expectedSize, preserves the
+// mode of an existing destination (default 644 otherwise; mktemp creates
+// 600), and renames into place so readers never observe a partial file. On
+// success it prints okdev-cp-ok:<n> on stderr — the client treats a missing
+// acknowledgement as a dropped stream. All commands are busybox-clean.
+func buildSingleFileUploadCommand(remotePath string, expectedSize int64) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "dst=%s\n", shellQuote(remotePath))
+	b.WriteString("if [ -d \"$dst\" ]; then echo \"okdev-cp-err: $dst is a directory\" >&2; exit 1; fi\n")
+	b.WriteString("dir=$(dirname \"$dst\")\n")
+	b.WriteString("tmp=$(mktemp \"$dir/.okdev-cp.XXXXXX\") || { echo \"okdev-cp-err: mktemp failed in $dir\" >&2; exit 1; }\n")
+	b.WriteString("trap 'rm -f \"$tmp\"' EXIT\n")
+	b.WriteString("mode=$(stat -c %a \"$dst\" 2>/dev/null || echo '')\n")
+	b.WriteString("cat >\"$tmp\" || { echo 'okdev-cp-err: write failed' >&2; exit 1; }\n")
+	b.WriteString("n=$(wc -c <\"$tmp\" | tr -d ' \\t')\n")
+	fmt.Fprintf(&b, "if [ \"$n\" -ne %d ]; then printf 'okdev-cp-size:%%s\\n' \"$n\" >&2; exit 21; fi\n", expectedSize)
+	b.WriteString("chmod \"${mode:-644}\" \"$tmp\" 2>/dev/null || true\n")
+	b.WriteString("mv \"$tmp\" \"$dst\" || { echo \"okdev-cp-err: rename to $dst failed\" >&2; exit 1; }\n")
+	b.WriteString("printf 'okdev-cp-ok:%s\\n' \"$n\" >&2\n")
+	return b.String()
+}
+
+// verifySingleFileUploadResult decides the outcome of one upload attempt from
+// the exec error and the script's stderr. Size mismatches and missing
+// acknowledgements wrap io.ErrUnexpectedEOF so the retry loop classifies
+// them as retryable stream drops.
+func verifySingleFileUploadResult(execErr error, stderr string, expectedSize int64, remotePath string) error {
+	if received, ok := parseUploadSizeMarker(stderr, "okdev-cp-size:"); ok {
+		return fmt.Errorf("upload to %s: pod received %d of %d bytes: %w", remotePath, received, expectedSize, io.ErrUnexpectedEOF)
+	}
+	if execErr != nil {
+		if detail := strings.TrimSpace(stderr); detail != "" {
+			return fmt.Errorf("upload to %s: %s: %w", remotePath, detail, execErr)
+		}
+		return fmt.Errorf("upload to %s: %w", remotePath, execErr)
+	}
+	acked, ok := parseUploadSizeMarker(stderr, "okdev-cp-ok:")
+	if !ok || acked != expectedSize {
+		return fmt.Errorf("upload to %s: pod did not acknowledge %d bytes (dropped exec stream): %w", remotePath, expectedSize, io.ErrUnexpectedEOF)
+	}
+	return nil
+}
+
+// parseUploadSizeMarker extracts the byte count from a `<prefix><n>` marker
+// line in the upload script's stderr.
+func parseUploadSizeMarker(stderr, prefix string) (int64, bool) {
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		n, err := strconv.ParseInt(strings.TrimPrefix(line, prefix), 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	}
+	return 0, false
 }
 
 // byteCounterWriter is a writer that just reports byte counts via the
@@ -1987,7 +2086,31 @@ func (c *Client) CopyDirToPod(ctx context.Context, namespace, pod, container, lo
 // CopyDirToPodWithProgress archives a local directory and extracts it into
 // remoteDir on the pod. prog.OnBytes counts uncompressed tar bytes sent;
 // prog.OnFile fires once per regular file packed into the archive.
+//
+// The remote command prints okdev-cp-ok on stderr only after tar extraction
+// succeeds. A dropped exec stream that delivers no stdin exits cleanly with
+// nothing extracted (the write-side twin of #167); requiring the
+// acknowledgement turns that silent no-op into a retried attempt. Truncation
+// mid-archive already fails loudly via tar itself.
 func (c *Client) CopyDirToPodWithProgress(ctx context.Context, namespace, pod, container, localDir, remoteDir string, prog CopyProgress) error {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		lastErr = c.copyDirToPodOnce(ctx, namespace, pod, container, localDir, remoteDir, prog)
+		if lastErr == nil {
+			return nil
+		}
+		if !isRetryableCopyStreamError(lastErr) || attempt == 2 {
+			return lastErr
+		}
+		time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+	}
+	return lastErr
+}
+
+func (c *Client) copyDirToPodOnce(ctx context.Context, namespace, pod, container, localDir, remoteDir string, prog CopyProgress) error {
 	pr, pw := io.Pipe()
 	errCh := make(chan error, 1)
 	go func() {
@@ -1995,19 +2118,33 @@ func (c *Client) CopyDirToPodWithProgress(ctx context.Context, namespace, pod, c
 		if prog.OnBytes != nil {
 			dest = io.MultiWriter(pw, byteCounterWriter(prog.OnBytes))
 		}
-		errCh <- createTarFromDirWithProgress(localDir, dest, prog.OnFile)
-		pw.Close()
+		err := createTarFromDirWithProgress(localDir, dest, prog.OnFile)
+		pw.CloseWithError(err)
+		errCh <- err
 	}()
-	cs, cfg, err := c.clientset()
-	if err != nil {
-		pr.Close()
-		return err
+	var stderr bytes.Buffer
+	script := fmt.Sprintf("mkdir -p %s && tar xf - -C %s && echo okdev-cp-ok >&2", shellQuote(remoteDir), shellQuote(remoteDir))
+	execErr := runPodUploadExecForCopy(ctx, c, namespace, pod, container, script, pr, &stderr)
+	// Unblock the archiving goroutine if the exec stream died before
+	// consuming the whole archive, then collect its result.
+	pr.CloseWithError(io.ErrClosedPipe)
+	tarErr := <-errCh
+	// A local archiving failure is the root cause even when the resulting
+	// truncated stream also made the remote tar exit non-zero; a tarErr of
+	// ErrClosedPipe just means the exec stream died first.
+	if tarErr != nil && !errors.Is(tarErr, io.ErrClosedPipe) {
+		return tarErr
 	}
-	cmd := []string{"sh", "-lc", fmt.Sprintf("mkdir -p %s && tar xf - -C %s", shellQuote(remoteDir), shellQuote(remoteDir))}
-	if execErr := c.execStream(ctx, cs, cfg, namespace, pod, container, cmd, pr, io.Discard, io.Discard, false); execErr != nil {
-		return execErr
+	if execErr != nil {
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return fmt.Errorf("upload to %s: %s: %w", remoteDir, detail, execErr)
+		}
+		return fmt.Errorf("upload to %s: %w", remoteDir, execErr)
 	}
-	return <-errCh
+	if !strings.Contains(stderr.String(), "okdev-cp-ok") {
+		return fmt.Errorf("upload to %s: pod did not acknowledge extraction (dropped exec stream): %w", remoteDir, io.ErrUnexpectedEOF)
+	}
+	return nil
 }
 
 // CopyDirFromPod streams a remote directory as a tar archive and extracts it locally.
@@ -2085,6 +2222,7 @@ func isRetryableCopyStreamError(err error) bool {
 	}
 	retryable := []string{
 		"unexpected eof",
+		"short read",
 		"context deadline exceeded",
 		"unexpected error when reading response body",
 		"connection reset by peer",
