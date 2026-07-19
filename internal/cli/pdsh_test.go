@@ -10,8 +10,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1057,6 +1059,123 @@ func TestValidateNoFlagLikeValues(t *testing.T) {
 	}
 }
 
+func TestPkillExecCommandShape(t *testing.T) {
+	argv := pkillExecCommand("train.py", "TERM")
+	if len(argv) != 6 || argv[0] != "sh" || argv[1] != "-c" || argv[3] != "okdev-pkill" || argv[4] != "train.py" || argv[5] != "TERM" {
+		t.Fatalf("unexpected argv: %#v", argv)
+	}
+	// The script must exclude self+ancestors and follow pkill exit semantics.
+	for _, want := range []string{"excl=\" $$ \"", "^PPid:", `[ "$matched" -eq 1 ]`, "kill -s"} {
+		if !strings.Contains(argv[2], want) {
+			t.Fatalf("helper script missing %q:\n%s", want, argv[2])
+		}
+	}
+	// The pattern must never be embedded in the script text itself.
+	if strings.Contains(argv[2], "train.py") {
+		t.Fatalf("pattern leaked into script text:\n%s", argv[2])
+	}
+}
+
+func TestExecPkillFlagValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "pkill with command conflicts",
+			args:    []string{"--pkill", "train.py", "--", "echo", "hi"},
+			wantErr: "--pkill cannot be combined with a command",
+		},
+		{
+			name:    "pkill with script conflicts",
+			args:    []string{"--pkill", "train.py", "--script", "./x.sh"},
+			wantErr: "--pkill cannot be combined with a command after -- or --script",
+		},
+		{
+			name:    "pkill with shell conflicts",
+			args:    []string{"--pkill", "train.py", "--shell", "bash"},
+			wantErr: "--pkill cannot be used with --shell",
+		},
+		{
+			name:    "pkill with detach conflicts",
+			args:    []string{"--pkill", "train.py", "--detach"},
+			wantErr: "--pkill cannot be used with --detach",
+		},
+		{
+			name:    "signal without pkill",
+			args:    []string{"--signal", "KILL", "--", "echo", "hi"},
+			wantErr: "--pkill requires a non-empty pattern",
+		},
+		{
+			name:    "invalid signal",
+			args:    []string{"--pkill", "train.py", "--signal", "TERM;rm"},
+			wantErr: "must be a signal name or number",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newExecCmd(&Options{})
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(tt.args)
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+// Runtime behavior of the --pkill helper (issue #170 follow-up): it must kill
+// a process whose cmdline matches the pattern, spare unrelated processes, and
+// spare itself even though its own argv carries the pattern. Linux-only: the
+// helper walks /proc.
+func TestPkillHelperKillsMatchAndSparesSelf(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("pkill helper walks /proc; linux only")
+	}
+	marker := fmt.Sprintf("okdev-pkill-decoy-%d-%d", os.Getpid(), time.Now().UnixNano())
+
+	// The trailing `:` keeps sleep off the script's tail position — busybox
+	// ash tail-call execs the last command, which would replace the shell
+	// and drop the marker from the decoy's cmdline.
+	decoy := exec.Command("sh", "-c", ": "+marker+"; sleep 30; :")
+	if err := decoy.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = decoy.Process.Kill() }()
+
+	bystander := exec.Command("sh", "-c", ": okdev-pkill-bystander; sleep 30; :")
+	if err := bystander.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = bystander.Process.Kill() }()
+
+	argv := pkillExecCommand(marker, "TERM")
+	out, err := exec.Command(argv[0], argv[1:]...).Output()
+	if err != nil {
+		t.Fatalf("helper failed (self-kill or no match): %v, output %q", err, out)
+	}
+	if !strings.Contains(string(out), fmt.Sprintf("killed %d", decoy.Process.Pid)) {
+		t.Fatalf("expected decoy pid %d in kill report, got %q", decoy.Process.Pid, out)
+	}
+
+	werr := decoy.Wait()
+	if werr == nil {
+		t.Fatal("decoy exited cleanly; expected SIGTERM")
+	}
+	if bystander.Process.Signal(syscall.Signal(0)) != nil {
+		t.Fatal("bystander was killed; helper matched too broadly")
+	}
+
+	// No match: pkill convention exit 1.
+	argv = pkillExecCommand(marker+"-no-such-process", "TERM")
+	if err := exec.Command(argv[0], argv[1:]...).Run(); err == nil {
+		t.Fatal("expected non-zero exit when nothing matches")
+	}
+}
+
 // Regression for issue #177: the validation must win the race against
 // validateExecArgs. A swallowed "--" turns command words into session args, so
 // without Args-stage ordering the user saw "accepts at most 1 session
@@ -1218,5 +1337,65 @@ func TestRunMultiExecInfraFailureCarriesSentinel(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "FAILED:") {
 		t.Fatalf("expected FAILED framing for infra failures, got %q", stderr.String())
+	}
+}
+
+// Regression for issue #170: an exit 143/137 from a command containing
+// pkill/kill gets a self-kill hint on stderr (the pattern likely matched a
+// shell running the command itself), while unrelated commands and exit codes
+// stay hint-free.
+func TestRunMultiExecSelfKillHint(t *testing.T) {
+	tests := []struct {
+		name     string
+		command  []string
+		exitCode int
+		wantHint bool
+	}{
+		{
+			name:     "pkill with SIGTERM exit gets hint",
+			command:  []string{"bash", "-lc", `pkill -f "train.py"; rm -f /tmp/lock`},
+			exitCode: 143,
+			wantHint: true,
+		},
+		{
+			name:     "kill with SIGKILL exit gets hint",
+			command:  []string{"bash", "-lc", "kill -9 $(cat pid)"},
+			exitCode: 137,
+			wantHint: true,
+		},
+		{
+			name:     "pkill with ordinary exit gets no hint",
+			command:  []string{"bash", "-lc", `pkill -f "train.py"`},
+			exitCode: 1,
+			wantHint: false,
+		},
+		{
+			name:     "signal exit without kill in command gets no hint",
+			command:  []string{"python", "train.py"},
+			exitCode: 143,
+			wantHint: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &fakePdshExecClient{
+				errs: map[string]error{
+					"okdev-sess-worker-0": k8sexec.CodeExitError{Err: fmt.Errorf("command terminated with exit code %d", tt.exitCode), Code: tt.exitCode},
+				},
+			}
+			pods := []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}}
+			var stdout, stderr bytes.Buffer
+			err := runMultiExec(context.Background(), client, "default", pods, "dev", tt.command, "", 0, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			gotHint := strings.Contains(stderr.String(), "hint: exit")
+			if gotHint != tt.wantHint {
+				t.Fatalf("hint presence = %v, want %v; stderr %q", gotHint, tt.wantHint, stderr.String())
+			}
+			if tt.wantHint && !strings.Contains(stderr.String(), "patter[n]") {
+				t.Fatalf("expected bracket-trick suggestion, got %q", stderr.String())
+			}
+		})
 	}
 }

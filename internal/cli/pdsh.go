@@ -72,6 +72,8 @@ func newExecCmd(opts *Options) *cobra.Command {
 	var jsonOutput bool
 	var gatewayPod string
 	var requireAll bool
+	var pkillPattern string
+	var pkillSignal string
 
 	cmd := &cobra.Command{
 		Use:   "exec [session]",
@@ -99,7 +101,16 @@ func newExecCmd(opts *Options) *cobra.Command {
   okdev exec --role worker --detach -- python train.py
 
   # Detach a local script on worker pods
-  okdev exec --role worker --detach --script ./benchmark.sh -- --steps 100`,
+  okdev exec --role worker --detach --script ./benchmark.sh -- --steps 100
+
+  # Kill processes matching a pattern. Unlike a raw pkill -f, --pkill can
+  # never match okdev's own exec machinery (for detached jobs prefer
+  # okdev jobs stop)
+  okdev exec --pkill 'train.py'
+
+  # Raw pkill -f needs the bracket trick so the pattern cannot match the
+  # shell running the command itself
+  okdev exec -- bash -lc 'pkill -f "trai[n].py"'`,
 		Aliases: []string{"connect"},
 		// Flag-like-value validation must run in the Args stage: a swallowed
 		// "--" shifts command words into session args, so validateExecArgs
@@ -113,7 +124,15 @@ func newExecCmd(opts *Options) *cobra.Command {
 		ValidArgsFunction: sessionCompletionFunc(opts),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sessionArgs, commandArgs := splitExecArgs(cmd, args)
-			invocation, err := buildExecInvocation(commandArgs, scriptPath)
+			var invocation execInvocation
+			var err error
+			if pkillPattern != "" || cmd.Flags().Changed("signal") {
+				// Before buildExecInvocation so a --script conflict reports
+				// as a conflict, not as a stat error on the script path.
+				invocation, err = buildPkillInvocation(pkillPattern, pkillSignal, commandArgs, scriptPath, shell, detach)
+			} else {
+				invocation, err = buildExecInvocation(commandArgs, scriptPath)
+			}
 			if err != nil {
 				return err
 			}
@@ -209,6 +228,8 @@ func newExecCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&parallel, "parallel", false, "Run explicit groups in parallel")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Capture each pod's result into a JSON envelope {pod,exit,stdout,stderr,status}; remote exit codes become data, not okdev failures")
 	cmd.Flags().StringVar(&gatewayPod, "gateway", "", "Pod to use as the in-cluster fanout gateway (requires --json and interpod SSH)")
+	cmd.Flags().StringVar(&pkillPattern, "pkill", "", "Kill processes whose full cmdline matches this extended regex; never matches okdev's own exec machinery (exit 0 if any process matched)")
+	cmd.Flags().StringVar(&pkillSignal, "signal", "TERM", "Signal name or number sent by --pkill")
 	cmd.Flags().BoolVar(&requireAll, "require-all", false, "Exit non-zero unless every targeted pod responded (requires --json)")
 	return cmd
 }
@@ -337,6 +358,70 @@ func validateNoFlagLikeValues(fs *pflag.FlagSet) error {
 		}
 	})
 	return err
+}
+
+// pkillHelperScript is the remote payload behind `okdev exec --pkill`. It
+// reimplements `pkill -f` with one crucial difference: it excludes itself and
+// its whole ancestor chain, so it can never match a shell wrapper running the
+// command — okdev's own exec machinery included — regardless of transport
+// (direct apiserver exec or the gateway sshd path). It follows the pkill exit
+// convention (0 when at least one process matched, 1 otherwise) and prints one
+// `killed <pid> <cmdline>` line per signalled process. Busybox-compatible:
+// only sh, tr, grep, cut and kill are required.
+const pkillHelperScript = `pattern="$1"
+sig="$2"
+excl=" $$ "
+pid=$$
+while [ "$pid" -gt 1 ] 2>/dev/null; do
+  pid=$(grep ^PPid: "/proc/$pid/status" 2>/dev/null | cut -f2)
+  [ -n "$pid" ] || break
+  excl="$excl$pid "
+done
+matched=0
+for f in /proc/[0-9]*/cmdline; do
+  pid="${f#/proc/}"
+  pid="${pid%/cmdline}"
+  case "$excl" in *" $pid "*) continue ;; esac
+  cmd=$(tr "\0" " " <"$f" 2>/dev/null)
+  [ -n "$cmd" ] || continue
+  printf "%s" "$cmd" | grep -Eq -- "$pattern" || continue
+  if kill -s "$sig" "$pid" 2>/dev/null; then
+    matched=1
+    printf "killed %s %s\n" "$pid" "$cmd"
+  fi
+done
+[ "$matched" -eq 1 ]
+`
+
+// pkillExecCommand delivers pattern and signal as separate argv words after
+// the script, so the only remote cmdline containing the pattern is the helper
+// shell itself — which the script excludes by construction.
+func pkillExecCommand(pattern, signal string) []string {
+	return []string{"sh", "-c", pkillHelperScript, "okdev-pkill", pattern, signal}
+}
+
+func buildPkillInvocation(pattern, signal string, commandArgs []string, scriptPath, shell string, detach bool) (execInvocation, error) {
+	if strings.TrimSpace(pattern) == "" {
+		return execInvocation{}, fmt.Errorf("--pkill requires a non-empty pattern (--signal is only meaningful with --pkill)")
+	}
+	if len(commandArgs) > 0 || scriptPath != "" {
+		return execInvocation{}, fmt.Errorf("--pkill cannot be combined with a command after -- or --script")
+	}
+	if strings.TrimSpace(shell) != "" {
+		return execInvocation{}, fmt.Errorf("--pkill cannot be used with --shell")
+	}
+	if detach {
+		return execInvocation{}, fmt.Errorf("--pkill cannot be used with --detach")
+	}
+	for _, r := range signal {
+		if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			return execInvocation{}, fmt.Errorf("--signal %q must be a signal name or number", signal)
+		}
+	}
+	return execInvocation{
+		Argv:           pkillExecCommand(pattern, signal),
+		DisplayCommand: fmt.Sprintf("--pkill %s --signal %s", shellutil.Quote(pattern), signal),
+	}, nil
 }
 
 func validateExecMode(shell string, invocation execInvocation) error {
@@ -1059,9 +1144,32 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 		}
 	}
 	if len(failures) > 0 {
-		return reportFanoutFailures(ctx, client, namespace, container, failures, len(pods), stderr)
+		return reportFanoutFailures(ctx, client, namespace, container, failures, len(pods), stderr, strings.Join(command, " "))
 	}
 	return nil
+}
+
+// selfKillHint explains a likely pkill/kill self-match (issue #170): a shell
+// running the command carries the full command text in its cmdline, so an
+// unbracketed `pkill -f <pattern>` inside the command can match and kill the
+// shell it is running under (SIGTERM → exit 143) before any trailing cleanup
+// executes.
+func selfKillHint(failures []podExecResult, commandDisplay string) string {
+	if !strings.Contains(commandDisplay, "kill") {
+		return ""
+	}
+	for _, f := range failures {
+		kind, code := classifyPodExecFailure(f.err)
+		if kind != "remote-exit" || (code != 137 && code != 143) {
+			continue
+		}
+		sig := "SIGTERM"
+		if code == 137 {
+			sig = "SIGKILL"
+		}
+		return fmt.Sprintf("hint: exit %d (%s) with kill/pkill in the command often means the pattern matched a shell running the command itself; use `okdev exec --pkill '<pattern>'` (never matches okdev's machinery), bracket the pattern (e.g. pkill -f 'patter[n]'), or `okdev jobs stop` for detached jobs", code, sig)
+	}
+	return ""
 }
 
 // reportFanoutFailures prints the per-pod failure summary and builds the
@@ -1072,7 +1180,7 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 // failure (transport, timeout, container gone) keeps the FAILED framing and
 // wraps ErrExecInfraFailure so okdev exits with the dedicated infra code
 // (ExitExecInfraFailure), letting scripts and monitors tell the two apart.
-func reportFanoutFailures(ctx context.Context, client connect.ExecClient, namespace, container string, failures []podExecResult, total int, stderr io.Writer) error {
+func reportFanoutFailures(ctx context.Context, client connect.ExecClient, namespace, container string, failures []podExecResult, total int, stderr io.Writer, commandDisplay string) error {
 	remoteExitOnly := true
 	parts := make([]string, 0, len(failures))
 	for _, f := range failures {
@@ -1087,8 +1195,16 @@ func reportFanoutFailures(ctx context.Context, client connect.ExecClient, namesp
 		}
 		parts = append(parts, part)
 	}
+	summary := strings.Join(parts, "\n")
 	if remoteExitOnly {
-		fmt.Fprintf(stderr, "\nCOMMAND EXITED NON-ZERO:\n%s\n", strings.Join(parts, "\n"))
+		fmt.Fprintf(stderr, "\nCOMMAND EXITED NON-ZERO:\n%s\n", summary)
+	} else {
+		fmt.Fprintf(stderr, "\nFAILED:\n%s\n", summary)
+	}
+	if hint := selfKillHint(failures, commandDisplay); hint != "" {
+		fmt.Fprintln(stderr, hint)
+	}
+	if remoteExitOnly {
 		if total == 1 {
 			// Single-pod runs keep the documented "remote exit status is
 			// always preserved" contract: wrap the pod's own ExitError so
@@ -1097,7 +1213,6 @@ func reportFanoutFailures(ctx context.Context, client connect.ExecClient, namesp
 		}
 		return fmt.Errorf("command exited non-zero on %d of %d pod(s)", len(failures), total)
 	}
-	fmt.Fprintf(stderr, "\nFAILED:\n%s\n", strings.Join(parts, "\n"))
 	return fmt.Errorf("%d of %d pods failed: %w", len(failures), total, ErrExecInfraFailure)
 }
 
@@ -1670,7 +1785,9 @@ func runMultiExecScript(ctx context.Context, client scriptCopyClient, namespace 
 		}
 	}
 	if len(failures) > 0 {
-		return reportFanoutFailures(ctx, client, namespace, container, failures, len(pods), stderr)
+		// Script exec runs the uploaded file (`sh <path>`), so no wrapper
+		// cmdline carries user text — the self-kill hint does not apply.
+		return reportFanoutFailures(ctx, client, namespace, container, failures, len(pods), stderr, "")
 	}
 	return nil
 }

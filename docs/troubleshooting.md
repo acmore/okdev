@@ -56,6 +56,14 @@ Versioned files carry a `~YYYYMMDD-HHMMSS` suffix before the extension (e.g. `re
   - `node -v` and `npm -v` work inside the container
 - `okdev` does not launch the agent for you; after setup, connect with `okdev ssh` and run the agent CLI manually.
 
+## `exec` Command Containing `pkill`/`kill` Exits 137/143
+
+A raw `pkill -f <pattern>` inside `okdev exec -- bash -lc '...'` can match the shell running the command itself — its cmdline contains the full command string — so pkill kills its own shell (exit 143/SIGTERM) and any trailing cleanup never runs. okdev prints a hint on stderr when it detects this shape. Preferred fixes:
+
+- `okdev exec --pkill '<pattern>' [--signal <sig>]` matches like `pkill -f` but can never match okdev's exec machinery (the helper excludes itself and its whole ancestor chain), and follows the pkill exit convention (0 matched, 1 none).
+- For detached jobs, `okdev jobs stop <job-id>` terminates the whole process group.
+- If you must use raw pkill, bracket the pattern so it cannot match its own command line: `pkill -f 'patter[n]'`.
+
 ## Port Forward Disconnects
 
 - Re-run `okdev ports` (or `okdev up`) to re-establish forwarding.

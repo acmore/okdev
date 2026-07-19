@@ -39,7 +39,7 @@ agents can react without launching a diagnostic chain on every blip:
 - `okdev target show`
 - `okdev target set [--pod <name> | --role <role>]`
 - `okdev agent list`
-- `okdev exec [session] [--shell /bin/bash] [--no-tty] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--detach] [--timeout <duration>] [--log-dir <path>] [--no-prefix] [--json] [--require-all] [--gateway <pod>] [--fanout N] [-- command...]`
+- `okdev exec [session] [--shell /bin/bash] [--no-tty] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--detach] [--timeout <duration>] [--log-dir <path>] [--no-prefix] [--json] [--require-all] [--gateway <pod>] [--fanout N] [--pkill <pattern> [--signal <sig>]] [-- command...]`
 - `okdev jobs list [session] [--job-id <id>] [--container <name>] [--fanout N]`
 - `okdev jobs logs <job-id> [session] [-f|--follow] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--fanout N]`
 - `okdev jobs stop <job-id> [session] [--container <name>] [--fanout N]`
@@ -120,6 +120,7 @@ agents can react without launching a diagnostic chain on every blip:
 - The `pid` returned from `--detach` is the pid of your command itself (okdev re-parents the launcher so `$!` is your program's pid after `execve`). `kill <pid>` or `okdev exec --pod <pod> -- kill <pid>` therefore targets your command, not a wrapper shell.
 - When using `--detach`, pass the command you want okdev to launch directly. Do not add an extra `nohup ... &` inside the command string.
 - `--timeout`: per-pod command timeout (e.g., `30s`, `5m`). Pods exceeding the timeout are cancelled and reported as failed.
+- `--pkill <pattern>`: kill processes whose full cmdline matches the extended regex, on the selected pods. Unlike a raw `pkill -f`, it can never match okdev's own exec machinery (the helper excludes itself and its whole ancestor chain), so no bracket trick (`pkill -f 'patter[n]'`) is needed. Prints one `killed <pid> <cmdline>` line per signalled process and follows the pkill exit convention: 0 when at least one process matched, 1 otherwise. `--signal <name|number>` (default `TERM`) selects the signal. Cannot be combined with a command after `--`, `--script`, `--shell`, or `--detach`. For detached jobs prefer `okdev jobs stop`, which terminates the whole process group.
 - `--log-dir`: write per-pod output to `<dir>/<short-name>.log`. Streaming to stdout still happens.
 - `--no-prefix`: suppress the pod name prefix in output. Auto-enabled when stdout is not a terminal (pipe/redirect/CI); pass `--no-prefix=false` to keep the prefix in that case.
 - `--fanout N`: maximum concurrent pod executions (default 16).
