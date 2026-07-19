@@ -994,6 +994,60 @@ fi
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs stop "$WAITGREP_JOB_ID" >/dev/null 2>&1 || true
 echo "jobs wait --grep and list hint verified"
 
+# Issue #190: exec --reset-gpu kills GPU holders and verifies via nvidia-smi.
+# No GPUs in kind, so a fake nvidia-smi reporting a live process exercises the
+# whole primitive: query, group kill, verify-to-zero, and exit conventions.
+echo "Testing exec --reset-gpu (fake nvidia-smi)"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'cat > /usr/local/bin/nvidia-smi <<"SMI"
+#!/bin/sh
+[ -f /tmp/gpu-pids ] || exit 0
+for pid in $(cat /tmp/gpu-pids); do
+  if kill -0 "$pid" 2>/dev/null; then
+    case "$*" in
+      *pid,process_name,used_memory*) echo "$pid, fake_proc, 1024 MiB" ;;
+      *) echo "$pid" ;;
+    esac
+  fi
+done
+SMI
+chmod +x /usr/local/bin/nvidia-smi
+setsid sh -c "sleep 600" >/dev/null 2>&1 </dev/null &
+echo $! > /tmp/gpu-pids
+sleep 1
+cat /tmp/gpu-pids' >/dev/null
+
+RESET_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix --reset-gpu 2>&1)
+RESET_STATUS=$?
+if [[ "$RESET_STATUS" -ne 0 || "$RESET_OUTPUT" != *"killed group"* || "$RESET_OUTPUT" != *"gpu-clear"* ]]; then
+  echo "ERROR: exec --reset-gpu should kill the fake holder and verify clear, got status=$RESET_STATUS:" >&2
+  echo "$RESET_OUTPUT" >&2
+  exit 1
+fi
+HOLDER_LEFT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'pgrep -f "sleep 60[0]" | wc -l | tr -d " "')
+if [[ "$HOLDER_LEFT" != "0" ]]; then
+  echo "ERROR: fake GPU holder survived --reset-gpu (left=$HOLDER_LEFT)" >&2
+  exit 1
+fi
+# Idempotent: clear GPU is success, nothing killed.
+RESET_AGAIN=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix --reset-gpu 2>&1)
+if [[ $? -ne 0 || "$RESET_AGAIN" != *"gpu-clear"* || "$RESET_AGAIN" == *"killed"* ]]; then
+  echo "ERROR: repeated --reset-gpu on a clear GPU should be a clean no-op, got:" >&2
+  echo "$RESET_AGAIN" >&2
+  exit 1
+fi
+# Without nvidia-smi the failure is a distinct remote exit 3.
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- rm /usr/local/bin/nvidia-smi >/dev/null
+set +e
+RESET_NOGPU=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --reset-gpu 2>&1)
+RESET_NOGPU_STATUS=$?
+set -e
+if [[ "$RESET_NOGPU_STATUS" -ne 3 || "$RESET_NOGPU" != *"nvidia-smi not found"* ]]; then
+  echo "ERROR: --reset-gpu without nvidia-smi should exit 3 with a clear error, got status=$RESET_NOGPU_STATUS:" >&2
+  echo "$RESET_NOGPU" >&2
+  exit 1
+fi
+echo "exec --reset-gpu verified (kill+verify, idempotent, no-gpu error)"
+
 echo "Testing jobs stop kills the whole process tree"
 STOP_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs stop "$TREE_JOB_ID")
 echo "$STOP_OUTPUT"
