@@ -24,7 +24,7 @@ Use this skill when the request involves:
 - config discovery or `.okdev.yaml` / `.okdev/okdev.yaml`
 - sync behavior, session reuse, port forwards, or SSH access
 - manifest-backed workloads such as `job`, `generic`, or `pytorchjob`
-- attachable pod behavior, multi-pod sessions, or inter-pod SSH
+- attachable pod behavior, multi-pod sessions, inter-pod SSH, or stable inter-pod addresses (`MASTER_ADDR`, host aliases)
 - exec fanout controls: pod grouping (`--group`), uploaded `--script`, background `--detach` jobs (`okdev jobs list`), targeted log reads (`okdev jobs logs <job-id> --pod/--role --tail N --since 90s --grep <regex> --dedup`), blocking on a job or a log pattern (`okdev jobs wait <id> [--grep <regex>]`), pattern-based process kill (`--pkill`), GPU cleanup with verification (`--reset-gpu`), or structured `--json` output
 
 Do not use this skill for:
@@ -56,6 +56,7 @@ Do not use this skill for:
 - Before a detached launch, sync health is checked automatically: an unhealthy channel prints a stale-code warning; `okdev exec --detach --require-sync` refuses to launch until sync is healthy and fully converged — recommend it for launches where running stale code would waste a long run.
 - Sync supports multiple mappings with per-path direction (`spec.sync.paths[].direction: bi|up|down`); `down` makes the pod the authority so local writes cannot clobber results. A mapping's local root may nest inside the primary root — okdev manages the exclusion and remote volumes automatically. "Not syncing" is often the configured direction or a managed exclude, not a fault; see `references/multipod.md` and `references/troubleshooting.md`.
 - `okdev ssh` is the okdev-managed interactive path; `ssh okdev-<session>` is the plain SSH host alias path. The interactive shell can be bash or zsh, and the okdev tmux prefix is `ctrl-a`.
+- Multi-node launch scripts should use the short-name aliases as in-cluster addresses (`MASTER_ADDR=master-0`) — okdev writes them into every pod's `/etc/hosts` on `up`/`restart`, so they survive recreations without `hostname -i` chasing. After a controller-driven pod recreation, run `okdev up` to refresh both hooks and aliases. Plain PyTorchJob training can also just use the operator-injected `MASTER_ADDR` env.
 - For sync, SSH, and port-forward issues, `okdev status --details` is usually the first useful diagnostic.
 - If a session vanished without an `okdev down`, plain `okdev status` appends its last known pod states and surviving cluster events (`Evicted`/`Preempted`/quota vs plain `Killing`) — read that post-mortem before recreating: resource evictions mean `okdev up` will likely fail again, cleanup deletions recreate safely. `--output json` returns it structured. Events expire ~1h, so diagnose promptly.
 - `okdev exec -- cmd` without a pod selector runs on the **target pod only** (safe default for write commands); fanout is opt-in — `--all`/`--workers`/`--role`/`--label`/`--pod`/`--group` to target, `--script` for non-trivial pipelines, and `--detach` + `okdev jobs list` for long background runs. Commands that must reach every pod need an explicit `--all`.
