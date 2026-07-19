@@ -57,6 +57,7 @@ Use:
 - `ssh okdev-<session>` for plain SSH
 - `okdev exec` for multi-pod parallel command execution (pdsh-style fanout with `--role`/`--label`/`--pod`/`--group`/`--workers` targeting, `--script` to upload+run a file, `--detach` for background runs surfaced by `okdev jobs list`, `--pkill '<pattern>'` to kill matching processes without the raw-pkill self-match footgun, `--json` for structured per-pod results, and `--fanout` concurrency control)
 - `okdev jobs logs <job-id>` accepts the same `--pod`/`--role`/`--label`/`--exclude` targeting as `okdev exec`; use it to tail a subset of a detached job's pods instead of every pod in the session
+- for monitoring poll loops, prefer `okdev jobs logs <job-id> --tail 200 --since 90s`: `--tail` bounds the transfer, `--since` skips pods whose log file has not changed since the cutoff (file-level gate — job logs have no per-line timestamps). Reads are size-verified and retried, so an empty result means an empty/idle log, not a dropped stream
 
 If attachable pods are involved, explain that interactive targeting follows attachable-pod selection rules rather than arbitrary pod choice.
 

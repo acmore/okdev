@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/acmore/okdev/internal/kube"
 )
@@ -45,7 +46,7 @@ func TestRunJobsLogsFollowStreamsPrefixedPodLogsUntilTerminal(t *testing.T) {
 		{Name: "okdev-sess-worker-1", Phase: "Running"},
 	}
 	var out bytes.Buffer
-	if err := runJobsLogs(context.Background(), client, "default", pods, "dev", "job-shared", pdshDefaultFanout, true, &out); err != nil {
+	if err := runJobsLogs(context.Background(), client, "default", pods, "dev", "job-shared", pdshDefaultFanout, jobsLogsOptions{Follow: true, TailLines: -1}, &out); err != nil {
 		t.Fatalf("runJobsLogs: %v", err)
 	}
 	got := out.String()
@@ -101,6 +102,105 @@ func TestRunJobsWaitFailsOnNonZeroExit(t *testing.T) {
 	}
 }
 
+func TestParseSinceCutoff(t *testing.T) {
+	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+	got, err := parseSinceCutoff("90s", now)
+	if err != nil || !got.Equal(now.Add(-90*time.Second)) {
+		t.Fatalf("duration cutoff wrong: %v err=%v", got, err)
+	}
+	got, err = parseSinceCutoff("2026-07-19T11:00:00Z", now)
+	if err != nil || !got.Equal(time.Date(2026, 7, 19, 11, 0, 0, 0, time.UTC)) {
+		t.Fatalf("absolute cutoff wrong: %v err=%v", got, err)
+	}
+	if _, err := parseSinceCutoff("-5m", now); err == nil {
+		t.Fatal("negative duration must be rejected")
+	}
+	if _, err := parseSinceCutoff("yesterday", now); err == nil {
+		t.Fatal("garbage must be rejected")
+	}
+}
+
+func TestDetachJobLogScriptShapes(t *testing.T) {
+	full := readDetachJobLogScript("/var/okdev/exec/j.log", -1, 0)
+	for _, want := range []string{"okdev-log-size:", "mktemp", `cat "$f"`} {
+		if !strings.Contains(full, want) {
+			t.Fatalf("full read script missing %q:\n%s", want, full)
+		}
+	}
+	tailed := readDetachJobLogScript("/var/okdev/exec/j.log", 200, 0)
+	if !strings.Contains(tailed, `tail -n 200 "$f"`) {
+		t.Fatalf("tail read script missing tail: %s", tailed)
+	}
+	since := readDetachJobLogScript("/var/okdev/exec/j.log", -1, 1750000000)
+	if !strings.Contains(since, "stat -c %Y") || !strings.Contains(since, "-lt 1750000000") {
+		t.Fatalf("since gate missing: %s", since)
+	}
+	follow := followDetachJobLogScript("/var/okdev/exec/j.log", -1)
+	if !strings.Contains(follow, "tail -n +1 -f") {
+		t.Fatalf("follow script must tail whole file: %s", follow)
+	}
+	followTail := followDetachJobLogScript("/var/okdev/exec/j.log", 50)
+	if !strings.Contains(followTail, "tail -n 50 -f") {
+		t.Fatalf("follow script must honor --tail: %s", followTail)
+	}
+}
+
+// Regression for issue #167: an exec stream that drops output (empty or
+// truncated despite a non-empty log file) must be retried, not presented as
+// the job's output.
+func TestRunJobsLogsRetriesDroppedRead(t *testing.T) {
+	client := &fakeJobsClient{
+		listOutputs: map[string][]string{
+			"okdev-sess-worker-0": {
+				detachMetadataJSON("job-drop", "okdev-sess-worker-0", "dev", 100, "exited", intPtr(0)),
+			},
+		},
+		streamPlanSeq: map[string][]fakeJobsStreamPlan{
+			"okdev-sess-worker-0|read": {
+				{stdout: "", stderr: "okdev-log-size:6\n"},        // dropped stream: size says 6, got 0
+				{stdout: "hello\n", stderr: "okdev-log-size:6\n"}, // retry succeeds
+			},
+		},
+	}
+	pods := []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}}
+	var out bytes.Buffer
+	if err := runJobsLogs(context.Background(), client, "default", pods, "dev", "job-drop", pdshDefaultFanout, jobsLogsOptions{TailLines: -1}, &out); err != nil {
+		t.Fatalf("runJobsLogs: %v", err)
+	}
+	if !strings.Contains(out.String(), "hello") {
+		t.Fatalf("expected retried content, got %q", out.String())
+	}
+	if strings.Count(out.String(), "hello") != 1 {
+		t.Fatalf("content must not duplicate across retries, got %q", out.String())
+	}
+}
+
+func TestRunJobsLogsFailsAfterPersistentTruncation(t *testing.T) {
+	client := &fakeJobsClient{
+		listOutputs: map[string][]string{
+			"okdev-sess-worker-0": {
+				detachMetadataJSON("job-trunc", "okdev-sess-worker-0", "dev", 100, "exited", intPtr(0)),
+			},
+		},
+		streamPlans: map[string]fakeJobsStreamPlan{
+			"okdev-sess-worker-0|read": {stdout: "par", stderr: "okdev-log-size:100\n"},
+		},
+	}
+	pods := []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}}
+	var out bytes.Buffer
+	err := runJobsLogs(context.Background(), client, "default", pods, "dev", "job-trunc", pdshDefaultFanout, jobsLogsOptions{TailLines: -1}, &out)
+	if err == nil {
+		t.Fatal("expected truncation error")
+	}
+	if !strings.Contains(out.String(), "truncated: got 3 of 100 bytes") {
+		t.Fatalf("expected truncation detail in failure output, got %q / err %v", out.String(), err)
+	}
+	// Truncated payloads must not leak into the output stream.
+	if strings.Contains(out.String(), "[worker-0] par") {
+		t.Fatalf("truncated content leaked into output: %q", out.String())
+	}
+}
+
 // deadContainerJobsClient wraps fakeJobsClient and fails log streams for the
 // named container, modeling an OOMKilled target while the sidecar stays up.
 type deadContainerJobsClient struct {
@@ -129,14 +229,14 @@ func TestRunJobsLogsFallsBackToSidecarWhenContainerGone(t *testing.T) {
 				},
 			},
 			streamPlans: map[string]fakeJobsStreamPlan{
-				"okdev-sess-worker-0|read": {stdout: "last words\n"},
+				"okdev-sess-worker-0|read": {stdout: "last words\n", stderr: "okdev-log-size:11\n"},
 			},
 		},
 		deadContainer: "pytorch",
 	}
 	pods := []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}}
 	var out bytes.Buffer
-	if err := runJobsLogs(context.Background(), client, "default", pods, "pytorch", "job-oom", pdshDefaultFanout, false, &out); err != nil {
+	if err := runJobsLogs(context.Background(), client, "default", pods, "pytorch", "job-oom", pdshDefaultFanout, jobsLogsOptions{TailLines: -1}, &out); err != nil {
 		t.Fatalf("runJobsLogs: %v", err)
 	}
 	if !strings.Contains(out.String(), "last words") {
@@ -154,6 +254,8 @@ type fakeJobsClient struct {
 	listErrs        map[string][]error
 	listCalls       map[string]int
 	streamPlans     map[string]fakeJobsStreamPlan
+	streamPlanSeq   map[string][]fakeJobsStreamPlan
+	streamSeqCalls  map[string]int
 	execShResponses map[string]fakeJobsExecResponse
 	execScripts     []string
 	onExec          func(pod, key string)
@@ -223,10 +325,24 @@ func (f *fakeJobsClient) ExecShInContainer(ctx context.Context, namespace, pod, 
 func (f *fakeJobsClient) StreamShInContainer(ctx context.Context, namespace, pod, container, script string, stdout, stderr io.Writer) error {
 	f.mu.Lock()
 	key := "read"
-	if strings.Contains(script, "tail -n +1 -f") {
+	if strings.Contains(script, "exec tail -n") {
 		key = "follow"
 	}
-	plan, ok := f.streamPlans[pod+"|"+key]
+	var plan fakeJobsStreamPlan
+	var ok bool
+	if seq, seqOK := f.streamPlanSeq[pod+"|"+key]; seqOK && len(seq) > 0 {
+		if f.streamSeqCalls == nil {
+			f.streamSeqCalls = make(map[string]int)
+		}
+		idx := f.streamSeqCalls[pod+"|"+key]
+		f.streamSeqCalls[pod+"|"+key]++
+		if idx >= len(seq) {
+			idx = len(seq) - 1
+		}
+		plan, ok = seq[idx], true
+	} else {
+		plan, ok = f.streamPlans[pod+"|"+key]
+	}
 	f.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("unexpected stream script for %s: %s", pod, script)

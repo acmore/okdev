@@ -889,6 +889,42 @@ if row.get("groupLive", 0) < 3:
 PY
 echo "jobs list process group verified"
 
+# Issue #167: jobs logs must be reliable (size-verified read, no silent empty
+# output) and cheap to poll (--tail limits lines; --since skips pods whose log
+# file has not changed since the cutoff).
+echo "Testing jobs logs full read, --tail, and --since"
+LOGS_JOB_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --detach -- sh -c 'for i in 1 2 3 4 5; do echo "logline-$i"; done')
+LOGS_JOB_ID=$(printf '%s\n' "$LOGS_JOB_OUTPUT" | sed -n 's/.*job_id=\([^ ]*\).*/\1/p' | head -n1)
+if [[ -z "$LOGS_JOB_ID" ]]; then
+  echo "ERROR: could not extract logs job id from: $LOGS_JOB_OUTPUT" >&2
+  exit 1
+fi
+sleep 3
+FULL_LOGS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs logs "$LOGS_JOB_ID")
+for i in 1 5; do
+  if [[ "$FULL_LOGS" != *"logline-$i"* ]]; then
+    echo "ERROR: full jobs logs read missing logline-$i: $FULL_LOGS" >&2
+    exit 1
+  fi
+done
+TAIL_LOGS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs logs "$LOGS_JOB_ID" --tail 2)
+if [[ "$TAIL_LOGS" != *"logline-5"* || "$TAIL_LOGS" == *"logline-1"* ]]; then
+  echo "ERROR: jobs logs --tail 2 should contain logline-5 but not logline-1: $TAIL_LOGS" >&2
+  exit 1
+fi
+sleep 3
+SINCE_LOGS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs logs "$LOGS_JOB_ID" --since 2s)
+if [[ "$SINCE_LOGS" == *"logline-"* ]]; then
+  echo "ERROR: jobs logs --since 2s should skip an idle log file: $SINCE_LOGS" >&2
+  exit 1
+fi
+SINCE_ACTIVE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs logs "$LOGS_JOB_ID" --since 24h)
+if [[ "$SINCE_ACTIVE" != *"logline-5"* ]]; then
+  echo "ERROR: jobs logs --since 24h should include recent content: $SINCE_ACTIVE" >&2
+  exit 1
+fi
+echo "jobs logs full/--tail/--since verified"
+
 echo "Testing jobs stop kills the whole process tree"
 STOP_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs stop "$TREE_JOB_ID")
 echo "$STOP_OUTPUT"
@@ -945,6 +981,23 @@ if [[ "$LOGS_FALLBACK" != *"sidecar-fallback-marker"* ]]; then
   exit 1
 fi
 echo "sidecar log fallback verified"
+
+# Issue #167: the size-verified read script with --tail/--since must behave
+# identically through the sidecar fallback — the read runs in the alpine
+# sidecar (busybox tail/stat/mktemp/wc), the exact suspect path from the
+# issue. Reuses the finished 5-line job from the earlier logs scenario.
+echo "Testing jobs logs --tail/--since through the sidecar fallback"
+TAIL_FALLBACK=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs logs "$LOGS_JOB_ID" --tail 2)
+if [[ "$TAIL_FALLBACK" != *"logline-5"* || "$TAIL_FALLBACK" == *"logline-1"* ]]; then
+  echo "ERROR: sidecar-fallback --tail 2 should contain logline-5 but not logline-1: $TAIL_FALLBACK" >&2
+  exit 1
+fi
+SINCE_FALLBACK=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs logs "$LOGS_JOB_ID" --since 5s)
+if [[ "$SINCE_FALLBACK" == *"logline-"* ]]; then
+  echo "ERROR: sidecar-fallback --since 5s should skip the idle log file: $SINCE_FALLBACK" >&2
+  exit 1
+fi
+echo "sidecar-fallback --tail/--since verified"
 
 echo "Detached job tests completed"
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -108,6 +109,8 @@ func newJobsLogsCmd(opts *Options) *cobra.Command {
 	var follow bool
 	var container string
 	var fanout int
+	var tailLines int
+	var since string
 	cmd := &cobra.Command{
 		Use:   "logs <job-id> [session]",
 		Short: "Show detached job logs",
@@ -118,6 +121,20 @@ func newJobsLogsCmd(opts *Options) *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if tailLines < -1 {
+				return fmt.Errorf("--tail must be -1 (all), 0, or a positive line count")
+			}
+			logOpts := jobsLogsOptions{Follow: follow, TailLines: tailLines}
+			if strings.TrimSpace(since) != "" {
+				if follow {
+					return fmt.Errorf("--since cannot be used with --follow")
+				}
+				cutoff, err := parseSinceCutoff(since, time.Now())
+				if err != nil {
+					return err
+				}
+				logOpts.SinceEpoch = cutoff.Unix()
+			}
 			applySessionArg(opts, args[1:])
 			cc, err := resolveCommandContext(opts, resolveSessionName)
 			if err != nil {
@@ -134,7 +151,7 @@ func newJobsLogsCmd(opts *Options) *cobra.Command {
 			if targetContainer == "" {
 				targetContainer = resolveTargetContainer(cc.cfg)
 			}
-			return runJobsLogs(cmd.Context(), cc.kube, cc.namespace, pods, targetContainer, strings.TrimSpace(args[0]), fanoutOrDefault(fanout), follow, cmd.OutOrStdout())
+			return runJobsLogs(cmd.Context(), cc.kube, cc.namespace, pods, targetContainer, strings.TrimSpace(args[0]), fanoutOrDefault(fanout), logOpts, cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().StringSliceVar(&podNames, "pod", nil, "Target specific pods by name (repeatable/comma-separated)")
@@ -144,7 +161,36 @@ func newJobsLogsCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "Follow logs until all pods in the job finish")
 	cmd.Flags().StringVar(&container, "container", "", "Override target container")
 	cmd.Flags().IntVar(&fanout, "fanout", pdshDefaultFanout, "Maximum concurrent pod queries")
+	cmd.Flags().IntVar(&tailLines, "tail", -1, "Show only the last N lines of each pod's log (-1 = all)")
+	cmd.Flags().StringVar(&since, "since", "", "Skip pods whose log file has not changed within this duration (e.g. 90s, 5m) or since an RFC3339 time; file-level gate, output is still the (tail-limited) current log")
 	return cmd
+}
+
+// jobsLogsOptions carries the log-read shaping for jobs logs (#167): --tail
+// and --since cut the cost of high-frequency poll loops by ~2 orders of
+// magnitude versus re-fetching the whole file each round.
+type jobsLogsOptions struct {
+	Follow    bool
+	TailLines int // -1 = whole file
+	// SinceEpoch, when >0, skips pods whose log file mtime is older. The
+	// job log stream carries no per-line timestamps, so this is a
+	// file-level activity gate, not a per-line filter.
+	SinceEpoch int64
+}
+
+// parseSinceCutoff accepts a relative duration ("90s", "5m") or an absolute
+// RFC3339 time and returns the cutoff instant.
+func parseSinceCutoff(s string, now time.Time) (time.Time, error) {
+	if d, err := time.ParseDuration(s); err == nil {
+		if d < 0 {
+			return time.Time{}, fmt.Errorf("--since duration must be positive, got %q", s)
+		}
+		return now.Add(-d), nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("--since %q is neither a duration (90s, 5m) nor an RFC3339 time", s)
 }
 
 func newJobsStopCmd(opts *Options) *cobra.Command {
@@ -228,7 +274,8 @@ func fanoutOrDefault(v int) int {
 	return v
 }
 
-func runJobsLogs(ctx context.Context, client detachJobClient, namespace string, pods []kube.PodSummary, container, jobID string, fanout int, follow bool, out io.Writer) error {
+func runJobsLogs(ctx context.Context, client detachJobClient, namespace string, pods []kube.PodSummary, container, jobID string, fanout int, logOpts jobsLogsOptions, out io.Writer) error {
+	follow := logOpts.Follow
 	job, podErrors, err := resolveLogicalDetachJob(ctx, client, namespace, pods, container, jobID, fanout)
 	if err != nil {
 		printExecJobsErrors(out, podErrors)
@@ -272,7 +319,7 @@ func runJobsLogs(ctx context.Context, client detachJobClient, namespace string, 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := streamDetachJobLog(streamCtx, client, namespace, row, prefixByPod[row.Pod], follow, out, &writeMu)
+			err := streamDetachJobLog(streamCtx, client, namespace, row, prefixByPod[row.Pod], logOpts, out, &writeMu)
 			if follow && streamCtx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 				return
 			}
@@ -595,43 +642,129 @@ func logicalJobFailed(job logicalExecJobView) bool {
 	return false
 }
 
-func streamDetachJobLog(ctx context.Context, client detachJobClient, namespace string, row execJobView, prefix string, follow bool, out io.Writer, mu *sync.Mutex) error {
-	script := readDetachJobLogScript(row.LogPath)
-	if follow {
-		script = followDetachJobLogScript(row.LogPath)
+// detachLogReadAttempts bounds the read retries when the received byte count
+// does not match the size the read script reported (#167: apiserver exec
+// streams occasionally drop output, surfacing as empty/truncated logs for a
+// job whose log file is demonstrably non-empty).
+const detachLogReadAttempts = 3
+
+func streamDetachJobLog(ctx context.Context, client detachJobClient, namespace string, row execJobView, prefix string, logOpts jobsLogsOptions, out io.Writer, mu *sync.Mutex) error {
+	if logOpts.Follow {
+		script := followDetachJobLogScript(row.LogPath, logOpts.TailLines)
+		var stderr bytes.Buffer
+		writer := newPrefixedWriter(prefix, out, mu)
+		defer writer.Flush()
+		err := streamDetachLogWithSidecarFallback(ctx, client, namespace, row, script, writer, &stderr)
+		if err != nil && strings.TrimSpace(stderr.String()) != "" {
+			return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+		}
+		return err
 	}
-	var stderr bytes.Buffer
-	writer := newPrefixedWriter(prefix, out, mu)
-	defer writer.Flush()
-	err := client.StreamShInContainer(ctx, namespace, row.Pod, row.Container, script, writer, &stderr)
+
+	// Non-follow reads buffer the whole (tail-limited) selection and verify
+	// it against the byte count the script reported before emitting, so a
+	// dropped exec stream is retried instead of being presented as the job's
+	// (empty) output.
+	script := readDetachJobLogScript(row.LogPath, logOpts.TailLines, logOpts.SinceEpoch)
+	var lastErr error
+	for attempt := 1; attempt <= detachLogReadAttempts; attempt++ {
+		var buf, stderr bytes.Buffer
+		err := streamDetachLogWithSidecarFallback(ctx, client, namespace, row, script, &buf, &stderr)
+		if err != nil {
+			if strings.TrimSpace(stderr.String()) != "" {
+				return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+			}
+			return err
+		}
+		want, ok := parseDetachLogSize(stderr.String())
+		if !ok || int64(buf.Len()) != want {
+			got := int64(buf.Len())
+			if !ok {
+				lastErr = fmt.Errorf("log read stream dropped its size marker (got %d bytes) after %d attempt(s)", got, attempt)
+			} else {
+				lastErr = fmt.Errorf("log read truncated: got %d of %d bytes after %d attempt(s)", got, want, attempt)
+			}
+			continue
+		}
+		writer := newPrefixedWriter(prefix, out, mu)
+		defer writer.Flush()
+		if _, err := writer.Write(buf.Bytes()); err != nil {
+			return err
+		}
+		return nil
+	}
+	return lastErr
+}
+
+// streamDetachLogWithSidecarFallback runs the log script in the job's
+// container, falling back to the always-running sidecar when that container
+// is gone (OOMKilled, crashed) — logs under /var/okdev live on the shared
+// runtime volume. Setup failures happen before any output is streamed, so the
+// fallback cannot duplicate log lines.
+func streamDetachLogWithSidecarFallback(ctx context.Context, client detachJobClient, namespace string, row execJobView, script string, stdout io.Writer, stderr *bytes.Buffer) error {
+	err := client.StreamShInContainer(ctx, namespace, row.Pod, row.Container, script, stdout, stderr)
 	if err != nil && row.Container != syncthingContainerName && isContainerUnavailableExecError(err) {
-		// The job's container is gone (OOMKilled, crashed). Logs under
-		// /var/okdev live on the shared runtime volume, so read them through
-		// the always-running sidecar instead. Setup failures like these
-		// happen before any output is streamed, so retrying cannot duplicate
-		// log lines.
 		stderr.Reset()
-		err = client.StreamShInContainer(ctx, namespace, row.Pod, syncthingContainerName, script, writer, &stderr)
+		err = client.StreamShInContainer(ctx, namespace, row.Pod, syncthingContainerName, script, stdout, stderr)
 	}
 	if err != nil && isContainerUnavailableExecError(err) {
 		if hint := containerUnavailableHint(ctx, client, namespace, row.Pod, row.Container); hint != "" {
 			err = fmt.Errorf("%w; %s", err, hint)
 		}
 	}
-	if err != nil && strings.TrimSpace(stderr.String()) != "" {
-		return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
-	}
 	return err
 }
 
-func readDetachJobLogScript(logPath string) string {
+// readDetachJobLogScript snapshots the (tail-limited) selection into a temp
+// file, reports its exact byte count on stderr (okdev-log-size:<n>), then
+// emits it. The count lets the client detect a dropped or truncated exec
+// stream and retry (#167). With sinceEpoch > 0, an unchanged log file is
+// skipped entirely (okdev-log-size:0, nothing printed) — the fast path for
+// poll loops.
+func readDetachJobLogScript(logPath string, tailLines int, sinceEpoch int64) string {
 	quoted := shellQuote(logPath)
-	return fmt.Sprintf("if [ ! -f %s ]; then echo 'missing detached job log' >&2; exit 1; fi\ncat %s\n", quoted, quoted)
+	var b strings.Builder
+	fmt.Fprintf(&b, "f=%s\n", quoted)
+	b.WriteString("if [ ! -f \"$f\" ]; then echo 'missing detached job log' >&2; exit 1; fi\n")
+	if sinceEpoch > 0 {
+		fmt.Fprintf(&b, "if [ \"$(stat -c %%Y \"$f\" 2>/dev/null || echo 0)\" -lt %d ]; then printf 'okdev-log-size:0\\n' >&2; exit 0; fi\n", sinceEpoch)
+	}
+	b.WriteString("tmp=$(mktemp \"${TMPDIR:-/tmp}/okdev-log.XXXXXX\") || exit 1\n")
+	b.WriteString("trap 'rm -f \"$tmp\"' EXIT\n")
+	if tailLines >= 0 {
+		fmt.Fprintf(&b, "tail -n %d \"$f\" >\"$tmp\"\n", tailLines)
+	} else {
+		b.WriteString("cat \"$f\" >\"$tmp\"\n")
+	}
+	b.WriteString("printf 'okdev-log-size:%s\\n' \"$(wc -c <\"$tmp\" | tr -d ' \\t')\" >&2\n")
+	b.WriteString("cat \"$tmp\"\n")
+	return b.String()
 }
 
-func followDetachJobLogScript(logPath string) string {
+func followDetachJobLogScript(logPath string, tailLines int) string {
 	quoted := shellQuote(logPath)
-	return fmt.Sprintf("if [ ! -f %s ]; then echo 'missing detached job log' >&2; exit 1; fi\nexec tail -n +1 -f %s\n", quoted, quoted)
+	from := "+1"
+	if tailLines >= 0 {
+		from = strconv.Itoa(tailLines)
+	}
+	return fmt.Sprintf("if [ ! -f %s ]; then echo 'missing detached job log' >&2; exit 1; fi\nexec tail -n %s -f %s\n", quoted, from, quoted)
+}
+
+// parseDetachLogSize extracts the okdev-log-size marker the read script
+// prints on stderr.
+func parseDetachLogSize(stderr string) (int64, bool) {
+	for _, line := range strings.Split(stderr, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "okdev-log-size:") {
+			continue
+		}
+		n, err := strconv.ParseInt(strings.TrimPrefix(line, "okdev-log-size:"), 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	}
+	return 0, false
 }
 
 func signalDetachJob(ctx context.Context, client detachJobClient, namespace string, row execJobView, signalName string) (string, error) {
