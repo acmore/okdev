@@ -390,6 +390,20 @@ if [[ "$INTERPOD_SSH_OUTPUT" != *"interpod-ssh-ok"* ]]; then
 fi
 echo "inter-pod SSH verified"
 
+# Issue #169: every pod's /etc/hosts maps short aliases to current pod IPs,
+# so launch scripts can use MASTER_ADDR=master-0 without resolving IPs.
+echo "Verifying short-name host aliases"
+refresh_pytorchjob_pods
+FIRST_WORKER_SHORT="worker-0"
+WORKER0_IP=$(kubectl -n "$NAMESPACE" get pod "$(echo "$WORKER_PODS" | awk '{print $1}')" -o jsonpath='{.status.podIP}')
+ALIAS_RESOLVED=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod master-0 --no-tty --no-prefix -- getent hosts "$FIRST_WORKER_SHORT")
+if [[ "$ALIAS_RESOLVED" != *"$WORKER0_IP"* ]]; then
+  echo "ERROR: master should resolve $FIRST_WORKER_SHORT to $WORKER0_IP, got: $ALIAS_RESOLVED" >&2
+  "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod master-0 --no-tty --no-prefix -- cat /etc/hosts >&2 || true
+  exit 1
+fi
+echo "host aliases verified (master resolves $FIRST_WORKER_SHORT)"
+
 # ---------------------------------------------------------------------------
 # Multi-pod exec (pdsh) verification
 # ---------------------------------------------------------------------------
@@ -1174,6 +1188,17 @@ if [[ "$SURVIVOR_STATE" != *"running"* ]]; then
   echo "$RESTART_JOBS_JSON" >&2
   exit 1
 fi
+# The restart's runUp refreshed the alias block: the recreated worker's NEW
+# IP must be resolvable from the master under the same stable alias.
+RESTART_WORKER_SHORT=$(echo "$RESTART_WORKER" | sed 's/.*-\(worker-[0-9]*\)$/\1/')
+NEW_WORKER_IP=$(kubectl -n "$NAMESPACE" get pod "$RESTART_WORKER" -o jsonpath='{.status.podIP}')
+ALIAS_AFTER_RESTART=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod master-0 --no-tty --no-prefix -- getent hosts "$RESTART_WORKER_SHORT")
+if [[ "$ALIAS_AFTER_RESTART" != *"$NEW_WORKER_IP"* ]]; then
+  echo "ERROR: alias $RESTART_WORKER_SHORT should track the recreated pod IP $NEW_WORKER_IP, got: $ALIAS_AFTER_RESTART" >&2
+  exit 1
+fi
+echo "host alias tracked the recreated worker's new IP"
+
 echo "restart --pod verified (worker recreated, hooks replayed, master and its detached job untouched)"
 
 # ---------------------------------------------------------------------------

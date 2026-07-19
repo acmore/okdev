@@ -33,6 +33,8 @@ Useful guidance:
 
 Pod addressing: prefer the **short names shown by `okdev status`** (`master-0`, `worker-1`) over full hash names — `--pod` on exec/cp/jobs and `target set --pod` accept them (plus any unique `-<name>` suffix), and they stay stable across pod recreations while full names do not. `--role` selects the whole role group; short names select individual pods.
 
+**In-cluster addressing**: the same short names resolve **inside** the pods — okdev writes them into every pod's `/etc/hosts` at `up`/`restart` time, so multi-node launch scripts hardcode `MASTER_ADDR=master-0` (Ray, torchrun, etc.) instead of chasing pod IPs with `hostname -i`. Refresh lifecycle matches lifecycle hooks: okdev-driven recreations (`restart --pod`, `up --reconcile`) refresh immediately; a controller-recreated pod resolves stale until the next `okdev up`. PyTorchJob pods additionally get the training-operator's own per-replica Services and auto-injected `MASTER_ADDR`/`MASTER_PORT` env — for plain torch those env vars are already the canonical answer.
+
 If the user wants to understand why one pod is chosen, consult the command/config docs before describing the selection behavior.
 
 ## Sync Expectations
