@@ -957,6 +957,43 @@ if [[ "$DEDUP_LOGS" != *"bar done"* ]]; then
 fi
 echo "jobs logs --grep/--dedup/CR normalization verified"
 
+# Issue #191: jobs wait --grep blocks until a log pattern appears; jobs list
+# hints at the wait primitive while a job is running.
+echo "Testing jobs wait --grep and the jobs list wait hint"
+WAITGREP_JOB_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --detach -- sh -c 'sleep 4; echo "phase-two reached"; sleep 30')
+WAITGREP_JOB_ID=$(printf '%s
+' "$WAITGREP_JOB_OUTPUT" | sed -n 's/.*job_id=\([^ ]*\).*/\1/p' | head -n1)
+if [[ -z "$WAITGREP_JOB_ID" ]]; then
+  echo "ERROR: could not extract wait-grep job id from: $WAITGREP_JOB_OUTPUT" >&2
+  exit 1
+fi
+LIST_HINT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs list)
+if [[ "$LIST_HINT" != *"okdev jobs wait"* ]]; then
+  echo "ERROR: jobs list should hint at jobs wait while a job runs: $LIST_HINT" >&2
+  exit 1
+fi
+WAIT_START=$(date +%s)
+WAIT_MATCH=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs wait "$WAITGREP_JOB_ID" --grep 'phase-two')
+WAIT_ELAPSED=$(( $(date +%s) - WAIT_START ))
+if [[ "$WAIT_MATCH" != *"phase-two reached"* ]]; then
+  echo "ERROR: jobs wait --grep should print the matching line, got: $WAIT_MATCH" >&2
+  exit 1
+fi
+if [[ "$WAIT_ELAPSED" -gt 25 ]]; then
+  echo "ERROR: jobs wait --grep should return on match (~4s), took ${WAIT_ELAPSED}s (did it wait for job exit?)" >&2
+  exit 1
+fi
+if "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs wait "$FILTER_JOB_ID" --grep 'never-in-this-log' 2>/tmp/waitgrep-err; then
+  echo "ERROR: jobs wait --grep on a finished job without a match must fail" >&2
+  exit 1
+fi
+if ! grep -q "without matching --grep" /tmp/waitgrep-err; then
+  echo "ERROR: no-match failure should carry a distinct error, got: $(cat /tmp/waitgrep-err)" >&2
+  exit 1
+fi
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs stop "$WAITGREP_JOB_ID" >/dev/null 2>&1 || true
+echo "jobs wait --grep and list hint verified"
+
 echo "Testing jobs stop kills the whole process tree"
 STOP_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs stop "$TREE_JOB_ID")
 echo "$STOP_OUTPUT"

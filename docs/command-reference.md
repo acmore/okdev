@@ -140,7 +140,7 @@ agents can react without launching a diagnostic chain on every blip:
 - Reads job metadata from `/var/okdev/exec/*.json` in the target container (plus the legacy `/tmp/okdev-exec/` location for jobs launched by older okdev versions).
 - If the target container is gone (e.g. OOMKilled), listing and `jobs logs` automatically retry through the `okdev-sidecar` container, which mounts the same runtime volume.
 - When a command fails because the container is gone, the error carries the termination cause when it can be determined, e.g. `container "pytorch" terminated: OOMKilled (exit 137, finished 2026-07-05T06:32:11Z)`. The same hint is appended to `okdev exec` FAILED lines and single-pod exec errors.
-- Text output is grouped by logical job id, with one row per detached launch showing job id, summarized state, pod count, earliest start time, and original command.
+- Text output is grouped by logical job id, with one row per detached launch showing job id, summarized state, pod count, earliest start time, and original command. When any job is still running, a footer points at the blocking primitive: `` hint: `okdev jobs wait <id>` blocks until it finishes; add --grep PATTERN to return when the log matches ``.
 - On a terminal the COMMAND column is truncated (with `…`) to the remaining terminal width so long training commands don't wrap rows; piped/redirected output and `--json` always carry the full command.
 - JSON output includes both the logical job summary and the per-pod `podStates` records (with `pgid` and `groupLive` — the count of live processes still in the job's process group — when available).
 - State values: `running` (wrapper alive and user command in flight), `exited` (user command finished; exit code is recorded in `podStates` / JSON), and `orphaned` (metadata still says `running` but the pid has exited or been recycled - typically the wrapper was `SIGKILL`ed or the container was restarted before the completion metadata could be written). Grouped text summaries render forms such as `running(1/2)`, `exited(2/2)`, and `failed(1/2)`.
@@ -173,11 +173,13 @@ agents can react without launching a diagnostic chain on every blip:
 - If the job's container is gone (e.g. OOMKilled), logs are read through the `okdev-sidecar` container instead — job logs live on the shared runtime volume and survive the container.
 - If some pod logs are unavailable, okdev still streams the logs it can read and reports the missing pods in a `FAILED:` footer before returning non-zero.
 
-### `okdev jobs wait <job-id> [session]`
+### `okdev jobs wait <job-id> [session] [--grep <regex>] [--tail N]`
 
 - Polls the detached job until all pod-local records are terminal.
 - Returns success only when every pod exits cleanly.
 - Returns non-zero when any pod exits non-zero, becomes `orphaned`, cannot be queried, or the job id does not exist.
+- `--grep <regex>`: return **as soon as a matching line appears in any pod's log** instead of waiting for the job to finish — the block-until-log-pattern primitive for monitoring loops (`--grep 'step 2|Error'` returns when training reaches step 2 *or* the first error shows up). The matching line(s) are printed pod-prefixed; `--tail N` bounds how many are shown (default 1, `-1` = all matches). The pattern is checked before the terminal state, so a job that already exited (even non-zero) with the pattern in its log still satisfies the wait. If the job ends without ever matching, `jobs wait` fails with a distinct error.
+- **`jobs wait` vs hand-rolled polling**: prefer `okdev jobs wait <id>` over `sleep`/`jobs list` loops for "block until done", and `jobs wait --grep` over `sleep`/`jobs logs --grep` loops for "block until the log says X" — one blocking call, no per-iteration token cost. Use a `jobs logs --tail --since` loop only when you need the ongoing output itself, not just a completion/progress signal.
 
 ### `okdev jobs stop <job-id> [session]`
 

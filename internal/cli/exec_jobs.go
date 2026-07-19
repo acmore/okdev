@@ -89,6 +89,9 @@ func runExecJobs(ctx context.Context, client connect.ExecClient, namespace strin
 				})
 			}
 			output.PrintTable(out, []string{"JOB ID", "STATE", "PODS", "STARTED", "COMMAND"}, table)
+			if running := firstRunningJobID(jobs); running != "" {
+				fmt.Fprintf(out, "\nhint: `okdev jobs wait %s` blocks until it finishes; add --grep PATTERN to return when the log matches\n", running)
+			}
 		}
 		if len(podErrors) > 0 {
 			fmt.Fprintf(out, "\nFAILED:\n")
@@ -527,4 +530,18 @@ func parseDetachMetadataLines(raw string) ([]detachMetadata, error) {
 		out = append(out, job)
 	}
 	return out, nil
+}
+
+// firstRunningJobID returns a running job's id for the jobs-list hint —
+// `jobs wait` went undiscovered for whole sessions of hand-rolled sleep
+// polling (#191), so the listing points at it whenever waiting is possible.
+func firstRunningJobID(jobs []logicalExecJobView) string {
+	for _, job := range jobs {
+		for _, row := range job.PodStates {
+			if row.State == "running" {
+				return job.JobID
+			}
+		}
+	}
+	return ""
 }

@@ -59,6 +59,7 @@ Use:
 - `okdev jobs logs <job-id>` accepts the same `--pod`/`--role`/`--label`/`--exclude` targeting as `okdev exec`; use it to tail a subset of a detached job's pods instead of every pod in the session
 - for monitoring poll loops, prefer `okdev jobs logs <job-id> --tail 200 --since 90s`: `--tail` bounds the transfer, `--since` skips pods whose log file has not changed since the cutoff (file-level gate — job logs have no per-line timestamps). Reads are size-verified and retried, so an empty result means an empty/idle log, not a dropped stream
 - to extract a metric or the first error cheaply, add `--grep`: `okdev jobs logs <id> --grep 'reward=|Error' --tail 5` returns just the latest matching lines (filtered pod-side). Add `--dedup` when multi-rank workers spam identical exception bodies — runs of identical lines collapse to one copy plus `[repeated Nx]`. Progress-bar logs (`\r` rewrites) are CR-normalized automatically on snapshot reads, so there is no need to drop to `okdev exec -- tr/grep` raw-file pipelines
+- do NOT build `sleep`+`grep` poll loops to wait on a job: `okdev jobs wait <id>` blocks until the job finishes, and `okdev jobs wait <id> --grep 'step 2|Error'` blocks until the log matches (returns the matching line, works even if the job already exited). One blocking call replaces the whole loop
 
 If attachable pods are involved, explain that interactive targeting follows attachable-pod selection rules rather than arbitrary pod choice.
 

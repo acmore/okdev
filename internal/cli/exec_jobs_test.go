@@ -469,9 +469,16 @@ func TestRunExecJobsTableRendersMultilineCommandAsOneRow(t *testing.T) {
 		t.Fatalf("expected flattened command in table, got %q", got)
 	}
 	for _, line := range strings.Split(got, "\n") {
+		if strings.Contains(line, "hint:") {
+			continue
+		}
 		if strings.Contains(line, "job-a") && !strings.Contains(line, "python t.py'") {
 			t.Fatalf("expected the job row to stay on one line, got %q", got)
 		}
+	}
+	// A running job points at jobs wait (#191).
+	if !strings.Contains(got, "okdev jobs wait job-a") {
+		t.Fatalf("expected wait hint for running job, got %q", got)
 	}
 }
 

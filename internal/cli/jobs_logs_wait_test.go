@@ -80,7 +80,7 @@ func TestRunJobsWaitBlocksUntilAllPodsExitSuccessfully(t *testing.T) {
 		{Name: "okdev-sess-worker-0", Phase: "Running"},
 		{Name: "okdev-sess-worker-1", Phase: "Running"},
 	}
-	if err := runJobsWait(context.Background(), client, "default", pods, "dev", "job-shared", pdshDefaultFanout); err != nil {
+	if err := runJobsWait(context.Background(), client, "default", pods, "dev", "job-shared", pdshDefaultFanout, jobsWaitOptions{}, io.Discard); err != nil {
 		t.Fatalf("runJobsWait: %v", err)
 	}
 }
@@ -96,7 +96,7 @@ func TestRunJobsWaitFailsOnNonZeroExit(t *testing.T) {
 	pods := []kube.PodSummary{
 		{Name: "okdev-sess-worker-0", Phase: "Running"},
 	}
-	err := runJobsWait(context.Background(), client, "default", pods, "dev", "job-shared", pdshDefaultFanout)
+	err := runJobsWait(context.Background(), client, "default", pods, "dev", "job-shared", pdshDefaultFanout, jobsWaitOptions{}, io.Discard)
 	if err == nil {
 		t.Fatal("expected failure")
 	}
@@ -463,5 +463,78 @@ func TestDetachJobLogScriptFiltersThroughRealShell(t *testing.T) {
 	}
 	if !strings.Contains(deduped, "step 2 reward=0.15") {
 		t.Fatalf("dedup must keep unique lines:\n%q", deduped)
+	}
+}
+
+func TestRunJobsWaitGrepReturnsOnPatternWhileRunning(t *testing.T) {
+	oldPollEvery := detachJobPollEvery
+	detachJobPollEvery = 5 * time.Millisecond
+	defer func() { detachJobPollEvery = oldPollEvery }()
+
+	client := &fakeJobsClient{
+		listOutputs: map[string][]string{
+			"okdev-sess-worker-0": {
+				detachMetadataJSON("job-metric", "okdev-sess-worker-0", "dev", 100, "running", nil),
+			},
+		},
+		streamPlanSeq: map[string][]fakeJobsStreamPlan{
+			"okdev-sess-worker-0|read": {
+				{stdout: "", stderr: "okdev-log-size:0\n"},                      // no match yet
+				{stdout: "step 2 reward=0.15\n", stderr: "okdev-log-size:19\n"}, // pattern appeared
+			},
+		},
+	}
+	pods := []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}}
+	var out bytes.Buffer
+	err := runJobsWait(context.Background(), client, "default", pods, "dev", "job-metric", pdshDefaultFanout, jobsWaitOptions{Grep: "reward=", TailLines: 1}, &out)
+	if err != nil {
+		t.Fatalf("runJobsWait --grep: %v", err)
+	}
+	if !strings.Contains(out.String(), "reward=0.15") {
+		t.Fatalf("expected the matching line to be printed, got %q", out.String())
+	}
+}
+
+func TestRunJobsWaitGrepMatchesAfterExitAndOnFailure(t *testing.T) {
+	// The pattern probe runs before the terminal check: a job that exits
+	// (even non-zero) with the pattern in its log still satisfies the wait —
+	// waiting for an Error line is a first-class use.
+	client := &fakeJobsClient{
+		listOutputs: map[string][]string{
+			"okdev-sess-worker-0": {
+				detachMetadataJSON("job-err", "okdev-sess-worker-0", "dev", 100, "exited", intPtr(1)),
+			},
+		},
+		streamPlans: map[string]fakeJobsStreamPlan{
+			"okdev-sess-worker-0|read": {stdout: "RuntimeError: boom\n", stderr: "okdev-log-size:19\n"},
+		},
+	}
+	pods := []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}}
+	var out bytes.Buffer
+	err := runJobsWait(context.Background(), client, "default", pods, "dev", "job-err", pdshDefaultFanout, jobsWaitOptions{Grep: "Error", TailLines: -1}, &out)
+	if err != nil {
+		t.Fatalf("runJobsWait --grep on exited job: %v", err)
+	}
+	if !strings.Contains(out.String(), "RuntimeError: boom") {
+		t.Fatalf("expected error line printed, got %q", out.String())
+	}
+}
+
+func TestRunJobsWaitGrepFailsWhenJobEndsWithoutMatch(t *testing.T) {
+	client := &fakeJobsClient{
+		listOutputs: map[string][]string{
+			"okdev-sess-worker-0": {
+				detachMetadataJSON("job-quiet", "okdev-sess-worker-0", "dev", 100, "exited", intPtr(0)),
+			},
+		},
+		streamPlans: map[string]fakeJobsStreamPlan{
+			"okdev-sess-worker-0|read": {stdout: "", stderr: "okdev-log-size:0\n"},
+		},
+	}
+	pods := []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}}
+	var out bytes.Buffer
+	err := runJobsWait(context.Background(), client, "default", pods, "dev", "job-quiet", pdshDefaultFanout, jobsWaitOptions{Grep: "reward=", TailLines: 1}, &out)
+	if err == nil || !strings.Contains(err.Error(), "without matching --grep") {
+		t.Fatalf("expected no-match failure, got %v", err)
 	}
 }
