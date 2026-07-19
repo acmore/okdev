@@ -690,12 +690,6 @@ func selectorForSessionRun(sessionName string) string {
 
 func annotationsForSession(cfg *config.DevEnvironment) map[string]string {
 	out := map[string]string{}
-	if cfg.Spec.Session.TTLHours > 0 {
-		out["okdev.io/ttl-hours"] = fmt.Sprintf("%d", cfg.Spec.Session.TTLHours)
-	}
-	if cfg.Spec.Session.IdleTimeoutMinutes > 0 {
-		out["okdev.io/idle-timeout-minutes"] = fmt.Sprintf("%d", cfg.Spec.Session.IdleTimeoutMinutes)
-	}
 	return out
 }
 

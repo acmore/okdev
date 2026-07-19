@@ -106,4 +106,3 @@ Use:
 
 - `okdev down`
 - `okdev down --wait` when the user wants workload removal confirmed
-- `okdev prune --ttl-hours <n>` for cleanup workflows

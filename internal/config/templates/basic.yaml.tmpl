@@ -9,8 +9,6 @@ spec:
 {{- end }}
   session:
     defaultNameTemplate: '{{`{{ .Repo }}-{{ .User }}`}}'
-    ttlHours: {{ .TTLHours }}
-    idleTimeoutMinutes: 120
   sync:
     engine: syncthing
     syncthing:
