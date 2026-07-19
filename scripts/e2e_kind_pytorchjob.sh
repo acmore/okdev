@@ -1215,6 +1215,57 @@ echo "host alias tracked the recreated worker's new IP"
 echo "restart --pod verified (worker recreated, hooks replayed, master and its detached job untouched)"
 
 # ---------------------------------------------------------------------------
+# Cascade termination (#179): with --kill-group-on-exit, the first member to
+# exit broadcasts a group-kill to its peers over interpod SSH, so surviving
+# ranks cannot hang around holding resources.
+# ---------------------------------------------------------------------------
+
+echo "Testing exec --detach --kill-group-on-exit cascade"
+refresh_pytorchjob_pods
+# The master member exits (non-zero) after 6s; workers would sleep 600.
+CASCADE_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --detach --kill-group-on-exit --no-tty -- sh -c 'case "$(hostname)" in *master*) sleep 6; exit 3 ;; *) exec sleep 600 ;; esac')
+CASCADE_JOB_ID=$(printf '%s
+' "$CASCADE_OUTPUT" | sed -n 's/.*job_id=\([^ ]*\).*/\1/p' | head -n1)
+if [[ -z "$CASCADE_JOB_ID" ]]; then
+  echo "ERROR: could not extract cascade job id from: $CASCADE_OUTPUT" >&2
+  exit 1
+fi
+CASCADE_DONE=0
+for i in $(seq 1 30); do
+  sleep 2
+  CASCADE_JSON=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec-jobs --output json 2>/dev/null || echo '{}')
+  RUNNING_LEFT=$(OKDEV_JOBS_JSON="$CASCADE_JSON" CASCADE_JOB_ID="$CASCADE_JOB_ID" python3 - <<'CASCPY'
+import json, os
+payload = json.loads(os.environ["OKDEV_JOBS_JSON"])
+running = 0
+for job in payload.get("jobs", []):
+    if job.get("jobId") != os.environ["CASCADE_JOB_ID"]:
+        continue
+    for row in job.get("podStates", []):
+        if row.get("state") == "running":
+            running += 1
+print(running)
+CASCPY
+)
+  if [[ "$RUNNING_LEFT" == "0" ]]; then
+    CASCADE_DONE=1
+    break
+  fi
+done
+if [[ "$CASCADE_DONE" != "1" ]]; then
+  echo "ERROR: cascade did not terminate all members (still running: $RUNNING_LEFT)" >&2
+  echo "$CASCADE_JSON" >&2
+  exit 1
+fi
+# The cascaded workers carry the forensics marker.
+CASCADE_MARKER=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod worker-0 --no-tty --no-prefix -- sh -lc "cat /var/okdev/exec/${CASCADE_JOB_ID}.cascaded 2>/dev/null || echo none")
+if [[ "$CASCADE_MARKER" != *"group"* && "$CASCADE_MARKER" != *"leader"* ]]; then
+  echo "ERROR: expected cascade marker on worker-0, got: $CASCADE_MARKER" >&2
+  exit 1
+fi
+echo "cascade termination verified (member exit killed all peers, marker present)"
+
+# ---------------------------------------------------------------------------
 # Hook state visibility + stale detection (in-place container restart):
 # status --details reports per-pod hook progress; a container restarted in
 # place (annotations survive, filesystem wiped) reads as stale, and okdev up

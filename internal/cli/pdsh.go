@@ -77,6 +77,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 	var pkillSignal string
 	var resetGPU bool
 	var requireSync bool
+	var killGroupOnExit bool
 
 	cmd := &cobra.Command{
 		Use:   "exec [session]",
@@ -204,6 +205,14 @@ func newExecCmd(opts *Options) *cobra.Command {
 				return err
 			}
 
+			if killGroupOnExit {
+				if !detach {
+					return fmt.Errorf("--kill-group-on-exit requires --detach")
+				}
+				if !cc.cfg.Spec.SSH.InterPodEnabled() {
+					return fmt.Errorf("--kill-group-on-exit needs the interpod SSH channel; set spec.ssh.interPod: true and re-run okdev up")
+				}
+			}
 			if detach {
 				if err := detachSyncPreflight(cmd, cc, requireSync); err != nil {
 					return err
@@ -211,7 +220,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 			}
 
 			if multiPod || detach {
-				return runMultiPodExec(cmd, cc, invocation, plan, container, detach, timeout, logDir, noPrefix, fanout, jsonOutput, gatewayPod, requireAll)
+				return runMultiPodExec(cmd, cc, invocation, plan, container, detach, killGroupOnExit, timeout, logDir, noPrefix, fanout, jsonOutput, gatewayPod, requireAll)
 			}
 
 			// Single-pod mode (existing behavior)
@@ -268,6 +277,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&pkillPattern, "pkill", "", "Kill processes whose full cmdline matches this extended regex; never matches okdev's own exec machinery (exit 0 if any process matched)")
 	cmd.Flags().BoolVar(&resetGPU, "reset-gpu", false, "Kill every process holding GPU compute in the targeted pods (SIGKILL by process group) and verify nvidia-smi returns to zero (exit 0 clear, 3 no nvidia-smi, 4 still busy)")
 	cmd.Flags().StringVar(&pkillSignal, "signal", "TERM", "Signal name or number sent by --pkill")
+	cmd.Flags().BoolVar(&killGroupOnExit, "kill-group-on-exit", false, "With --detach on multiple pods: when any member exits, SIGKILL the whole cross-pod job group (requires spec.ssh.interPod)")
 	cmd.Flags().BoolVar(&requireSync, "require-sync", false, "With --detach: refuse to launch unless sync is healthy and fully converged")
 	cmd.Flags().BoolVar(&requireAll, "require-all", false, "Exit non-zero unless every targeted pod responded (requires --json)")
 	return cmd
@@ -343,13 +353,16 @@ type execGroupRunOptions struct {
 	Container  string
 	Invocation execInvocation
 	Detach     bool
-	Timeout    time.Duration
-	LogDir     string
-	NoPrefix   bool
-	Fanout     int
-	Order      execGroupOrder
-	Stdout     io.Writer
-	Stderr     io.Writer
+	// CascadeOnExit makes each detached member broadcast a group-kill to
+	// its peers when it exits (#179).
+	CascadeOnExit bool
+	Timeout       time.Duration
+	LogDir        string
+	NoPrefix      bool
+	Fanout        int
+	Order         execGroupOrder
+	Stdout        io.Writer
+	Stderr        io.Writer
 }
 
 // flagLikePathValueFlags lists flags whose values are file paths — the only
@@ -662,7 +675,7 @@ func printTargetOnlyNotice(w io.Writer, ctx context.Context, cc *commandContext,
 	fmt.Fprintf(w, "notice: running on target pod %s only; use --all, --workers, --role, or --pod to fan out\n", target.PodName)
 }
 
-func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvocation, plan execTargetPlan, container string, detach bool, timeout time.Duration, logDir string, noPrefix bool, fanout int, jsonOutput bool, gatewayPod string, requireAll bool) error {
+func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvocation, plan execTargetPlan, container string, detach, killGroupOnExit bool, timeout time.Duration, logDir string, noPrefix bool, fanout int, jsonOutput bool, gatewayPod string, requireAll bool) error {
 	ctx := cmd.Context()
 	labelSel := selectorForSessionRun(cc.sessionName)
 	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
@@ -712,16 +725,17 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvo
 	effectiveNoPrefix := resolveExecNoPrefix(cmd.Flags().Changed("no-prefix"), noPrefix, cmd.OutOrStdout())
 
 	return runExecPodGroups(ctx, cc.kube, cc.namespace, groups, execGroupRunOptions{
-		Container:  targetContainer,
-		Invocation: invocation,
-		Detach:     detach,
-		Timeout:    timeout,
-		LogDir:     logDir,
-		NoPrefix:   effectiveNoPrefix,
-		Fanout:     effectiveFanout,
-		Order:      order,
-		Stdout:     cmd.OutOrStdout(),
-		Stderr:     cmd.ErrOrStderr(),
+		Container:     targetContainer,
+		Invocation:    invocation,
+		Detach:        detach,
+		CascadeOnExit: killGroupOnExit,
+		Timeout:       timeout,
+		LogDir:        logDir,
+		NoPrefix:      effectiveNoPrefix,
+		Fanout:        effectiveFanout,
+		Order:         order,
+		Stdout:        cmd.OutOrStdout(),
+		Stderr:        cmd.ErrOrStderr(),
 	})
 }
 
@@ -945,7 +959,7 @@ func runExecPodGroups(ctx context.Context, client scriptCopyClient, namespace st
 		}
 		if opts.Detach {
 			// Detached jobs log inside the pod; --log-dir is not used.
-			return runDetachExec(ctx, client, namespace, group.Pods, opts.Container, opts.Invocation, sem, stdout)
+			return runDetachExec(ctx, client, namespace, group.Pods, opts.Container, opts.Invocation, opts.CascadeOnExit, sem, stdout)
 		}
 		groupLogDir, err := groupExecLogDir(opts.LogDir, index, group.Label, len(groups) > 1)
 		if err != nil {
@@ -1479,6 +1493,10 @@ type detachJobSpec struct {
 	LogPath    string
 	MetaPath   string
 	ScriptPath string
+	// CascadePeers, when non-empty, makes the wrapper broadcast a
+	// group-kill to these peer pods the moment the local member exits
+	// (#179) — the cross-pod extension of the per-pod process group.
+	CascadePeers []string
 }
 
 type detachMetadata struct {
@@ -1550,7 +1568,7 @@ func detachCommand(spec detachJobSpec) []string {
 		State:      "exited",
 		ExitCode:   &exitCodeZero,
 	})
-	wrapper := detachWrapperScript(spec.JobID, spec.Argv, spec.Cleanup, spec.MetaPath, runningTemplate, completionTemplate)
+	wrapper := detachWrapperScript(spec.JobID, spec.Argv, spec.Cleanup, spec.MetaPath, runningTemplate, completionTemplate, spec.CascadePeers)
 	script := fmt.Sprintf(
 		"set -eu\n"+
 			// Prefer the shared runtime volume so logs survive a container
@@ -1628,8 +1646,22 @@ func detachCommand(spec detachJobSpec) []string {
 // We deliberately do NOT `set -e` around the user command so that a
 // non-zero exit still falls through to the EXIT trap that records the real
 // exit code.
-func detachWrapperScript(jobID string, argv []string, cleanupPaths []string, metaPath, runningTemplate, completionTemplate string) string {
+func detachWrapperScript(jobID string, argv []string, cleanupPaths []string, metaPath, runningTemplate, completionTemplate string, cascadePeers []string) string {
 	quotedArgs := shellQuotedArgs(argv)
+	cascadeBlock := "cascade() { :; }\n"
+	if len(cascadePeers) > 0 {
+		cascadeBlock = fmt.Sprintf(
+			"cascade() {\n"+
+				"  for peer in %s; do\n"+
+				"    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 \"$peer\" 'sh -s' <<'OKDEV_CASCADE_KILL' >/dev/null 2>&1 || true\n"+
+				"%s"+
+				"OKDEV_CASCADE_KILL\n"+
+				"  done\n"+
+				"}\n",
+			shellQuotedArgs(cascadePeers),
+			cascadePeerKillScript(jobID),
+		)
+	}
 	cleanupLines := ""
 	for _, path := range cleanupPaths {
 		if strings.TrimSpace(path) == "" {
@@ -1652,6 +1684,7 @@ func detachWrapperScript(jobID string, argv []string, cleanupPaths []string, met
 			"export OKDEV_JOB_ID=%s\n"+
 			"set -- %s\n"+
 			"cleanup() {\n%s}\n"+
+			cascadeBlock+
 			// setsid puts the user command in its own process group (PGID ==
 			// its PID) so `okdev jobs stop` can signal the whole tree —
 			// torchrun's children included. The backgrounded child is not a
@@ -1674,7 +1707,7 @@ func detachWrapperScript(jobID string, argv []string, cleanupPaths []string, met
 			"fi\n"+
 			"printf '%%s\\n' \"$running_json\" | sed \"s/%s/$user_pid/g; s/%s/$user_pgid/g\" >\"$meta_tmp\" || exit 1\n"+
 			"mv \"$meta_tmp\" \"$meta_path\" || exit 1\n"+
-			"trap 'rc=$?; printf \"%%s\\n\" \"$exit_json\" | sed \"s/%s/$user_pid/g; s/%s/$user_pgid/g; s/%s/$rc/g\" >\"$meta_tmp\" 2>/dev/null && mv \"$meta_tmp\" \"$meta_path\" 2>/dev/null; cleanup; exit $rc' EXIT\n"+
+			"trap 'rc=$?; printf \"%%s\\n\" \"$exit_json\" | sed \"s/%s/$user_pid/g; s/%s/$user_pgid/g; s/%s/$rc/g\" >\"$meta_tmp\" 2>/dev/null && mv \"$meta_tmp\" \"$meta_path\" 2>/dev/null; cascade; cleanup; exit $rc' EXIT\n"+
 			"wait \"$user_pid\"\n",
 		shellutil.Quote(metaPath),
 		shellutil.Quote(runningTemplate),
@@ -1687,6 +1720,55 @@ func detachWrapperScript(jobID string, argv []string, cleanupPaths []string, met
 		detachPIDPlaceholder,
 		detachPGIDPlaceholder,
 		detachExitPlaceholder,
+	)
+}
+
+// cascadePeerKillScript is the peer-side payload of --kill-group-on-exit
+// (#179), delivered over interpod SSH by the exiting member's wrapper. It
+// SIGKILLs the peer's process group for the same job id — after verifying via
+// OKDEV_JOB_ID in a member's environ that the group still belongs to this job
+// (the same PGID-recycling guard as `okdev jobs stop`) — and leaves a
+// .cascaded marker beside the job metadata. A job already past "running" on
+// the peer is left alone.
+func cascadePeerKillScript(jobID string) string {
+	quotedJobEnv := shellutil.Quote("OKDEV_JOB_ID=" + jobID)
+	return fmt.Sprintf(
+		"jid=%s\n"+
+			"for d in %s %s; do\n"+
+			"  m=\"$d/$jid.json\"\n"+
+			"  [ -f \"$m\" ] || continue\n"+
+			"  state=$(sed -n 's/.*\"state\":\"\\([a-z]*\\)\".*/\\1/p' \"$m\" | head -n1)\n"+
+			"  [ \"$state\" = \"running\" ] || exit 0\n"+
+			"  pgid=$(sed -n 's/.*\"pgid\":\\([0-9][0-9]*\\).*/\\1/p' \"$m\" | head -n1)\n"+
+			"  pid=$(sed -n 's/.*\"pid\":\\([0-9][0-9]*\\).*/\\1/p' \"$m\" | head -n1)\n"+
+			"  killed=\"\"\n"+
+			"  if [ -n \"$pgid\" ] && [ \"$pgid\" -gt 1 ] 2>/dev/null; then\n"+
+			"    members=$(awk -v g=\"$pgid\" '{ pid=$1; line=$0; sub(/^[0-9]+ \\(.*\\) /, \"\", line); split(line, f, \" \"); if (f[1] != \"Z\" && f[3] == g) print pid }' /proc/[0-9]*/stat 2>/dev/null)\n"+
+			"    for mp in $members; do\n"+
+			"      if tr '\\000' '\\n' < \"/proc/$mp/environ\" 2>/dev/null | grep -Fqx %s; then\n"+
+			"        kill -9 \"-$pgid\" 2>/dev/null || true\n"+
+			"        killed=group\n"+
+			"        break\n"+
+			"      fi\n"+
+			"    done\n"+
+			"  fi\n"+
+			"  if [ -z \"$killed\" ] && [ -n \"$pid\" ]; then\n"+
+			"    if tr '\\000' '\\n' < \"/proc/$pid/environ\" 2>/dev/null | grep -Fqx %s; then\n"+
+			"      kill -9 \"$pid\" 2>/dev/null || true\n"+
+			"      killed=leader\n"+
+			"    fi\n"+
+			"  fi\n"+
+			"  if [ -n \"$killed\" ]; then\n"+
+			"    echo \"$killed\" > \"$d/$jid.cascaded\" 2>/dev/null || true\n"+
+			"  fi\n"+
+			"  exit 0\n"+
+			"done\n"+
+			"",
+		shellutil.Quote(jobID),
+		detachMetadataDir,
+		legacyDetachMetadataDir,
+		quotedJobEnv,
+		quotedJobEnv,
 	)
 }
 
@@ -1794,7 +1876,7 @@ func parseDetachLaunchOutput(raw string) (detachLaunchInfo, error) {
 	return detachLaunchInfo{}, errors.New("missing detach launch metadata")
 }
 
-func runDetachExec(ctx context.Context, client scriptCopyClient, namespace string, pods []kube.PodSummary, container string, invocation execInvocation, sem chan struct{}, out io.Writer) error {
+func runDetachExec(ctx context.Context, client scriptCopyClient, namespace string, pods []kube.PodSummary, container string, invocation execInvocation, cascadeOnExit bool, sem chan struct{}, out io.Writer) error {
 	podNames := make([]string, len(pods))
 	for i, p := range pods {
 		podNames[i] = p.Name
@@ -1825,6 +1907,13 @@ func runDetachExec(ctx context.Context, client scriptCopyClient, namespace strin
 				cleanup = []string{remotePath}
 			}
 			spec := newDetachJobSpec(jobID, pod.Name, container, invocation.DisplayCommand, argv, cleanup)
+			if cascadeOnExit {
+				for _, peer := range podNames {
+					if peer != pod.Name {
+						spec.CascadePeers = append(spec.CascadePeers, peer)
+					}
+				}
+			}
 			command := detachCommand(spec)
 			var remoteStdout, remoteStderr bytes.Buffer
 			err := connect.RunOnContainer(ctx, client, namespace, pod.Name, container, command, false, nil, &remoteStdout, &remoteStderr)
