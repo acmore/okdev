@@ -195,7 +195,6 @@ okdev down
 
 # Block until the workload object and session pods are fully gone
 okdev down --wait
-okdev prune --ttl-hours 72
 ```
 
 ## Kubernetes Context

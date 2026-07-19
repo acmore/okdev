@@ -114,18 +114,14 @@ Users continue to launch agent CLIs manually through `okdev ssh`, plain SSH, or 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `defaultNameTemplate` | `string` | — | Go template for inferred session name |
-| `ttlHours` | `int` | from template | Reserved for lifecycle policy |
-| `idleTimeoutMinutes` | `int` | from template | Reserved for lifecycle policy |
-
-**Validation:** `ttlHours >= 0`, `idleTimeoutMinutes >= 0`.
 
 ```yaml
 spec:
   session:
     defaultNameTemplate: "{{ .Repo }}-{{ .User }}"
-    ttlHours: 72
-    idleTimeoutMinutes: 120
 ```
+
+Note: earlier versions accepted `ttlHours` / `idleTimeoutMinutes` here and shipped an `okdev prune` command around them. Nothing cluster-side ever enforced those values, so the fields and the command were removed; leftover fields in existing configs are ignored. Use your platform's own reclamation (or a cron running `okdev down`) for cleanup policies.
 
 ---
 
@@ -667,7 +663,6 @@ spec:
   namespace: ai-team
   session:
     defaultNameTemplate: "{{ .Repo }}-{{ .User }}"
-    ttlHours: 168
   volumes:
     - name: workspace
       persistentVolumeClaim:

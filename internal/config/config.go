@@ -101,8 +101,6 @@ type SidecarSpec struct {
 
 type SessionSpec struct {
 	DefaultNameTemplate string `yaml:"defaultNameTemplate"`
-	TTLHours            int    `yaml:"ttlHours"`
-	IdleTimeoutMinutes  int    `yaml:"idleTimeoutMinutes"`
 }
 
 type WorkloadSpec struct {
@@ -448,12 +446,6 @@ func (d *DevEnvironment) Validate() error {
 	}
 	if d.Spec.Sync.Syncthing.RescanIntervalSeconds < 0 {
 		return errors.New("spec.sync.syncthing.rescanIntervalSeconds must be >= 0")
-	}
-	if d.Spec.Session.TTLHours < 0 {
-		return errors.New("spec.session.ttlHours must be >= 0")
-	}
-	if d.Spec.Session.IdleTimeoutMinutes < 0 {
-		return errors.New("spec.session.idleTimeoutMinutes must be >= 0")
 	}
 	switch d.Spec.Exec.FanoutMode {
 	case "", ExecFanoutAuto, ExecFanoutGateway, ExecFanoutDirect:

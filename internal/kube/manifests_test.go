@@ -8,12 +8,12 @@ import (
 )
 
 func TestBuildPVCManifest(t *testing.T) {
-	m, err := BuildPVCManifest("dev", "pvc1", "10Gi", "", map[string]string{"okdev.io/managed": "true"}, map[string]string{"okdev.io/ttl-hours": "72"})
+	m, err := BuildPVCManifest("dev", "pvc1", "10Gi", "", map[string]string{"okdev.io/managed": "true"}, map[string]string{"okdev.io/created-by": "okdev"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(m)
-	if !strings.Contains(s, "kind: PersistentVolumeClaim") || !strings.Contains(s, "apiVersion: v1") || !strings.Contains(s, "ReadWriteOnce") || !strings.Contains(s, "okdev.io/ttl-hours") {
+	if !strings.Contains(s, "kind: PersistentVolumeClaim") || !strings.Contains(s, "apiVersion: v1") || !strings.Contains(s, "ReadWriteOnce") || !strings.Contains(s, "okdev.io/created-by") {
 		t.Fatalf("unexpected manifest: %s", s)
 	}
 }

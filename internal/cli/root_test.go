@@ -26,7 +26,7 @@ func TestNewRootCmdRegistersExpectedCommandsAndFlags(t *testing.T) {
 	}
 	for _, name := range []string{
 		"version", "init", "validate", "up", "down", "status", "list", "use",
-		"target", "agent", "exec", "jobs", "logs", "ssh", "ssh-proxy", "ports", "port-forward", "sync", "prune", "migrate", "completion",
+		"target", "agent", "exec", "jobs", "logs", "ssh", "ssh-proxy", "ports", "port-forward", "sync", "migrate", "completion",
 	} {
 		if _, _, err := cmd.Find([]string{name}); err != nil {
 			t.Fatalf("expected subcommand %q: %v", name, err)

@@ -97,7 +97,6 @@ type TemplateVars struct {
 	InjectPaths      []string
 	AttachContainer  string
 	GenericPreset    string
-	TTLHours         int
 }
 
 type PortVar struct {
@@ -126,7 +125,6 @@ func NewTemplateVars() *TemplateVars {
 		SyncRemote:       "/workspace",
 		SSHUser:          "root",
 		WorkloadType:     "pod",
-		TTLHours:         72,
 	}
 }
 

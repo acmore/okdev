@@ -370,14 +370,6 @@ func TestSetDefaultsPreservesExplicitSyncthingCompression(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsNegativeTTL(t *testing.T) {
-	cfg := validConfig()
-	cfg.Spec.Session.TTLHours = -1
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("expected validation error")
-	}
-}
-
 func TestValidateRejectsUnknownAgent(t *testing.T) {
 	cfg := validConfig()
 	cfg.Spec.Agents = []AgentSpec{{Name: "cursor"}}

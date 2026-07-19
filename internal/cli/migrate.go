@@ -422,7 +422,6 @@ func templateVarsForMigrate(cfg *config.DevEnvironment, cfgPath string) *config.
 	if sidecarImage := strings.TrimSpace(cfg.Spec.Sidecar.Image); sidecarImage != "" {
 		vars.SidecarImage = sidecarImage
 	}
-	vars.TTLHours = cfg.Spec.Session.TTLHours
 
 	if len(cfg.Spec.Workload.Inject) > 0 {
 		vars.InjectPaths = make([]string, 0, len(cfg.Spec.Workload.Inject))

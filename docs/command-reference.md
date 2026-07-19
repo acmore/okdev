@@ -52,7 +52,6 @@ agents can react without launching a diagnostic chain on every blip:
 - `okdev port-forward [session] <local:remote>... [--address <addr>[,<addr>...]] [--pod <name> | --role <role>] [--ready-only]`
 - `okdev sync [--mode up|down|bi] [--foreground] [--reset] [--dry-run]`
 - `okdev sync wait [session] [--timeout 10m]`
-- `okdev prune [--ttl-hours 72] [--all-namespaces] [--all-users] [--include-pvc] [--dry-run]`
 - `okdev migrate [--template <name>] [--set key=value] [--dry-run] [--yes]`
 - `okdev upgrade`
 
