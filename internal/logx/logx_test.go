@@ -1,12 +1,17 @@
 package logx
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"k8s.io/klog/v2"
 )
 
 func TestConfigureVerbosity(t *testing.T) {
@@ -21,6 +26,50 @@ func TestConfigureVerbosity(t *testing.T) {
 	Configure(true)
 	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
 		t.Fatal("debug should be enabled when verbose=true")
+	}
+}
+
+// Regression for issue #176: klog duplicates ERROR-and-above records onto
+// os.Stderr through its default stderrthreshold=ERROR even when LogToStderr
+// is false and severity outputs are routed elsewhere. That is how client-go
+// transport errors ("Websocket Ping failed") leaked into exec's terminal
+// streams and corrupted parsed command output.
+func TestConfigureRoutesKlogErrorsAwayFromStderr(t *testing.T) {
+	var captured bytes.Buffer
+	logWriterMu.Lock()
+	prev := logWriter
+	logWriter = &captured
+	logWriterMu.Unlock()
+	defer func() {
+		logWriterMu.Lock()
+		logWriter = prev
+		logWriterMu.Unlock()
+	}()
+
+	origStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = origStderr }()
+
+	Configure(false)
+	klog.ErrorS(errors.New("ping timeout"), "Websocket Ping failed")
+	klog.Flush()
+
+	_ = w.Close()
+	os.Stderr = origStderr
+	leaked, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(string(leaked), "Websocket Ping failed") {
+		t.Fatalf("klog ERROR leaked to stderr: %q", leaked)
+	}
+	if !strings.Contains(captured.String(), "Websocket Ping failed") {
+		t.Fatalf("klog ERROR not routed to okdev log writer, got %q", captured.String())
 	}
 }
 
