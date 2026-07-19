@@ -3036,6 +3036,12 @@ const (
 	syncHealthActive  syncHealthStatus = "active"
 	syncHealthStale   syncHealthStatus = "stale"
 	syncHealthStopped syncHealthStatus = "stopped"
+	// syncHealthPaused means the user froze the channel with `okdev sync
+	// pause` (#174). It is an intentional state: sync/sync wait must report
+	// it distinctly and never "repair" it back to running — only `okdev
+	// sync resume` (or the next `okdev up`, which rebuilds folder config)
+	// ends it.
+	syncHealthPaused syncHealthStatus = "paused"
 )
 
 // checkSyncHealth checks the health of the Syncthing sync for a session.
@@ -3066,6 +3072,14 @@ func checkSyncHealth(sessionName string) (syncHealthStatus, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
+	// An intentional pause outranks connectivity: report it before the
+	// peer check so a paused session never reads as merely "stale".
+	if cfg, cfgErr := syncthingGetConfig(ctx, apiBase, apiKey); cfgErr == nil {
+		if paused, total := countPausedSessionFolders(cfg, sessionName); total > 0 && paused > 0 {
+			return syncHealthPaused, "paused by `okdev sync pause`; resume with `okdev sync resume`"
+		}
+	}
+
 	// Check connections to see if peer is connected.
 	connected, err := syncthingPeerConnected(ctx, apiBase, apiKey, "")
 	if err != nil {
@@ -3079,6 +3093,84 @@ func checkSyncHealth(sessionName string) (syncHealthStatus, string) {
 	}
 
 	return syncHealthActive, ""
+}
+
+// sessionFolderIDMatches reports whether a syncthing folder id belongs to
+// this session's managed folders (primary "okdev-<session>" plus the
+// hash-suffixed additional mappings).
+func sessionFolderIDMatches(folderID, sessionName string) bool {
+	primary := "okdev-" + sessionName
+	return folderID == primary || strings.HasPrefix(folderID, primary+"-")
+}
+
+// countPausedSessionFolders counts this session's managed folders and how
+// many of them are paused, from a /rest/config payload.
+func countPausedSessionFolders(cfg map[string]any, sessionName string) (paused, total int) {
+	folders, err := syncthingObjectArray(cfg, "folders")
+	if err != nil {
+		return 0, 0
+	}
+	for _, f := range folders {
+		fm, err := syncthingObjectMap(f, "folder entry")
+		if err != nil {
+			continue
+		}
+		if !sessionFolderIDMatches(asString(fm["id"]), sessionName) {
+			continue
+		}
+		total++
+		if b, ok := fm["paused"].(bool); ok && b {
+			paused++
+		}
+	}
+	return paused, total
+}
+
+// setSessionSyncPaused flips the paused flag on every managed folder of the
+// session's local syncthing daemon and returns how many folders it touched.
+// Pausing the local (hub) side freezes the channel in both directions: the
+// hub neither scans/pushes local edits nor pulls remote changes (#174).
+func setSessionSyncPaused(ctx context.Context, sessionName string, paused bool) (int, error) {
+	home, err := localSyncthingStatusHome(sessionName)
+	if err != nil {
+		return 0, fmt.Errorf("resolve local syncthing home: %w", err)
+	}
+	apiBase, apiKey, err := readLocalSyncthingEndpoint(home)
+	if err != nil {
+		return 0, fmt.Errorf("read local syncthing endpoint: %w", err)
+	}
+	return setSessionSyncPausedVia(ctx, apiBase, apiKey, sessionName, paused)
+}
+
+func setSessionSyncPausedVia(ctx context.Context, apiBase, apiKey, sessionName string, paused bool) (int, error) {
+	cfg, err := syncthingGetConfig(ctx, apiBase, apiKey)
+	if err != nil {
+		return 0, fmt.Errorf("read local syncthing config: %w", err)
+	}
+	folders, err := syncthingObjectArray(cfg, "folders")
+	if err != nil {
+		return 0, err
+	}
+	payload, err := json.Marshal(map[string]any{"paused": paused})
+	if err != nil {
+		return 0, err
+	}
+	touched := 0
+	for _, f := range folders {
+		fm, err := syncthingObjectMap(f, "folder entry")
+		if err != nil {
+			continue
+		}
+		id := asString(fm["id"])
+		if !sessionFolderIDMatches(id, sessionName) {
+			continue
+		}
+		if _, err := syncthingAPIRequestWithContext(ctx, http.MethodPatch, apiBase, apiKey, "/rest/config/folders/"+url.PathEscape(id), payload, "application/json"); err != nil {
+			return touched, fmt.Errorf("set paused=%t on folder %s: %w", paused, id, err)
+		}
+		touched++
+	}
+	return touched, nil
 }
 
 // readLocalSyncthingEndpoint reads the API base URL and key from a local

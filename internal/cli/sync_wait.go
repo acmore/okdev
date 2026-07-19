@@ -63,6 +63,8 @@ func detachSyncWarning(status syncHealthStatus, reason string) string {
 	switch status {
 	case syncHealthActive:
 		return ""
+	case syncHealthPaused:
+		return "warning: sync is paused (`okdev sync pause`) — the detached job may run stale code; resume with \"okdev sync resume\" before launching, or gate the launch with --require-sync"
 	case syncHealthStale:
 		return fmt.Sprintf("warning: sync is running but unhealthy (%s) — the detached job may run stale code; repair with \"okdev sync\" or gate the launch with --require-sync", reason)
 	default:
@@ -117,6 +119,11 @@ func syncWaitGateError(sessionName string, status syncHealthStatus, reason strin
 	switch status {
 	case syncHealthActive:
 		return nil
+	case syncHealthPaused:
+		// Paused is intentional, not broken: pending changes cannot converge
+		// by design, so waiting would only time out. Point at resume, never
+		// at repair (#174).
+		return fmt.Errorf("sync is paused for session %s; pending changes will not propagate until `okdev sync resume`", sessionName)
 	case syncHealthStale:
 		return fmt.Errorf("background sync is running but unhealthy for session %s (%s); repair it with \"okdev sync\" or \"okdev sync --reset\"", sessionName, reason)
 	default:

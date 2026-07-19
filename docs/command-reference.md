@@ -364,6 +364,12 @@ agents can react without launching a diagnostic chain on every blip:
 ### `okdev sync wait [session] [--timeout 10m]`
 
 - Scope: the **data** question — has everything propagated? — complementary to `okdev sync`, which manages the channel. Blocks until every configured sync mapping has zero pending bytes in **both** directions, then returns — the edit-run loop guarantee: `vim train.py && okdev sync wait && okdev exec -- python train.py`.
+
+### `okdev sync pause` / `okdev sync resume`
+
+- Freezes the sync channel in both directions so a local high-risk operation — `git checkout`, a rebase, anything that swaps working-tree files — cannot propagate onto a pod under a running job. Canonical sequence: `okdev sync pause` → switch branches / rebase → `okdev sync resume` → `okdev sync wait` before the next run.
+- A pause is an **explicit state**, not a fault: `okdev sync wait` fails fast pointing at `resume` (pending changes cannot converge by design), plain `okdev sync` refuses to override it, detached launches warn (and `--require-sync` refuses), and `okdev status --details` reports `health: paused`. Only `okdev sync resume` — or the next `okdev up`, which rebuilds sync from config as part of the intentional session lifecycle — ends the pause.
+- Implemented as the syncthing folder-level `paused` flag on the local daemon (the hub), so nothing is torn down: resume picks up deltas without a fresh rescan cycle.
 - Triggers an immediate rescan on both sides before waiting, so files written moments earlier are picked up now instead of after the filesystem-watcher delay.
 - Purely a wait: it does not start or repair sync. It fails fast with a state-accurate report: "not running" when the background process is gone (start it with `okdev sync`), or "running but unhealthy (…)" when the process is alive but the channel is broken (repair with `okdev sync`, which self-heals, or `okdev sync --reset`).
 - Prints pending-byte progress while waiting; exits non-zero if convergence is not reached within `--timeout`.

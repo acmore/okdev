@@ -20,7 +20,7 @@ Primary docs:
 
 Use this skill when the request involves:
 
-- `okdev init`, `up`, `restart`, `status`, `ssh`, `exec`, `cp`, `sync`, `ports`, `down`, `jobs`
+- `okdev init`, `up`, `restart`, `status`, `ssh`, `exec`, `cp`, `sync` (including `sync pause`/`resume`/`wait`), `ports`, `down`, `jobs`
 - config discovery or `.okdev.yaml` / `.okdev/okdev.yaml`
 - sync behavior, session reuse, port forwards, or SSH access
 - manifest-backed workloads such as `job`, `generic`, or `pytorchjob`
@@ -53,6 +53,7 @@ Do not use this skill for:
 - `okdev up` on a `job` or `pytorchjob` workload fails fast when a pod enters `PodFailed` before readiness. If that run also created or recreated the workload, okdev deletes the failed workload and clears local session state — the next `okdev up` starts fresh. Workloads that were reused as-is (no create/recreate this run) are left alone. For `pod` workloads okdev also returns early on `Failed` but does not auto-delete.
 - `okdev sync` and `okdev sync wait` answer different questions — do not substitute one for the other. `okdev sync` is about the **channel**: it starts or repairs the transport, and returning successfully does NOT mean the latest edits are on the pod. `okdev sync wait` is about the **data**: it guarantees pending changes have fully propagated, and it never starts or repairs anything. The canonical sequence when the next step depends on latest files: edit → `okdev sync wait` → run; if `sync wait` reports a channel problem, repair with `okdev sync`, then `sync wait` again.
 - When sync is dead or stale (e.g. after a laptop network drop), a plain `okdev sync` now detects the unhealthy channel and repairs it in place — recommend it before `okdev sync --reset` (which remains for forced resets and mesh repair). `okdev sync` and `okdev sync wait` share one health check and never contradict each other about the same channel.
+- Before a local `git checkout`/rebase while a remote job is running, `okdev sync pause` freezes the channel so swapped files cannot land under the live job; `okdev sync resume` + `okdev sync wait` afterwards. Paused is an explicit state: `sync wait` fails fast pointing at resume, and plain `okdev sync` never overrides it (only `resume` or the next `okdev up` does).
 - Before a detached launch, sync health is checked automatically: an unhealthy channel prints a stale-code warning; `okdev exec --detach --require-sync` refuses to launch until sync is healthy and fully converged — recommend it for launches where running stale code would waste a long run.
 - Sync supports multiple mappings with per-path direction (`spec.sync.paths[].direction: bi|up|down`); `down` makes the pod the authority so local writes cannot clobber results. A mapping's local root may nest inside the primary root — okdev manages the exclusion and remote volumes automatically. "Not syncing" is often the configured direction or a managed exclude, not a fault; see `references/multipod.md` and `references/troubleshooting.md`.
 - `okdev ssh` is the okdev-managed interactive path; `ssh okdev-<session>` is the plain SSH host alias path. The interactive shell can be bash or zsh, and the okdev tmux prefix is `ctrl-a`.

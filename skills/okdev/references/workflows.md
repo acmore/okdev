@@ -77,6 +77,7 @@ Default guidance:
   - `okdev sync wait` = **data**: block until pending changes have fully propagated. It never starts or repairs the channel.
   - canonical edit-run sequence: `vim train.py && okdev sync wait && okdev exec -- python train.py`; if `sync wait` reports a channel problem, run `okdev sync` to repair, then `sync wait` again before running
 - a plain `okdev sync` self-heals a dead or stale channel (health-checked, never a false "already running"); `okdev sync --reset` remains for forced resets and mesh repair
+- before a local branch switch / rebase while a job is running: `okdev sync pause` → git operations → `okdev sync resume` → `okdev sync wait`. Paused is explicit — `sync wait` fails fast pointing at resume, plain `okdev sync` refuses to override it
 - `okdev exec --detach --require-sync` gates a job launch on healthy + fully converged sync in one flag (unguarded detach launches warn on stderr when the channel is unhealthy)
 - `okdev sync wait` blocks until every mapping has zero pending bytes both ways — use it between an edit and a run to guarantee the pod sees the latest files: `vim train.py && okdev sync wait && okdev exec -- python train.py`. It only waits; it does not start or repair sync.
 
