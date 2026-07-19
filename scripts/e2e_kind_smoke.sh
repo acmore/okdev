@@ -982,6 +982,23 @@ if [[ "$LOGS_FALLBACK" != *"sidecar-fallback-marker"* ]]; then
 fi
 echo "sidecar log fallback verified"
 
+# Issue #167: the size-verified read script with --tail/--since must behave
+# identically through the sidecar fallback — the read runs in the alpine
+# sidecar (busybox tail/stat/mktemp/wc), the exact suspect path from the
+# issue. Reuses the finished 5-line job from the earlier logs scenario.
+echo "Testing jobs logs --tail/--since through the sidecar fallback"
+TAIL_FALLBACK=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs logs "$LOGS_JOB_ID" --tail 2)
+if [[ "$TAIL_FALLBACK" != *"logline-5"* || "$TAIL_FALLBACK" == *"logline-1"* ]]; then
+  echo "ERROR: sidecar-fallback --tail 2 should contain logline-5 but not logline-1: $TAIL_FALLBACK" >&2
+  exit 1
+fi
+SINCE_FALLBACK=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs logs "$LOGS_JOB_ID" --since 5s)
+if [[ "$SINCE_FALLBACK" == *"logline-"* ]]; then
+  echo "ERROR: sidecar-fallback --since 5s should skip the idle log file: $SINCE_FALLBACK" >&2
+  exit 1
+fi
+echo "sidecar-fallback --tail/--since verified"
+
 echo "Detached job tests completed"
 
 echo "Testing explicit okdev down"
