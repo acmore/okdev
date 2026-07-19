@@ -319,6 +319,7 @@ agents can react without launching a diagnostic chain on every blip:
 ### `okdev sync [--mode up|down|bi] [--foreground] [--reset] [--dry-run]`
 
 - Advanced command. Starts detached background sync by default; use `--foreground` for sync debugging, or explicit one-way sync (`up`/`down`).
+- Scope: `okdev sync` manages the **channel** (start/repair the transport). A successful return does not mean pending changes have finished propagating — to guarantee your latest edits are on the pod, use `okdev sync wait` (the **data** question). The two are complementary, not interchangeable.
 - By default each configured mapping syncs in its own `direction` (`spec.sync.paths[].direction`, falling back to `bi`); an explicit `--mode` forces that mode onto every mapping for the invocation. See the config manifest for choosing persistent directions — `down` makes the pod the authority so local writes can never clobber pod-generated results.
 - With multiple mappings, each becomes its own syncthing folder; the first (primary) mapping is the one shared to mesh receivers, and `sync reset-remote` clears only the primary remote.
 - A mapping's local root may nest inside the primary root: okdev maintains a managed block in the primary root's `.stignore` excluding it from the primary folder (written before the sync daemon starts). Removing a mapping retains the entry as a tombstone so the subtree never silently joins the primary folder; sync start prints a notice and `status --details` lists active/retained excludes.
@@ -334,7 +335,7 @@ agents can react without launching a diagnostic chain on every blip:
 
 ### `okdev sync wait [session] [--timeout 10m]`
 
-- Blocks until every configured sync mapping has zero pending bytes in **both** directions, then returns — the edit-run loop guarantee: `vim train.py && okdev sync wait && okdev exec -- python train.py`.
+- Scope: the **data** question — has everything propagated? — complementary to `okdev sync`, which manages the channel. Blocks until every configured sync mapping has zero pending bytes in **both** directions, then returns — the edit-run loop guarantee: `vim train.py && okdev sync wait && okdev exec -- python train.py`.
 - Triggers an immediate rescan on both sides before waiting, so files written moments earlier are picked up now instead of after the filesystem-watcher delay.
 - Purely a wait: it does not start or repair sync. It fails fast with a state-accurate report: "not running" when the background process is gone (start it with `okdev sync`), or "running but unhealthy (…)" when the process is alive but the channel is broken (repair with `okdev sync`, which self-heals, or `okdev sync --reset`).
 - Prints pending-byte progress while waiting; exits non-zero if convergence is not reached within `--timeout`.

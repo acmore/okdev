@@ -33,6 +33,8 @@ Standard repair steps:
 - `okdev sync --reset` for forced resets and mesh repair
 - `okdev up` again if the pod was recreated
 
+Repairing the channel is not the same as confirming the data arrived: after `okdev sync` returns, pending changes may still be in flight. When the user's next step depends on the latest files (running code, collecting results), follow with `okdev sync wait` — and conversely, never suggest `sync wait` as a repair step (it never starts or fixes the channel; it fails fast and points at `okdev sync`).
+
 If a detached job failed with exit 127 or ran stale code, check whether sync was dead at launch time — `okdev exec --detach` warns on stderr when launching over an unhealthy channel, and `--require-sync` refuses such launches until sync is healthy and converged.
 
 If a real file was overwritten by a bad write syncing across from the other side (e.g. an empty local file clobbered a pod-side result), recover the previous version from `.stversions/` at the sync root on the side that had the good copy (pod: `<remote workspace>/.stversions/`; local: `<local sync root>/.stversions/`). Versioning is on by default (`spec.sync.syncthing.versioningDays`, 30 days).
