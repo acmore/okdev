@@ -22,6 +22,7 @@ import (
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/shellutil"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	k8sexec "k8s.io/client-go/util/exec"
 )
 
@@ -99,8 +100,16 @@ func newExecCmd(opts *Options) *cobra.Command {
 
   # Detach a local script on worker pods
   okdev exec --role worker --detach --script ./benchmark.sh -- --steps 100`,
-		Aliases:           []string{"connect"},
-		Args:              validateExecArgs,
+		Aliases: []string{"connect"},
+		// Flag-like-value validation must run in the Args stage: a swallowed
+		// "--" shifts command words into session args, so validateExecArgs
+		// would otherwise fail first with a misleading session-count error.
+		Args: func(cmd *cobra.Command, args []string) error {
+			if err := validateNoFlagLikeValues(cmd.Flags()); err != nil {
+				return err
+			}
+			return validateExecArgs(cmd, args)
+		},
 		ValidArgsFunction: sessionCompletionFunc(opts),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sessionArgs, commandArgs := splitExecArgs(cmd, args)
@@ -281,6 +290,53 @@ type execGroupRunOptions struct {
 	Order      execGroupOrder
 	Stdout     io.Writer
 	Stderr     io.Writer
+}
+
+// flagLikePathValueFlags lists flags whose values are file paths — the only
+// values where a leading dash can be intentional (escapable as ./name).
+var flagLikePathValueFlags = map[string]bool{"script": true, "log-dir": true, "config": true}
+
+// validateNoFlagLikeValues rejects explicitly-set string flag values that
+// begin with "-": pflag greedily consumes the next token as a value-taking
+// flag's value, so a misplaced flag (`--group --detach`) or the "--"
+// separator (`--group -- cmd`) becomes the value and surfaces later as a
+// misleading downstream error ("unknown pod", "stat: no such file", "accepts
+// at most 1 session argument", ...). Walking the parsed FlagSet covers local
+// and inherited persistent flags without a hand-maintained list.
+func validateNoFlagLikeValues(fs *pflag.FlagSet) error {
+	var err error
+	fs.VisitAll(func(f *pflag.Flag) {
+		if err != nil || !f.Changed {
+			return
+		}
+		var values []string
+		switch f.Value.Type() {
+		case "string":
+			values = []string{f.Value.String()}
+		case "stringSlice", "stringArray":
+			if sv, ok := f.Value.(pflag.SliceValue); ok {
+				values = sv.GetSlice()
+			}
+		default:
+			return
+		}
+		for _, v := range values {
+			if !strings.HasPrefix(v, "-") {
+				continue
+			}
+			if v == "--" {
+				err = fmt.Errorf("missing value for --%s: the \"--\" separator was consumed as its value; give --%s a value before \"--\"", f.Name, f.Name)
+				return
+			}
+			hint := ""
+			if flagLikePathValueFlags[f.Name] {
+				hint = fmt.Sprintf(", or prefix an intentional path with \"./\" (e.g. %q)", "./"+v)
+			}
+			err = fmt.Errorf("--%s value %q begins with \"-\", which usually means a following flag was consumed as the value; move that flag before --%s%s", f.Name, v, f.Name, hint)
+			return
+		}
+	})
+	return err
 }
 
 func validateExecMode(shell string, invocation execInvocation) error {

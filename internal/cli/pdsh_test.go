@@ -971,6 +971,136 @@ func TestValidateMultiPodFlags(t *testing.T) {
 	}
 }
 
+func TestValidateNoFlagLikeValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "group swallows following flag",
+			args:    []string{"--group", "--detach"},
+			wantErr: `--group value "--detach" begins with "-"`,
+		},
+		{
+			name:    "pod swallows following flag",
+			args:    []string{"--pod", "--all"},
+			wantErr: `--pod value "--all" begins with "-"`,
+		},
+		{
+			name:    "string flag swallows following flag",
+			args:    []string{"--role", "--all"},
+			wantErr: `--role value "--all" begins with "-"`,
+		},
+		{
+			name:    "swallowed separator gets missing-value message",
+			args:    []string{"--group", "--"},
+			wantErr: `missing value for --group`,
+		},
+		{
+			name:    "script path hint keeps full value",
+			args:    []string{"--script", "--detach"},
+			wantErr: `"./--detach"`,
+		},
+		{
+			name:    "log-dir path hint keeps full value",
+			args:    []string{"--log-dir", "-x"},
+			wantErr: `"./-x"`,
+		},
+		{
+			name:    "equals form also rejected",
+			args:    []string{"--group=--detach"},
+			wantErr: `--group value "--detach" begins with "-"`,
+		},
+		{
+			name:    "dash item inside comma list rejected",
+			args:    []string{"--pod", "worker-0,-1"},
+			wantErr: `--pod value "-1" begins with "-"`,
+		},
+		{
+			name: "defaults untouched",
+			args: []string{},
+		},
+		{
+			name: "valid values pass",
+			args: []string{"--group", "master-0,worker-0", "--script", "./collect.sh", "--label", "tier=gpu", "--pod", "worker-0"},
+		},
+		{
+			name: "dash-leading script escaped with dot-slash passes",
+			args: []string{"--script", "./-weird.sh"},
+		},
+		{
+			name: "non-string flags are ignored",
+			args: []string{"--detach", "--fanout", "5"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newExecCmd(&Options{})
+			if err := cmd.ParseFlags(tt.args); err != nil {
+				t.Fatalf("ParseFlags: %v", err)
+			}
+			err := validateNoFlagLikeValues(cmd.Flags())
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+			}
+		})
+	}
+}
+
+// Regression for issue #177: the validation must win the race against
+// validateExecArgs. A swallowed "--" turns command words into session args, so
+// without Args-stage ordering the user saw "accepts at most 1 session
+// argument before --" instead of the real cause.
+func TestExecRejectsFlagLikeValuesBeforeArgsValidation(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantErr    string
+		notWantErr string
+	}{
+		{
+			name:       "forgotten group value swallows separator",
+			args:       []string{"--detach", "--group", "--", "python", "train.py"},
+			wantErr:    "missing value for --group",
+			notWantErr: "accepts at most 1 session argument",
+		},
+		{
+			name:       "group swallows following flag",
+			args:       []string{"--group", "--detach", "--", "true"},
+			wantErr:    `--group value "--detach" begins with "-"`,
+			notWantErr: "unknown pod",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newExecCmd(&Options{})
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(tt.args)
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+			}
+			if strings.Contains(err.Error(), tt.notWantErr) {
+				t.Fatalf("error %q must not contain %q", err.Error(), tt.notWantErr)
+			}
+		})
+	}
+}
+
 func TestBuildExecPodGroupsSupportsShortNamesAndWorkers(t *testing.T) {
 	pods := []kube.PodSummary{
 		{Name: "okdev-sess-master-0", Phase: "Running", Labels: map[string]string{"okdev.io/workload-role": "Master"}},
