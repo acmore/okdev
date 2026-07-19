@@ -1172,6 +1172,41 @@ if [[ "$RESUMED_REMOTE" != *"paused-edit"* ]]; then
 fi
 echo "sync pause/resume verified (frozen while paused, converged after resume)"
 
+# Issue #175: install-class exec commands hint at lifecycle hooks; env-diff
+# reports packages installed by hand since the post-hook baseline.
+echo "Testing install hint and env-diff drift detection"
+BASELINE_PRESENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'test -f /var/okdev/env-baseline/packages.txt && echo yes || echo no')
+if [[ "$BASELINE_PRESENT" != *"yes"* ]]; then
+  echo "ERROR: okdev up should have captured an env baseline" >&2
+  exit 1
+fi
+set +e
+INSTALL_HINT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'pip install leftpad || true' 2>&1)
+set -e
+if [[ "$INSTALL_HINT" != *"container overlay"* || "$INSTALL_HINT" != *"postCreate"* ]]; then
+  echo "ERROR: install-class command should print the lifecycle-hook hint, got:" >&2
+  echo "$INSTALL_HINT" >&2
+  exit 1
+fi
+NO_DRIFT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" env-diff)
+if [[ "$NO_DRIFT" != *"no package drift"* ]]; then
+  echo "ERROR: expected no drift before manual installs, got: $NO_DRIFT" >&2
+  exit 1
+fi
+# Simulate a manual install with a fake pip (no network needed): the baseline
+# was captured when no pip existed, so its packages surface as drift.
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'printf "#!/bin/sh
+[ "\$1" = freeze ] && echo "leftpad==1.0.0"
+" > /usr/local/bin/pip && chmod +x /usr/local/bin/pip' >/dev/null
+DRIFT_OUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" env-diff)
+if [[ "$DRIFT_OUT" != *"+ py:leftpad==1.0.0"* || "$DRIFT_OUT" != *"pip install leftpad==1.0.0"* ]]; then
+  echo "ERROR: env-diff should report the manual package with a postCreate draft, got:" >&2
+  echo "$DRIFT_OUT" >&2
+  exit 1
+fi
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- rm /usr/local/bin/pip >/dev/null
+echo "install hint and env-diff verified"
+
 echo "Testing jobs stop kills the whole process tree"
 STOP_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs stop "$TREE_JOB_ID")
 echo "$STOP_OUTPUT"

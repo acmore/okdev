@@ -182,6 +182,9 @@ func newExecCmd(opts *Options) *cobra.Command {
 			if err := validateExecMode(shell, invocation); err != nil {
 				return err
 			}
+			if hint := installCommandHint(invocation.DisplayCommand); hint != "" {
+				fmt.Fprintln(cmd.ErrOrStderr(), hint)
+			}
 			if (hasCommand || detach) && !hasSelector {
 				target, err := resolveTargetRef(cmd.Context(), cc.opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
 				if err != nil {
