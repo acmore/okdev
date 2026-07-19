@@ -352,19 +352,30 @@ echo "Verifying SSH into master pod"
 
 FIRST_WORKER_POD=$(echo "$WORKER_PODS" | awk '{print $1}')
 echo "Waiting for ssh client to be available in master pod"
-for i in $(seq 1 30); do
+# The container installs openssh-client via apt at startup; 60s is enough on
+# CI but flakes on slower networks, so allow up to 180s.
+for i in $(seq 1 90); do
   if "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --cmd 'which ssh' >/dev/null 2>&1; then
     break
   fi
-  if [[ "$i" -eq 30 ]]; then
-    echo "ERROR: ssh client not available in master pod after 60s" >&2
+  if [[ "$i" -eq 90 ]]; then
+    echo "ERROR: ssh client not available in master pod after 180s" >&2
     exit 1
   fi
   sleep 2
 done
 
 echo "Verifying inter-pod SSH from master to worker"
-INTERPOD_SSH_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --cmd "ssh -o BatchMode=yes $FIRST_WORKER_POD 'echo interpod-ssh-ok'")
+# The worker-side ssh setup can lag the master on slow networks (apt install
+# at container start), so retry the check for up to 60s.
+INTERPOD_SSH_OUTPUT=""
+for i in $(seq 1 12); do
+  INTERPOD_SSH_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --cmd "ssh -o BatchMode=yes $FIRST_WORKER_POD 'echo interpod-ssh-ok'" 2>&1 || true)
+  if [[ "$INTERPOD_SSH_OUTPUT" == *"interpod-ssh-ok"* ]]; then
+    break
+  fi
+  sleep 5
+done
 if [[ "$INTERPOD_SSH_OUTPUT" != *"interpod-ssh-ok"* ]]; then
   echo "ERROR: expected inter-pod SSH from master to worker to succeed" >&2
   echo "$INTERPOD_SSH_OUTPUT" >&2
@@ -1076,6 +1087,71 @@ if [[ "$RECONCILE_STATUS" != *"health: active"* ]]; then
   echo "$RECONCILE_STATUS" >&2
   exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# Single-pod restart (okdev restart --pod): recreate one worker in place,
+# leaving the master (its state and its running detached job) untouched.
+# ---------------------------------------------------------------------------
+
+echo "Testing okdev restart --pod recreates a single worker"
+refresh_pytorchjob_pods
+RESTART_WORKER=$(echo "$WORKER_PODS" | awk '{print $1}')
+RESTART_WORKER_UID=$(kubectl -n "$NAMESPACE" get pod "$RESTART_WORKER" -o jsonpath='{.metadata.uid}')
+
+# Pod-local drift on the worker (must vanish) and on the master (must survive).
+kubectl -n "$NAMESPACE" exec "$RESTART_WORKER" -c pytorch -- touch /tmp/worker-drift-marker
+kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- touch /tmp/master-survives-marker
+
+# A running detached job on the master must survive the worker restart.
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod master-0 --detach --no-tty -- sleep 600 >/dev/null
+
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" restart --pod "$RESTART_WORKER" --yes --wait-timeout 5m
+
+refresh_pytorchjob_pods
+NEW_WORKER_UID=$(kubectl -n "$NAMESPACE" get pod "$RESTART_WORKER" -o jsonpath='{.metadata.uid}')
+if [[ -z "$NEW_WORKER_UID" || "$NEW_WORKER_UID" == "$RESTART_WORKER_UID" ]]; then
+  echo "ERROR: expected $RESTART_WORKER to be recreated with a new uid, got '$NEW_WORKER_UID'" >&2
+  exit 1
+fi
+if kubectl -n "$NAMESPACE" exec "$RESTART_WORKER" -c pytorch -- test -f /tmp/worker-drift-marker; then
+  echo "ERROR: recreated worker still has the pre-restart drift marker" >&2
+  exit 1
+fi
+if ! kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- test -f /tmp/master-survives-marker; then
+  echo "ERROR: master pod lost its marker — it must not be touched by restart --pod" >&2
+  exit 1
+fi
+POST_SYNC_REPLAYED=0
+for i in $(seq 1 30); do
+  if kubectl -n "$NAMESPACE" exec "$RESTART_WORKER" -c pytorch -- test -f /tmp/post-sync-marker 2>/dev/null; then
+    POST_SYNC_REPLAYED=1
+    break
+  fi
+  sleep 2
+done
+if [[ "$POST_SYNC_REPLAYED" != "1" ]]; then
+  echo "ERROR: postSync did not replay on the recreated worker" >&2
+  kubectl -n "$NAMESPACE" exec "$RESTART_WORKER" -c pytorch -- ls /tmp >&2 || true
+  exit 1
+fi
+RESTART_JOBS_JSON=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec-jobs --pod master-0 --output json)
+SURVIVOR_STATE=$(
+  OKDEV_JOBS_JSON="$RESTART_JOBS_JSON" python3 - <<'PY'
+import json, os, shlex
+payload = json.loads(os.environ["OKDEV_JOBS_JSON"])
+for job in payload.get("jobs", []):
+    if shlex.split(job.get("command") or "") != ["sleep", "600"]:
+        continue
+    for row in job.get("podStates", []):
+        print(row["state"])
+PY
+)
+if [[ "$SURVIVOR_STATE" != *"running"* ]]; then
+  echo "ERROR: detached job on master did not survive restart --pod of a worker" >&2
+  echo "$RESTART_JOBS_JSON" >&2
+  exit 1
+fi
+echo "restart --pod verified (worker recreated, hooks replayed, master and its detached job untouched)"
 
 echo "Testing explicit okdev down"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes

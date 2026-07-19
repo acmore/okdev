@@ -32,7 +32,7 @@ agents can react without launching a diagnostic chain on every blip:
 - `okdev validate`
 - `okdev up [--wait-timeout 10m] [--dry-run]`
 - `okdev down [session] [--delete-pvc] [--dry-run] [--wait] [--wait-timeout 2m] [--output json]`
-- `okdev restart [session] [--yes] [--wait-timeout 10m]`
+- `okdev restart [session] [--pod <name>] [--yes] [--wait-timeout 10m]`
 - `okdev status [session] [--all] [--all-users] [--details]`
 - `okdev list [--all-namespaces] [--all-users]`
 - `okdev use <session>`
@@ -272,13 +272,20 @@ agents can react without launching a diagnostic chain on every blip:
 - `--output json`: emits a machine-readable summary of the planned or completed deletion and local cleanup steps.
 - `--delete-pvc` remains accepted for compatibility but is ignored; `okdev` no longer manages PVC lifecycle automatically.
 
-### `okdev restart [session] [--yes] [--wait-timeout 10m]`
+### `okdev restart [session] [--pod <name>] [--yes] [--wait-timeout 10m]`
 
 - One-command recovery when a container died and the restart policy will not bring it back: deletes the session workload, waits for termination, resets local per-session sync state, and runs the full `up` flow against the current config.
 - PVCs and other resources referenced by `spec.volumes` are untouched; auto-provisioned sync volumes are recreated.
 - Lifecycle hooks (`postCreate`/`postSync`) re-run automatically on the fresh pods — configure them for setup that must survive recreation (installed tools, editable installs).
 - Pod names change on recreation; use the short-name aliases (`master-0`, `worker-1`) with `--pod` so scripts survive restarts.
 - Prompts for confirmation; `--yes` for scripts. `--wait-timeout` caps both the deletion wait and pod readiness.
+
+**Full restart vs `--pod`** — use `--pod` when one pod of a multi-pod session is broken (e.g. a worker OOMKilled on a bad node); use the full restart when the workload spec changed or the whole session is wedged. A full restart of a 10-pod session pays ~full-recreate time, re-runs hooks everywhere, invalidates per-pod caches, and kills every in-flight detached job; `--pod` pays that cost only on the named pods.
+
+- `--pod <name>` (repeatable, short names ok): deletes only the named pods and lets the workload controller recreate them in place. Other pods keep running — their caches and detached jobs are untouched. Lifecycle hooks are tracked per pod, so `postSync`/`postCreate` re-run only on the fresh pods; sync re-bootstraps only if the sync hub pod itself was recreated.
+- Requires a controller-backed workload (`job`, `pytorchjob`, `generic`); for a single-pod `pod` workload use the full `okdev restart`.
+- PyTorchJob replicas must have `restartPolicy: OnFailure` (the scaffold default) — with `Never`, the training-operator marks the whole job Failed instead of recreating a deleted member pod, so `restart --pod` refuses up front and explains the fix (`okdev up --reconcile` after changing the policy).
+- Canonical dead-worker sequence: `okdev status` (spot the broken pod) → `okdev restart --pod worker-3` → relaunch the affected rank/job.
 
 ### `okdev ssh [session] [--setup-key] [--user root] [--cmd "..."] [--no-tmux] [--forward-agent|--no-forward-agent]`
 

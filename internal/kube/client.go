@@ -69,8 +69,11 @@ type Client struct {
 var defaultPortForwardAddresses = []string{"localhost"}
 
 type PodSummary struct {
-	Namespace   string
-	Name        string
+	Namespace string
+	Name      string
+	// UID distinguishes a controller-recreated pod from the pod it replaced —
+	// controller-backed workloads like PyTorchJob reuse stable pod names.
+	UID         string
 	Phase       string
 	Deleting    bool
 	CreatedAt   time.Time
@@ -709,6 +712,42 @@ func (c *Client) GetResourceAnnotation(ctx context.Context, namespace, apiVersio
 
 	v, ok := annotations[key]
 	return v, ok, nil
+}
+
+// GetResourceNestedString reads a nested string field from a live resource
+// via the dynamic client (e.g. a PyTorchJob replica's restartPolicy). The
+// bool reports whether the field was present.
+func (c *Client) GetResourceNestedString(ctx context.Context, namespace, apiVersion, kind, name string, fields ...string) (string, bool, error) {
+	if strings.TrimSpace(name) == "" {
+		return "", false, fmt.Errorf("resource name is required")
+	}
+	_, dc, mapper, _, err := c.clients()
+	if err != nil {
+		return "", false, err
+	}
+	gv, err := schema.ParseGroupVersion(apiVersion)
+	if err != nil {
+		return "", false, fmt.Errorf("parse apiVersion %q: %w", apiVersion, err)
+	}
+	mapping, err := mapper.RESTMapping(schema.GroupKind{Group: gv.Group, Kind: kind}, gv.Version)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve rest mapping for %s/%s: %w", apiVersion, kind, err)
+	}
+	var resource dynamic.ResourceInterface
+	if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
+		resource = dc.Resource(mapping.Resource).Namespace(namespace)
+	} else {
+		resource = dc.Resource(mapping.Resource)
+	}
+	obj, err := resource.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return "", false, err
+	}
+	value, found, err := unstructured.NestedString(obj.Object, fields...)
+	if err != nil {
+		return "", false, fmt.Errorf("read %s from %s/%s: %w", strings.Join(fields, "."), kind, name, err)
+	}
+	return value, found, nil
 }
 
 func (c *Client) DeleteByRef(ctx context.Context, namespace string, apiVersion string, kind string, name string, ignoreNotFound bool) error {
@@ -2532,6 +2571,7 @@ func podSummaryFromPod(p *corev1.Pod) PodSummary {
 	return PodSummary{
 		Namespace:       p.Namespace,
 		Name:            p.Name,
+		UID:             string(p.UID),
 		Phase:           phase,
 		Deleting:        deleting,
 		CreatedAt:       p.CreationTimestamp.Time,
