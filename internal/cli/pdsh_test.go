@@ -17,7 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
+	"github.com/acmore/okdev/internal/workload"
 	k8sexec "k8s.io/client-go/util/exec"
 	utilexec "k8s.io/utils/exec"
 )
@@ -1460,5 +1462,15 @@ func TestReportFanoutFailuresKeepsFailedFramingClean(t *testing.T) {
 	// Delivery failures keep the FAILED framing without the delivered clarifier.
 	if !strings.Contains(got, "FAILED:") || strings.Contains(got, "delivered and ran on every pod") {
 		t.Fatalf("delivery failure must not carry the delivered clarifier, got %q", got)
+	}
+}
+
+func TestPrintTargetOnlyNoticeGating(t *testing.T) {
+	var buf bytes.Buffer // non-TTY writer
+	cfg := &config.DevEnvironment{}
+	cfg.Spec.Workload.Type = "pytorchjob"
+	printTargetOnlyNotice(&buf, context.Background(), &commandContext{cfg: cfg}, workload.TargetRef{PodName: "m-0"})
+	if buf.Len() != 0 {
+		t.Fatalf("non-TTY stderr must stay silent, got %q", buf.String())
 	}
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/acmore/okdev/internal/fanout"
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/shellutil"
+	"github.com/acmore/okdev/internal/workload"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	k8sexec "k8s.io/client-go/util/exec"
@@ -84,8 +85,11 @@ func newExecCmd(opts *Options) *cobra.Command {
 		Example: `  # Open an interactive shell
   okdev exec
 
-  # Run a command on all session pods
+  # Run a command on the target pod (fanout is opt-in)
   okdev exec -- nvidia-smi
+
+  # Run a command on all session pods
+  okdev exec --all -- nvidia-smi
 
   # Upload and run a local script on all session pods
   okdev exec --script ./collect-logs.sh -- --since 10m
@@ -170,9 +174,22 @@ func newExecCmd(opts *Options) *cobra.Command {
 			}
 
 			hasCommand := len(invocation.Argv) > 0 || invocation.ScriptLocalPath != ""
-			multiPod := hasCommand || allPods || workers || len(podNames) > 0 || role != "" || len(labels) > 0 || len(groups) > 0 || detach
+			hasSelector := allPods || workers || len(podNames) > 0 || role != "" || len(labels) > 0 || len(groups) > 0 || len(exclude) > 0
+			// Fanout is opt-in (#178): a command without a pod selector runs
+			// on the target pod only, like kubectl exec — a state-mutating
+			// command must never hit every pod because a flag was forgotten.
+			multiPod := hasSelector
 			if err := validateExecMode(shell, invocation); err != nil {
 				return err
+			}
+			if (hasCommand || detach) && !hasSelector {
+				target, err := resolveTargetRef(cmd.Context(), cc.opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
+				if err != nil {
+					return err
+				}
+				plan.podNames = []string{target.PodName}
+				multiPod = true
+				printTargetOnlyNotice(cmd.ErrOrStderr(), cmd.Context(), cc, target)
 			}
 			if err := validateMultiPodFlags(allPods, workers, podNames, role, labels, exclude, groups, hasCommand, detach, sequential, parallel); err != nil {
 				return err
@@ -626,6 +643,22 @@ func resolveExecNoPrefix(explicitlySet bool, noPrefix bool, out io.Writer) bool 
 	return !isTerminalWriter(out)
 }
 
+// printTargetOnlyNotice tells interactive users that their selector-less
+// command ran on the target pod only — fanout became opt-in (#178) and the
+// silent behavior change deserves a visible cue. TTY-gated: agents and
+// scripts (non-TTY stderr) get clean output and pay no per-call tokens, and
+// single-pod workloads (type pod) skip it because there is nothing to fan
+// out to anyway.
+func printTargetOnlyNotice(w io.Writer, ctx context.Context, cc *commandContext, target workload.TargetRef) {
+	if !isTerminalWriter(w) {
+		return
+	}
+	if cc == nil || cc.cfg == nil || normalizeWorkloadType(cc.cfg.Spec.Workload.Type) == workload.TypePod {
+		return
+	}
+	fmt.Fprintf(w, "notice: running on target pod %s only; use --all, --workers, --role, or --pod to fan out\n", target.PodName)
+}
+
 func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvocation, plan execTargetPlan, container string, detach bool, timeout time.Duration, logDir string, noPrefix bool, fanout int, jsonOutput bool, gatewayPod string, requireAll bool) error {
 	ctx := cmd.Context()
 	labelSel := selectorForSessionRun(cc.sessionName)
@@ -637,7 +670,6 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvo
 	if err != nil {
 		return err
 	}
-
 	targetContainer := container
 	if targetContainer == "" {
 		targetContainer = resolveTargetContainer(cc.cfg)

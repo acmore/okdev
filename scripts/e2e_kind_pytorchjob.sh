@@ -394,8 +394,21 @@ echo "inter-pod SSH verified"
 # Multi-pod exec (pdsh) verification
 # ---------------------------------------------------------------------------
 
-echo "Testing exec -- across all session pods"
-EXEC_ALL_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'echo hello-from-$(hostname)')
+# Issue #178: a command without a pod selector runs on the target pod only —
+# fanout is opt-in, so a forgotten flag can no longer mutate every pod.
+echo "Testing selector-less exec targets only the target pod"
+EXEC_DEFAULT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- hostname)
+EXEC_DEFAULT_LINES=$(printf '%s
+' "$EXEC_DEFAULT_OUTPUT" | grep -c . || true)
+if [[ "$EXEC_DEFAULT_LINES" -ne 1 || "$EXEC_DEFAULT_OUTPUT" != *"master-0"* ]]; then
+  echo "ERROR: selector-less exec should run on the master target pod only, got:" >&2
+  echo "$EXEC_DEFAULT_OUTPUT" >&2
+  exit 1
+fi
+echo "selector-less exec default verified (target pod only)"
+
+echo "Testing exec --all across all session pods"
+EXEC_ALL_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-tty -- sh -lc 'echo hello-from-$(hostname)')
 echo "$EXEC_ALL_OUTPUT"
 # Expect prefixed output from 3 pods (1 master + 2 workers).
 EXEC_ALL_LINES=$(echo "$EXEC_ALL_OUTPUT" | grep -c 'hello-from-')
@@ -411,7 +424,7 @@ echo "exec verified ($EXEC_ALL_LINES pods responded)"
 # FAILED delivery framing or the infra exit code 69.
 echo "Testing multi-pod exec exit semantics for a non-zero command"
 set +e
-EXEC_NONZERO_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'exit 3' 2>&1)
+EXEC_NONZERO_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-tty -- sh -lc 'exit 3' 2>&1)
 EXEC_NONZERO_STATUS=$?
 set -e
 if [[ "$EXEC_NONZERO_STATUS" -ne 1 ]]; then
@@ -433,7 +446,7 @@ fi
 # The pattern is bracketed so it cannot self-match the shell running it —
 # an unbracketed pattern would trip the (also correct) self-kill hint instead.
 set +e
-PKILL_NOMATCH_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'pkill -f "no-such-process-okdev-e2[e]"' 2>&1)
+PKILL_NOMATCH_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-tty -- sh -lc 'pkill -f "no-such-process-okdev-e2[e]"' 2>&1)
 set -e
 if [[ "$PKILL_NOMATCH_OUTPUT" != *"pkill/pgrep exit 1 when no process matched"* ]]; then
   echo "ERROR: expected the no-match pkill hint, got:" >&2
@@ -482,7 +495,7 @@ echo "exec --exclude verified"
 echo "Testing exec auto-suppresses prefix when stdout is captured (non-TTY)"
 # No --no-prefix flag, but the command substitution makes stdout a pipe, so
 # the [pod] prefix should be auto-suppressed (okdev-exec-output spec §1).
-EXEC_AUTO_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'echo auto-bare')
+EXEC_AUTO_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-tty -- sh -lc 'echo auto-bare')
 if echo "$EXEC_AUTO_OUTPUT" | grep -q '^\['; then
   echo "ERROR: expected auto-suppressed prefix for captured exec output, got prefixed lines" >&2
   echo "$EXEC_AUTO_OUTPUT" >&2
@@ -496,7 +509,7 @@ fi
 echo "exec auto-suppress prefix verified"
 
 echo "Testing exec --no-prefix suppresses pod name prefix"
-EXEC_NOPREFIX_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-prefix --no-tty -- sh -lc 'echo raw-output')
+EXEC_NOPREFIX_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-prefix --no-tty -- sh -lc 'echo raw-output')
 echo "$EXEC_NOPREFIX_OUTPUT"
 # In no-prefix mode, lines should be raw (no "[podname]" prefix).
 if echo "$EXEC_NOPREFIX_OUTPUT" | grep -qE '^\[.*\] raw-output$'; then
@@ -552,7 +565,7 @@ PY
 
 echo "Testing exec --log-dir writes per-pod log files"
 EXEC_LOG_DIR=$(mktemp -d)
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --log-dir "$EXEC_LOG_DIR" -- sh -lc 'echo log-test'
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-tty --log-dir "$EXEC_LOG_DIR" -- sh -lc 'echo log-test'
 EXEC_LOG_COUNT=$(find "$EXEC_LOG_DIR" -name '*.log' | wc -l | tr -d ' ')
 if [[ "$EXEC_LOG_COUNT" -lt 3 ]]; then
   echo "ERROR: expected at least 3 log files in $EXEC_LOG_DIR, found $EXEC_LOG_COUNT" >&2
@@ -569,7 +582,7 @@ rm -rf "$EXEC_LOG_DIR"
 echo "exec --log-dir verified"
 
 echo "Testing exec --fanout 1 (serial execution)"
-EXEC_FANOUT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --fanout 1 --no-tty -- sh -lc 'echo fanout-test')
+EXEC_FANOUT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --fanout 1 --no-tty -- sh -lc 'echo fanout-test')
 echo "$EXEC_FANOUT_OUTPUT"
 EXEC_FANOUT_LINES=$(echo "$EXEC_FANOUT_OUTPUT" | grep -c 'fanout-test')
 if [[ "$EXEC_FANOUT_LINES" -lt 3 ]]; then
@@ -579,7 +592,7 @@ fi
 echo "exec --fanout 1 verified"
 
 echo "Testing exec --detach launches background command"
-DETACH_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --detach --no-tty -- sh -lc 'touch /tmp/detach-marker')
+DETACH_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --detach --no-tty -- sh -lc 'touch /tmp/detach-marker')
 echo "$DETACH_OUTPUT"
 DETACH_LINES=$(echo "$DETACH_OUTPUT" | grep -c 'detached')
 if [[ "$DETACH_LINES" -lt 3 ]]; then
@@ -606,7 +619,7 @@ echo "exec --detach verified"
 # ---------------------------------------------------------------------------
 EXEC_JOBS_DIR=/tmp/okdev-exec
 echo "Cleaning prior detached-job metadata on all pods"
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- \
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-tty --no-prefix -- \
   sh -lc "rm -f $EXEC_JOBS_DIR/*.json $EXEC_JOBS_DIR/*.sh $EXEC_JOBS_DIR/*.log $EXEC_JOBS_DIR/*.tmp 2>/dev/null; true" \
   >/dev/null
 
@@ -616,7 +629,7 @@ echo "Testing exec-jobs lists a running detached job on every pod"
 # `sleep` directly (no `sh -c` wrapper) means the pid we capture is
 # unambiguously the sleep process, independent of any shell tail-exec
 # optimizations.
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --detach --no-tty -- sleep 30
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --detach --no-tty -- sleep 30
 
 # Give wrappers a moment to publish metadata on every pod.
 sleep 1
@@ -768,7 +781,7 @@ fi
 echo "exec-jobs non-zero exit capture verified"
 
 # Clean up metadata so this block does not leak state into the rest of the run.
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- \
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-tty --no-prefix -- \
   sh -lc "rm -f $EXEC_JOBS_DIR/*.json $EXEC_JOBS_DIR/*.sh $EXEC_JOBS_DIR/*.log $EXEC_JOBS_DIR/*.tmp 2>/dev/null; true" \
   >/dev/null
 
@@ -804,7 +817,7 @@ mkdir -p "$CP_DIR/sub"
 echo "file-a" >"$CP_DIR/a.txt"
 echo "file-b" >"$CP_DIR/sub/b.txt"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp --all "$CP_DIR" :/tmp/cp-upload-dir
-CP_ALL_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'cat /tmp/cp-upload-dir/a.txt && cat /tmp/cp-upload-dir/sub/b.txt')
+CP_ALL_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-tty -- sh -lc 'cat /tmp/cp-upload-dir/a.txt && cat /tmp/cp-upload-dir/sub/b.txt')
 echo "$CP_ALL_OUTPUT"
 CP_ALL_LINES=$(echo "$CP_ALL_OUTPUT" | grep -c 'file-a')
 if [[ "$CP_ALL_LINES" -lt 3 ]]; then
@@ -814,7 +827,7 @@ fi
 echo "cp upload directory to all pods verified"
 
 echo "Testing cp download from all pods"
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'echo download-$(hostname) > /tmp/cp-download.txt'
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-tty -- sh -lc 'echo download-$(hostname) > /tmp/cp-download.txt'
 CP_DL_DIR="$WORKDIR/cp-download"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp --all :/tmp/cp-download.txt "$CP_DL_DIR"
 CP_DL_COUNT=$(find "$CP_DL_DIR" -name 'cp-download.txt' | wc -l | tr -d ' ')
@@ -826,7 +839,7 @@ fi
 echo "cp download from all pods verified"
 
 echo "Testing cp download directory from all pods"
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty -- sh -lc 'mkdir -p /tmp/cp-download-dir/nested && echo dir-$(hostname) > /tmp/cp-download-dir/root.txt && echo nested-$(hostname) > /tmp/cp-download-dir/nested/value.txt'
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-tty -- sh -lc 'mkdir -p /tmp/cp-download-dir/nested && echo dir-$(hostname) > /tmp/cp-download-dir/root.txt && echo nested-$(hostname) > /tmp/cp-download-dir/nested/value.txt'
 CP_DIR_DL="$WORKDIR/cp-dir-download"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" cp --all :/tmp/cp-download-dir "$CP_DIR_DL"
 CP_DIR_ROOT_COUNT=$(find "$CP_DIR_DL" -path '*/cp-download-dir/root.txt' | wc -l | tr -d ' ')
