@@ -74,6 +74,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 	var requireAll bool
 	var pkillPattern string
 	var pkillSignal string
+	var resetGPU bool
 	var requireSync bool
 
 	cmd := &cobra.Command{
@@ -111,7 +112,11 @@ func newExecCmd(opts *Options) *cobra.Command {
 
   # Raw pkill -f needs the bracket trick so the pattern cannot match the
   # shell running the command itself
-  okdev exec -- bash -lc 'pkill -f "trai[n].py"'`,
+  okdev exec -- bash -lc 'pkill -f "trai[n].py"'
+
+  # Between experiment rounds: kill everything holding GPU compute on the
+  # workers and verify nvidia-smi is back to zero
+  okdev exec --workers --reset-gpu`,
 		Aliases: []string{"connect"},
 		// Flag-like-value validation must run in the Args stage: a swallowed
 		// "--" shifts command words into session args, so validateExecArgs
@@ -130,7 +135,9 @@ func newExecCmd(opts *Options) *cobra.Command {
 			sessionArgs, commandArgs := splitExecArgs(cmd, args)
 			var invocation execInvocation
 			var err error
-			if pkillPattern != "" || cmd.Flags().Changed("signal") {
+			if resetGPU {
+				invocation, err = buildResetGPUInvocation(commandArgs, scriptPath, shell, detach, pkillPattern)
+			} else if pkillPattern != "" || cmd.Flags().Changed("signal") {
 				// Before buildExecInvocation so a --script conflict reports
 				// as a conflict, not as a stat error on the script path.
 				invocation, err = buildPkillInvocation(pkillPattern, pkillSignal, commandArgs, scriptPath, shell, detach)
@@ -239,6 +246,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Capture each pod's result into a JSON envelope {pod,exit,stdout,stderr,status}; remote exit codes become data, not okdev failures")
 	cmd.Flags().StringVar(&gatewayPod, "gateway", "", "Pod to use as the in-cluster fanout gateway (requires --json and interpod SSH)")
 	cmd.Flags().StringVar(&pkillPattern, "pkill", "", "Kill processes whose full cmdline matches this extended regex; never matches okdev's own exec machinery (exit 0 if any process matched)")
+	cmd.Flags().BoolVar(&resetGPU, "reset-gpu", false, "Kill every process holding GPU compute in the targeted pods (SIGKILL by process group) and verify nvidia-smi returns to zero (exit 0 clear, 3 no nvidia-smi, 4 still busy)")
 	cmd.Flags().StringVar(&pkillSignal, "signal", "TERM", "Signal name or number sent by --pkill")
 	cmd.Flags().BoolVar(&requireSync, "require-sync", false, "With --detach: refuse to launch unless sync is healthy and fully converged")
 	cmd.Flags().BoolVar(&requireAll, "require-all", false, "Exit non-zero unless every targeted pod responded (requires --json)")
@@ -432,6 +440,93 @@ func buildPkillInvocation(pattern, signal string, commandArgs []string, scriptPa
 	return execInvocation{
 		Argv:           pkillExecCommand(pattern, signal),
 		DisplayCommand: fmt.Sprintf("--pkill %s --signal %s", shellutil.Quote(pattern), signal),
+	}, nil
+}
+
+// resetGPUHelperScript is the remote payload behind `okdev exec --reset-gpu`
+// (#190): kill everything currently holding GPU compute in this container and
+// verify the GPUs actually came back to zero — the hand-rolled version of
+// this (bracket-safe pkill per role + manual nvidia-smi checks) ran many
+// times per experiment session. Holders are killed by process group with
+// SIGKILL (the targets are hung/leftover rank trees; a polite TERM is what
+// they are already ignoring). Exit convention: 0 = GPUs clear (including
+// "already clear" — reset is idempotent), 3 = no nvidia-smi in the
+// container, 4 = still busy after the verify window (leftovers listed on
+// stderr). PIDs reported by nvidia-smi that do not exist in this PID
+// namespace are called out — killing them is impossible from here.
+const resetGPUHelperScript = `verify="${1:-30}"
+if ! command -v nvidia-smi >/dev/null 2>&1; then
+  echo "nvidia-smi not found in this container" >&2
+  exit 3
+fi
+excl=" $$ "
+pid=$$
+while [ "$pid" -gt 1 ] 2>/dev/null; do
+  pid=$(grep ^PPid: "/proc/$pid/status" 2>/dev/null | cut -f2)
+  [ -n "$pid" ] || break
+  excl="$excl$pid "
+done
+pids=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | tr -d " " | grep -E "^[0-9]+$" || true)
+killedgroups=" "
+for pid in $pids; do
+  case "$excl" in *" $pid "*) continue ;; esac
+  if [ ! -d "/proc/$pid" ]; then
+    echo "pid $pid holds GPU but is not visible in this container namespace (host-pid mapping unavailable)" >&2
+    continue
+  fi
+  cmd=$(tr "\0" " " <"/proc/$pid/cmdline" 2>/dev/null)
+  stat=$(cat "/proc/$pid/stat" 2>/dev/null) || continue
+  rest="${stat##*) }"
+  set -- $rest
+  pgid=$3
+  if [ -n "$pgid" ] && [ "$pgid" -gt 1 ] 2>/dev/null; then
+    case "$killedgroups" in *" $pgid "*) : ;; *)
+      if kill -9 "-$pgid" 2>/dev/null; then
+        killedgroups="$killedgroups$pgid "
+        printf "killed group %s (holder %s %s)\n" "$pgid" "$pid" "$cmd"
+        continue
+      fi
+    ;; esac
+  fi
+  if kill -9 "$pid" 2>/dev/null; then
+    printf "killed %s %s\n" "$pid" "$cmd"
+  fi
+done
+i=0
+while [ "$i" -lt "$verify" ]; do
+  left=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -cE "^[0-9 ]+$" || true)
+  if [ "$left" = "0" ]; then
+    echo "gpu-clear"
+    exit 0
+  fi
+  sleep 1
+  i=$((i+1))
+done
+echo "gpu-busy: $left process(es) still hold GPU memory after ${verify}s:" >&2
+nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader >&2 2>/dev/null || true
+exit 4
+`
+
+func resetGPUExecCommand() []string {
+	return []string{"sh", "-c", resetGPUHelperScript, "okdev-reset-gpu"}
+}
+
+func buildResetGPUInvocation(commandArgs []string, scriptPath, shell string, detach bool, pkillPattern string) (execInvocation, error) {
+	if len(commandArgs) > 0 || scriptPath != "" {
+		return execInvocation{}, fmt.Errorf("--reset-gpu cannot be combined with a command after -- or --script")
+	}
+	if strings.TrimSpace(shell) != "" {
+		return execInvocation{}, fmt.Errorf("--reset-gpu cannot be used with --shell")
+	}
+	if detach {
+		return execInvocation{}, fmt.Errorf("--reset-gpu cannot be used with --detach")
+	}
+	if strings.TrimSpace(pkillPattern) != "" {
+		return execInvocation{}, fmt.Errorf("--reset-gpu cannot be combined with --pkill (reset-gpu already kills the GPU holders)")
+	}
+	return execInvocation{
+		Argv:           resetGPUExecCommand(),
+		DisplayCommand: "--reset-gpu",
 	}, nil
 }
 
