@@ -10,8 +10,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1054,6 +1056,123 @@ func TestValidateNoFlagLikeValues(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
 			}
 		})
+	}
+}
+
+func TestPkillExecCommandShape(t *testing.T) {
+	argv := pkillExecCommand("train.py", "TERM")
+	if len(argv) != 6 || argv[0] != "sh" || argv[1] != "-c" || argv[3] != "okdev-pkill" || argv[4] != "train.py" || argv[5] != "TERM" {
+		t.Fatalf("unexpected argv: %#v", argv)
+	}
+	// The script must exclude self+ancestors and follow pkill exit semantics.
+	for _, want := range []string{"excl=\" $$ \"", "^PPid:", `[ "$matched" -eq 1 ]`, "kill -s"} {
+		if !strings.Contains(argv[2], want) {
+			t.Fatalf("helper script missing %q:\n%s", want, argv[2])
+		}
+	}
+	// The pattern must never be embedded in the script text itself.
+	if strings.Contains(argv[2], "train.py") {
+		t.Fatalf("pattern leaked into script text:\n%s", argv[2])
+	}
+}
+
+func TestExecPkillFlagValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "pkill with command conflicts",
+			args:    []string{"--pkill", "train.py", "--", "echo", "hi"},
+			wantErr: "--pkill cannot be combined with a command",
+		},
+		{
+			name:    "pkill with script conflicts",
+			args:    []string{"--pkill", "train.py", "--script", "./x.sh"},
+			wantErr: "--pkill cannot be combined with a command after -- or --script",
+		},
+		{
+			name:    "pkill with shell conflicts",
+			args:    []string{"--pkill", "train.py", "--shell", "bash"},
+			wantErr: "--pkill cannot be used with --shell",
+		},
+		{
+			name:    "pkill with detach conflicts",
+			args:    []string{"--pkill", "train.py", "--detach"},
+			wantErr: "--pkill cannot be used with --detach",
+		},
+		{
+			name:    "signal without pkill",
+			args:    []string{"--signal", "KILL", "--", "echo", "hi"},
+			wantErr: "--pkill requires a non-empty pattern",
+		},
+		{
+			name:    "invalid signal",
+			args:    []string{"--pkill", "train.py", "--signal", "TERM;rm"},
+			wantErr: "must be a signal name or number",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newExecCmd(&Options{})
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(tt.args)
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+// Runtime behavior of the --pkill helper (issue #170 follow-up): it must kill
+// a process whose cmdline matches the pattern, spare unrelated processes, and
+// spare itself even though its own argv carries the pattern. Linux-only: the
+// helper walks /proc.
+func TestPkillHelperKillsMatchAndSparesSelf(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("pkill helper walks /proc; linux only")
+	}
+	marker := fmt.Sprintf("okdev-pkill-decoy-%d-%d", os.Getpid(), time.Now().UnixNano())
+
+	// The trailing `:` keeps sleep off the script's tail position — busybox
+	// ash tail-call execs the last command, which would replace the shell
+	// and drop the marker from the decoy's cmdline.
+	decoy := exec.Command("sh", "-c", ": "+marker+"; sleep 30; :")
+	if err := decoy.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = decoy.Process.Kill() }()
+
+	bystander := exec.Command("sh", "-c", ": okdev-pkill-bystander; sleep 30; :")
+	if err := bystander.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = bystander.Process.Kill() }()
+
+	argv := pkillExecCommand(marker, "TERM")
+	out, err := exec.Command(argv[0], argv[1:]...).Output()
+	if err != nil {
+		t.Fatalf("helper failed (self-kill or no match): %v, output %q", err, out)
+	}
+	if !strings.Contains(string(out), fmt.Sprintf("killed %d", decoy.Process.Pid)) {
+		t.Fatalf("expected decoy pid %d in kill report, got %q", decoy.Process.Pid, out)
+	}
+
+	werr := decoy.Wait()
+	if werr == nil {
+		t.Fatal("decoy exited cleanly; expected SIGTERM")
+	}
+	if bystander.Process.Signal(syscall.Signal(0)) != nil {
+		t.Fatal("bystander was killed; helper matched too broadly")
+	}
+
+	// No match: pkill convention exit 1.
+	argv = pkillExecCommand(marker+"-no-such-process", "TERM")
+	if err := exec.Command(argv[0], argv[1:]...).Run(); err == nil {
+		t.Fatal("expected non-zero exit when nothing matches")
 	}
 }
 

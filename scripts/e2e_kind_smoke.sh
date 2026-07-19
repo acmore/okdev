@@ -339,6 +339,31 @@ if [[ "$NONZERO_OUTPUT" != *"COMMAND EXITED NON-ZERO"* || "$NONZERO_OUTPUT" == *
 fi
 echo "exec non-zero command framing and exit status verified"
 
+# Issue #170 follow-up: `exec --pkill` kills processes matching a pattern
+# without ever matching okdev's own exec machinery (the raw `pkill -f`
+# self-match footgun). The decoy subshell keeps the marker in its cmdline
+# (trailing `:` defeats shell tail-call exec) and survives the launching exec.
+echo "Testing exec --pkill"
+PKILL_MARKER="okdev-pkill-e2e-$$"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- \
+  sh -c "( : $PKILL_MARKER; sleep 300; : ) >/dev/null 2>&1 &"
+sleep 1
+PKILL_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix --pkill "$PKILL_MARKER")
+if [[ "$PKILL_OUTPUT" != *"killed "* ]]; then
+  echo "ERROR: expected --pkill to report a killed process" >&2
+  echo "Got: $PKILL_OUTPUT" >&2
+  exit 1
+fi
+set +e
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix --pkill "$PKILL_MARKER" >/dev/null 2>&1
+PKILL_NOMATCH_STATUS=$?
+set -e
+if [[ "$PKILL_NOMATCH_STATUS" -eq 0 ]]; then
+  echo "ERROR: expected --pkill to exit non-zero when nothing matches" >&2
+  exit 1
+fi
+echo "exec --pkill verified (kill reported, pkill exit convention held)"
+
 # exec --json: the remote command's own non-zero exit must surface as data
 # (exit field) without making okdev itself exit non-zero, and stdout must be
 # captured into the envelope. Single-pod sessions still emit a JSON array.
