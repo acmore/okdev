@@ -187,6 +187,66 @@ if [[ "$SYNC_OK" != "true" ]]; then
   exit 1
 fi
 
+# Issue #165: after the background sync process dies silently, every command
+# must agree about the channel state (no "already running" vs "not running"
+# contradiction), a detached launch must warn (or refuse with --require-sync)
+# instead of silently running stale code, and a plain `okdev sync` must
+# recover without requiring --reset.
+echo "Testing silent sync death consistency (issue #165)"
+SYNC_PID=$(cat "$SYNC_HOME/sync.pid")
+kill -9 "$SYNC_PID" 2>/dev/null || true
+pkill -9 -f "syncthing.*${SESSION_NAME}" 2>/dev/null || true
+sleep 1
+
+set +e
+WAIT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync wait --timeout 5s 2>&1)
+WAIT_STATUS=$?
+set -e
+if [[ "$WAIT_STATUS" -eq 0 || "$WAIT_OUTPUT" != *"not running"* ]]; then
+  echo "ERROR: expected sync wait to fail fast with a not-running report after silent death" >&2
+  echo "$WAIT_OUTPUT" >&2
+  exit 1
+fi
+
+DETACH_WARN=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --detach -- true 2>&1 >/dev/null)
+if [[ "$DETACH_WARN" != *"may run stale code"* ]]; then
+  echo "ERROR: expected detach launch on a dead sync channel to warn about stale code" >&2
+  echo "$DETACH_WARN" >&2
+  exit 1
+fi
+
+set +e
+REQUIRE_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --detach --require-sync -- true 2>&1)
+REQUIRE_STATUS=$?
+set -e
+if [[ "$REQUIRE_STATUS" -eq 0 || "$REQUIRE_OUTPUT" != *"require-sync"* ]]; then
+  echo "ERROR: expected --require-sync to refuse launching on a dead sync channel" >&2
+  echo "$REQUIRE_OUTPUT" >&2
+  exit 1
+fi
+
+SYNC_RECOVER_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync)
+if [[ "$SYNC_RECOVER_OUTPUT" == *"already running"* || "$SYNC_RECOVER_OUTPUT" == *"already active"* ]]; then
+  echo "ERROR: okdev sync claimed already-running for a dead channel" >&2
+  echo "$SYNC_RECOVER_OUTPUT" >&2
+  exit 1
+fi
+echo "Waiting for sync to recover after silent death"
+for i in $(seq 1 30); do
+  STATUS_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
+  if [[ "$STATUS_OUTPUT" == *"health: active"* ]]; then
+    break
+  fi
+  if [[ "$i" -eq 30 ]]; then
+    echo "ERROR: expected plain okdev sync to recover a dead channel without --reset" >&2
+    echo "$STATUS_OUTPUT" >&2
+    exit 1
+  fi
+  sleep 2
+done
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync wait --timeout 2m
+echo "Silent-death consistency verified: accurate reports, guarded detach, plain-sync recovery"
+
 echo "Testing explicit okdev down"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes
 assert_no_local_sync_processes "$SESSION_NAME" "$SYNC_HOME"

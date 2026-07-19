@@ -74,6 +74,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 	var requireAll bool
 	var pkillPattern string
 	var pkillSignal string
+	var requireSync bool
 
 	cmd := &cobra.Command{
 		Use:   "exec [session]",
@@ -123,6 +124,9 @@ func newExecCmd(opts *Options) *cobra.Command {
 		},
 		ValidArgsFunction: sessionCompletionFunc(opts),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if requireSync && !detach {
+				return fmt.Errorf("--require-sync requires --detach")
+			}
 			sessionArgs, commandArgs := splitExecArgs(cmd, args)
 			var invocation execInvocation
 			var err error
@@ -171,6 +175,12 @@ func newExecCmd(opts *Options) *cobra.Command {
 			}
 			if err := validateExecGatewayFlags(jsonOutput, gatewayPod, requireAll); err != nil {
 				return err
+			}
+
+			if detach {
+				if err := detachSyncPreflight(cmd, cc, requireSync); err != nil {
+					return err
+				}
 			}
 
 			if multiPod || detach {
@@ -230,6 +240,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&gatewayPod, "gateway", "", "Pod to use as the in-cluster fanout gateway (requires --json and interpod SSH)")
 	cmd.Flags().StringVar(&pkillPattern, "pkill", "", "Kill processes whose full cmdline matches this extended regex; never matches okdev's own exec machinery (exit 0 if any process matched)")
 	cmd.Flags().StringVar(&pkillSignal, "signal", "TERM", "Signal name or number sent by --pkill")
+	cmd.Flags().BoolVar(&requireSync, "require-sync", false, "With --detach: refuse to launch unless sync is healthy and fully converged")
 	cmd.Flags().BoolVar(&requireAll, "require-all", false, "Exit non-zero unless every targeted pod responded (requires --json)")
 	return cmd
 }
