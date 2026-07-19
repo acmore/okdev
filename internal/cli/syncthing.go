@@ -1037,10 +1037,9 @@ func stopLocalSyncthingForHome(home string) error {
 			return rmErr
 		}
 	}
-	if err := pkillByPattern(syncthingServeHomePattern(home)); err != nil {
+	if err := pkillByPatternWithEscalation(syncthingServeHomePattern(home), syncthingShutdownWait); err != nil {
 		return err
 	}
-	time.Sleep(syncthingShutdownPollInterval)
 	return nil
 }
 
@@ -1115,7 +1114,16 @@ func openLocalSyncthingLog(path string) (*os.File, error) {
 }
 
 func pkillByPattern(pattern string) error {
-	cmd := exec.Command("pkill", "-f", pattern)
+	return pkillByPatternSignal(pattern, "")
+}
+
+func pkillByPatternSignal(pattern, signal string) error {
+	args := []string{}
+	if signal != "" {
+		args = append(args, "-"+signal)
+	}
+	args = append(args, "-f", pattern)
+	cmd := exec.Command("pkill", args...)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return nil
@@ -1126,6 +1134,31 @@ func pkillByPattern(pattern string) error {
 		return nil
 	}
 	return fmt.Errorf("%w (%s)", err, msg)
+}
+
+func patternAlive(pattern string) bool {
+	cmd := exec.Command("pgrep", "-f", pattern)
+	return cmd.Run() == nil
+}
+
+// pkillByPatternWithEscalation mirrors stopRecordedLocalSyncthing for the
+// pattern-matched path: TERM, wait out a graceful shutdown, then KILL
+// whatever still matches. Without the wait+escalation a syncthing daemon
+// flushing its index on SIGTERM (several seconds) outlives the caller's
+// checks and reads as a leaked process — the exact shape of the sync-health
+// e2e flake where a just-restarted daemon was stopped milliseconds later.
+func pkillByPatternWithEscalation(pattern string, wait time.Duration) error {
+	if err := pkillByPattern(pattern); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(wait)
+	for patternAlive(pattern) && time.Now().Before(deadline) {
+		time.Sleep(syncthingShutdownPollInterval)
+	}
+	if patternAlive(pattern) {
+		return pkillByPatternSignal(pattern, "KILL")
+	}
+	return nil
 }
 
 func syncthingServeHomePattern(home string) string {
