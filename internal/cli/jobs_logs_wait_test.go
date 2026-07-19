@@ -5,6 +5,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -121,17 +124,29 @@ func TestParseSinceCutoff(t *testing.T) {
 }
 
 func TestDetachJobLogScriptShapes(t *testing.T) {
-	full := readDetachJobLogScript("/var/okdev/exec/j.log", -1, 0)
-	for _, want := range []string{"okdev-log-size:", "mktemp", `cat "$f"`} {
+	full := readDetachJobLogScript("/var/okdev/exec/j.log", jobsLogsOptions{TailLines: -1})
+	for _, want := range []string{"okdev-log-size:", "mktemp", `sed -e 's/\r$//' -e 's/\r/\n/g' "$f"`} {
 		if !strings.Contains(full, want) {
 			t.Fatalf("full read script missing %q:\n%s", want, full)
 		}
 	}
-	tailed := readDetachJobLogScript("/var/okdev/exec/j.log", 200, 0)
-	if !strings.Contains(tailed, `tail -n 200 "$f"`) {
-		t.Fatalf("tail read script missing tail: %s", tailed)
+	tailed := readDetachJobLogScript("/var/okdev/exec/j.log", jobsLogsOptions{TailLines: 200})
+	if !strings.Contains(tailed, `| tail -n 200`) {
+		t.Fatalf("tail read script missing tail stage: %s", tailed)
 	}
-	since := readDetachJobLogScript("/var/okdev/exec/j.log", -1, 1750000000)
+	filtered := readDetachJobLogScript("/var/okdev/exec/j.log", jobsLogsOptions{TailLines: 5, Grep: "reward=", Dedup: true})
+	for _, want := range []string{"grep -E -- 'reward='", "[repeated ", `| tail -n 5`} {
+		if !strings.Contains(filtered, want) {
+			t.Fatalf("filtered script missing %q:\n%s", want, filtered)
+		}
+	}
+	grepIdx := strings.Index(filtered, "grep -E")
+	dedupIdx := strings.Index(filtered, "awk")
+	tailIdx := strings.Index(filtered, "| tail -n 5")
+	if !(grepIdx < dedupIdx && dedupIdx < tailIdx) {
+		t.Fatalf("pipeline must be grep | dedup | tail, got:\n%s", filtered)
+	}
+	since := readDetachJobLogScript("/var/okdev/exec/j.log", jobsLogsOptions{TailLines: -1, SinceEpoch: 1750000000})
 	if !strings.Contains(since, "stat -c %Y") || !strings.Contains(since, "-lt 1750000000") {
 		t.Fatalf("since gate missing: %s", since)
 	}
@@ -393,4 +408,60 @@ func detachMetadataLineGroup(jobID, pod, container string, pid, pgid int, state 
 	}
 	return fmt.Sprintf("%s\t%d\t{\"jobId\":\"%s\",\"pod\":\"%s\",\"container\":\"%s\",\"pid\":%d,\"pgid\":%d,\"command\":\"python train.py\",\"startedAt\":\"2026-05-09T10:00:00Z\",\"stdoutPath\":\"/var/okdev/exec/%s.log\",\"stderrPath\":\"/var/okdev/exec/%s.log\",\"metaPath\":\"/var/okdev/exec/%s.json\",\"state\":\"%s\"%s}\n",
 		aliveFlag, groupLive, jobID, pod, container, pid, pgid, jobID, jobID, jobID, state, exitPart)
+}
+
+// Executes the generated read script through a real shell against a fixture
+// log with tqdm-style \r rewrites, CRLF endings, and multi-rank repeated
+// error spam — the #188/#189 scenarios.
+func TestDetachJobLogScriptFiltersThroughRealShell(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "job.log")
+	content := "step 1 reward=0.10\r\n" + // CRLF line
+		"10%|#\r20%|##\r30%|###\rprogress done\n" + // tqdm rewrites, one physical line
+		strings.Repeat("ValueError: missing weights for layer.7\n", 5) + // per-rank spam
+		"step 2 reward=0.15\n"
+	if err := os.WriteFile(logPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(opts jobsLogsOptions) string {
+		t.Helper()
+		script := readDetachJobLogScript(logPath, opts)
+		cmd := exec.Command("sh", "-c", script)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("script failed: %v (stderr: %s)", err, stderr.String())
+		}
+		size, ok := parseDetachLogSize(stderr.String())
+		if !ok || size != int64(stdout.Len()) {
+			t.Fatalf("size marker %d does not match stdout %d (stderr: %s)", size, stdout.Len(), stderr.String())
+		}
+		return stdout.String()
+	}
+
+	// CR normalization: tqdm frames become separate lines, CRLF is stripped.
+	plain := run(jobsLogsOptions{TailLines: -1})
+	if !strings.Contains(plain, "step 1 reward=0.10\n") || !strings.Contains(plain, "30%|###\nprogress done\n") {
+		t.Fatalf("CR normalization wrong:\n%q", plain)
+	}
+
+	// grep composes with tail: latest N matching lines.
+	grepped := run(jobsLogsOptions{TailLines: 1, Grep: "reward="})
+	if grepped != "step 2 reward=0.15\n" {
+		t.Fatalf("grep+tail wrong: %q", grepped)
+	}
+
+	// dedup folds the repeated exception into one line with a count.
+	deduped := run(jobsLogsOptions{TailLines: -1, Dedup: true})
+	if !strings.Contains(deduped, "ValueError: missing weights for layer.7 [repeated 5x]") {
+		t.Fatalf("dedup missing repeat fold:\n%q", deduped)
+	}
+	if strings.Count(deduped, "ValueError") != 1 {
+		t.Fatalf("dedup left duplicate lines:\n%q", deduped)
+	}
+	if !strings.Contains(deduped, "step 2 reward=0.15") {
+		t.Fatalf("dedup must keep unique lines:\n%q", deduped)
+	}
 }
