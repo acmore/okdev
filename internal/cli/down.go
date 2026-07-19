@@ -494,5 +494,10 @@ func downCleanupLocal(ui *upUI, payload *downOutput, sessionName string) error {
 		ui.stepDone("sync state", "cleared")
 		payload.Cleanup["syncState"] = "cleared"
 	}
+	// An intentional teardown is not a death cause — drop the snapshot so a
+	// later status does not report this session as externally reclaimed.
+	if err := session.ClearLastSeen(sessionName); err != nil {
+		slog.Debug("failed to clear last-seen snapshot", "session", sessionName, "error", err)
+	}
 	return nil
 }

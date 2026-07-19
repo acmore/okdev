@@ -60,6 +60,10 @@ If setup (installed tools, builds) is lost after a pod recreation: that is overl
 
 If a container was OOMKilled or crashed and the restart policy will not bring it back (`status --details` shows the terminated reason), the one-command recovery is `okdev restart [--yes]`: delete + recreate + full setup with the same config. When only one pod of a multi-pod session is broken, prefer `okdev restart --pod worker-3 [--yes]` — it deletes just that pod, the controller recreates it, and hooks replay only there; the other pods keep their caches and running detached jobs. PyTorchJob replicas need `restartPolicy: OnFailure` (the scaffold default) for `--pod` to work; with `Never` the operator would fail the whole job, and `restart --pod` refuses with the fix. Scripts referencing pods should use the short-name aliases (`master-0`, `worker-1`) so they survive the pod-name change.
 
+## Session Disappeared (not an okdev down)
+
+If `okdev status` reports the session gone that you did not `okdev down`, it now appends the last known pod states and any surviving cluster events. Read the events before recreating: `Evicted`/`Preempted`/quota messages mean the cluster reclaimed resources and `okdev up` will likely fail again; plain `Killing` events with no warnings usually mean a TTL/admin cleanup and `okdev up` recreates safely. `okdev status --output json` returns the same post-mortem structured (`found: false` plus `pods`/`events`) for automation. Events expire ~1h after emission — diagnose promptly.
+
 ## Auto-Cleared Failed Jobs / PyTorchJobs
 
 If the user's previous `okdev up` failed with a pod in `Failed` state on a `job` or `pytorchjob` workload, okdev may have already deleted that workload and cleared local session state as part of the same `okdev up`. Symptoms:
