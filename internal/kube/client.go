@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -2332,6 +2333,55 @@ func (c *Client) DescribePod(ctx context.Context, namespace, pod string) (string
 		}
 	}
 	return b.String(), nil
+}
+
+// EventSummary is a flattened cluster event, used for post-mortem reporting
+// after a session's objects are gone (events outlive their objects for a
+// while, so eviction/preemption/kill reasons remain queryable).
+type EventSummary struct {
+	Type         string
+	Reason       string
+	Message      string
+	Count        int32
+	LastSeen     time.Time
+	InvolvedKind string
+	InvolvedName string
+}
+
+// ListObjectEvents returns the namespace events for the named object,
+// newest last. The object itself may no longer exist.
+func (c *Client) ListObjectEvents(ctx context.Context, namespace, name string) ([]EventSummary, error) {
+	cs, _, err := c.clientset()
+	if err != nil {
+		return nil, err
+	}
+	list, err := cs.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("involvedObject.name=%s", name),
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]EventSummary, 0, len(list.Items))
+	for _, item := range list.Items {
+		lastSeen := item.LastTimestamp.Time
+		if lastSeen.IsZero() {
+			lastSeen = item.EventTime.Time
+		}
+		if lastSeen.IsZero() {
+			lastSeen = item.CreationTimestamp.Time
+		}
+		out = append(out, EventSummary{
+			Type:         item.Type,
+			Reason:       item.Reason,
+			Message:      item.Message,
+			Count:        item.Count,
+			LastSeen:     lastSeen,
+			InvolvedKind: item.InvolvedObject.Kind,
+			InvolvedName: item.InvolvedObject.Name,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LastSeen.Before(out[j].LastSeen) })
+	return out, nil
 }
 
 // WatchPodEvents watches Kubernetes events for the given pod and calls onEvent

@@ -1230,6 +1230,42 @@ if [[ "$HEALED_STATUS" == *"postSync stale"* || "$HEALED_STATUS" != *"postSync d
 fi
 echo "stale hook healing via up --wait-hooks verified"
 
+# ---------------------------------------------------------------------------
+# Death-cause reporting (#166): delete the workload behind okdev's back and
+# verify status explains what happened instead of a bare "not found".
+# ---------------------------------------------------------------------------
+
+echo "Testing death-cause report after an external workload delete"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status >/dev/null # refresh the last-seen snapshot
+EXTERNAL_WORKLOAD=$(session_workload_name "$NAMESPACE" "$SESSION_NAME")
+kubectl -n "$NAMESPACE" delete pytorchjob "$EXTERNAL_WORKLOAD"
+for i in $(seq 1 30); do
+  REMAINING=$(kubectl -n "$NAMESPACE" get pods -l "okdev.io/session=$SESSION_NAME" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  [[ "$REMAINING" == "0" ]] && break
+  sleep 2
+done
+DEATH_STATUS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status)
+if [[ "$DEATH_STATUS" != *"No matching sessions found"* || "$DEATH_STATUS" != *"Last known state"* ]]; then
+  echo "ERROR: expected death-cause report after external delete, got:" >&2
+  echo "$DEATH_STATUS" >&2
+  exit 1
+fi
+if [[ "$DEATH_STATUS" != *"master-0"* ]]; then
+  echo "ERROR: expected last-seen pod names in the death report" >&2
+  echo "$DEATH_STATUS" >&2
+  exit 1
+fi
+DEATH_JSON=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --output json)
+OKDEV_DEATH_JSON="$DEATH_JSON" python3 - <<'DEATHPY'
+import json, os, sys
+payload = json.loads(os.environ["OKDEV_DEATH_JSON"])
+if payload.get("found") is not False:
+    sys.exit("expected found=false in death report json")
+if not payload.get("pods"):
+    sys.exit("expected cached pods in death report json")
+DEATHPY
+echo "death-cause report verified (text + json)"
+
 echo "Testing explicit okdev down"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes
 assert_no_local_sync_processes "$SESSION_NAME" "$HOME_DIR/.okdev/sessions/${SESSION_NAME}/syncthing"

@@ -928,6 +928,10 @@ func persistSessionState(state *upState) error {
 			state.ui.warnf("failed to clear prior shutdown request: %v", err)
 		}
 	}
+	// A fresh/resumed workload invalidates any cached death-cause snapshot.
+	if err := session.ClearLastSeen(state.command.sessionName); err != nil {
+		slog.Debug("failed to clear last-seen snapshot", "session", state.command.sessionName, "error", err)
+	}
 	apiVersion, kind, workloadName := "", "", state.workloadName
 	if provider, ok := state.runtime.(workload.RefProvider); ok {
 		if refAPIVersion, refKind, refName, refErr := provider.WorkloadRef(); refErr == nil {

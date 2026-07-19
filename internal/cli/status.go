@@ -88,9 +88,22 @@ func newStatusCmd(opts *Options) *cobra.Command {
 				}
 			}
 			if len(views) == 0 {
+				if !all {
+					if report, ok := buildSessionDeathReport(ctx, cc.kube, cc.sessionName, cc.namespace); ok {
+						if opts.Output == "json" {
+							return outputJSON(cmd.OutOrStdout(), report)
+						}
+						fmt.Fprintln(cmd.OutOrStdout(), "No matching sessions found")
+						printSessionDeathReport(cmd.OutOrStdout(), report)
+						return nil
+					}
+				}
 				fmt.Fprintln(cmd.OutOrStdout(), "No matching sessions found")
 				return nil
 			}
+			// Cache a live snapshot per session so a later externally-reclaimed
+			// session can still explain what its pods looked like (#166).
+			captureSessionLastSeen(views)
 			if details {
 				if all || len(views) != 1 {
 					return fmt.Errorf("--details requires a single session")
