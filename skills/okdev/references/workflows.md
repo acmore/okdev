@@ -55,7 +55,7 @@ Use:
 
 - `okdev ssh` for the managed interactive shell (bash or zsh; okdev tmux prefix is `ctrl-a`)
 - `ssh okdev-<session>` for plain SSH
-- `okdev exec` for multi-pod parallel command execution (pdsh-style fanout with `--role`/`--label`/`--pod`/`--group`/`--workers` targeting, `--script` to upload+run a file, `--detach` for background runs surfaced by `okdev jobs list`, `--json` for structured per-pod results, and `--fanout` concurrency control)
+- `okdev exec` for multi-pod parallel command execution (pdsh-style fanout with `--role`/`--label`/`--pod`/`--group`/`--workers` targeting, `--script` to upload+run a file, `--detach` for background runs surfaced by `okdev jobs list`, `--pkill '<pattern>'` to kill matching processes without the raw-pkill self-match footgun, `--json` for structured per-pod results, and `--fanout` concurrency control)
 - `okdev jobs logs <job-id>` accepts the same `--pod`/`--role`/`--label`/`--exclude` targeting as `okdev exec`; use it to tail a subset of a detached job's pods instead of every pod in the session
 
 If attachable pods are involved, explain that interactive targeting follows attachable-pod selection rules rather than arbitrary pod choice.

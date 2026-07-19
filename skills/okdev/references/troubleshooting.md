@@ -111,6 +111,16 @@ When `okdev` is driven by scripts, CI, or agents, distinguish its pre-flight exi
 
 `okdev exec --json` reports each pod's result as data (`{pod, exit, stdout, stderr}`) and exits 0 whenever the JSON document is produced — a non-zero *remote* exit does not make okdev exit non-zero. Branch on each envelope's `exit`/`error`. Only pre-flight failures (session not found / cluster unreachable) bypass JSON and surface on stderr with the 74/78 codes above.
 
+## exec With pkill/kill Exits 137/143
+
+If an `okdev exec -- bash -lc 'pkill -f <pattern>; <cleanup>'` command exits 143 (SIGTERM) or 137 (SIGKILL) and the trailing cleanup did not run, the pattern most likely matched the shell running the command itself — its cmdline contains the full command string. okdev prints a stderr hint when it detects this shape. Fixes, in order of preference:
+
+- `okdev exec --pkill '<pattern>' [--signal <sig>]` — same matching as `pkill -f`, but structurally unable to match okdev's exec machinery
+- `okdev jobs stop <job-id>` for detached jobs (kills the whole process group)
+- raw pkill with the bracket trick: `pkill -f 'patter[n]'`
+
+Related contract: okdev's own control-plane/transport diagnostics (client-go, websocket retries) are routed to `~/.okdev/logs/okdev.log` and never mix into exec's stdout — in `--json` mode the JSON document on stdout stays machine-parseable even during apiserver instability.
+
 ## When To Escalate To kubectl
 
 Escalate to `kubectl` only when `okdev` output is not enough, for example:
