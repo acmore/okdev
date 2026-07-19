@@ -150,11 +150,12 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			}
 
 			if !background && (mode == "" || mode == "bi") && os.Getenv("OKDEV_SYNCTHING_BACKGROUND_CHILD") != "1" {
-				if pidPath, err := syncthingPIDPath(cc.sessionName); err == nil {
-					if pid, ok := readSyncthingPID(pidPath); ok && processAlive(pid) && processLooksLikeSyncthingSync(pid) {
-						fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync already active in background for session %s\n", cc.sessionName)
-						return nil
-					}
+				// Health check, not just process liveness (#165): an alive
+				// but stale process must not short-circuit the run — fall
+				// through so the foreground run re-establishes the channel.
+				if status, _ := checkSyncHealth(cc.sessionName); status == syncHealthActive {
+					fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync already active in background for session %s\n", cc.sessionName)
+					return nil
 				}
 			}
 
@@ -165,8 +166,18 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				}
 				if started {
 					fmt.Fprintf(cmd.OutOrStdout(), "Started syncthing sync in background for session %s\n", cc.sessionName)
-				} else {
+				} else if status, reason := checkSyncHealth(cc.sessionName); status == syncHealthActive {
 					fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync already running in background for session %s\n", cc.sessionName)
+				} else {
+					// Never claim "already running" for an unhealthy
+					// channel (#165) — that is the exact report that
+					// contradicted "sync wait". The user typed "okdev
+					// sync" to make sync work, so repair it here instead
+					// of pointing at --reset.
+					fmt.Fprintf(cmd.OutOrStdout(), "Sync process found but unhealthy for session %s (%s); repairing\n", cc.sessionName, reason)
+					if err := resetLocalSync(cmd, cc, false); err != nil {
+						return err
+					}
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Logs: %s\n", logPath)
 				return nil

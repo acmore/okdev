@@ -35,8 +35,9 @@ direction, then return. Purely a wait — it does not start or repair sync
 			if err := ensureExistingSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 				return err
 			}
-			if !syncthingSessionActive(cc.sessionName) {
-				return fmt.Errorf("background sync is not running for session %s; start it with \"okdev sync\" or \"okdev up\" first", cc.sessionName)
+			status, reason := checkSyncHealth(cc.sessionName)
+			if err := syncWaitGateError(cc.sessionName, status, reason); err != nil {
+				return err
 			}
 			pairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
 			if err != nil {
@@ -52,6 +53,75 @@ direction, then return. Purely a wait — it does not start or repair sync
 
 	cmd.Flags().DurationVar(&timeout, "timeout", syncWaitDefaultTimeout, "Give up if sync has not converged within this duration")
 	return cmd
+}
+
+// detachSyncWarning returns a stderr warning for launching a detached job
+// over an unhealthy sync channel (issue #165): the job would run stale or
+// missing code (typically exit 127) with nothing tying the failure back to
+// sync. Empty when the channel is healthy.
+func detachSyncWarning(status syncHealthStatus, reason string) string {
+	switch status {
+	case syncHealthActive:
+		return ""
+	case syncHealthStale:
+		return fmt.Sprintf("warning: sync is running but unhealthy (%s) — the detached job may run stale code; repair with \"okdev sync\" or gate the launch with --require-sync", reason)
+	default:
+		return "warning: sync is not running — the detached job may run stale code; start it with \"okdev sync\" or gate the launch with --require-sync"
+	}
+}
+
+// detachSyncPreflight guards a detached launch against the issue #165
+// wasted-run. Without --require-sync an unhealthy channel produces a stderr
+// warning only; with it, the launch aborts unless sync is healthy AND every
+// mapping has fully converged. Sessions with no sync mappings are exempt from
+// the warning (there is no channel to be stale).
+func detachSyncPreflight(cmd *cobra.Command, cc *commandContext, requireSync bool) error {
+	if len(cc.cfg.Spec.Sync.Paths) == 0 {
+		if requireSync {
+			return fmt.Errorf("--require-sync: session %s has no sync mappings", cc.sessionName)
+		}
+		return nil
+	}
+	status, reason := checkSyncHealth(cc.sessionName)
+	if !requireSync {
+		if warn := detachSyncWarning(status, reason); warn != "" {
+			fmt.Fprintln(cmd.ErrOrStderr(), warn)
+		}
+		return nil
+	}
+	if err := syncWaitGateError(cc.sessionName, status, reason); err != nil {
+		return fmt.Errorf("--require-sync: %w", err)
+	}
+	pairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
+	if err != nil {
+		return err
+	}
+	target, err := resolveTargetRef(cmd.Context(), cc.opts, cc.cfg, cc.namespace, cc.sessionName, cc.kube)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(cmd.ErrOrStderr(), "--require-sync: waiting for sync convergence before launch")
+	if err := runSyncWaitConvergence(cmd.Context(), cc, target.PodName, pairs, syncWaitDefaultTimeout, cmd.ErrOrStderr()); err != nil {
+		return fmt.Errorf("--require-sync: %w", err)
+	}
+	return nil
+}
+
+// syncWaitGateError converts a session's sync health into the gate error for
+// commands that need a live sync channel (sync wait, exec --require-sync).
+// Issue #165: a stale channel (process alive, peer disconnected — the state a
+// laptop network drop leaves behind) must never be reported as "not running";
+// the two states have different repairs and the message must match what
+// "okdev sync" reports for the same channel.
+func syncWaitGateError(sessionName string, status syncHealthStatus, reason string) error {
+	switch status {
+	case syncHealthActive:
+		return nil
+	case syncHealthStale:
+		return fmt.Errorf("background sync is running but unhealthy for session %s (%s); repair it with \"okdev sync\" or \"okdev sync --reset\"", sessionName, reason)
+	default:
+		return fmt.Errorf("background sync is not running for session %s; start it with \"okdev sync\" or \"okdev up\" first", sessionName)
+	}
 }
 
 // runSyncWaitConvergence polls every managed folder on both syncthing

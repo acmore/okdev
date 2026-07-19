@@ -1112,6 +1112,11 @@ func TestExecPkillFlagValidation(t *testing.T) {
 			args:    []string{"--pkill", "train.py", "--signal", "TERM;rm"},
 			wantErr: "must be a signal name or number",
 		},
+		{
+			name:    "require-sync without detach",
+			args:    []string{"--require-sync", "--", "echo", "hi"},
+			wantErr: "--require-sync requires --detach",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

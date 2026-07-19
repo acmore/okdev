@@ -39,7 +39,7 @@ agents can react without launching a diagnostic chain on every blip:
 - `okdev target show`
 - `okdev target set [--pod <name> | --role <role>]`
 - `okdev agent list`
-- `okdev exec [session] [--shell /bin/bash] [--no-tty] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--detach] [--timeout <duration>] [--log-dir <path>] [--no-prefix] [--json] [--require-all] [--gateway <pod>] [--fanout N] [--pkill <pattern> [--signal <sig>]] [-- command...]`
+- `okdev exec [session] [--shell /bin/bash] [--no-tty] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--detach] [--timeout <duration>] [--log-dir <path>] [--no-prefix] [--json] [--require-all] [--gateway <pod>] [--fanout N] [--pkill <pattern> [--signal <sig>]] [--require-sync] [-- command...]`
 - `okdev jobs list [session] [--job-id <id>] [--container <name>] [--fanout N]`
 - `okdev jobs logs <job-id> [session] [-f|--follow] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--fanout N]`
 - `okdev jobs stop <job-id> [session] [--container <name>] [--fanout N]`
@@ -120,6 +120,7 @@ agents can react without launching a diagnostic chain on every blip:
 - The `pid` returned from `--detach` is the pid of your command itself (okdev re-parents the launcher so `$!` is your program's pid after `execve`). `kill <pid>` or `okdev exec --pod <pod> -- kill <pid>` therefore targets your command, not a wrapper shell.
 - When using `--detach`, pass the command you want okdev to launch directly. Do not add an extra `nohup ... &` inside the command string.
 - `--timeout`: per-pod command timeout (e.g., `30s`, `5m`). Pods exceeding the timeout are cancelled and reported as failed.
+- `--require-sync` (with `--detach`): refuse to launch unless background sync is healthy **and** every mapping has fully converged (an inline `okdev sync wait`). Without it, a detached launch on a dead or unhealthy sync channel still proceeds but prints a stderr warning that the job may run stale code. Requires the session to have sync mappings.
 - `--pkill <pattern>`: kill processes whose full cmdline matches the extended regex, on the selected pods. Unlike a raw `pkill -f`, it can never match okdev's own exec machinery (the helper excludes itself and its whole ancestor chain), so no bracket trick (`pkill -f 'patter[n]'`) is needed. Prints one `killed <pid> <cmdline>` line per signalled process and follows the pkill exit convention: 0 when at least one process matched, 1 otherwise. `--signal <name|number>` (default `TERM`) selects the signal. Cannot be combined with a command after `--`, `--script`, `--shell`, or `--detach`. For detached jobs prefer `okdev jobs stop`, which terminates the whole process group.
 - `--log-dir`: write per-pod output to `<dir>/<short-name>.log`. Streaming to stdout still happens.
 - `--no-prefix`: suppress the pod name prefix in output. Auto-enabled when stdout is not a terminal (pipe/redirect/CI); pass `--no-prefix=false` to keep the prefix in that case.
@@ -322,6 +323,7 @@ agents can react without launching a diagnostic chain on every blip:
 - With multiple mappings, each becomes its own syncthing folder; the first (primary) mapping is the one shared to mesh receivers, and `sync reset-remote` clears only the primary remote.
 - A mapping's local root may nest inside the primary root: okdev maintains a managed block in the primary root's `.stignore` excluding it from the primary folder (written before the sync daemon starts). Removing a mapping retains the entry as a tombstone so the subtree never silently joins the primary folder; sync start prints a notice and `status --details` lists active/retained excludes.
 - Without an explicit `--mode`, no-op when background sync is already active for the session.
+- Liveness is judged by health, not just process existence: a sync process that is alive but unhealthy (e.g. peer disconnected after a network drop) is never reported as "already running" — `okdev sync` repairs it in place (reset local state + restart), so a plain `okdev sync` recovers a dead or stale channel without `--reset`. `okdev sync` and `okdev sync wait` share this health check and can no longer contradict each other about the same channel.
 - `--background`: explicitly request detached background mode.
 - `--reset`: check local-to-hub sync and mesh receiver health, then reset only what is broken. Skips the local sync teardown when the primary sync is already healthy. For sessions with mesh receivers, probes each receiver and re-runs mesh setup only when broken or disconnected receivers are found.
 - `--reset --force` / `--reset -f`: unconditionally reset without health checks.
@@ -334,7 +336,7 @@ agents can react without launching a diagnostic chain on every blip:
 
 - Blocks until every configured sync mapping has zero pending bytes in **both** directions, then returns — the edit-run loop guarantee: `vim train.py && okdev sync wait && okdev exec -- python train.py`.
 - Triggers an immediate rescan on both sides before waiting, so files written moments earlier are picked up now instead of after the filesystem-watcher delay.
-- Purely a wait: it does not start or repair sync. If background sync is not running it fails fast with guidance (`okdev sync` starts it, `okdev sync --reset` repairs it).
+- Purely a wait: it does not start or repair sync. It fails fast with a state-accurate report: "not running" when the background process is gone (start it with `okdev sync`), or "running but unhealthy (…)" when the process is alive but the channel is broken (repair with `okdev sync`, which self-heals, or `okdev sync --reset`).
 - Prints pending-byte progress while waiting; exits non-zero if convergence is not reached within `--timeout`.
 
 ### `okdev upgrade`
