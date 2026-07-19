@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -443,14 +444,54 @@ func TestBuildCmdInteractiveShell(t *testing.T) {
 
 func TestBuildCmdRawCommandUsesLoginShellCommandMode(t *testing.T) {
 	cmd := buildCmd(fakeSessionCmd{raw: "echo hi", env: []string{"A=B"}}, "/bin/bash", []string{"SSH_AUTH_SOCK=/tmp/agent.sock"})
-	if got := strings.Join(cmd.Args, " "); got != "/bin/bash -lc echo hi" {
+	// The payload travels via the environment, never argv: the wrapper
+	// shell's cmdline must not be matchable by a pkill -f pattern taken
+	// from the command itself (issue #170).
+	if got := strings.Join(cmd.Args, " "); strings.Contains(got, "echo hi") {
+		t.Fatalf("raw command must not appear in argv: %q", got)
+	}
+	if got := strings.Join(cmd.Args, " "); got != `/bin/bash -lc eval "$OKDEV_SSHD_COMMAND"` {
 		t.Fatalf("unexpected raw command args: %q", got)
+	}
+	if !contains(cmd.Env, "OKDEV_SSHD_COMMAND=echo hi") {
+		t.Fatalf("expected command payload in env: %#v", cmd.Env)
 	}
 	if !contains(cmd.Env, "A=B") {
 		t.Fatalf("expected session env to be appended: %#v", cmd.Env)
 	}
 	if !contains(cmd.Env, "SSH_AUTH_SOCK=/tmp/agent.sock") {
 		t.Fatalf("expected extra env to be appended: %#v", cmd.Env)
+	}
+}
+
+func TestBuildCmdRawCommandRunsPayloadFromEnv(t *testing.T) {
+	cmd := buildCmd(fakeSessionCmd{raw: "printf %s payload-from-env"}, "/bin/sh", nil)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if string(out) != "payload-from-env" {
+		t.Fatalf("unexpected output: %q", out)
+	}
+}
+
+// Regression for issue #170: `pkill -f <pattern>` inside the command must not
+// match the wrapper shell that runs the command. Before the env-payload change
+// the wrapper's cmdline contained the full command string, so pkill killed its
+// own wrapper (exit 143) and the trailing cleanup never ran.
+func TestBuildCmdRawCommandSurvivesPkillOfOwnPattern(t *testing.T) {
+	if _, err := exec.LookPath("pkill"); err != nil {
+		t.Skip("pkill not available")
+	}
+	marker := fmt.Sprintf("okdev-selfkill-%d-%d", os.Getpid(), time.Now().UnixNano())
+	raw := fmt.Sprintf(`pkill -f %q; echo cleanup-ran`, marker)
+	cmd := buildCmd(fakeSessionCmd{raw: raw}, "/bin/sh", nil)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("wrapper was killed or failed: %v (output %q)", err, out)
+	}
+	if !strings.Contains(string(out), "cleanup-ran") {
+		t.Fatalf("trailing cleanup did not run, output %q", out)
 	}
 }
 

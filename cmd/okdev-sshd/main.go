@@ -169,6 +169,7 @@ func sessionHandler(shell string) ssh.Handler {
 
 func buildCmd(s ssh.Session, shell string, extraEnv []string) *exec.Cmd {
 	var cmd *exec.Cmd
+	env := append(append(os.Environ(), s.Environ()...), extraEnv...)
 	if len(s.RawCommand()) == 0 {
 		interactiveShell := resolveInteractiveShell(shell)
 		if script := interactiveLoginScript(s, interactiveShell); script != "" {
@@ -177,9 +178,18 @@ func buildCmd(s ssh.Session, shell string, extraEnv []string) *exec.Cmd {
 			cmd = exec.Command(interactiveShell, "-l")
 		}
 	} else {
-		cmd = exec.Command(shell, "-lc", s.RawCommand())
+		// The command payload travels via the environment, not argv: with
+		// `shell -lc <command>` the wrapper's /proc/<pid>/cmdline contains
+		// the full command text, so an unbracketed `pkill -f <pattern>`
+		// inside the command matches (and kills) its own wrapper before any
+		// trailing cleanup runs (#170). pkill/pgrep -f match cmdline only,
+		// never the environment, and eval of the variable preserves `-lc`
+		// semantics exactly. Appended last so a session-supplied variable of
+		// the same name cannot override the payload.
+		cmd = exec.Command(shell, "-lc", `eval "$OKDEV_SSHD_COMMAND"`)
+		env = append(env, "OKDEV_SSHD_COMMAND="+s.RawCommand())
 	}
-	cmd.Env = append(append(os.Environ(), s.Environ()...), extraEnv...)
+	cmd.Env = env
 	return cmd
 }
 

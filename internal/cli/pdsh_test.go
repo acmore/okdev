@@ -1220,3 +1220,63 @@ func TestRunMultiExecInfraFailureCarriesSentinel(t *testing.T) {
 		t.Fatalf("expected FAILED framing for infra failures, got %q", stderr.String())
 	}
 }
+
+// Regression for issue #170: an exit 143/137 from a command containing
+// pkill/kill gets a self-kill hint on stderr (the pattern likely matched a
+// shell running the command itself), while unrelated commands and exit codes
+// stay hint-free.
+func TestRunMultiExecSelfKillHint(t *testing.T) {
+	tests := []struct {
+		name     string
+		command  []string
+		exitCode int
+		wantHint bool
+	}{
+		{
+			name:     "pkill with SIGTERM exit gets hint",
+			command:  []string{"bash", "-lc", `pkill -f "train.py"; rm -f /tmp/lock`},
+			exitCode: 143,
+			wantHint: true,
+		},
+		{
+			name:     "kill with SIGKILL exit gets hint",
+			command:  []string{"bash", "-lc", "kill -9 $(cat pid)"},
+			exitCode: 137,
+			wantHint: true,
+		},
+		{
+			name:     "pkill with ordinary exit gets no hint",
+			command:  []string{"bash", "-lc", `pkill -f "train.py"`},
+			exitCode: 1,
+			wantHint: false,
+		},
+		{
+			name:     "signal exit without kill in command gets no hint",
+			command:  []string{"python", "train.py"},
+			exitCode: 143,
+			wantHint: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &fakePdshExecClient{
+				errs: map[string]error{
+					"okdev-sess-worker-0": k8sexec.CodeExitError{Err: fmt.Errorf("command terminated with exit code %d", tt.exitCode), Code: tt.exitCode},
+				},
+			}
+			pods := []kube.PodSummary{{Name: "okdev-sess-worker-0", Phase: "Running"}}
+			var stdout, stderr bytes.Buffer
+			err := runMultiExec(context.Background(), client, "default", pods, "dev", tt.command, "", 0, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			gotHint := strings.Contains(stderr.String(), "hint: exit")
+			if gotHint != tt.wantHint {
+				t.Fatalf("hint presence = %v, want %v; stderr %q", gotHint, tt.wantHint, stderr.String())
+			}
+			if tt.wantHint && !strings.Contains(stderr.String(), "patter[n]") {
+				t.Fatalf("expected bracket-trick suggestion, got %q", stderr.String())
+			}
+		})
+	}
+}

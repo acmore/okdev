@@ -53,7 +53,9 @@ type Request struct {
 	Port    int      `json:"port"`
 	Targets []Target `json:"targets"`
 	// Command is a complete shell command string executed via the remote
-	// pod's okdev-sshd (which runs it with `shell -lc`).
+	// pod's okdev-sshd (which runs it with `shell -lc`, delivering the
+	// payload through the environment so the wrapper's cmdline is not
+	// matchable by pkill -f patterns taken from the command itself).
 	Command string `json:"command,omitempty"`
 	// Script is executed on each pod by writing it to a temp file (so
 	// shebangs are honored) and running it with ScriptArgs.

@@ -99,7 +99,11 @@ func newExecCmd(opts *Options) *cobra.Command {
   okdev exec --role worker --detach -- python train.py
 
   # Detach a local script on worker pods
-  okdev exec --role worker --detach --script ./benchmark.sh -- --steps 100`,
+  okdev exec --role worker --detach --script ./benchmark.sh -- --steps 100
+
+  # Kill processes by pattern: bracket the pattern so pkill cannot match the
+  # shell running the command itself (for detached jobs prefer okdev jobs stop)
+  okdev exec -- bash -lc 'pkill -f "trai[n].py"'`,
 		Aliases: []string{"connect"},
 		// Flag-like-value validation must run in the Args stage: a swallowed
 		// "--" shifts command words into session args, so validateExecArgs
@@ -1059,9 +1063,32 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 		}
 	}
 	if len(failures) > 0 {
-		return reportFanoutFailures(ctx, client, namespace, container, failures, len(pods), stderr)
+		return reportFanoutFailures(ctx, client, namespace, container, failures, len(pods), stderr, strings.Join(command, " "))
 	}
 	return nil
+}
+
+// selfKillHint explains a likely pkill/kill self-match (issue #170): a shell
+// running the command carries the full command text in its cmdline, so an
+// unbracketed `pkill -f <pattern>` inside the command can match and kill the
+// shell it is running under (SIGTERM → exit 143) before any trailing cleanup
+// executes.
+func selfKillHint(failures []podExecResult, commandDisplay string) string {
+	if !strings.Contains(commandDisplay, "kill") {
+		return ""
+	}
+	for _, f := range failures {
+		kind, code := classifyPodExecFailure(f.err)
+		if kind != "remote-exit" || (code != 137 && code != 143) {
+			continue
+		}
+		sig := "SIGTERM"
+		if code == 137 {
+			sig = "SIGKILL"
+		}
+		return fmt.Sprintf("hint: exit %d (%s) with kill/pkill in the command often means the pattern matched a shell running the command itself; bracket the pattern (e.g. pkill -f 'patter[n]') or use `okdev jobs stop` for detached jobs", code, sig)
+	}
+	return ""
 }
 
 // reportFanoutFailures prints the per-pod failure summary and builds the
@@ -1072,7 +1099,7 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 // failure (transport, timeout, container gone) keeps the FAILED framing and
 // wraps ErrExecInfraFailure so okdev exits with the dedicated infra code
 // (ExitExecInfraFailure), letting scripts and monitors tell the two apart.
-func reportFanoutFailures(ctx context.Context, client connect.ExecClient, namespace, container string, failures []podExecResult, total int, stderr io.Writer) error {
+func reportFanoutFailures(ctx context.Context, client connect.ExecClient, namespace, container string, failures []podExecResult, total int, stderr io.Writer, commandDisplay string) error {
 	remoteExitOnly := true
 	parts := make([]string, 0, len(failures))
 	for _, f := range failures {
@@ -1087,8 +1114,16 @@ func reportFanoutFailures(ctx context.Context, client connect.ExecClient, namesp
 		}
 		parts = append(parts, part)
 	}
+	summary := strings.Join(parts, "\n")
 	if remoteExitOnly {
-		fmt.Fprintf(stderr, "\nCOMMAND EXITED NON-ZERO:\n%s\n", strings.Join(parts, "\n"))
+		fmt.Fprintf(stderr, "\nCOMMAND EXITED NON-ZERO:\n%s\n", summary)
+	} else {
+		fmt.Fprintf(stderr, "\nFAILED:\n%s\n", summary)
+	}
+	if hint := selfKillHint(failures, commandDisplay); hint != "" {
+		fmt.Fprintln(stderr, hint)
+	}
+	if remoteExitOnly {
 		if total == 1 {
 			// Single-pod runs keep the documented "remote exit status is
 			// always preserved" contract: wrap the pod's own ExitError so
@@ -1097,7 +1132,6 @@ func reportFanoutFailures(ctx context.Context, client connect.ExecClient, namesp
 		}
 		return fmt.Errorf("command exited non-zero on %d of %d pod(s)", len(failures), total)
 	}
-	fmt.Fprintf(stderr, "\nFAILED:\n%s\n", strings.Join(parts, "\n"))
 	return fmt.Errorf("%d of %d pods failed: %w", len(failures), total, ErrExecInfraFailure)
 }
 
@@ -1670,7 +1704,9 @@ func runMultiExecScript(ctx context.Context, client scriptCopyClient, namespace 
 		}
 	}
 	if len(failures) > 0 {
-		return reportFanoutFailures(ctx, client, namespace, container, failures, len(pods), stderr)
+		// Script exec runs the uploaded file (`sh <path>`), so no wrapper
+		// cmdline carries user text — the self-kill hint does not apply.
+		return reportFanoutFailures(ctx, client, namespace, container, failures, len(pods), stderr, "")
 	}
 	return nil
 }
