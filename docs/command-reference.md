@@ -370,6 +370,13 @@ agents can react without launching a diagnostic chain on every blip:
 - `--reset --force --local` / `--reset --force --mesh`: force reset a specific component.
 - `okdev init` writes the starter config and, for built-in templates, a starter local `.stignore` file for the initialized sync root.
 
+### `okdev sync status [session] [--top 5] [--output json]`
+
+- Scope: the **inventory** question — *what* is still moving, and why is it taking so long? Complementary to `okdev sync` (the channel) and `okdev sync wait` (has it finished): use `status` when a transfer is slow or stuck and you need the cause, `wait` when you just need it to be done. Canonical sequence when sync will not converge: `okdev sync status` → add the offending path to `.stignore` → `okdev sync` → `okdev sync wait`.
+- Reports per mapping: pending bytes and file count, the largest **actually pending** files with each one's share of the transfer and its direction (`local->remote` / `remote->local`), and the exclude patterns in force — noting whether they come from a `.stignore` file or from okdev's built-in defaults when no file exists.
+- The pending set comes from syncthing itself (`/rest/db/need`), not from a scan of local file sizes: an already-synced file never appears, and a file pending **from** the pod does. This is the difference from the large-file warning printed during `okdev up`, which is a local size heuristic — that warning now names its top entries inline and points here for the authoritative answer.
+- `--top N` changes how many pending files are named per mapping (default 5). One file at a 90% share is the common case, and it is a one-line `.stignore` fix; repeatedly running `okdev sync --reset` against it never converges, because the cause is still there.
+
 ### `okdev sync wait [session] [--timeout 10m]`
 
 - Scope: the **data** question — has everything propagated? — complementary to `okdev sync`, which manages the channel. Blocks until every configured sync mapping has zero pending bytes in **both** directions, then returns — the edit-run loop guarantee: `vim train.py && okdev sync wait && okdev exec -- python train.py`.

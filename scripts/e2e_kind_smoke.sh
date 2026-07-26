@@ -242,6 +242,102 @@ if [[ "$PROBE_CONTENT" != *"sync-wait-payload"* ]]; then
 fi
 echo "sync wait convergence guarantee verified"
 
+# Issue #215: "which file is holding up the transfer" had no answer after the
+# fact — no `sync status`, and the up-time warning was a local size heuristic
+# pointing at "earlier logs".
+echo "Testing okdev sync status reports the actual pending set"
+SYNC_STATUS_CONVERGED=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync status)
+if [[ "$SYNC_STATUS_CONVERGED" != *"Sync converged"* ]]; then
+  echo "ERROR: expected sync status to report a converged channel, got:" >&2
+  echo "$SYNC_STATUS_CONVERGED" >&2
+  exit 1
+fi
+if [[ "$SYNC_STATUS_CONVERGED" != *"excludes in force"* ]]; then
+  echo "ERROR: expected sync status to report the excludes in force, got:" >&2
+  echo "$SYNC_STATUS_CONVERGED" >&2
+  exit 1
+fi
+
+# A pending set only exists while data is in flight: the index arrives before
+# the bytes do. Pausing first is what makes that observable rather than racy —
+# the whole payload is announced in one go on resume, instead of trickling in
+# as the watcher notices each file.
+PENDING_PROBE_DIR="$SYNC_DIR/pending-probe"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync pause >/dev/null
+mkdir -p "$PENDING_PROBE_DIR"
+# Incompressible, so the transfer cannot be shortcut, and big enough to
+# dominate the share column.
+dd if=/dev/urandom of="$PENDING_PROBE_DIR/blob.bin" bs=1048576 count=192 >/dev/null 2>&1
+for i in $(seq 1 400); do printf 'pending-payload-%s' "$i" >"$PENDING_PROBE_DIR/file-$i.txt"; done
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync resume >/dev/null
+PENDING_JSON=""
+PENDING_OBSERVED=false
+for i in $(seq 1 40); do
+  PENDING_JSON=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync status --output json)
+  if OKDEV_SYNC_STATUS_JSON="$PENDING_JSON" python3 -c '
+import json, os, sys
+report = json.loads(os.environ["OKDEV_SYNC_STATUS_JSON"])
+sys.exit(0 if (report.get("needBytes") or 0) > 0 else 1)
+'; then
+    PENDING_OBSERVED=true
+    break
+  fi
+done
+if [[ "$PENDING_OBSERVED" != "true" ]]; then
+  echo "ERROR: never observed a pending transfer for a 192 MiB payload; sync status reported:" >&2
+  echo "$PENDING_JSON" >&2
+  rm -rf "$PENDING_PROBE_DIR"
+  exit 1
+fi
+OKDEV_SYNC_STATUS_JSON="$PENDING_JSON" python3 - <<'SYNCSTATUSPY'
+import json, os, sys
+report = json.loads(os.environ["OKDEV_SYNC_STATUS_JSON"])
+if report.get("converged"):
+    sys.exit("expected converged=false while the payload is in flight")
+if not report.get("needBytes") or not report.get("needFiles"):
+    sys.exit(f"expected pending bytes and file count, got {report!r}")
+folders = report.get("folders") or []
+pending = [f for folder in folders for f in (folder.get("pending") or [])]
+if not pending:
+    sys.exit(f"expected the actual pending set from /rest/db/need, got {folders!r}")
+# Largest first, each attributed a share: "this one file is most of what is
+# left" is the answer that makes the report actionable (#215).
+if pending != sorted(pending, key=lambda f: -f["size"]):
+    sys.exit(f"expected pending files ordered by size, got {pending!r}")
+# A share above 100% is the mid-transfer bug: needBytes shrinks as blocks
+# arrive while a need entry keeps its whole file size.
+if not all(0 < f["share"] <= 1 for f in pending):
+    sys.exit(f"expected every share within 0-100% of the transfer, got {pending!r}")
+# Directories are pending items too, but listing one among "the largest
+# pending files" is noise — its size is metadata, not transfer volume.
+if any(f["name"].rstrip("/") == "pending-probe" for f in pending):
+    sys.exit(f"expected directory entries to be filtered out of the pending files, got {pending!r}")
+if not all(f["direction"] == "local->remote" for f in pending):
+    sys.exit(f"expected local->remote for a locally written payload, got {pending!r}")
+if not any(folder.get("excludes") for folder in folders):
+    sys.exit("expected the excludes in force to be reported")
+SYNCSTATUSPY
+# Re-query mid-transfer: the shares must still be sane once part of the blob
+# has already moved, which is exactly when the >100% bug appeared (a whole
+# file size divided by the shrinking remaining bytes).
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync status || true
+PENDING_MID=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync status --output json || true)
+if ! OKDEV_SYNC_STATUS_JSON="$PENDING_MID" python3 -c '
+import json, os, sys
+report = json.loads(os.environ["OKDEV_SYNC_STATUS_JSON"])
+bad = [f for folder in (report.get("folders") or []) for f in (folder.get("pending") or []) if f["share"] > 1]
+if bad:
+    sys.exit(f"pending files reported at more than 100% of the transfer: {bad!r}")
+'; then
+  echo "ERROR: mid-transfer shares exceeded the whole transfer" >&2
+  echo "$PENDING_MID" >&2
+  rm -rf "$PENDING_PROBE_DIR"
+  exit 1
+fi
+rm -rf "$PENDING_PROBE_DIR"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync wait --timeout 5m >/dev/null
+echo "sync status pending-set reporting verified (json shape, share + direction)"
+
 echo "Verifying repeated okdev up reuses active sync"
 SYNC_PID_BEFORE=""
 for i in $(seq 1 5); do

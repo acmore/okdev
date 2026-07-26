@@ -772,7 +772,7 @@ func upSetup(state *upState) error {
 			if progress.NeedWarnLargeSync && !warnedLargeSync && localPath != "" {
 				state.ui.stopActive()
 				warnLargeSyncEntries(state.ui.out, localPath, progress.MaxNeedBytes)
-				state.ui.warnf("sync is processing unusually large files; see earlier logs")
+				state.ui.warnf("%s", summarizeLargeSyncEntries(localPath, progress.MaxNeedBytes))
 				warnedLargeSync = true
 			}
 		}); err != nil {
