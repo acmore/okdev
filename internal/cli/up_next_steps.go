@@ -54,7 +54,7 @@ func buildUpNextSteps(hasSync, hasPostSync, hasPostCreate, waitHooksUsed bool, p
 	}
 	if multiPod {
 		hints = append(hints, nextStepHint{"okdev exec --all | --role worker", "fanout is opt-in; a selector-less exec runs on the target pod only"})
-		hints = append(hints, nextStepHint{"master-0 / worker-1", "short-name aliases resolve inside every pod — no pod-IP lookups needed"})
+		hints = append(hints, nextStepHint{"master-0 / worker-1", "short-name aliases that resolve inside every pod, so launch scripts need no pod-IP lookups"})
 	}
 	hints = append(hints, nextStepHint{"okdev jobs logs --tail --grep", "follow detached runs without re-deriving pod names"})
 
