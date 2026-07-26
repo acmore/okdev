@@ -19,7 +19,11 @@ const lastSeenFileName = "last-seen.json"
 // lifecycle transitions (up, down) clear it so it only ever describes an
 // external death.
 type LastSeen struct {
-	At        time.Time         `json:"at"`
+	At time.Time `json:"at"`
+	// RunID names the run this snapshot describes. A snapshot whose run-id no
+	// longer matches session.Info means the run it describes has ended and a
+	// different one took its place (#213).
+	RunID     string            `json:"runID,omitempty"`
 	Namespace string            `json:"namespace,omitempty"`
 	Workload  LastSeenWorkload  `json:"workload,omitempty"`
 	Pods      []LastSeenPod     `json:"pods,omitempty"`

@@ -127,20 +127,28 @@ func newStatusCmd(opts *Options) *cobra.Command {
 					Restarts  int32  `json:"restarts"`
 					Reason    string `json:"reason"`
 					PodCount  int    `json:"podCount"`
+					// PreviousRunEnd is present only while this run is the one
+					// that replaced an ended run (#213).
+					PreviousRunEnd *session.RunEnd `json:"previousRunEnd,omitempty"`
 				}
 				rows := make([]statusRow, 0, len(views))
 				for _, view := range views {
+					var previousRunEnd *session.RunEnd
+					if record, ok := currentSessionPreviousRunEnd(view.Session); ok {
+						previousRunEnd = &record
+					}
 					rows = append(rows, statusRow{
-						Session:   view.Session,
-						Owner:     view.Owner,
-						Workload:  view.WorkloadType,
-						TargetPod: view.TargetPod,
-						Phase:     view.Phase,
-						Age:       age(view.CreatedAt),
-						Ready:     view.Ready,
-						Restarts:  view.Restarts,
-						Reason:    view.Reason,
-						PodCount:  view.PodCount,
+						Session:        view.Session,
+						Owner:          view.Owner,
+						Workload:       view.WorkloadType,
+						TargetPod:      view.TargetPod,
+						Phase:          view.Phase,
+						Age:            age(view.CreatedAt),
+						Ready:          view.Ready,
+						Restarts:       view.Restarts,
+						Reason:         view.Reason,
+						PodCount:       view.PodCount,
+						PreviousRunEnd: previousRunEnd,
 					})
 				}
 				return outputJSON(cmd.OutOrStdout(), rows)
@@ -181,6 +189,16 @@ func newStatusCmd(opts *Options) *cobra.Command {
 					})
 				}
 				output.PrintTable(cmd.OutOrStdout(), []string{"SEL", "POD", "PHASE", "READY", "RESTARTS", "REASON", "AGE"}, podRows)
+			}
+			// A recreated session looks identical to one that never died, so
+			// carry the previous run's cause of death for as long as this run
+			// lives — the right mitigation depends on which class it was
+			// (#213).
+			if !all && len(views) == 1 {
+				if record, ok := currentSessionPreviousRunEnd(views[0].Session); ok {
+					fmt.Fprintln(cmd.OutOrStdout(), "")
+					printPreviousRunEnd(cmd.OutOrStdout(), record)
+				}
 			}
 			return nil
 		},

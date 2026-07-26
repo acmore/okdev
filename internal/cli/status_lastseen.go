@@ -24,37 +24,45 @@ func captureSessionLastSeen(views []sessionView) {
 		if err != nil || strings.TrimSpace(info.Name) == "" {
 			continue
 		}
-		snapshot := session.LastSeen{
-			At:        time.Now().UTC(),
-			Namespace: view.Namespace,
-			Workload: session.LastSeenWorkload{
-				APIVersion: info.WorkloadAPIVersion,
-				Kind:       info.WorkloadKind,
-				Name:       info.WorkloadName,
-			},
-		}
-		for _, pod := range view.Pods {
-			entry := session.LastSeenPod{
-				Name:     pod.Name,
-				Phase:    pod.Phase,
-				Ready:    pod.Ready,
-				Reason:   pod.Reason,
-				Deleting: pod.Deleting,
-				Node:     pod.NodeName,
-			}
-			for _, issue := range pod.ContainerIssues {
-				entry.Issues = append(entry.Issues, session.LastSeenPodIssue{
-					Container: issue.Container,
-					Reason:    issue.Reason,
-					ExitCode:  issue.ExitCode,
-				})
-			}
-			snapshot.Pods = append(snapshot.Pods, entry)
-		}
-		if err := session.SaveLastSeen(view.Session, snapshot); err != nil {
+		if err := session.SaveLastSeen(view.Session, buildLastSeenSnapshot(info, view.Namespace, view.Pods)); err != nil {
 			slog.Debug("failed to save last-seen snapshot", "session", view.Session, "error", err)
 		}
 	}
+}
+
+// buildLastSeenSnapshot renders live pods into the cached snapshot shape. It
+// records the run identity as well as the pods, so a later run can tell that
+// the run this snapshot describes is not the one now live (#213).
+func buildLastSeenSnapshot(info session.Info, namespace string, pods []kube.PodSummary) session.LastSeen {
+	snapshot := session.LastSeen{
+		At:        time.Now().UTC(),
+		RunID:     strings.TrimSpace(info.RunID),
+		Namespace: namespace,
+		Workload: session.LastSeenWorkload{
+			APIVersion: info.WorkloadAPIVersion,
+			Kind:       info.WorkloadKind,
+			Name:       info.WorkloadName,
+		},
+	}
+	for _, pod := range pods {
+		entry := session.LastSeenPod{
+			Name:     pod.Name,
+			Phase:    pod.Phase,
+			Ready:    pod.Ready,
+			Reason:   pod.Reason,
+			Deleting: pod.Deleting,
+			Node:     pod.NodeName,
+		}
+		for _, issue := range pod.ContainerIssues {
+			entry.Issues = append(entry.Issues, session.LastSeenPodIssue{
+				Container: issue.Container,
+				Reason:    issue.Reason,
+				ExitCode:  issue.ExitCode,
+			})
+		}
+		snapshot.Pods = append(snapshot.Pods, entry)
+	}
+	return snapshot
 }
 
 // sessionDeathReport is what okdev can still say about a session whose
