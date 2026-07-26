@@ -192,8 +192,8 @@ func newExecCmd(opts *Options) *cobra.Command {
 					return err
 				}
 				plan.podNames = []string{target.PodName}
+				plan.targetOnly = true
 				multiPod = true
-				printTargetOnlyNotice(cmd.ErrOrStderr(), cmd.Context(), cc, target)
 			}
 			if err := validateMultiPodFlags(allPods, workers, podNames, role, labels, exclude, groups, hasCommand, detach, sequential, parallel); err != nil {
 				return err
@@ -335,6 +335,10 @@ type execTargetPlan struct {
 	readyOnly  bool
 	sequential bool
 	parallel   bool
+	// targetOnly records that no selector was given, so the plan was narrowed
+	// to the target pod alone. The count is only knowable once session pods
+	// have been listed, which is why the notice is emitted downstream.
+	targetOnly bool
 }
 
 type execPodGroup struct {
@@ -659,20 +663,26 @@ func resolveExecNoPrefix(explicitlySet bool, noPrefix bool, out io.Writer) bool 
 	return !isTerminalWriter(out)
 }
 
-// printTargetOnlyNotice tells interactive users that their selector-less
-// command ran on the target pod only — fanout became opt-in (#178) and the
-// silent behavior change deserves a visible cue. TTY-gated: agents and
-// scripts (non-TTY stderr) get clean output and pay no per-call tokens, and
-// single-pod workloads (type pod) skip it because there is nothing to fan
-// out to anyway.
-func printTargetOnlyNotice(w io.Writer, ctx context.Context, cc *commandContext, target workload.TargetRef) {
-	if !isTerminalWriter(w) {
+// printTargetOnlyNotice tells the caller that their selector-less command is
+// about to run on the target pod only — fanout is opt-in (#178) and the silent
+// narrowing deserves a visible cue.
+//
+// Not TTY-gated (#212): the callers most likely to read "ran on every pod" as
+// "the deploy is complete" are agents and scripts, whose stderr is not a
+// terminal, and a partial deploy on a multi-node job surfaces hours later as
+// numerical divergence rather than as an error. What keeps the output cheap is
+// the denominator instead of the TTY: the notice is skipped unless the session
+// actually has another pod to fan out to, so single-pod sessions — the common
+// case, and every workload of type pod — stay silent.
+func printTargetOnlyNotice(w io.Writer, cc *commandContext, targetPod string, ran, sessionTotal int) {
+	if sessionTotal <= ran {
 		return
 	}
 	if cc == nil || cc.cfg == nil || normalizeWorkloadType(cc.cfg.Spec.Workload.Type) == workload.TypePod {
 		return
 	}
-	fmt.Fprintf(w, "notice: running on target pod %s only; use --all, --workers, --role, or --pod to fan out\n", target.PodName)
+	fmt.Fprintf(w, "notice: running on %d of %d session pod(s): target pod %s only; use --all, --workers, --role, or --pod to fan out\n",
+		ran, sessionTotal, targetPod)
 }
 
 func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvocation, plan execTargetPlan, container string, detach, killGroupOnExit bool, timeout time.Duration, logDir string, noPrefix bool, fanout int, jsonOutput bool, gatewayPod string, requireAll bool) error {
@@ -685,6 +695,10 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvo
 	groups, err := buildExecPodGroups(cc.sessionName, sessionPods, plan)
 	if err != nil {
 		return err
+	}
+	if plan.targetOnly && len(groups) == 1 && len(groups[0].Pods) > 0 {
+		printTargetOnlyNotice(cmd.ErrOrStderr(), cc, groups[0].Pods[0].Name,
+			len(groups[0].Pods), len(filterRunningPods(sessionPods)))
 	}
 	targetContainer := container
 	if targetContainer == "" {
@@ -1342,6 +1356,21 @@ func noMatchKillHint(failures []podExecResult, commandDisplay string) string {
 	return ""
 }
 
+// fanoutDeliveryNote states which side produced the exit codes, and over how
+// many pods. The count is the point: the old wording said "ran on every pod"
+// unconditionally, which a selector-less run (target pod only, #178) turned
+// into a false claim of full coverage (#212). "targeted" — never "every" —
+// keeps the sentence true no matter how the plan was narrowed; the
+// target-only notice printed earlier in the run carries the session
+// denominator.
+func fanoutDeliveryNote(total int) string {
+	scope := fmt.Sprintf("all %d targeted pods", total)
+	if total == 1 {
+		scope = "the 1 targeted pod"
+	}
+	return fmt.Sprintf("(the command was delivered and ran on %s; the exit codes above are the command's own results — delivery failures report as FAILED with exit 69)", scope)
+}
+
 // reportFanoutFailures prints the per-pod failure summary and builds the
 // command error. When every failure is the remote command merely exiting
 // non-zero (grep with no match, a failing test), the run is reported as a
@@ -1370,7 +1399,7 @@ func reportFanoutFailures(ctx context.Context, client connect.ExecClient, namesp
 		fmt.Fprintf(stderr, "\nCOMMAND EXITED NON-ZERO:\n%s\n", summary)
 		// Cleanup loops routinely misread a non-zero cleanup command as a pod
 		// failure (#192) — say explicitly which side produced the status.
-		fmt.Fprintln(stderr, "(the command was delivered and ran on every pod; the exit codes above are the command's own results — delivery failures report as FAILED with exit 69)")
+		fmt.Fprintln(stderr, fanoutDeliveryNote(total))
 	} else {
 		fmt.Fprintf(stderr, "\nFAILED:\n%s\n", summary)
 	}

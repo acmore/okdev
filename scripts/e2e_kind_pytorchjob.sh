@@ -411,7 +411,8 @@ echo "host aliases verified (master resolves $FIRST_WORKER_SHORT)"
 # Issue #178: a command without a pod selector runs on the target pod only —
 # fanout is opt-in, so a forgotten flag can no longer mutate every pod.
 echo "Testing selector-less exec targets only the target pod"
-EXEC_DEFAULT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- hostname)
+EXEC_DEFAULT_STDERR="$WORKDIR/exec-default.stderr"
+EXEC_DEFAULT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- hostname 2>"$EXEC_DEFAULT_STDERR")
 EXEC_DEFAULT_LINES=$(printf '%s
 ' "$EXEC_DEFAULT_OUTPUT" | grep -c . || true)
 if [[ "$EXEC_DEFAULT_LINES" -ne 1 || "$EXEC_DEFAULT_OUTPUT" != *"master-0"* ]]; then
@@ -419,7 +420,40 @@ if [[ "$EXEC_DEFAULT_LINES" -ne 1 || "$EXEC_DEFAULT_OUTPUT" != *"master-0"* ]]; 
   echo "$EXEC_DEFAULT_OUTPUT" >&2
   exit 1
 fi
-echo "selector-less exec default verified (target pod only)"
+# Issue #212: the denominator must reach a NON-TTY caller — stderr is a file
+# here, which is exactly the shape an agent or CI job sees. Before the fix the
+# only corrective output was TTY-gated, so scripts silently believed a
+# selector-less deploy had reached every pod.
+if ! grep -q 'running on 1 of 3 session pod(s)' "$EXEC_DEFAULT_STDERR"; then
+  echo "ERROR: expected the target-only notice with session counts on non-TTY stderr, got:" >&2
+  cat "$EXEC_DEFAULT_STDERR" >&2
+  exit 1
+fi
+if ! grep -q -- '--all' "$EXEC_DEFAULT_STDERR"; then
+  echo "ERROR: target-only notice must name the fanout flags, got:" >&2
+  cat "$EXEC_DEFAULT_STDERR" >&2
+  exit 1
+fi
+echo "selector-less exec default verified (target pod only, 1 of 3 reported to non-TTY)"
+
+# The failure summary must never claim coverage it does not have (#212): a
+# selector-less run that exits non-zero says "the 1 targeted pod", not
+# "every pod".
+echo "Testing selector-less exec failure summary reports the targeted count"
+set +e
+EXEC_DEFAULT_NONZERO=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'exit 3' 2>&1)
+set -e
+if [[ "$EXEC_DEFAULT_NONZERO" == *"every pod"* ]]; then
+  echo "ERROR: selector-less run must not claim it ran on every pod, got:" >&2
+  echo "$EXEC_DEFAULT_NONZERO" >&2
+  exit 1
+fi
+if [[ "$EXEC_DEFAULT_NONZERO" != *"ran on the 1 targeted pod"* ]]; then
+  echo "ERROR: expected the targeted-count delivery note, got:" >&2
+  echo "$EXEC_DEFAULT_NONZERO" >&2
+  exit 1
+fi
+echo "selector-less exec failure summary verified (1 targeted pod, no coverage claim)"
 
 echo "Testing exec --all across all session pods"
 EXEC_ALL_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-tty -- sh -lc 'echo hello-from-$(hostname)')
@@ -451,8 +485,8 @@ if [[ "$EXEC_NONZERO_OUTPUT" != *"COMMAND EXITED NON-ZERO"* || "$EXEC_NONZERO_OU
   echo "$EXEC_NONZERO_OUTPUT" >&2
   exit 1
 fi
-if [[ "$EXEC_NONZERO_OUTPUT" != *"delivered and ran on every pod"* ]]; then
-  echo "ERROR: expected the delivered-vs-failed clarifier under the non-zero summary" >&2
+if [[ "$EXEC_NONZERO_OUTPUT" != *"delivered and ran on all 3 targeted pods"* ]]; then
+  echo "ERROR: expected the delivered-vs-failed clarifier with the targeted count" >&2
   echo "$EXEC_NONZERO_OUTPUT" >&2
   exit 1
 fi
