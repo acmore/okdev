@@ -241,7 +241,20 @@ fi
 kubectl -n "$NAMESPACE" delete pod "$PVC_INIT_POD" >/dev/null 2>&1 || true
 
 echo "Starting PyTorchJob smoke session (1 master + 2 workers)"
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m
+PTJOB_UP_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m)
+echo "$PTJOB_UP_OUTPUT"
+
+# Issue #219: on a multi-pod session the ready card must name the primitives
+# that only matter here — fanout targeting and the in-pod short-name aliases.
+# Hand-rolled substitutes for exactly these (a getent-hosts IP lookup, a
+# forgotten --all) are what these hints exist to pre-empt.
+echo "Testing the next-steps hints on a multi-pod session"
+if [[ "$PTJOB_UP_OUTPUT" != *"--role worker"* || "$PTJOB_UP_OUTPUT" != *"master-0 / worker-1"* ]]; then
+  echo "ERROR: expected multi-pod fanout and alias hints, got:" >&2
+  echo "$PTJOB_UP_OUTPUT" >&2
+  exit 1
+fi
+echo "multi-pod next-steps hints verified"
 
 echo "Checking status"
 STATUS_OUTPUT=""

@@ -936,9 +936,31 @@ func upSetup(state *upState) error {
 		}
 	}
 	state.ui.printWarnings()
-	state.ui.printReadyCard(state.command.sessionName, state.command.namespace, target.PodName, sshSummary, syncSummary, state.command.cfg.Spec.Ports, state.syncPairs, syncModeSymbol)
+	state.ui.printReadyCard(state.command.sessionName, state.command.namespace, target.PodName, sshSummary, syncSummary, state.command.cfg.Spec.Ports, state.syncPairs, syncModeSymbol,
+		buildUpNextSteps(
+			len(state.syncPairs) > 0,
+			postSyncCmd != "",
+			postCreateCmd != "",
+			state.flags.waitHooks,
+			upSessionPodCount(state),
+		))
 	upgrade.NewChecker().CheckAndRemind(version.Version, state.cmd.ErrOrStderr())
 	return nil
+}
+
+// upSessionPodCount counts the pods this run brought up, which decides whether
+// the multi-pod hints apply. Best-effort: a failed listing simply drops those
+// hints rather than failing an `up` that already succeeded.
+func upSessionPodCount(state *upState) int {
+	if state == nil || state.command == nil || state.command.kube == nil {
+		return 0
+	}
+	pods, err := state.command.kube.ListPods(state.ctx, state.command.namespace, false, selectorForSessionRun(state.command.sessionName))
+	if err != nil {
+		slog.Debug("failed to count session pods for next-steps", "session", state.command.sessionName, "error", err)
+		return 0
+	}
+	return len(pods)
 }
 
 // persistSessionState writes the active-session pointer and session.Info
@@ -1904,7 +1926,7 @@ func (u *upUI) warnWriter() io.Writer {
 	return upWarnSink{ui: u}
 }
 
-func (u *upUI) printReadyCard(sessionName, namespace, pod, sshSummary, syncSummary string, ports []config.PortMapping, syncPairs []syncengine.Pair, syncModeSymbol string) {
+func (u *upUI) printReadyCard(sessionName, namespace, pod, sshSummary, syncSummary string, ports []config.PortMapping, syncPairs []syncengine.Pair, syncModeSymbol string, nextSteps []nextStepHint) {
 	u.stopActive()
 	fmt.Fprintln(u.out, "\n== Ready ==")
 	fmt.Fprintf(u.out, "session:   %s\n", sessionName)
@@ -1930,6 +1952,7 @@ func (u *upUI) printReadyCard(sessionName, namespace, pod, sshSummary, syncSumma
 	fmt.Fprintf(u.out, "- ssh %s\n", sshHostAlias(sessionName))
 	fmt.Fprintln(u.out, "- okdev status")
 	fmt.Fprintln(u.out, "- okdev down")
+	printUpNextStepHints(u.out, nextSteps)
 }
 
 // pairModeSymbol renders a mapping's direction arrow, defaulting the empty

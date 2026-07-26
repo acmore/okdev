@@ -265,6 +265,36 @@ if [[ "$REPEAT_UP_OUTPUT" != *"reused existing workload"* ]]; then
   echo "ERROR: expected repeated up to reuse existing pod workload" >&2
   exit 1
 fi
+# Issue #219: the primitives a session is about to need must be named on the
+# execution path, not only in the skill. Captured stdout here (non-TTY) is the
+# shape an agent or CI job sees — exactly the caller that operates from memory
+# of the tool and never reads the docs. They extend the ready card's existing
+# "next:" list rather than opening a second one.
+echo "Testing the next-steps hints on a single-pod session with sync"
+if [[ "$REPEAT_UP_OUTPUT" != *"okdev sync wait / exec --require-sync"* ]]; then
+  echo "ERROR: a session with sync mappings must be pointed at the convergence primitives, got:" >&2
+  echo "$REPEAT_UP_OUTPUT" >&2
+  exit 1
+fi
+if [[ "$(printf '%s\n' "$REPEAT_UP_OUTPUT" | grep -c '^next:')" != "1" ]]; then
+  echo "ERROR: expected exactly one next: section in the ready card, got:" >&2
+  echo "$REPEAT_UP_OUTPUT" >&2
+  exit 1
+fi
+# Shape-awareness is what keeps the block from being ignored: a single-pod
+# session has nothing to fan out to and no short-name aliases.
+if [[ "$REPEAT_UP_OUTPUT" == *"master-0 / worker-1"* || "$REPEAT_UP_OUTPUT" == *"--role worker"* ]]; then
+  echo "ERROR: multi-pod hints must not appear on a single-pod session, got:" >&2
+  echo "$REPEAT_UP_OUTPUT" >&2
+  exit 1
+fi
+NEXT_HINT_LINES=$(printf '%s\n' "$REPEAT_UP_OUTPUT" | sed -n '/^next:/,$p' | grep -c '^- .* — ' || true)
+if [[ "$NEXT_HINT_LINES" -lt 1 || "$NEXT_HINT_LINES" -gt 4 ]]; then
+  echo "ERROR: expected 1-4 session-shaped hint lines, got $NEXT_HINT_LINES" >&2
+  echo "$REPEAT_UP_OUTPUT" >&2
+  exit 1
+fi
+echo "next-steps hints verified ($NEXT_HINT_LINES lines, sync primitives present, multi-pod hints absent)"
 SYNC_REUSED=false
 if [[ "$REPEAT_UP_OUTPUT" == *"sync: already active"* ]]; then
   SYNC_REUSED=true
