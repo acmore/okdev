@@ -94,6 +94,20 @@ type PodSummary struct {
 	// A hook done-marker older than its container's start means the hook's
 	// effects were wiped by an in-place restart (annotations survive those).
 	ContainerStarts []ContainerStart
+	// ContainerImages carries what each container is actually running. Which
+	// image a session runs is otherwise invisible from okdev, and so is any
+	// divergence from the image the same code is tested in (#216).
+	ContainerImages []ContainerImage
+}
+
+// ContainerImage pairs a container with the image it runs. Image is the
+// reference as resolved by the kubelet (the running truth, which can differ
+// from the spec after a mutable tag moved); Digest is the immutable id when
+// the runtime reported one.
+type ContainerImage struct {
+	Name   string
+	Image  string
+	Digest string
 }
 
 // ContainerStart pairs a container name with its current start time.
@@ -2613,6 +2627,7 @@ func podSummaryFromPod(p *corev1.Pod) PodSummary {
 	reason := p.Status.Reason
 	var issues []ContainerIssue
 	var starts []ContainerStart
+	images := containerImagesFromPod(p)
 	for _, st := range p.Status.ContainerStatuses {
 		if st.Ready {
 			readyContainers++
@@ -2658,7 +2673,56 @@ func podSummaryFromPod(p *corev1.Pod) PodSummary {
 		NodeName:        p.Spec.NodeName,
 		ContainerIssues: issues,
 		ContainerStarts: starts,
+		ContainerImages: images,
 	}
+}
+
+// containerImagesFromPod reports the image per container: the reference as the
+// session declares it, plus the digest the runtime resolved it to.
+//
+// The name comes from the spec on purpose. The kubelet rewrites a status image
+// into its fully-qualified form ("ubuntu:22.04" becomes
+// "docker.io/library/ubuntu:22.04"), which no longer matches what the user
+// wrote and is what they need to compare against another image. The running
+// truth that the status *does* carry uniquely is the digest — a mutable tag
+// that moved keeps the same string in both places and differs only there — so
+// that is taken from the status. Containers with no status yet (pending pod)
+// report their spec image without one.
+func containerImagesFromPod(p *corev1.Pod) []ContainerImage {
+	statuses := make(map[string]corev1.ContainerStatus, len(p.Status.ContainerStatuses))
+	for _, st := range p.Status.ContainerStatuses {
+		statuses[st.Name] = st
+	}
+	out := make([]ContainerImage, 0, len(p.Spec.Containers))
+	for _, c := range p.Spec.Containers {
+		entry := ContainerImage{Name: c.Name, Image: c.Image}
+		if st, ok := statuses[c.Name]; ok {
+			if strings.TrimSpace(entry.Image) == "" {
+				entry.Image = st.Image
+			}
+			entry.Digest = imageDigestFromID(st.ImageID)
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// imageDigestFromID pulls the digest out of a container status ImageID, which
+// the runtime reports either as a full "repo@sha256:..." reference or as a
+// bare digest. Anything else (a plain tag from some runtimes) carries no
+// immutable identity and is dropped rather than shown as one.
+func imageDigestFromID(imageID string) string {
+	id := strings.TrimSpace(imageID)
+	if id == "" {
+		return ""
+	}
+	if at := strings.LastIndex(id, "@"); at >= 0 {
+		id = id[at+1:]
+	}
+	if strings.HasPrefix(id, "sha256:") {
+		return id
+	}
+	return ""
 }
 
 // containerIssueFromStatus extracts an abnormal termination from a container
