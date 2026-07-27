@@ -1266,6 +1266,70 @@ fi
 echo "cascade termination verified (member exit killed all peers, marker present)"
 
 # ---------------------------------------------------------------------------
+# Scoped jobs stop (#221): a fanned-out detach shares one job id across every
+# pod, so "stop" without a selector kills the job everywhere. That is the right
+# default for ending a distributed run, but until now it was the ONLY
+# expressible intent — there was no way to end one misbehaving rank and leave
+# the others computing.
+# ---------------------------------------------------------------------------
+
+echo "Testing scoped jobs stop targets one pod and leaves the rest running"
+SCOPED_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --detach --no-tty -- sh -c 'exec sleep 7411')
+SCOPED_JOB_ID=$(printf '%s\n' "$SCOPED_OUTPUT" | sed -n 's/.*job_id=\([^ ]*\).*/\1/p' | head -n1)
+if [[ -z "$SCOPED_JOB_ID" ]]; then
+  echo "ERROR: could not extract job id from: $SCOPED_OUTPUT" >&2
+  exit 1
+fi
+scoped_running_pods() {
+  "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec-jobs --output json 2>/dev/null |
+    OKDEV_SCOPED_JOB_ID="$SCOPED_JOB_ID" python3 -c '
+import json, os, sys
+payload = json.load(sys.stdin)
+for job in payload.get("jobs", []):
+    if job.get("jobId") != os.environ["OKDEV_SCOPED_JOB_ID"]:
+        continue
+    print(" ".join(sorted(r["pod"] for r in job.get("podStates", []) if r.get("state") == "running")))
+    break
+'
+}
+SCOPED_BEFORE=$(scoped_running_pods)
+SCOPED_BEFORE_COUNT=$(printf '%s' "$SCOPED_BEFORE" | wc -w | tr -d ' ')
+if [[ "$SCOPED_BEFORE_COUNT" -ne 3 ]]; then
+  echo "ERROR: expected the detached job running on 3 pods, got $SCOPED_BEFORE_COUNT ($SCOPED_BEFORE)" >&2
+  exit 1
+fi
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs stop "$SCOPED_JOB_ID" --pod worker-1
+SCOPED_AFTER=""
+for i in $(seq 1 20); do
+  SCOPED_AFTER=$(scoped_running_pods)
+  [[ "$SCOPED_AFTER" != *"worker-1"* ]] && break
+  sleep 2
+done
+if [[ "$SCOPED_AFTER" == *"worker-1"* ]]; then
+  echo "ERROR: --pod worker-1 should have stopped that rank, still running: $SCOPED_AFTER" >&2
+  exit 1
+fi
+# The whole point: the peers keep computing.
+SCOPED_AFTER_COUNT=$(printf '%s' "$SCOPED_AFTER" | wc -w | tr -d ' ')
+if [[ "$SCOPED_AFTER_COUNT" -ne 2 || "$SCOPED_AFTER" != *"master-0"* || "$SCOPED_AFTER" != *"worker-0"* ]]; then
+  echo "ERROR: scoped stop must leave master-0 and worker-0 running, got: $SCOPED_AFTER" >&2
+  exit 1
+fi
+# And the unscoped default still ends the whole job.
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs stop "$SCOPED_JOB_ID"
+SCOPED_FINAL=""
+for i in $(seq 1 20); do
+  SCOPED_FINAL=$(scoped_running_pods)
+  [[ -z "$(printf '%s' "$SCOPED_FINAL" | tr -d ' ')" ]] && break
+  sleep 2
+done
+if [[ -n "$(printf '%s' "$SCOPED_FINAL" | tr -d ' ')" ]]; then
+  echo "ERROR: unscoped jobs stop must end the whole job, still running: $SCOPED_FINAL" >&2
+  exit 1
+fi
+echo "scoped jobs stop verified (one rank stopped, peers untouched, default still stops all)"
+
+# ---------------------------------------------------------------------------
 # Hook state visibility + stale detection (in-place container restart):
 # status --details reports per-pod hook progress; a container restarted in
 # place (annotations survive, filesystem wiped) reads as stale, and okdev up
