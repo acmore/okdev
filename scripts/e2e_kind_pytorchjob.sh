@@ -300,6 +300,40 @@ if [[ "$SHORT_UNKNOWN_STATUS" -eq 0 ]] || [[ "$SHORT_UNKNOWN" != *"no session po
   echo "ERROR: unknown short name must error with guidance, got status=$SHORT_UNKNOWN_STATUS: $SHORT_UNKNOWN" >&2
   exit 1
 fi
+# Issue #223: the docs told readers to learn short names from `okdev status`,
+# which never printed them — the only working way to discover one was to
+# mistype --pod and read the error. The column and the selector must agree.
+echo "Testing the ALIAS column lists the names --pod accepts"
+ALIAS_TABLE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status)
+if [[ "$ALIAS_TABLE" != *"ALIAS"* || "$ALIAS_TABLE" != *"master-0"* || "$ALIAS_TABLE" != *"worker-1"* ]]; then
+  echo "ERROR: expected an ALIAS column listing short pod names, got:" >&2
+  echo "$ALIAS_TABLE" >&2
+  exit 1
+fi
+ALIAS_TARGET_TABLE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" target show)
+if [[ "$ALIAS_TARGET_TABLE" != *"ALIAS"* || "$ALIAS_TARGET_TABLE" != *"worker-0"* ]]; then
+  echo "ERROR: expected okdev target to list aliases too, got:" >&2
+  echo "$ALIAS_TARGET_TABLE" >&2
+  exit 1
+fi
+ALIAS_DETAILS_JSON=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details --output json)
+OKDEV_ALIAS_JSON="$ALIAS_DETAILS_JSON" python3 - <<'ALIASPY'
+import json, os, sys
+detail = json.loads(os.environ["OKDEV_ALIAS_JSON"])
+aliases = sorted(p.get("alias", "") for p in detail.get("pods") or [])
+if aliases != ["master-0", "worker-0", "worker-1"]:
+    sys.exit(f"expected the three short names in status --details json, got {aliases!r}")
+ALIASPY
+# Every alias the column prints must be accepted verbatim by --pod.
+for alias in master-0 worker-0 worker-1; do
+  RESOLVED=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod "$alias" --no-tty --no-prefix -- hostname)
+  if [[ "$RESOLVED" != *"$alias"* ]]; then
+    echo "ERROR: alias $alias from the ALIAS column did not resolve via --pod, got: $RESOLVED" >&2
+    exit 1
+  fi
+done
+echo "ALIAS column verified (status, target, details json, and --pod agree)"
+
 echo "Short-name pod addressing verified"
 
 echo "Waiting for PyTorchJob pods before validating PVC mount layout"
@@ -405,13 +439,44 @@ fi
 echo "host aliases verified (master resolves $FIRST_WORKER_SHORT)"
 
 # ---------------------------------------------------------------------------
+# Rendezvous env hijack (#217): the operator injects distributed-rendezvous
+# variables into every pod, and anything single-node started in that pod joins
+# a rendezvous that never completes — it hangs with no error. This guards the
+# documented escape hatch: the variables really are injected, and the `env -u`
+# recipe in docs/troubleshooting.md really clears them. If the operator renames
+# or stops injecting them, the doc is wrong and this fails.
+# ---------------------------------------------------------------------------
+
+RENDEZVOUS_GREP='^(PET_[A-Z_]*|MASTER_ADDR|MASTER_PORT|RANK|WORLD_SIZE)='
+echo "Testing the documented rendezvous-env scrub recipe"
+RENDEZVOUS_PRESENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod master-0 --no-tty --no-prefix -- \
+  sh -lc "env | grep -c -E '$RENDEZVOUS_GREP' || true")
+RENDEZVOUS_PRESENT=$(echo "$RENDEZVOUS_PRESENT" | tr -dc '0-9')
+if [[ -z "$RENDEZVOUS_PRESENT" || "$RENDEZVOUS_PRESENT" -lt 4 ]]; then
+  echo "ERROR: expected the operator to inject rendezvous env (MASTER_ADDR/MASTER_PORT/RANK/WORLD_SIZE), found ${RENDEZVOUS_PRESENT:-none}" >&2
+  "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod master-0 --no-tty --no-prefix -- env >&2 || true
+  exit 1
+fi
+RENDEZVOUS_SCRUBBED=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod master-0 --no-tty --no-prefix -- \
+  env -u PET_MASTER_ADDR -u PET_MASTER_PORT -u PET_NNODES -u PET_NODE_RANK -u PET_NPROC_PER_NODE \
+      -u MASTER_ADDR -u MASTER_PORT -u RANK -u WORLD_SIZE \
+  sh -lc "env | grep -c -E '$RENDEZVOUS_GREP' || true")
+RENDEZVOUS_SCRUBBED=$(echo "$RENDEZVOUS_SCRUBBED" | tr -dc '0-9')
+if [[ "$RENDEZVOUS_SCRUBBED" != "0" ]]; then
+  echo "ERROR: the documented env -u recipe left rendezvous variables behind (${RENDEZVOUS_SCRUBBED} remaining)" >&2
+  exit 1
+fi
+echo "rendezvous-env scrub recipe verified ($RENDEZVOUS_PRESENT injected, 0 after the documented scrub)"
+
+# ---------------------------------------------------------------------------
 # Multi-pod exec (pdsh) verification
 # ---------------------------------------------------------------------------
 
 # Issue #178: a command without a pod selector runs on the target pod only —
 # fanout is opt-in, so a forgotten flag can no longer mutate every pod.
 echo "Testing selector-less exec targets only the target pod"
-EXEC_DEFAULT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- hostname)
+EXEC_DEFAULT_STDERR="$WORKDIR/exec-default.stderr"
+EXEC_DEFAULT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- hostname 2>"$EXEC_DEFAULT_STDERR")
 EXEC_DEFAULT_LINES=$(printf '%s
 ' "$EXEC_DEFAULT_OUTPUT" | grep -c . || true)
 if [[ "$EXEC_DEFAULT_LINES" -ne 1 || "$EXEC_DEFAULT_OUTPUT" != *"master-0"* ]]; then
@@ -419,7 +484,40 @@ if [[ "$EXEC_DEFAULT_LINES" -ne 1 || "$EXEC_DEFAULT_OUTPUT" != *"master-0"* ]]; 
   echo "$EXEC_DEFAULT_OUTPUT" >&2
   exit 1
 fi
-echo "selector-less exec default verified (target pod only)"
+# Issue #212: the denominator must reach a NON-TTY caller — stderr is a file
+# here, which is exactly the shape an agent or CI job sees. Before the fix the
+# only corrective output was TTY-gated, so scripts silently believed a
+# selector-less deploy had reached every pod.
+if ! grep -q 'running on 1 of 3 session pod(s)' "$EXEC_DEFAULT_STDERR"; then
+  echo "ERROR: expected the target-only notice with session counts on non-TTY stderr, got:" >&2
+  cat "$EXEC_DEFAULT_STDERR" >&2
+  exit 1
+fi
+if ! grep -q -- '--all' "$EXEC_DEFAULT_STDERR"; then
+  echo "ERROR: target-only notice must name the fanout flags, got:" >&2
+  cat "$EXEC_DEFAULT_STDERR" >&2
+  exit 1
+fi
+echo "selector-less exec default verified (target pod only, 1 of 3 reported to non-TTY)"
+
+# The failure summary must never claim coverage it does not have (#212): a
+# selector-less run that exits non-zero says "the 1 targeted pod", not
+# "every pod".
+echo "Testing selector-less exec failure summary reports the targeted count"
+set +e
+EXEC_DEFAULT_NONZERO=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'exit 3' 2>&1)
+set -e
+if [[ "$EXEC_DEFAULT_NONZERO" == *"every pod"* ]]; then
+  echo "ERROR: selector-less run must not claim it ran on every pod, got:" >&2
+  echo "$EXEC_DEFAULT_NONZERO" >&2
+  exit 1
+fi
+if [[ "$EXEC_DEFAULT_NONZERO" != *"ran on the 1 targeted pod"* ]]; then
+  echo "ERROR: expected the targeted-count delivery note, got:" >&2
+  echo "$EXEC_DEFAULT_NONZERO" >&2
+  exit 1
+fi
+echo "selector-less exec failure summary verified (1 targeted pod, no coverage claim)"
 
 echo "Testing exec --all across all session pods"
 EXEC_ALL_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-tty -- sh -lc 'echo hello-from-$(hostname)')
@@ -451,8 +549,8 @@ if [[ "$EXEC_NONZERO_OUTPUT" != *"COMMAND EXITED NON-ZERO"* || "$EXEC_NONZERO_OU
   echo "$EXEC_NONZERO_OUTPUT" >&2
   exit 1
 fi
-if [[ "$EXEC_NONZERO_OUTPUT" != *"delivered and ran on every pod"* ]]; then
-  echo "ERROR: expected the delivered-vs-failed clarifier under the non-zero summary" >&2
+if [[ "$EXEC_NONZERO_OUTPUT" != *"delivered and ran on all 3 targeted pods"* ]]; then
+  echo "ERROR: expected the delivered-vs-failed clarifier with the targeted count" >&2
   echo "$EXEC_NONZERO_OUTPUT" >&2
   exit 1
 fi

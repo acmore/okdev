@@ -71,14 +71,19 @@ func newTargetShowCmd(opts *Options) *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(), "role:      %s\n", target.Role)
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "")
-			rows := make([][]string, 0, len(view.Pods))
-			for _, pod := range sortedSessionPods(view.Pods) {
+			sorted := sortedSessionPods(view.Pods)
+			// Same vocabulary as `--pod` accepts, listed where a user picks
+			// a pod to target (#223).
+			aliases := shortPodNames(podSummaryNames(sorted))
+			rows := make([][]string, 0, len(sorted))
+			for i, pod := range sorted {
 				marker := ""
 				if pod.Name == target.PodName {
 					marker = "*"
 				}
 				rows = append(rows, []string{
 					marker,
+					aliases[i],
 					pod.Name,
 					strings.TrimSpace(pod.Labels["okdev.io/workload-role"]),
 					strings.TrimSpace(pod.Labels["okdev.io/attachable"]),
@@ -86,7 +91,7 @@ func newTargetShowCmd(opts *Options) *cobra.Command {
 					pod.Ready,
 				})
 			}
-			output.PrintTable(cmd.OutOrStdout(), []string{"SEL", "POD", "ROLE", "ATTACHABLE", "PHASE", "READY"}, rows)
+			output.PrintTable(cmd.OutOrStdout(), []string{"SEL", "ALIAS", "POD", "ROLE", "ATTACHABLE", "PHASE", "READY"}, rows)
 			return nil
 		},
 	}
