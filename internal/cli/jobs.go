@@ -929,7 +929,7 @@ func signalDetachJobScript(jobID string, pid, pgid int, signalName string) strin
 	if pgid > 0 {
 		groupPrelude = fmt.Sprintf(
 			"pgid=%d\n"+
-				"members=$(awk -v g=\"$pgid\" '{ pid=$1; line=$0; sub(/^[0-9]+ \\(.*\\) /, \"\", line); split(line, f, \" \"); if (f[1] != \"Z\" && f[3] == g) print pid }' /proc/[0-9]*/stat 2>/dev/null)\n"+
+				procGroupMembersScript("")+"\n"+
 				"for m in $members; do\n"+
 				"  if tr '\\000' '\\n' < \"/proc/$m/environ\" 2>/dev/null | grep -Fqx %s; then\n"+
 				// No `--` before the negative pgid: dash's kill builtin

@@ -76,7 +76,7 @@ func TestSyncWaitGateAndDetachWarningForPaused(t *testing.T) {
 	if strings.Contains(err.Error(), "repair") {
 		t.Fatalf("paused gate must not suggest repair, got %v", err)
 	}
-	warn := detachSyncWarning(syncHealthPaused, "")
+	warn := syncStalenessWarning(syncHealthPaused, "", "the command")
 	if !strings.Contains(warn, "paused") || !strings.Contains(warn, "resume") {
 		t.Fatalf("detach warning must explain paused state, got %q", warn)
 	}

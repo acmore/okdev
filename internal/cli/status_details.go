@@ -75,6 +75,17 @@ type detailedStatusPod struct {
 	Mounts          []detailedStatusMount          `json:"mounts,omitempty"`
 	ContainerIssues []detailedStatusContainerIssue `json:"containerIssues,omitempty"`
 	Hooks           []detailedStatusHook           `json:"hooks,omitempty"`
+	Images          []detailedStatusImage          `json:"images,omitempty"`
+}
+
+// detailedStatusImage reports what a container is actually running. okdev does
+// not own whether the session image matches the image the code is tested in —
+// but it does own making the running image visible, so a mismatch is
+// noticeable instead of being discovered through a missing dependency (#216).
+type detailedStatusImage struct {
+	Container string `json:"container"`
+	Image     string `json:"image"`
+	Digest    string `json:"digest,omitempty"`
 }
 
 // detailedStatusHook reports a lifecycle hook's per-pod progress so operators
@@ -246,9 +257,28 @@ func buildDetailedTarget(view sessionView, cfg *config.DevEnvironment) (detailed
 			PodIP:           pod.PodIP,
 			NodeName:        pod.NodeName,
 			ContainerIssues: issues,
+			Images:          buildDetailedImages(pod.ContainerImages),
 		})
 	}
 	return target, pods
+}
+
+func buildDetailedImages(images []kube.ContainerImage) []detailedStatusImage {
+	if len(images) == 0 {
+		return nil
+	}
+	out := make([]detailedStatusImage, 0, len(images))
+	for _, image := range images {
+		if strings.TrimSpace(image.Image) == "" {
+			continue
+		}
+		out = append(out, detailedStatusImage{
+			Container: image.Name,
+			Image:     image.Image,
+			Digest:    image.Digest,
+		})
+	}
+	return out
 }
 
 // attachPodHookStates derives each pod's lifecycle-hook progress from its
@@ -649,6 +679,7 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 			renderPodLocationLine("ip", pod.PodIP),
 			renderPodLocationLine("node", pod.NodeName),
 			renderMountsLine(pod.Mounts),
+			renderImagesLine(pod.Images),
 			renderHooksLine(pod.Hooks),
 		} {
 			if extra != "" {
@@ -774,6 +805,37 @@ func renderPodLocationLine(label, value string) string {
 		return ""
 	}
 	return label + "=" + value
+}
+
+// renderImagesLine formats the per-container images, e.g.
+// "images: dev=ghcr.io/org/dev:cuda12 (sha256:1a2b3c4d), okdev-sidecar=okdev-sidecar:v0.8.0".
+// The digest is truncated because its job here is comparison, not resolution:
+// two pods showing different short digests for the same tag is the signal.
+func renderImagesLine(images []detailedStatusImage) string {
+	if len(images) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(images))
+	for _, image := range images {
+		part := image.Container + "=" + image.Image
+		if short := shortImageDigest(image.Digest); short != "" {
+			part += " (" + short + ")"
+		}
+		parts = append(parts, part)
+	}
+	return "images: " + strings.Join(parts, ", ")
+}
+
+func shortImageDigest(digest string) string {
+	digest = strings.TrimSpace(digest)
+	hex := strings.TrimPrefix(digest, "sha256:")
+	if hex == "" || hex == digest {
+		return digest
+	}
+	if len(hex) > 12 {
+		hex = hex[:12]
+	}
+	return "sha256:" + hex
 }
 
 func renderMountsLine(mounts []detailedStatusMount) string {
