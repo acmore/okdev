@@ -188,6 +188,7 @@ func TestUpUIPrintReadyCard(t *testing.T) {
 		},
 		[]syncengine.Pair{{Local: ".", Remote: "/workspace"}},
 		"<->",
+		[]nextStepHint{{Subject: "okdev sync wait", Why: "block until local edits have reached the pods"}},
 	)
 
 	got := out.String()
@@ -198,6 +199,9 @@ func TestUpUIPrintReadyCard(t *testing.T) {
 		"<-> /workspace",
 		"forwards:",
 		"http: localhost:8080 -> remote:80",
+		// The session-shaped hints join the card's existing next: list rather
+		// than opening a second block under the same heading (#219).
+		"- okdev sync wait — block until local edits have reached the pods",
 		"api-reverse: remote:3000 -> localhost:3000",
 		"port: localhost:9000 -> remote:9000",
 		"- ssh okdev-sess",
