@@ -43,8 +43,8 @@ agents can react without launching a diagnostic chain on every blip:
 - `okdev exec [session] [--shell /bin/bash] [--no-tty] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--detach] [--timeout <duration>] [--log-dir <path>] [--no-prefix] [--json] [--require-all] [--gateway <pod>] [--fanout N] [--pkill <pattern> [--signal <sig>]] [--require-sync] [-- command...]`
 - `okdev jobs list [session] [--job-id <id>] [--container <name>] [--fanout N]`
 - `okdev jobs logs <job-id> [session] [-f|--follow] [--tail N] [--since <dur|time>] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--fanout N]`
-- `okdev jobs stop <job-id> [session] [--container <name>] [--fanout N]`
-- `okdev jobs wait <job-id> [session] [--container <name>] [--fanout N]`
+- `okdev jobs stop <job-id> [session] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--fanout N]`
+- `okdev jobs wait <job-id> [session] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--fanout N]`
 - `okdev exec-jobs [session] [--job-id <id>] [--container <name>] [--fanout N]`
 - `okdev cp [session] <src> <dst> [--all | --pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--fanout N]`
 - `okdev logs [session] [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
@@ -193,10 +193,15 @@ agents can react without launching a diagnostic chain on every blip:
 ### `okdev jobs stop <job-id> [session]`
 
 - Stops every still-running pod in the logical job by sending `SIGTERM`, waiting 10 seconds, then sending `SIGKILL` to survivors.
+- **Scope**: a fanned-out `--detach` shares one job id across every pod it launched on, so the default stops the job on all of them. `--pod`, `--role`, `--label` and `--exclude` narrow it to some ranks and leave the others running — the same selector set as `okdev jobs list`/`logs`. Which to use: no selector to end the whole distributed run, `--pod worker-1` to kill one misbehaving rank. Note the default here is deliberately *not* the target-pod-only default that `okdev exec` uses: a job id identifies one logical job, and stopping half a distributed run by accident is the worse failure. Say the narrow intent explicitly.
 - Signals the job's whole **process group** when available: detached jobs are launched via `setsid`, so children the command forked (e.g. `torchrun` workers) are signaled too — including stragglers whose leader already exited. Stop only reports success once no live group member remains, so a clean return means the process tree (and its GPU memory) is gone.
 - Group membership is verified via the job's `OKDEV_JOB_ID` environment marker before signaling, so recycled pids/pgids are never signaled by mistake. Jobs launched by older okdev versions (or in containers without `setsid`) fall back to leader-only signaling.
 - Prints which pods were signaled (`pgid=N` for group signals, `pid=N` for the fallback) during the stop flow.
 - Returns non-zero when any pod could not be queried or signaled, or if processes are still alive after the stop attempt.
+
+### `okdev jobs wait <job-id> [session]`
+
+- Waits for the job to finish (or, with `--grep`, for a log pattern to appear) across the selected pods. Accepts the same `--pod`/`--role`/`--label`/`--exclude` selectors as `stop`, so a launcher can block on one rank instead of the whole group. Read-only.
 
 ### `okdev exec-jobs [session]`
 
