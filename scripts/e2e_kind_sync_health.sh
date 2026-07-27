@@ -225,7 +225,47 @@ if [[ "$REQUIRE_STATUS" -eq 0 || "$REQUIRE_OUTPUT" != *"require-sync"* ]]; then
   exit 1
 fi
 
+# Issue #222: the same guard must cover a FOREGROUND run. The failure being
+# prevented — running pre-edit code because the channel is dead — is identical,
+# and a foreground experiment that hits it returns a plausible-looking result
+# instead of crashing.
+FOREGROUND_WARN=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- true 2>&1 >/dev/null)
+if [[ "$FOREGROUND_WARN" != *"may run stale code"* ]]; then
+  echo "ERROR: expected a foreground exec on a dead sync channel to warn about stale code" >&2
+  echo "$FOREGROUND_WARN" >&2
+  exit 1
+fi
+# The warning must speak about the command, not a detached job it isn't.
+if [[ "$FOREGROUND_WARN" == *"detached job"* ]]; then
+  echo "ERROR: foreground warning must not describe the run as a detached job:" >&2
+  echo "$FOREGROUND_WARN" >&2
+  exit 1
+fi
+set +e
+FOREGROUND_REQUIRE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix --require-sync -- true 2>&1)
+FOREGROUND_REQUIRE_STATUS=$?
+set -e
+if [[ "$FOREGROUND_REQUIRE_STATUS" -eq 0 || "$FOREGROUND_REQUIRE" != *"require-sync"* ]]; then
+  echo "ERROR: expected --require-sync to refuse a FOREGROUND run on a dead sync channel" >&2
+  echo "$FOREGROUND_REQUIRE" >&2
+  exit 1
+fi
+# --require-sync used to be rejected outright without --detach; it must not be.
+if [[ "$FOREGROUND_REQUIRE" == *"requires --detach"* ]]; then
+  echo "ERROR: --require-sync must no longer be detach-only:" >&2
+  echo "$FOREGROUND_REQUIRE" >&2
+  exit 1
+fi
+echo "foreground sync guard verified (warns, and --require-sync refuses)"
+
 SYNC_RECOVER_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync)
+# `okdev sync` reports the channel; it must point at the command that reports
+# the data, which only `sync resume` used to do (#222).
+if [[ "$SYNC_RECOVER_OUTPUT" != *"okdev sync wait"* ]]; then
+  echo "ERROR: expected okdev sync output to point at sync wait, got:" >&2
+  echo "$SYNC_RECOVER_OUTPUT" >&2
+  exit 1
+fi
 if [[ "$SYNC_RECOVER_OUTPUT" == *"already running"* || "$SYNC_RECOVER_OUTPUT" == *"already active"* ]]; then
   echo "ERROR: okdev sync claimed already-running for a dead channel" >&2
   echo "$SYNC_RECOVER_OUTPUT" >&2

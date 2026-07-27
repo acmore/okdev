@@ -430,7 +430,7 @@ func detachJobsCommand() []string {
     fi
     glive=0
     if [ -n "$pgid" ] && [ "$pgid" -gt 0 ] 2>/dev/null; then
-      members=$(awk -v g="$pgid" '{ pid=$1; line=$0; sub(/^[0-9]+ \(.*\) /, "", line); split(line, f, " "); if (f[1] != "Z" && f[3] == g) print pid }' /proc/[0-9]*/stat 2>/dev/null)
+      ` + procGroupMembersScript("") + `
       for m in $members; do
         if tr '\0' '\n' < "/proc/$m/environ" 2>/dev/null | grep -Fqx "OKDEV_JOB_ID=$job_id"; then
           glive=$(set -- $members; echo $#)
