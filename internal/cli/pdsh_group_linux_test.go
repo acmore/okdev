@@ -2,12 +2,14 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -18,11 +20,25 @@ import (
 // metadata records the pgid, and the signal script kills the entire tree —
 // including children the leader forked (the torchrun/pretrain.py scenario).
 // Linux-only: the scripts inspect /proc.
+// detachTestJobSeq keeps the id unique across repeated runs in one binary
+// (go test -count=N), not just across binaries.
+var detachTestJobSeq atomic.Int64
+
 func TestDetachGroupSignalKillsProcessTreeLinux(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("requires /proc and process groups")
 	}
-	jobID := "job-group-e2e"
+	// A unique id per run, as production does (newDetachJobID). With a fixed
+	// id every run wrote the same /var/okdev/exec/<id>.json, and the launcher
+	// treats "the metadata file exists" as "the wrapper published its
+	// metadata" — so a run could read the PREVIOUS run's exited record, wait
+	// on a dead pgid, and then kill that dead pgid while the job it actually
+	// started kept running (leaking three processes per occurrence). The
+	// previous run's wrapper survives the group kill by design (it is the
+	// parent shell, outside the group) and rewrites the file from its EXIT
+	// trap, racing the test's own cleanup — which is what made it flaky
+	// rather than always broken.
+	jobID := fmt.Sprintf("job-group-e2e-%d-%d", os.Getpid(), detachTestJobSeq.Add(1))
 	spec := newDetachJobSpec(jobID, "pod-x", "dev", "tree", []string{"sh", "-c", "sleep 300 & sleep 300 & wait"}, nil)
 	cmd := detachCommand(spec)
 	launcher := exec.Command(cmd[0], cmd[1], cmd[2])

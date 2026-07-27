@@ -1778,7 +1778,7 @@ func cascadePeerKillScript(jobID string) string {
 			"  pid=$(sed -n 's/.*\"pid\":\\([0-9][0-9]*\\).*/\\1/p' \"$m\" | head -n1)\n"+
 			"  killed=\"\"\n"+
 			"  if [ -n \"$pgid\" ] && [ \"$pgid\" -gt 1 ] 2>/dev/null; then\n"+
-			"    members=$(awk -v g=\"$pgid\" '{ pid=$1; line=$0; sub(/^[0-9]+ \\(.*\\) /, \"\", line); split(line, f, \" \"); if (f[1] != \"Z\" && f[3] == g) print pid }' /proc/[0-9]*/stat 2>/dev/null)\n"+
+			"    "+procGroupMembersScript("")+"\n"+
 			"    for mp in $members; do\n"+
 			"      if tr '\\000' '\\n' < \"/proc/$mp/environ\" 2>/dev/null | grep -Fqx %s; then\n"+
 			"        kill -9 \"-$pgid\" 2>/dev/null || true\n"+

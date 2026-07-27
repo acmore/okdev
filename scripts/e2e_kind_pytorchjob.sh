@@ -405,6 +405,36 @@ fi
 echo "host aliases verified (master resolves $FIRST_WORKER_SHORT)"
 
 # ---------------------------------------------------------------------------
+# Rendezvous env hijack (#217): the operator injects distributed-rendezvous
+# variables into every pod, and anything single-node started in that pod joins
+# a rendezvous that never completes — it hangs with no error. This guards the
+# documented escape hatch: the variables really are injected, and the `env -u`
+# recipe in docs/troubleshooting.md really clears them. If the operator renames
+# or stops injecting them, the doc is wrong and this fails.
+# ---------------------------------------------------------------------------
+
+RENDEZVOUS_GREP='^(PET_[A-Z_]*|MASTER_ADDR|MASTER_PORT|RANK|WORLD_SIZE)='
+echo "Testing the documented rendezvous-env scrub recipe"
+RENDEZVOUS_PRESENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod master-0 --no-tty --no-prefix -- \
+  sh -lc "env | grep -c -E '$RENDEZVOUS_GREP' || true")
+RENDEZVOUS_PRESENT=$(echo "$RENDEZVOUS_PRESENT" | tr -dc '0-9')
+if [[ -z "$RENDEZVOUS_PRESENT" || "$RENDEZVOUS_PRESENT" -lt 4 ]]; then
+  echo "ERROR: expected the operator to inject rendezvous env (MASTER_ADDR/MASTER_PORT/RANK/WORLD_SIZE), found ${RENDEZVOUS_PRESENT:-none}" >&2
+  "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod master-0 --no-tty --no-prefix -- env >&2 || true
+  exit 1
+fi
+RENDEZVOUS_SCRUBBED=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod master-0 --no-tty --no-prefix -- \
+  env -u PET_MASTER_ADDR -u PET_MASTER_PORT -u PET_NNODES -u PET_NODE_RANK -u PET_NPROC_PER_NODE \
+      -u MASTER_ADDR -u MASTER_PORT -u RANK -u WORLD_SIZE \
+  sh -lc "env | grep -c -E '$RENDEZVOUS_GREP' || true")
+RENDEZVOUS_SCRUBBED=$(echo "$RENDEZVOUS_SCRUBBED" | tr -dc '0-9')
+if [[ "$RENDEZVOUS_SCRUBBED" != "0" ]]; then
+  echo "ERROR: the documented env -u recipe left rendezvous variables behind (${RENDEZVOUS_SCRUBBED} remaining)" >&2
+  exit 1
+fi
+echo "rendezvous-env scrub recipe verified ($RENDEZVOUS_PRESENT injected, 0 after the documented scrub)"
+
+# ---------------------------------------------------------------------------
 # Multi-pod exec (pdsh) verification
 # ---------------------------------------------------------------------------
 
