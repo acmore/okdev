@@ -47,6 +47,9 @@ type detailedStatus struct {
 	Agents           []agentListRow                `json:"agents,omitempty"`
 	Logs             detailedStatusLogs            `json:"logs"`
 	TargetPodDetails string                        `json:"targetPodDetails,omitempty"`
+	// PreviousRunEnd explains the run this session replaced, while that run
+	// is the one being replaced by the live one (#213).
+	PreviousRunEnd *session.RunEnd `json:"previousRunEnd,omitempty"`
 }
 
 type detailedStatusTarget struct {
@@ -179,6 +182,10 @@ func gatherDetailedStatus(ctx context.Context, opts *Options, cfg *config.DevEnv
 		Reason:    view.Reason,
 		Age:       age(view.CreatedAt),
 		PodCount:  view.PodCount,
+	}
+
+	if record, ok := currentSessionPreviousRunEnd(view.Session); ok {
+		detail.PreviousRunEnd = &record
 	}
 
 	target, pods := buildDetailedTarget(view, cfg)
@@ -796,6 +803,11 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 	if strings.TrimSpace(detail.TargetPodDetails) != "" {
 		fmt.Fprintln(w, "\nTarget Pod Details:")
 		writeIndentedBlock(w, detail.TargetPodDetails, "  ")
+	}
+
+	if detail.PreviousRunEnd != nil {
+		fmt.Fprintln(w, "\nPrevious Run:")
+		printPreviousRunEnd(w, *detail.PreviousRunEnd)
 	}
 }
 

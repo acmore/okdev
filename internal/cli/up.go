@@ -61,6 +61,10 @@ type upState struct {
 	previousTarget      workload.TargetRef
 	reconcileKube       reconcileWaitClient
 	teardownOnUpFailure bool
+	// previousRunEnd explains the run this one replaced. Detected before the
+	// cached snapshot is dropped, reported once the session is up (#213).
+	previousRunEnd    session.RunEnd
+	hasPreviousRunEnd bool
 }
 
 type workloadApplyOutcome int
@@ -942,8 +946,36 @@ func upSetup(state *upState) error {
 	}
 	state.ui.printWarnings()
 	state.ui.printReadyCard(state.command.sessionName, state.command.namespace, target.PodName, sshSummary, syncSummary, state.command.cfg.Spec.Ports, state.syncPairs, syncModeSymbol)
+	// Seed the snapshot for this run so the *next* end has something to
+	// explain it even if no `okdev status` ever runs (#213). Reported before
+	// this point the line would scroll away under the ready card.
+	refreshSessionLastSeen(state)
+	if state.hasPreviousRunEnd {
+		printPreviousRunEnd(state.cmd.OutOrStdout(), state.previousRunEnd)
+	}
 	upgrade.NewChecker().CheckAndRemind(version.Version, state.cmd.ErrOrStderr())
 	return nil
+}
+
+// refreshSessionLastSeen caches the live pods for the run that just came up.
+// Best-effort: `up` succeeded, and a missing cache only costs the next
+// post-mortem its detail.
+func refreshSessionLastSeen(state *upState) {
+	if state == nil || state.command == nil || state.command.kube == nil {
+		return
+	}
+	info, err := session.LoadInfo(state.command.sessionName)
+	if err != nil || strings.TrimSpace(info.Name) == "" {
+		return
+	}
+	pods, err := state.command.kube.ListPods(state.ctx, state.command.namespace, false, selectorForSessionRun(state.command.sessionName))
+	if err != nil || len(pods) == 0 {
+		slog.Debug("skipped last-seen refresh after up", "session", state.command.sessionName, "pods", len(pods), "error", err)
+		return
+	}
+	if err := session.SaveLastSeen(state.command.sessionName, buildLastSeenSnapshot(info, state.command.namespace, pods)); err != nil {
+		slog.Debug("failed to refresh last-seen snapshot after up", "session", state.command.sessionName, "error", err)
+	}
 }
 
 // persistSessionState writes the active-session pointer and session.Info
@@ -963,6 +995,19 @@ func persistSessionState(state *upState) error {
 	if err := session.ClearShutdownRequest(state.command.sessionName); err != nil {
 		if state.ui != nil {
 			state.ui.warnf("failed to clear prior shutdown request: %v", err)
+		}
+	}
+	// A snapshot describing a *different* run is the only local evidence of
+	// how that run ended — read it before dropping it, so the recreate can
+	// say what it is recovering from instead of silently erasing the cause
+	// (#213). Intentional teardowns (down, restart) clear the snapshot
+	// themselves, so nothing here reports a recreation the user asked for.
+	if record, ok := detectPreviousRunEnd(state.ctx, state.command.kube, state.command.sessionName,
+		state.command.namespace, state.runID, state.workloadName); ok {
+		state.previousRunEnd = record
+		state.hasPreviousRunEnd = true
+		if err := session.SaveRunEnd(state.command.sessionName, record); err != nil {
+			slog.Debug("failed to save run-end record", "session", state.command.sessionName, "error", err)
 		}
 	}
 	// A fresh/resumed workload invalidates any cached death-cause snapshot.

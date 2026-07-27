@@ -598,7 +598,17 @@ echo "Pod reconcile verified"
 echo "Testing okdev restart recreates the workload in one command"
 RESTART_POD_BEFORE=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
 RESTART_UID_BEFORE=$(kubectl -n "$NAMESPACE" get pod "$RESTART_POD_BEFORE" -o jsonpath='{.metadata.uid}')
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" restart --yes --wait-timeout 5m
+RESTART_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" restart --yes --wait-timeout 5m)
+echo "$RESTART_OUTPUT"
+# An operator-requested recreation is not a death (#213): restart mints a new
+# run-id, so the report must be suppressed by the teardown clearing the
+# snapshot — otherwise every restart would accuse the cluster of killing the
+# session.
+if [[ "$RESTART_OUTPUT" == *"previous run"* ]]; then
+  echo "ERROR: restart is an intentional recreation and must not report a previous-run end" >&2
+  echo "$RESTART_OUTPUT" >&2
+  exit 1
+fi
 RESTART_POD_AFTER=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
 RESTART_UID_AFTER=$(kubectl -n "$NAMESPACE" get pod "$RESTART_POD_AFTER" -o jsonpath='{.metadata.uid}')
 if [[ "$RESTART_UID_AFTER" == "$RESTART_UID_BEFORE" ]]; then
@@ -611,6 +621,69 @@ if [[ "$RESTART_EXEC" != *"restart-ok"* ]]; then
   exit 1
 fi
 echo "okdev restart verified"
+
+# ---------------------------------------------------------------------------
+# Previous-run end reporting (#213): a session that was killed and recreated
+# looks exactly like one that never died, and the cause of death used to be
+# reachable only while the session was still gone. Kill the workload behind
+# okdev's back, recreate, and verify the recreate says what it recovered from.
+# ---------------------------------------------------------------------------
+
+echo "Testing previous-run end reason survives the recreate"
+SESSION_INFO_PATH="$HOME_DIR/.okdev/sessions/${SESSION_NAME}/session.json"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status >/dev/null # snapshot the live run
+RUN_ID_BEFORE=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("runID",""))' "$SESSION_INFO_PATH")
+if [[ -z "$RUN_ID_BEFORE" ]]; then
+  echo "ERROR: could not read the live run-id from $SESSION_INFO_PATH" >&2
+  exit 1
+fi
+REAPED_POD=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
+kubectl -n "$NAMESPACE" delete pod "$REAPED_POD" --wait=true >/dev/null
+for i in $(seq 1 30); do
+  REMAINING=$(kubectl -n "$NAMESPACE" get pods -l "okdev.io/session=$SESSION_NAME" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  [[ "$REMAINING" == "0" ]] && break
+  sleep 2
+done
+RECREATE_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m)
+echo "$RECREATE_OUTPUT"
+if [[ "$RECREATE_OUTPUT" != *"previous run $RUN_ID_BEFORE ended:"* ]]; then
+  echo "ERROR: expected the recreate to name the ended run $RUN_ID_BEFORE, got:" >&2
+  echo "$RECREATE_OUTPUT" >&2
+  exit 1
+fi
+RUN_ID_AFTER=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("runID",""))' "$SESSION_INFO_PATH")
+if [[ "$RUN_ID_AFTER" == "$RUN_ID_BEFORE" ]]; then
+  echo "ERROR: expected the recreate to mint a new run-id, still $RUN_ID_AFTER" >&2
+  exit 1
+fi
+
+# The whole point of #213: the answer must still be there on the command the
+# user is already on, after the up output has scrolled away.
+RUN_END_STATUS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status)
+if [[ "$RUN_END_STATUS" != *"previous run $RUN_ID_BEFORE ended:"* ]]; then
+  echo "ERROR: expected status to carry the previous-run end for the live run, got:" >&2
+  echo "$RUN_END_STATUS" >&2
+  exit 1
+fi
+RUN_END_JSON=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --output json)
+OKDEV_RUN_END_JSON="$RUN_END_JSON" OKDEV_RUN_ID_BEFORE="$RUN_ID_BEFORE" python3 - <<'RUNENDPY'
+import json, os, sys
+rows = json.loads(os.environ["OKDEV_RUN_END_JSON"])
+record = (rows[0] or {}).get("previousRunEnd") or {}
+if record.get("endedRunID") != os.environ["OKDEV_RUN_ID_BEFORE"]:
+    sys.exit(f"expected previousRunEnd.endedRunID={os.environ['OKDEV_RUN_ID_BEFORE']}, got {record!r}")
+if not record.get("class") or not record.get("reason"):
+    sys.exit(f"expected a classified reason in {record!r}")
+RUNENDPY
+# Announced once by the recreate that performed it: a repeat `up` on the same
+# run has no transition to report.
+REPEAT_AFTER_RECREATE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m)
+if [[ "$REPEAT_AFTER_RECREATE" == *"previous run"* ]]; then
+  echo "ERROR: a repeat up on the same run must not re-report the end, got:" >&2
+  echo "$REPEAT_AFTER_RECREATE" >&2
+  exit 1
+fi
+echo "previous-run end reporting verified (up + status + json, once per recreate)"
 
 # --- Sync direction: per-path direction semantics on a live session --------
 # Covers the direction chain end-to-end: editing spec.sync.paths[].direction
