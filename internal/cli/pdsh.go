@@ -93,7 +93,7 @@ func newExecCmd(opts *Options) *cobra.Command {
   okdev exec --all -- nvidia-smi
 
   # Upload and run a local script on all session pods
-  okdev exec --script ./collect-logs.sh -- --since 10m
+  okdev exec --all --script ./collect-logs.sh -- --since 10m
 
   # Run on worker pods only
   okdev exec --workers -- nvidia-smi
@@ -810,7 +810,12 @@ func buildExecPodGroups(sessionName string, sessionPods []kube.PodSummary, plan 
 	case plan.allPods:
 		// keep all
 	default:
-		// command with no selector defaults to all pods
+		// No selector: every pod the caller passed in. This helper is shared,
+		// and its callers do NOT share a default — `exec` pins itself to the
+		// target pod upstream of here (#178, pdsh.go RunE), while the
+		// selectSessionPods callers (jobs *, env-diff, port-forward) really
+		// do mean all session pods. Do not read this arm as "the project
+		// default is fanout" (#223).
 	}
 	if len(plan.exclude) > 0 {
 		filtered = excludePods(filtered, plan.exclude)
@@ -2089,9 +2094,9 @@ func filterPodsByLabels(pods []kube.PodSummary, labels []string) []kube.PodSumma
 }
 
 // resolvePodAliases maps requested pod names to session pods. Accepted
-// forms, in order: the full pod name, the short name shown by `okdev
-// status` (longest common prefix stripped — e.g. "master-0", "worker-1"),
-// or a unique "-<name>" suffix. Unknown or ambiguous names error instead of
+// forms, in order: the full pod name, the short name in the ALIAS column of
+// `okdev status` and `okdev target` (longest common prefix stripped — e.g.
+// "master-0", "worker-1"), or a unique "-<name>" suffix. Unknown or ambiguous names error instead of
 // being silently dropped.
 func resolvePodAliases(sessionPods []kube.PodSummary, names []string) ([]kube.PodSummary, error) {
 	fullNames := podSummaryNames(sessionPods)

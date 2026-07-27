@@ -165,13 +165,19 @@ func newStatusCmd(opts *Options) *cobra.Command {
 			if !all && len(views) == 1 && len(views[0].Pods) > 1 {
 				fmt.Fprintln(cmd.OutOrStdout(), "")
 				podRows := make([][]string, 0, len(views[0].Pods))
-				for _, pod := range views[0].Pods {
+				// ALIAS is the vocabulary --pod, --group and the in-pod
+				// /etc/hosts entries all speak, and nothing listed it: the
+				// docs said to read it here, and the only way to actually
+				// learn it was to mistype --pod and read the error (#223).
+				aliases := shortPodNames(podSummaryNames(views[0].Pods))
+				for i, pod := range views[0].Pods {
 					marker := ""
 					if pod.Name == views[0].TargetPod {
 						marker = "*"
 					}
 					podRows = append(podRows, []string{
 						marker,
+						aliases[i],
 						pod.Name,
 						pod.Phase,
 						pod.Ready,
@@ -180,7 +186,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 						age(pod.CreatedAt),
 					})
 				}
-				output.PrintTable(cmd.OutOrStdout(), []string{"SEL", "POD", "PHASE", "READY", "RESTARTS", "REASON", "AGE"}, podRows)
+				output.PrintTable(cmd.OutOrStdout(), []string{"SEL", "ALIAS", "POD", "PHASE", "READY", "RESTARTS", "REASON", "AGE"}, podRows)
 			}
 			return nil
 		},

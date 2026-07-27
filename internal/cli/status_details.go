@@ -57,7 +57,11 @@ type detailedStatusTarget struct {
 }
 
 type detailedStatusPod struct {
-	Name            string                         `json:"name"`
+	Name string `json:"name"`
+	// Alias is the short name --pod/--group accept and the /etc/hosts entry
+	// inside the pods. It was documented as visible in `okdev status` long
+	// before anything printed it (#223).
+	Alias           string                         `json:"alias,omitempty"`
 	Role            string                         `json:"role,omitempty"`
 	Attachable      bool                           `json:"attachable"`
 	Phase           string                         `json:"phase"`
@@ -210,8 +214,10 @@ func buildDetailedTarget(view sessionView, cfg *config.DevEnvironment) (detailed
 		SelectedContainer: selectedContainer,
 	}
 
+	sortedPods := sortedSessionPods(view.Pods)
+	podAliases := shortPodNames(podSummaryNames(sortedPods))
 	pods := make([]detailedStatusPod, 0, len(view.Pods))
-	for _, pod := range sortedSessionPods(view.Pods) {
+	for i, pod := range sortedPods {
 		issues := make([]detailedStatusContainerIssue, 0, len(pod.ContainerIssues))
 		for _, issue := range pod.ContainerIssues {
 			finishedAt := ""
@@ -228,6 +234,7 @@ func buildDetailedTarget(view sessionView, cfg *config.DevEnvironment) (detailed
 		}
 		pods = append(pods, detailedStatusPod{
 			Name:            pod.Name,
+			Alias:           podAliases[i],
 			Role:            strings.TrimSpace(pod.Labels["okdev.io/workload-role"]),
 			Attachable:      !strings.EqualFold(strings.TrimSpace(pod.Labels["okdev.io/attachable"]), "false"),
 			Phase:           pod.Phase,
@@ -625,6 +632,9 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 			marker = "*"
 		}
 		line := fmt.Sprintf("%s %s phase=%s ready=%s restarts=%d age=%s", marker, pod.Name, pod.Phase, pod.Ready, pod.Restarts, pod.Age)
+		if pod.Alias != "" && pod.Alias != pod.Name {
+			line += " alias=" + pod.Alias
+		}
 		if pod.Role != "" {
 			line += " role=" + pod.Role
 		}

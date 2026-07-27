@@ -300,6 +300,40 @@ if [[ "$SHORT_UNKNOWN_STATUS" -eq 0 ]] || [[ "$SHORT_UNKNOWN" != *"no session po
   echo "ERROR: unknown short name must error with guidance, got status=$SHORT_UNKNOWN_STATUS: $SHORT_UNKNOWN" >&2
   exit 1
 fi
+# Issue #223: the docs told readers to learn short names from `okdev status`,
+# which never printed them — the only working way to discover one was to
+# mistype --pod and read the error. The column and the selector must agree.
+echo "Testing the ALIAS column lists the names --pod accepts"
+ALIAS_TABLE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status)
+if [[ "$ALIAS_TABLE" != *"ALIAS"* || "$ALIAS_TABLE" != *"master-0"* || "$ALIAS_TABLE" != *"worker-1"* ]]; then
+  echo "ERROR: expected an ALIAS column listing short pod names, got:" >&2
+  echo "$ALIAS_TABLE" >&2
+  exit 1
+fi
+ALIAS_TARGET_TABLE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" target show)
+if [[ "$ALIAS_TARGET_TABLE" != *"ALIAS"* || "$ALIAS_TARGET_TABLE" != *"worker-0"* ]]; then
+  echo "ERROR: expected okdev target to list aliases too, got:" >&2
+  echo "$ALIAS_TARGET_TABLE" >&2
+  exit 1
+fi
+ALIAS_DETAILS_JSON=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details --output json)
+OKDEV_ALIAS_JSON="$ALIAS_DETAILS_JSON" python3 - <<'ALIASPY'
+import json, os, sys
+detail = json.loads(os.environ["OKDEV_ALIAS_JSON"])
+aliases = sorted(p.get("alias", "") for p in detail.get("pods") or [])
+if aliases != ["master-0", "worker-0", "worker-1"]:
+    sys.exit(f"expected the three short names in status --details json, got {aliases!r}")
+ALIASPY
+# Every alias the column prints must be accepted verbatim by --pod.
+for alias in master-0 worker-0 worker-1; do
+  RESOLVED=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod "$alias" --no-tty --no-prefix -- hostname)
+  if [[ "$RESOLVED" != *"$alias"* ]]; then
+    echo "ERROR: alias $alias from the ALIAS column did not resolve via --pod, got: $RESOLVED" >&2
+    exit 1
+  fi
+done
+echo "ALIAS column verified (status, target, details json, and --pod agree)"
+
 echo "Short-name pod addressing verified"
 
 echo "Waiting for PyTorchJob pods before validating PVC mount layout"
