@@ -19,7 +19,6 @@ import (
 
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
-	"github.com/acmore/okdev/internal/workload"
 	k8sexec "k8s.io/client-go/util/exec"
 	utilexec "k8s.io/utils/exec"
 )
@@ -1115,9 +1114,11 @@ func TestExecPkillFlagValidation(t *testing.T) {
 			wantErr: "must be a signal name or number",
 		},
 		{
-			name:    "require-sync without detach",
-			args:    []string{"--require-sync", "--", "echo", "hi"},
-			wantErr: "--require-sync requires --detach",
+			// #222: --require-sync is no longer detach-only. What it still
+			// cannot do is gate an interactive shell, and it says so.
+			name:    "require-sync without a command to gate",
+			args:    []string{"--require-sync"},
+			wantErr: "--require-sync needs a command to gate",
 		},
 	}
 	for _, tt := range tests {
@@ -1422,7 +1423,7 @@ func TestReportFanoutFailuresClarifiesDeliveredVsFailed(t *testing.T) {
 	}
 	got := stderr.String()
 	// The clarifier ties the exit codes to the command, not pod health (#192).
-	if !strings.Contains(got, "delivered and ran on every pod") || !strings.Contains(got, "exit 69") {
+	if !strings.Contains(got, "delivered and ran on the 1 targeted pod") || !strings.Contains(got, "exit 69") {
 		t.Fatalf("expected delivered-vs-failed clarifier, got %q", got)
 	}
 	// A bare pkill exiting 1 gets the benign-cleanup signpost.
@@ -1460,17 +1461,70 @@ func TestReportFanoutFailuresKeepsFailedFramingClean(t *testing.T) {
 	}
 	got := stderr.String()
 	// Delivery failures keep the FAILED framing without the delivered clarifier.
-	if !strings.Contains(got, "FAILED:") || strings.Contains(got, "delivered and ran on every pod") {
+	if !strings.Contains(got, "FAILED:") || strings.Contains(got, "delivered and ran on") {
 		t.Fatalf("delivery failure must not carry the delivered clarifier, got %q", got)
 	}
 }
 
 func TestPrintTargetOnlyNoticeGating(t *testing.T) {
-	var buf bytes.Buffer // non-TTY writer
-	cfg := &config.DevEnvironment{}
-	cfg.Spec.Workload.Type = "pytorchjob"
-	printTargetOnlyNotice(&buf, context.Background(), &commandContext{cfg: cfg}, workload.TargetRef{PodName: "m-0"})
-	if buf.Len() != 0 {
-		t.Fatalf("non-TTY stderr must stay silent, got %q", buf.String())
+	multiPod := &config.DevEnvironment{}
+	multiPod.Spec.Workload.Type = "pytorchjob"
+	singlePod := &config.DevEnvironment{}
+	singlePod.Spec.Workload.Type = "pod"
+
+	tests := []struct {
+		name         string
+		cfg          *config.DevEnvironment
+		ran          int
+		sessionTotal int
+		want         string
+	}{
+		{
+			// #212: the denominator, not the TTY, is what gates the notice —
+			// a non-TTY caller (agent, script, CI) is exactly who misreads a
+			// selector-less run as a full deploy.
+			name:         "non-tty multi-pod session carries the denominator",
+			cfg:          multiPod,
+			ran:          1,
+			sessionTotal: 3,
+			want:         "notice: running on 1 of 3 session pod(s): target pod m-0 only; use --all, --workers, --role, or --pod to fan out\n",
+		},
+		{
+			name:         "nothing left to fan out to stays silent",
+			cfg:          multiPod,
+			ran:          1,
+			sessionTotal: 1,
+		},
+		{
+			name:         "workload type pod stays silent",
+			cfg:          singlePod,
+			ran:          1,
+			sessionTotal: 2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer // non-TTY writer
+			printTargetOnlyNotice(&buf, &commandContext{cfg: tt.cfg}, "m-0", tt.ran, tt.sessionTotal)
+			if got := buf.String(); got != tt.want {
+				t.Fatalf("notice = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFanoutDeliveryNoteCarriesTargetedCount(t *testing.T) {
+	// "every pod" was the false claim (#212): a selector-less run targets one
+	// pod, so the note must name the targeted count and never imply coverage.
+	one := fanoutDeliveryNote(1)
+	if !strings.Contains(one, "ran on the 1 targeted pod") || strings.Contains(one, "every pod") {
+		t.Fatalf("single-pod note = %q", one)
+	}
+	many := fanoutDeliveryNote(3)
+	if !strings.Contains(many, "ran on all 3 targeted pods") || strings.Contains(many, "every pod") {
+		t.Fatalf("multi-pod note = %q", many)
+	}
+	if !strings.Contains(one, "exit 69") || !strings.Contains(many, "exit 69") {
+		t.Fatal("the delivered-vs-failed clarifier must keep the infra exit code (#192)")
 	}
 }

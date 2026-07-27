@@ -293,6 +293,42 @@ if [[ "$SYNC_REUSED" == "true" && $((SYNC_LOG_LINES_AFTER - SYNC_LOG_LINES_BEFOR
   tail -20 "$SYNC_HOME/local.log" >&2
   exit 1
 fi
+# Issue #216: which image the session actually runs must be visible, so a
+# divergence from the image the same code is tested in is noticeable instead of
+# being discovered through a missing dependency inside the pod.
+echo "Testing status --details reports the running container images"
+if [[ "$REPEAT_STATUS" != *"images: dev=ubuntu:22.04"* ]]; then
+  echo "ERROR: expected the dev container image in status --details, got:" >&2
+  echo "$REPEAT_STATUS" >&2
+  exit 1
+fi
+if [[ "$REPEAT_STATUS" != *"sha256:"* ]]; then
+  echo "ERROR: expected an image digest alongside the tag in status --details, got:" >&2
+  echo "$REPEAT_STATUS" >&2
+  exit 1
+fi
+IMAGES_JSON=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details --output json)
+OKDEV_IMAGES_JSON="$IMAGES_JSON" python3 - <<'IMAGESPY'
+import json, os, sys
+detail = json.loads(os.environ["OKDEV_IMAGES_JSON"])
+pods = detail.get("pods") or []
+if not pods:
+    sys.exit("expected pods in status --details json")
+images = {i["container"]: i for i in (pods[0].get("images") or [])}
+dev = images.get("dev")
+if not dev:
+    sys.exit(f"expected a dev container image entry, got {images!r}")
+if dev.get("image") != "ubuntu:22.04":
+    sys.exit(f"expected dev image ubuntu:22.04, got {dev!r}")
+if not str(dev.get("digest", "")).startswith("sha256:"):
+    sys.exit(f"expected a sha256 digest for the running dev image, got {dev!r}")
+# The sidecar is a different image than the dev container; both must be visible
+# because sync bugs are often sidecar-version bugs.
+if "okdev-sidecar" not in images:
+    sys.exit(f"expected the sync sidecar image to be reported too, got {sorted(images)}")
+IMAGESPY
+echo "status --details image reporting verified (text + json, tag + digest)"
+
 STATUS_OUTPUT="$REPEAT_STATUS"
 if [[ "$SYNC_REUSED" == "true" ]]; then
   echo "Repeated okdev up sync reuse verified"
