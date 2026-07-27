@@ -65,6 +65,10 @@ type upState struct {
 	// cached snapshot is dropped, reported once the session is up (#213).
 	previousRunEnd    session.RunEnd
 	hasPreviousRunEnd bool
+	// recreatedThisRun records that this `up` deleted and recreated the
+	// workload itself, which rotates the run id (#214) without that counting
+	// as a run that ended on its own (#213).
+	recreatedThisRun bool
 }
 
 type workloadApplyOutcome int
@@ -341,12 +345,61 @@ func upReconcile(state *upState, applyWorkload bool) error {
 			}
 		}
 	}
+	// A recreate is a new run (#214). Both paths above have already deleted
+	// the old object, so from here the session is starting a fresh workload
+	// and it gets a fresh identity rather than stepping back into the dead
+	// one's name — some control planes reject or misbehave on rapid reuse of
+	// a name, and reusing it also makes two runs indistinguishable in
+	// discovery labels, events and logs. Reuse and re-apply keep their id:
+	// nothing was destroyed there.
+	if reusedExisting && outcome == workloadApplyRecreated {
+		if err := rotateRunIdentity(state); err != nil {
+			return err
+		}
+	}
 	if err := state.runtime.Apply(state.ctx, state.command.kube, state.command.namespace); err != nil {
 		return err
 	}
 	state.teardownOnUpFailure = shouldTeardownOnUpFailure(reusedExisting, outcome)
 	state.ui.stepDone(state.runtime.Kind(), workloadApplyStatus(outcome))
 	return persistSessionState(state)
+}
+
+// rotateRunIdentity mints a new run-id for a workload okdev just deleted and
+// is about to recreate, and rebuilds the runtime around it so the new object,
+// its discovery labels and the session metadata all agree.
+//
+// It must run after the delete and before the apply: the delete targets the
+// old runtime's name, and the apply must use the new one.
+func rotateRunIdentity(state *upState) error {
+	if state == nil || state.command == nil {
+		return nil
+	}
+	runID, err := newRunID()
+	if err != nil {
+		return err
+	}
+	workloadName := workloadNameForRun(state.command.sessionName, runID)
+	if state.labels == nil {
+		state.labels = map[string]string{}
+	}
+	state.labels["okdev.io/run-id"] = runID
+	cc := state.command
+	runtime, err := sessionRuntime(cc.cfg, cc.cfgPath, cc.sessionName, workloadName, state.labels, state.annotations,
+		cc.cfg.Spec.PodTemplate.Spec, state.volumes, state.enableTmux, resolvePreStopCommand(cc.cfg, cc.cfgPath))
+	if err != nil {
+		return fmt.Errorf("rebuild workload for new run id: %w", err)
+	}
+	state.runtime = runtime
+	state.runID = runID
+	state.workloadName = runtime.WorkloadName()
+	// okdev performed this recreate, so the run that just ended is not a
+	// death to report — the same rule down and restart follow (#213).
+	state.recreatedThisRun = true
+	if state.ui != nil {
+		state.ui.stepDone("run id", fmt.Sprintf("new run %s (%s)", runID, state.workloadName))
+	}
+	return nil
 }
 
 func shouldTeardownOnUpFailure(reusedExisting bool, outcome workloadApplyOutcome) bool {
@@ -1023,9 +1076,11 @@ func persistSessionState(state *upState) error {
 	// how that run ended — read it before dropping it, so the recreate can
 	// say what it is recovering from instead of silently erasing the cause
 	// (#213). Intentional teardowns (down, restart) clear the snapshot
-	// themselves, so nothing here reports a recreation the user asked for.
+	// themselves, so nothing here reports a recreation the user asked for —
+	// and neither does a --reconcile or drift recreate, which now rotates the
+	// run id (#214) and would otherwise look exactly like a run that died.
 	if record, ok := detectPreviousRunEnd(state.ctx, state.command.kube, state.command.sessionName,
-		state.command.namespace, state.runID, state.workloadName); ok {
+		state.command.namespace, state.runID, state.workloadName); ok && !state.recreatedThisRun {
 		state.previousRunEnd = record
 		state.hasPreviousRunEnd = true
 		if err := session.SaveRunEnd(state.command.sessionName, record); err != nil {
