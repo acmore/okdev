@@ -134,9 +134,6 @@ func newExecCmd(opts *Options) *cobra.Command {
 		},
 		ValidArgsFunction: sessionCompletionFunc(opts),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if requireSync && !detach {
-				return fmt.Errorf("--require-sync requires --detach")
-			}
 			sessionArgs, commandArgs := splitExecArgs(cmd, args)
 			var invocation execInvocation
 			var err error
@@ -213,10 +210,24 @@ func newExecCmd(opts *Options) *cobra.Command {
 					return fmt.Errorf("--kill-group-on-exit needs the interpod SSH channel; set spec.ssh.interPod: true and re-run okdev up")
 				}
 			}
-			if detach {
-				if err := detachSyncPreflight(cmd, cc, requireSync); err != nil {
+			// The sync-staleness guard covers foreground runs too (#222):
+			// the failure it prevents — running pre-edit code because
+			// `okdev sync` returned before the change reached the pod — does
+			// not care whether the process is detached, and a foreground
+			// experiment that hits it returns a plausible-looking result
+			// instead of crashing. An interactive shell (no command) is
+			// exempt: there is nothing to gate, and the user can see the
+			// session state for themselves.
+			if detach || hasCommand {
+				subject := "the command"
+				if detach {
+					subject = "the detached job"
+				}
+				if err := execSyncPreflight(cmd, cc, requireSync, subject); err != nil {
 					return err
 				}
+			} else if requireSync {
+				return fmt.Errorf("--require-sync needs a command to gate; pass one after --")
 			}
 
 			if multiPod || detach {
@@ -278,7 +289,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&resetGPU, "reset-gpu", false, "Kill every process holding GPU compute in the targeted pods (SIGKILL by process group) and verify nvidia-smi returns to zero (exit 0 clear, 3 no nvidia-smi, 4 still busy)")
 	cmd.Flags().StringVar(&pkillSignal, "signal", "TERM", "Signal name or number sent by --pkill")
 	cmd.Flags().BoolVar(&killGroupOnExit, "kill-group-on-exit", false, "With --detach on multiple pods: when any member exits, SIGKILL the whole cross-pod job group (requires spec.ssh.interPod)")
-	cmd.Flags().BoolVar(&requireSync, "require-sync", false, "With --detach: refuse to launch unless sync is healthy and fully converged")
+	cmd.Flags().BoolVar(&requireSync, "require-sync", false, "Refuse to run unless sync is healthy and fully converged (foreground or --detach)")
 	cmd.Flags().BoolVar(&requireAll, "require-all", false, "Exit non-zero unless every targeted pod responded (requires --json)")
 	return cmd
 }

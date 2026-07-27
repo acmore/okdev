@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -55,29 +56,42 @@ direction, then return. Purely a wait — it does not start or repair sync
 	return cmd
 }
 
-// detachSyncWarning returns a stderr warning for launching a detached job
-// over an unhealthy sync channel (issue #165): the job would run stale or
-// missing code (typically exit 127) with nothing tying the failure back to
-// sync. Empty when the channel is healthy.
-func detachSyncWarning(status syncHealthStatus, reason string) string {
+// syncStalenessWarning returns a stderr warning for running a command over an
+// unhealthy sync channel (issue #165): the command would run stale or missing
+// code (typically exit 127) with nothing tying the failure back to sync. Empty
+// when the channel is healthy.
+//
+// subject names what is at risk, because the same channel problem is reported
+// on two paths now (#222): a detached job and a foreground command are equally
+// capable of running pre-edit code, and a foreground experiment that does so
+// produces a plausible-looking result rather than a crash.
+func syncStalenessWarning(status syncHealthStatus, reason string, subject string) string {
+	if strings.TrimSpace(subject) == "" {
+		subject = "the command"
+	}
 	switch status {
 	case syncHealthActive:
 		return ""
 	case syncHealthPaused:
-		return "warning: sync is paused (`okdev sync pause`) — the detached job may run stale code; resume with \"okdev sync resume\" before launching, or gate the launch with --require-sync"
+		return fmt.Sprintf("warning: sync is paused (`okdev sync pause`) — %s may run stale code; resume with \"okdev sync resume\" before running, or gate it with --require-sync", subject)
 	case syncHealthStale:
-		return fmt.Sprintf("warning: sync is running but unhealthy (%s) — the detached job may run stale code; repair with \"okdev sync\" or gate the launch with --require-sync", reason)
+		return fmt.Sprintf("warning: sync is running but unhealthy (%s) — %s may run stale code; repair with \"okdev sync\" or gate it with --require-sync", reason, subject)
 	default:
-		return "warning: sync is not running — the detached job may run stale code; start it with \"okdev sync\" or gate the launch with --require-sync"
+		return fmt.Sprintf("warning: sync is not running — %s may run stale code; start it with \"okdev sync\" or gate it with --require-sync", subject)
 	}
 }
 
-// detachSyncPreflight guards a detached launch against the issue #165
-// wasted-run. Without --require-sync an unhealthy channel produces a stderr
-// warning only; with it, the launch aborts unless sync is healthy AND every
-// mapping has fully converged. Sessions with no sync mappings are exempt from
-// the warning (there is no channel to be stale).
-func detachSyncPreflight(cmd *cobra.Command, cc *commandContext, requireSync bool) error {
+// execSyncPreflight guards a run against the issue #165 wasted-run. Without
+// --require-sync an unhealthy channel produces a stderr warning only; with it,
+// the run aborts unless sync is healthy AND every mapping has fully converged.
+// Sessions with no sync mappings are exempt from the warning (there is no
+// channel to be stale).
+//
+// Both foreground and detached runs come through here (#222). The gate is what
+// actually changes behaviour — it stands in front of the action and refuses
+// with a reason — and it used to cover only the detached half of the workload,
+// even though the failure being guarded is identical on both.
+func execSyncPreflight(cmd *cobra.Command, cc *commandContext, requireSync bool, subject string) error {
 	if len(cc.cfg.Spec.Sync.Paths) == 0 {
 		if requireSync {
 			return fmt.Errorf("--require-sync: session %s has no sync mappings", cc.sessionName)
@@ -86,7 +100,7 @@ func detachSyncPreflight(cmd *cobra.Command, cc *commandContext, requireSync boo
 	}
 	status, reason := checkSyncHealth(cc.sessionName)
 	if !requireSync {
-		if warn := detachSyncWarning(status, reason); warn != "" {
+		if warn := syncStalenessWarning(status, reason, subject); warn != "" {
 			fmt.Fprintln(cmd.ErrOrStderr(), warn)
 		}
 		return nil
@@ -102,7 +116,7 @@ func detachSyncPreflight(cmd *cobra.Command, cc *commandContext, requireSync boo
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(cmd.ErrOrStderr(), "--require-sync: waiting for sync convergence before launch")
+	fmt.Fprintln(cmd.ErrOrStderr(), "--require-sync: waiting for sync convergence before running")
 	if err := runSyncWaitConvergence(cmd.Context(), cc, target.PodName, pairs, syncWaitDefaultTimeout, cmd.ErrOrStderr()); err != nil {
 		return fmt.Errorf("--require-sync: %w", err)
 	}

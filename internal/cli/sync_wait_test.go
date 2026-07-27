@@ -41,17 +41,28 @@ func TestSyncWaitGateError(t *testing.T) {
 	}
 }
 
-func TestDetachSyncWarning(t *testing.T) {
-	if got := detachSyncWarning(syncHealthActive, ""); got != "" {
+func TestSyncStalenessWarning(t *testing.T) {
+	if got := syncStalenessWarning(syncHealthActive, "", "the command"); got != "" {
 		t.Fatalf("healthy channel must not warn, got %q", got)
 	}
-	got := detachSyncWarning(syncHealthStale, "peer disconnected")
+	got := syncStalenessWarning(syncHealthStale, "peer disconnected", "the detached job")
 	if !strings.Contains(got, "unhealthy") || !strings.Contains(got, "peer disconnected") || !strings.Contains(got, "--require-sync") {
 		t.Fatalf("stale warning incomplete: %q", got)
 	}
-	got = detachSyncWarning(syncHealthStopped, "sync is not running")
+	if !strings.Contains(got, "the detached job") {
+		t.Fatalf("warning must name what is at risk, got %q", got)
+	}
+	got = syncStalenessWarning(syncHealthStopped, "sync is not running", "the command")
 	if !strings.Contains(got, "not running") || !strings.Contains(got, "--require-sync") {
 		t.Fatalf("stopped warning incomplete: %q", got)
+	}
+	// A foreground run is warned about in its own terms (#222).
+	if !strings.Contains(got, "the command") || strings.Contains(got, "detached") {
+		t.Fatalf("foreground warning must not talk about detached jobs, got %q", got)
+	}
+	// An empty subject still produces a sentence.
+	if got := syncStalenessWarning(syncHealthStopped, "", ""); !strings.Contains(got, "the command") {
+		t.Fatalf("expected a default subject, got %q", got)
 	}
 }
 
