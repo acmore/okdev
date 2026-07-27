@@ -57,6 +57,28 @@ Versioned files carry a `~YYYYMMDD-HHMMSS` suffix before the extension (e.g. `re
   - `node -v` and `npm -v` work inside the container
 - `okdev` does not launch the agent for you; after setup, connect with `okdev ssh` and run the agent CLI manually.
 
+## Single-Node Process Hangs Inside A PyTorchJob Pod (No Error)
+
+The training operator injects rendezvous environment variables into **every** PyTorchJob pod — `MASTER_ADDR`, `MASTER_PORT`, `RANK`, `WORLD_SIZE`, `PET_MASTER_ADDR`, `PET_MASTER_PORT`, `PET_NNODES`, `PET_NODE_RANK`, `PET_NPROC_PER_NODE` — with no `elasticPolicy` or torchrun involvement required. They are there on a plain scaffolded job.
+
+Anything that reads them joins a distributed rendezvous whether or not you asked for one. A single-node Ray head, a single-process inference server, or a plain `python train.py` started inside the pod waits for peers that never arrive and **hangs with no error output**. Nothing crashes and nothing is logged, so there is no signal that triggers investigation — the failure is only visible as elapsed wall-clock.
+
+Which direction you want:
+
+- **Distributed torchrun / torch DDP** — use the injected values; they are the canonical answer, and `MASTER_ADDR=master-0` resolves in-cluster (see the multipod reference). Unset nothing.
+- **A single-node process in the same pod** — clear the rendezvous env for that command only:
+
+```bash
+okdev exec --pod master-0 -- env \
+  -u PET_MASTER_ADDR -u PET_MASTER_PORT -u PET_NNODES -u PET_NODE_RANK -u PET_NPROC_PER_NODE \
+  -u MASTER_ADDR -u MASTER_PORT -u RANK -u WORLD_SIZE \
+  <command>
+```
+
+For a local Ray head, prefix `RAY_ADDRESS=127.0.0.1:6379` as well.
+
+Keep the scrub scoped to the single command. Unsetting these globally — in the pod's shell profile, or in a `spec.lifecycle.postCreate`/`postSync` hook — breaks the distributed launch the multi-pod session exists for, and does so just as silently.
+
 ## `exec` Command Containing `pkill`/`kill` Exits 137/143
 
 A raw `pkill -f <pattern>` inside `okdev exec -- bash -lc '...'` can match the shell running the command itself — its cmdline contains the full command string — so pkill kills its own shell (exit 143/SIGTERM) and any trailing cleanup never runs. okdev prints a hint on stderr when it detects this shape. Preferred fixes:
