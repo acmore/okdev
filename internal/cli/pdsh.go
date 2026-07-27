@@ -696,6 +696,12 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvo
 	if err != nil {
 		return err
 	}
+	// Self-heal the short-name block before running anything (#220). This is
+	// the path where wrong addressing actually costs something — a launcher
+	// that follows the documented `MASTER_ADDR=master-0` advice against a
+	// stale map does not fail, it hangs in rendezvous — and the pods are
+	// already listed here, so detection is free.
+	refreshStaleHostAliases(ctx, cc, sessionPods, targetContainerForAliases(cc, container), cmd.ErrOrStderr())
 	if plan.targetOnly && len(groups) == 1 && len(groups[0].Pods) > 0 {
 		printTargetOnlyNotice(cmd.ErrOrStderr(), cc, groups[0].Pods[0].Name,
 			len(groups[0].Pods), len(filterRunningPods(sessionPods)))
