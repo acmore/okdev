@@ -149,6 +149,12 @@ func newExecCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Pure flag validation, before any cluster work: an interactive
+			// shell has nothing to gate, so --require-sync has no meaning
+			// there (#222).
+			if requireSync && !detach && len(invocation.Argv) == 0 && invocation.ScriptLocalPath == "" {
+				return fmt.Errorf("--require-sync needs a command to gate; pass one after -- or use --detach")
+			}
 			applySessionArg(opts, sessionArgs)
 			cc, err := resolveCommandContext(opts, resolveSessionName)
 			if err != nil {
@@ -226,8 +232,6 @@ func newExecCmd(opts *Options) *cobra.Command {
 				if err := execSyncPreflight(cmd, cc, requireSync, subject); err != nil {
 					return err
 				}
-			} else if requireSync {
-				return fmt.Errorf("--require-sync needs a command to gate; pass one after --")
 			}
 
 			if multiPod || detach {

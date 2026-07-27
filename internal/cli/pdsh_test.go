@@ -1115,9 +1115,11 @@ func TestExecPkillFlagValidation(t *testing.T) {
 			wantErr: "must be a signal name or number",
 		},
 		{
-			name:    "require-sync without detach",
-			args:    []string{"--require-sync", "--", "echo", "hi"},
-			wantErr: "--require-sync requires --detach",
+			// #222: --require-sync is no longer detach-only. What it still
+			// cannot do is gate an interactive shell, and it says so.
+			name:    "require-sync without a command to gate",
+			args:    []string{"--require-sync"},
+			wantErr: "--require-sync needs a command to gate",
 		},
 	}
 	for _, tt := range tests {
