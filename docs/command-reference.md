@@ -43,8 +43,8 @@ agents can react without launching a diagnostic chain on every blip:
 - `okdev exec [session] [--shell /bin/bash] [--no-tty] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--detach] [--timeout <duration>] [--log-dir <path>] [--no-prefix] [--json] [--require-all] [--gateway <pod>] [--fanout N] [--pkill <pattern> [--signal <sig>]] [--require-sync] [-- command...]`
 - `okdev jobs list [session] [--job-id <id>] [--container <name>] [--fanout N]`
 - `okdev jobs logs <job-id> [session] [-f|--follow] [--tail N] [--since <dur|time>] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--fanout N]`
-- `okdev jobs stop <job-id> [session] [--container <name>] [--fanout N]`
-- `okdev jobs wait <job-id> [session] [--container <name>] [--fanout N]`
+- `okdev jobs stop <job-id> [session] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--fanout N]`
+- `okdev jobs wait <job-id> [session] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--fanout N]`
 - `okdev exec-jobs [session] [--job-id <id>] [--container <name>] [--fanout N]`
 - `okdev cp [session] <src> <dst> [--all | --pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--fanout N]`
 - `okdev logs [session] [--container <name> | --all] [--tail N] [--since 5m] [--follow] [--previous]`
@@ -193,10 +193,15 @@ agents can react without launching a diagnostic chain on every blip:
 ### `okdev jobs stop <job-id> [session]`
 
 - Stops every still-running pod in the logical job by sending `SIGTERM`, waiting 10 seconds, then sending `SIGKILL` to survivors.
+- **Scope**: a fanned-out `--detach` shares one job id across every pod it launched on, so the default stops the job on all of them. `--pod`, `--role`, `--label` and `--exclude` narrow it to some ranks and leave the others running — the same selector set as `okdev jobs list`/`logs`. Which to use: no selector to end the whole distributed run, `--pod worker-1` to kill one misbehaving rank. Note the default here is deliberately *not* the target-pod-only default that `okdev exec` uses: a job id identifies one logical job, and stopping half a distributed run by accident is the worse failure. Say the narrow intent explicitly.
 - Signals the job's whole **process group** when available: detached jobs are launched via `setsid`, so children the command forked (e.g. `torchrun` workers) are signaled too — including stragglers whose leader already exited. Stop only reports success once no live group member remains, so a clean return means the process tree (and its GPU memory) is gone.
 - Group membership is verified via the job's `OKDEV_JOB_ID` environment marker before signaling, so recycled pids/pgids are never signaled by mistake. Jobs launched by older okdev versions (or in containers without `setsid`) fall back to leader-only signaling.
 - Prints which pods were signaled (`pgid=N` for group signals, `pid=N` for the fallback) during the stop flow.
 - Returns non-zero when any pod could not be queried or signaled, or if processes are still alive after the stop attempt.
+
+### `okdev jobs wait <job-id> [session]`
+
+- Waits for the job to finish (or, with `--grep`, for a log pattern to appear) across the selected pods. Accepts the same `--pod`/`--role`/`--label`/`--exclude` selectors as `stop`, so a launcher can block on one rank instead of the whole group. Read-only.
 
 ### `okdev exec-jobs [session]`
 
@@ -276,7 +281,7 @@ agents can react without launching a diagnostic chain on every blip:
 - When `sync.engine=syncthing`, `okdev up` refreshes the session's local Syncthing processes, starts background sync in bidirectional mode by default, and waits for the initial sync to converge before exiting.
 - Lifecycle hooks run synchronously inside `okdev up` and are tracked per pod: `okdev up && launch` is already hook-safe for pods that existed when the hook fanout started. A hook whose done-marker predates the container's current start (an in-place restart wiped its effects) reads as **stale** and is re-run by the next `okdev up`.
 - `--wait-hooks`: keep converging `postSync` until every session pod — including pods the controller created after the initial fanout (operator recreations, late-scheduled workers) — has completed it. Use this in automation that launches work across all pods right after `up`; without it, a pod that appeared mid-`up` completes its hooks only on the next `okdev up`.
-- On multi-pod sessions, `okdev up` writes a managed block into every pod's `/etc/hosts` mapping the short-name aliases (`master-0`, `worker-1`, …) to current pod IPs — launch scripts can hardcode `MASTER_ADDR=master-0` once and survive recreations. The block is rewritten on every `up`/`restart` (including `restart --pod`). Boundary: a pod the **controller** recreated on its own resolves stale until the next `okdev up` — the same lifecycle as lifecycle-hook replay, and the same cue applies (run `okdev up` after external recreations). Best-effort: pods whose image cannot write `/etc/hosts` warn instead of failing.
+- On multi-pod sessions, `okdev up` writes a managed block into every pod's `/etc/hosts` mapping the short-name aliases (`master-0`, `worker-1`, …) to current pod IPs — launch scripts can hardcode `MASTER_ADDR=master-0` once and survive recreations. The block is rewritten on every `up`/`restart` (including `restart --pod`). A pod the **controller** recreated on its own (OOM kill, eviction, node drain, operator restart) no longer leaves the map wrong until the next `okdev up`: okdev records what it wrote, and `okdev exec` compares that record against the live pods and rewrites the block before running anything when they disagree — the recreated pod keeps its name but gets a new UID and IP, so the comparison is on UID, not name. `okdev status` reports the same drift but never repairs it, because a read command must not mutate the cluster. Boundary: only the aliases self-heal. Lifecycle hooks and interpod SSH keys on a controller-recreated pod still need an `okdev up`, so after an external recreation that remains the complete repair. Best-effort: pods whose image cannot write `/etc/hosts` warn instead of failing, and a write that lands nowhere is now caught by a readback rather than being reported as success. A partial write names the pods that did not get the block — short names do not resolve inside those.
 - The ready card's `next:` list is extended with the primitives that session is most likely to need — at most four lines, and only the ones that apply to its shape: `okdev sync wait / exec --require-sync` when the session has sync mappings, `spec.lifecycle.postCreate / postSync` when no lifecycle hook is configured (or `up --wait-hooks` when one is and the session is multi-pod), and fanout targeting plus the in-pod short-name aliases when there is more than one pod. Not TTY-gated: scripts and agents are the callers most likely to hand-roll a substitute for a primitive that already exists.
 - `spec.ports` is materialized as SSH `LocalForward` or `RemoteForward` based on `direction`.
 

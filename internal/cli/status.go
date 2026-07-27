@@ -181,6 +181,13 @@ func newStatusCmd(opts *Options) *cobra.Command {
 					})
 				}
 				output.PrintTable(cmd.OutOrStdout(), []string{"SEL", "POD", "PHASE", "READY", "RESTARTS", "REASON", "AGE"}, podRows)
+				// Report, never repair: status is a read command, and the
+				// exec path already self-heals before it runs anything (#220).
+				if record, err := session.LoadHostAliases(views[0].Session); err == nil {
+					if reason := hostAliasesStale(record, views[0].Pods); reason != "" {
+						fmt.Fprintln(cmd.OutOrStdout(), hostAliasRefreshHint(reason))
+					}
+				}
 			}
 			return nil
 		},
