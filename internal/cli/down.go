@@ -503,5 +503,9 @@ func downCleanupLocal(ui *upUI, payload *downOutput, sessionName string) error {
 	if err := session.ClearRunEnd(sessionName); err != nil {
 		slog.Debug("failed to clear run-end record", "session", sessionName, "error", err)
 	}
+	// The pods that carried the alias block are gone with the session.
+	if err := session.ClearHostAliases(sessionName); err != nil {
+		slog.Debug("failed to clear host alias record", "session", sessionName, "error", err)
+	}
 	return nil
 }

@@ -824,10 +824,15 @@ func upSetup(state *upState) error {
 	// Stable inter-pod addressing: every pod's /etc/hosts maps the short
 	// aliases (master-0, worker-1) to current pod IPs, so launch scripts can
 	// hardcode MASTER_ADDR=master-0 once (#169). Rewritten on every up.
-	if aliasCount, aliasErr := setupHostAliases(state.ctx, state.command.kube, state.command.namespace, state.labels, target.Container, state.ui.warnf); aliasErr != nil {
+	if aliasResult, aliasErr := setupHostAliases(state.ctx, state.command.kube, state.command.namespace, state.command.sessionName, state.labels, target.Container, state.ui.warnf); aliasErr != nil {
 		state.ui.warnf("host aliases: %v", aliasErr)
-	} else if aliasCount > 0 {
-		state.ui.stepDone("host aliases", fmt.Sprintf("short-name aliases written on %d pod(s)", aliasCount))
+	} else if aliasResult.Written > 0 || len(aliasResult.Skipped) > 0 {
+		state.ui.stepDone("host aliases", aliasResult.Summary())
+		if !aliasResult.Complete() {
+			// A pod without the block is a pod where master-0 does not
+			// resolve — the count alone hid that (#220).
+			state.ui.warnf("host aliases: %s", aliasResult.Summary())
+		}
 	}
 
 	postSyncRanThisUp := false

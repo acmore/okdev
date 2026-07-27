@@ -209,9 +209,19 @@ func parseSinceCutoff(s string, now time.Time) (time.Time, error) {
 func newJobsStopCmd(opts *Options) *cobra.Command {
 	var container string
 	var fanout int
+	var podNames []string
+	var role string
+	var labels []string
+	var exclude []string
 	cmd := &cobra.Command{
 		Use:   "stop <job-id> [session]",
 		Short: "Stop a detached job",
+		Long: `Stop a detached job by id.
+
+A fanned-out detach shares one job id across every pod it launched on, so by
+default "stop" kills the job's process group on all of them. Narrow it with the
+same selectors as "jobs list"/"jobs logs" to stop a single rank — for example
+"okdev jobs stop <id> --pod worker-1" — and leave the rest running.`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 || len(args) > 2 {
 				return errors.New("requires <job-id> and optional [session]")
@@ -227,7 +237,7 @@ func newJobsStopCmd(opts *Options) *cobra.Command {
 			if err := ensureExistingSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 				return err
 			}
-			pods, err := selectSessionPods(cmd.Context(), cc, nil, "", nil, nil, true)
+			pods, err := selectSessionPods(cmd.Context(), cc, podNames, role, labels, exclude, true)
 			if err != nil {
 				return err
 			}
@@ -240,6 +250,14 @@ func newJobsStopCmd(opts *Options) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&container, "container", "", "Override target container")
 	cmd.Flags().IntVar(&fanout, "fanout", pdshDefaultFanout, "Maximum concurrent pod queries")
+	// The same selector set as jobs list/logs (#221). Without these, the only
+	// expressible intent was "kill this job everywhere", which is the widest
+	// blast radius in the jobs family and the one command that could not be
+	// narrowed.
+	cmd.Flags().StringSliceVar(&podNames, "pod", nil, "Stop the job only on these pods (repeatable/comma-separated)")
+	cmd.Flags().StringVar(&role, "role", "", "Stop the job only on pods with this workload role")
+	cmd.Flags().StringSliceVar(&labels, "label", nil, "Stop the job only on pods matching label key=value (repeatable)")
+	cmd.Flags().StringSliceVar(&exclude, "exclude", nil, "Leave these pods running (repeatable/comma-separated)")
 	return cmd
 }
 
@@ -248,6 +266,10 @@ func newJobsWaitCmd(opts *Options) *cobra.Command {
 	var fanout int
 	var grep string
 	var tailLines int
+	var podNames []string
+	var role string
+	var labels []string
+	var exclude []string
 	cmd := &cobra.Command{
 		Use:   "wait <job-id> [session]",
 		Short: "Wait for a detached job to finish, or for a log pattern to appear",
@@ -266,7 +288,7 @@ func newJobsWaitCmd(opts *Options) *cobra.Command {
 			if err := ensureExistingSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 				return err
 			}
-			pods, err := selectSessionPods(cmd.Context(), cc, nil, "", nil, nil, true)
+			pods, err := selectSessionPods(cmd.Context(), cc, podNames, role, labels, exclude, true)
 			if err != nil {
 				return err
 			}
@@ -281,6 +303,12 @@ func newJobsWaitCmd(opts *Options) *cobra.Command {
 	cmd.Flags().IntVar(&fanout, "fanout", pdshDefaultFanout, "Maximum concurrent pod queries")
 	cmd.Flags().StringVar(&grep, "grep", "", "Return as soon as a line matching this extended regex appears in any pod's log (instead of waiting for the job to finish)")
 	cmd.Flags().IntVar(&tailLines, "tail", 1, "With --grep: how many matching lines to print on success (-1 = all matches)")
+	// Read-only, so the blast radius was nil — but it was hardcoded to all
+	// pods the same way stop was, and "wait for rank 3" is a real question.
+	cmd.Flags().StringSliceVar(&podNames, "pod", nil, "Wait only on these pods (repeatable/comma-separated)")
+	cmd.Flags().StringVar(&role, "role", "", "Wait only on pods with this workload role")
+	cmd.Flags().StringSliceVar(&labels, "label", nil, "Wait only on pods matching label key=value (repeatable)")
+	cmd.Flags().StringSliceVar(&exclude, "exclude", nil, "Ignore these pods (repeatable/comma-separated)")
 	return cmd
 }
 
