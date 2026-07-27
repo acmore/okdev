@@ -214,6 +214,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview sync actions without transferring files")
 
 	cmd.AddCommand(newSyncResetRemoteCmd(opts))
+	cmd.AddCommand(newSyncStatusCmd(opts))
 	cmd.AddCommand(newSyncWaitCmd(opts))
 	cmd.AddCommand(newSyncPauseCmd(opts))
 	cmd.AddCommand(newSyncResumeCmd(opts))

@@ -1521,6 +1521,10 @@ type syncthingFolderStatusInfo struct {
 	GlobalFiles int64
 	LocalFiles  int64
 	NeedBytes   int64
+	// NeedFiles is the pending file count. /rest/db/status has always
+	// returned it; it was simply not decoded, which left "how much is left"
+	// answerable only in bytes (#215).
+	NeedFiles int64
 }
 
 func syncthingFolderStatusInfoForFolder(ctx context.Context, base, key, folderID string) (syncthingFolderStatusInfo, error) {
@@ -1534,6 +1538,7 @@ func syncthingFolderStatusInfoForFolder(ctx context.Context, base, key, folderID
 		GlobalFiles int64  `json:"globalFiles"`
 		LocalFiles  int64  `json:"localFiles"`
 		NeedBytes   int64  `json:"needBytes"`
+		NeedFiles   int64  `json:"needFiles"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return syncthingFolderStatusInfo{}, err
@@ -1543,6 +1548,7 @@ func syncthingFolderStatusInfoForFolder(ctx context.Context, base, key, folderID
 		GlobalFiles: payload.GlobalFiles,
 		LocalFiles:  payload.LocalFiles,
 		NeedBytes:   payload.NeedBytes,
+		NeedFiles:   payload.NeedFiles,
 	}, nil
 }
 
@@ -2924,6 +2930,40 @@ func warnLargeSyncEntries(w io.Writer, localPath string, needBytes int64) {
 		fmt.Fprintf(w, "- dir  %s  %s/\n", humanSizeIEC(d.Size), d.Path)
 	}
 	fmt.Fprintln(w, "consider adding large generated or dataset files to .stignore")
+}
+
+// summarizeLargeSyncEntries builds a one-line, self-contained version of the
+// warning above. "see earlier logs" was worthless the moment the output
+// scrolled or was captured (#215), and it is precisely a long transfer that
+// scrolls: the names have to travel with the warning, and the authoritative
+// pending set has to be re-queryable afterwards.
+func summarizeLargeSyncEntries(localPath string, needBytes int64) string {
+	files, dirs, err := detectLargeSyncEntries(localPath, largeSyncWarnThreshold, largeSyncWarnLimit)
+	if err != nil || (len(files) == 0 && len(dirs) == 0) {
+		return fmt.Sprintf("sync is processing unusually large files (%s pending); run `okdev sync status` to see which files are actually pending", humanSizeIEC(needBytes))
+	}
+	const inline = 3
+	parts := make([]string, 0, inline)
+	for _, f := range files {
+		if len(parts) == inline {
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s %s", f.Path, humanSizeIEC(f.Size)))
+	}
+	for _, d := range dirs {
+		if len(parts) == inline {
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s/ %s", d.Path, humanSizeIEC(d.Size)))
+	}
+	more := ""
+	if extra := len(files) + len(dirs) - len(parts); extra > 0 {
+		more = fmt.Sprintf(" (+%d more)", extra)
+	}
+	// The list is a local size heuristic, not the pending set — say so, and
+	// point at the command that knows the difference.
+	return fmt.Sprintf("sync is processing unusually large files (%s pending); largest local candidates: %s%s — run `okdev sync status` for the files actually pending and their share",
+		humanSizeIEC(needBytes), strings.Join(parts, ", "), more)
 }
 
 func detectLargeSyncEntries(root string, threshold int64, limit int) ([]syncLargeFile, []syncLargeDir, error) {
