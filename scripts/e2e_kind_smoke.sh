@@ -361,6 +361,36 @@ if [[ "$REPEAT_UP_OUTPUT" != *"reused existing workload"* ]]; then
   echo "ERROR: expected repeated up to reuse existing pod workload" >&2
   exit 1
 fi
+# Issue #219: the primitives a session is about to need must be named on the
+# execution path, not only in the skill. Captured stdout here (non-TTY) is the
+# shape an agent or CI job sees — exactly the caller that operates from memory
+# of the tool and never reads the docs. They extend the ready card's existing
+# "next:" list rather than opening a second one.
+echo "Testing the next-steps hints on a single-pod session with sync"
+if [[ "$REPEAT_UP_OUTPUT" != *"okdev sync wait / exec --require-sync"* ]]; then
+  echo "ERROR: a session with sync mappings must be pointed at the convergence primitives, got:" >&2
+  echo "$REPEAT_UP_OUTPUT" >&2
+  exit 1
+fi
+if [[ "$(printf '%s\n' "$REPEAT_UP_OUTPUT" | grep -c '^next:')" != "1" ]]; then
+  echo "ERROR: expected exactly one next: section in the ready card, got:" >&2
+  echo "$REPEAT_UP_OUTPUT" >&2
+  exit 1
+fi
+# Shape-awareness is what keeps the block from being ignored: a single-pod
+# session has nothing to fan out to and no short-name aliases.
+if [[ "$REPEAT_UP_OUTPUT" == *"master-0 / worker-1"* || "$REPEAT_UP_OUTPUT" == *"--role worker"* ]]; then
+  echo "ERROR: multi-pod hints must not appear on a single-pod session, got:" >&2
+  echo "$REPEAT_UP_OUTPUT" >&2
+  exit 1
+fi
+NEXT_HINT_LINES=$(printf '%s\n' "$REPEAT_UP_OUTPUT" | sed -n '/^next:/,$p' | grep -c '^- .* — ' || true)
+if [[ "$NEXT_HINT_LINES" -lt 1 || "$NEXT_HINT_LINES" -gt 4 ]]; then
+  echo "ERROR: expected 1-4 session-shaped hint lines, got $NEXT_HINT_LINES" >&2
+  echo "$REPEAT_UP_OUTPUT" >&2
+  exit 1
+fi
+echo "next-steps hints verified ($NEXT_HINT_LINES lines, sync primitives present, multi-pod hints absent)"
 SYNC_REUSED=false
 if [[ "$REPEAT_UP_OUTPUT" == *"sync: already active"* ]]; then
   SYNC_REUSED=true
@@ -389,6 +419,42 @@ if [[ "$SYNC_REUSED" == "true" && $((SYNC_LOG_LINES_AFTER - SYNC_LOG_LINES_BEFOR
   tail -20 "$SYNC_HOME/local.log" >&2
   exit 1
 fi
+# Issue #216: which image the session actually runs must be visible, so a
+# divergence from the image the same code is tested in is noticeable instead of
+# being discovered through a missing dependency inside the pod.
+echo "Testing status --details reports the running container images"
+if [[ "$REPEAT_STATUS" != *"images: dev=ubuntu:22.04"* ]]; then
+  echo "ERROR: expected the dev container image in status --details, got:" >&2
+  echo "$REPEAT_STATUS" >&2
+  exit 1
+fi
+if [[ "$REPEAT_STATUS" != *"sha256:"* ]]; then
+  echo "ERROR: expected an image digest alongside the tag in status --details, got:" >&2
+  echo "$REPEAT_STATUS" >&2
+  exit 1
+fi
+IMAGES_JSON=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details --output json)
+OKDEV_IMAGES_JSON="$IMAGES_JSON" python3 - <<'IMAGESPY'
+import json, os, sys
+detail = json.loads(os.environ["OKDEV_IMAGES_JSON"])
+pods = detail.get("pods") or []
+if not pods:
+    sys.exit("expected pods in status --details json")
+images = {i["container"]: i for i in (pods[0].get("images") or [])}
+dev = images.get("dev")
+if not dev:
+    sys.exit(f"expected a dev container image entry, got {images!r}")
+if dev.get("image") != "ubuntu:22.04":
+    sys.exit(f"expected dev image ubuntu:22.04, got {dev!r}")
+if not str(dev.get("digest", "")).startswith("sha256:"):
+    sys.exit(f"expected a sha256 digest for the running dev image, got {dev!r}")
+# The sidecar is a different image than the dev container; both must be visible
+# because sync bugs are often sidecar-version bugs.
+if "okdev-sidecar" not in images:
+    sys.exit(f"expected the sync sidecar image to be reported too, got {sorted(images)}")
+IMAGESPY
+echo "status --details image reporting verified (text + json, tag + digest)"
+
 STATUS_OUTPUT="$REPEAT_STATUS"
 if [[ "$SYNC_REUSED" == "true" ]]; then
   echo "Repeated okdev up sync reuse verified"
@@ -658,7 +724,17 @@ echo "Pod reconcile verified"
 echo "Testing okdev restart recreates the workload in one command"
 RESTART_POD_BEFORE=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
 RESTART_UID_BEFORE=$(kubectl -n "$NAMESPACE" get pod "$RESTART_POD_BEFORE" -o jsonpath='{.metadata.uid}')
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" restart --yes --wait-timeout 5m
+RESTART_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" restart --yes --wait-timeout 5m)
+echo "$RESTART_OUTPUT"
+# An operator-requested recreation is not a death (#213): restart mints a new
+# run-id, so the report must be suppressed by the teardown clearing the
+# snapshot — otherwise every restart would accuse the cluster of killing the
+# session.
+if [[ "$RESTART_OUTPUT" == *"previous run"* ]]; then
+  echo "ERROR: restart is an intentional recreation and must not report a previous-run end" >&2
+  echo "$RESTART_OUTPUT" >&2
+  exit 1
+fi
 RESTART_POD_AFTER=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
 RESTART_UID_AFTER=$(kubectl -n "$NAMESPACE" get pod "$RESTART_POD_AFTER" -o jsonpath='{.metadata.uid}')
 if [[ "$RESTART_UID_AFTER" == "$RESTART_UID_BEFORE" ]]; then
@@ -671,6 +747,69 @@ if [[ "$RESTART_EXEC" != *"restart-ok"* ]]; then
   exit 1
 fi
 echo "okdev restart verified"
+
+# ---------------------------------------------------------------------------
+# Previous-run end reporting (#213): a session that was killed and recreated
+# looks exactly like one that never died, and the cause of death used to be
+# reachable only while the session was still gone. Kill the workload behind
+# okdev's back, recreate, and verify the recreate says what it recovered from.
+# ---------------------------------------------------------------------------
+
+echo "Testing previous-run end reason survives the recreate"
+SESSION_INFO_PATH="$HOME_DIR/.okdev/sessions/${SESSION_NAME}/session.json"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status >/dev/null # snapshot the live run
+RUN_ID_BEFORE=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("runID",""))' "$SESSION_INFO_PATH")
+if [[ -z "$RUN_ID_BEFORE" ]]; then
+  echo "ERROR: could not read the live run-id from $SESSION_INFO_PATH" >&2
+  exit 1
+fi
+REAPED_POD=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
+kubectl -n "$NAMESPACE" delete pod "$REAPED_POD" --wait=true >/dev/null
+for i in $(seq 1 30); do
+  REMAINING=$(kubectl -n "$NAMESPACE" get pods -l "okdev.io/session=$SESSION_NAME" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  [[ "$REMAINING" == "0" ]] && break
+  sleep 2
+done
+RECREATE_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m)
+echo "$RECREATE_OUTPUT"
+if [[ "$RECREATE_OUTPUT" != *"previous run $RUN_ID_BEFORE ended:"* ]]; then
+  echo "ERROR: expected the recreate to name the ended run $RUN_ID_BEFORE, got:" >&2
+  echo "$RECREATE_OUTPUT" >&2
+  exit 1
+fi
+RUN_ID_AFTER=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("runID",""))' "$SESSION_INFO_PATH")
+if [[ "$RUN_ID_AFTER" == "$RUN_ID_BEFORE" ]]; then
+  echo "ERROR: expected the recreate to mint a new run-id, still $RUN_ID_AFTER" >&2
+  exit 1
+fi
+
+# The whole point of #213: the answer must still be there on the command the
+# user is already on, after the up output has scrolled away.
+RUN_END_STATUS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status)
+if [[ "$RUN_END_STATUS" != *"previous run $RUN_ID_BEFORE ended:"* ]]; then
+  echo "ERROR: expected status to carry the previous-run end for the live run, got:" >&2
+  echo "$RUN_END_STATUS" >&2
+  exit 1
+fi
+RUN_END_JSON=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --output json)
+OKDEV_RUN_END_JSON="$RUN_END_JSON" OKDEV_RUN_ID_BEFORE="$RUN_ID_BEFORE" python3 - <<'RUNENDPY'
+import json, os, sys
+rows = json.loads(os.environ["OKDEV_RUN_END_JSON"])
+record = (rows[0] or {}).get("previousRunEnd") or {}
+if record.get("endedRunID") != os.environ["OKDEV_RUN_ID_BEFORE"]:
+    sys.exit(f"expected previousRunEnd.endedRunID={os.environ['OKDEV_RUN_ID_BEFORE']}, got {record!r}")
+if not record.get("class") or not record.get("reason"):
+    sys.exit(f"expected a classified reason in {record!r}")
+RUNENDPY
+# Announced once by the recreate that performed it: a repeat `up` on the same
+# run has no transition to report.
+REPEAT_AFTER_RECREATE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m)
+if [[ "$REPEAT_AFTER_RECREATE" == *"previous run"* ]]; then
+  echo "ERROR: a repeat up on the same run must not re-report the end, got:" >&2
+  echo "$REPEAT_AFTER_RECREATE" >&2
+  exit 1
+fi
+echo "previous-run end reporting verified (up + status + json, once per recreate)"
 
 # --- Sync direction: per-path direction semantics on a live session --------
 # Covers the direction chain end-to-end: editing spec.sync.paths[].direction

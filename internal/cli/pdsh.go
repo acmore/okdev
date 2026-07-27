@@ -93,7 +93,7 @@ func newExecCmd(opts *Options) *cobra.Command {
   okdev exec --all -- nvidia-smi
 
   # Upload and run a local script on all session pods
-  okdev exec --script ./collect-logs.sh -- --since 10m
+  okdev exec --all --script ./collect-logs.sh -- --since 10m
 
   # Run on worker pods only
   okdev exec --workers -- nvidia-smi
@@ -134,9 +134,6 @@ func newExecCmd(opts *Options) *cobra.Command {
 		},
 		ValidArgsFunction: sessionCompletionFunc(opts),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if requireSync && !detach {
-				return fmt.Errorf("--require-sync requires --detach")
-			}
 			sessionArgs, commandArgs := splitExecArgs(cmd, args)
 			var invocation execInvocation
 			var err error
@@ -151,6 +148,12 @@ func newExecCmd(opts *Options) *cobra.Command {
 			}
 			if err != nil {
 				return err
+			}
+			// Pure flag validation, before any cluster work: an interactive
+			// shell has nothing to gate, so --require-sync has no meaning
+			// there (#222).
+			if requireSync && !detach && len(invocation.Argv) == 0 && invocation.ScriptLocalPath == "" {
+				return fmt.Errorf("--require-sync needs a command to gate; pass one after -- or use --detach")
 			}
 			applySessionArg(opts, sessionArgs)
 			cc, err := resolveCommandContext(opts, resolveSessionName)
@@ -192,8 +195,8 @@ func newExecCmd(opts *Options) *cobra.Command {
 					return err
 				}
 				plan.podNames = []string{target.PodName}
+				plan.targetOnly = true
 				multiPod = true
-				printTargetOnlyNotice(cmd.ErrOrStderr(), cmd.Context(), cc, target)
 			}
 			if err := validateMultiPodFlags(allPods, workers, podNames, role, labels, exclude, groups, hasCommand, detach, sequential, parallel); err != nil {
 				return err
@@ -213,8 +216,20 @@ func newExecCmd(opts *Options) *cobra.Command {
 					return fmt.Errorf("--kill-group-on-exit needs the interpod SSH channel; set spec.ssh.interPod: true and re-run okdev up")
 				}
 			}
-			if detach {
-				if err := detachSyncPreflight(cmd, cc, requireSync); err != nil {
+			// The sync-staleness guard covers foreground runs too (#222):
+			// the failure it prevents — running pre-edit code because
+			// `okdev sync` returned before the change reached the pod — does
+			// not care whether the process is detached, and a foreground
+			// experiment that hits it returns a plausible-looking result
+			// instead of crashing. An interactive shell (no command) is
+			// exempt: there is nothing to gate, and the user can see the
+			// session state for themselves.
+			if detach || hasCommand {
+				subject := "the command"
+				if detach {
+					subject = "the detached job"
+				}
+				if err := execSyncPreflight(cmd, cc, requireSync, subject); err != nil {
 					return err
 				}
 			}
@@ -278,7 +293,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&resetGPU, "reset-gpu", false, "Kill every process holding GPU compute in the targeted pods (SIGKILL by process group) and verify nvidia-smi returns to zero (exit 0 clear, 3 no nvidia-smi, 4 still busy)")
 	cmd.Flags().StringVar(&pkillSignal, "signal", "TERM", "Signal name or number sent by --pkill")
 	cmd.Flags().BoolVar(&killGroupOnExit, "kill-group-on-exit", false, "With --detach on multiple pods: when any member exits, SIGKILL the whole cross-pod job group (requires spec.ssh.interPod)")
-	cmd.Flags().BoolVar(&requireSync, "require-sync", false, "With --detach: refuse to launch unless sync is healthy and fully converged")
+	cmd.Flags().BoolVar(&requireSync, "require-sync", false, "Refuse to run unless sync is healthy and fully converged (foreground or --detach)")
 	cmd.Flags().BoolVar(&requireAll, "require-all", false, "Exit non-zero unless every targeted pod responded (requires --json)")
 	return cmd
 }
@@ -335,6 +350,10 @@ type execTargetPlan struct {
 	readyOnly  bool
 	sequential bool
 	parallel   bool
+	// targetOnly records that no selector was given, so the plan was narrowed
+	// to the target pod alone. The count is only knowable once session pods
+	// have been listed, which is why the notice is emitted downstream.
+	targetOnly bool
 }
 
 type execPodGroup struct {
@@ -659,20 +678,26 @@ func resolveExecNoPrefix(explicitlySet bool, noPrefix bool, out io.Writer) bool 
 	return !isTerminalWriter(out)
 }
 
-// printTargetOnlyNotice tells interactive users that their selector-less
-// command ran on the target pod only — fanout became opt-in (#178) and the
-// silent behavior change deserves a visible cue. TTY-gated: agents and
-// scripts (non-TTY stderr) get clean output and pay no per-call tokens, and
-// single-pod workloads (type pod) skip it because there is nothing to fan
-// out to anyway.
-func printTargetOnlyNotice(w io.Writer, ctx context.Context, cc *commandContext, target workload.TargetRef) {
-	if !isTerminalWriter(w) {
+// printTargetOnlyNotice tells the caller that their selector-less command is
+// about to run on the target pod only — fanout is opt-in (#178) and the silent
+// narrowing deserves a visible cue.
+//
+// Not TTY-gated (#212): the callers most likely to read "ran on every pod" as
+// "the deploy is complete" are agents and scripts, whose stderr is not a
+// terminal, and a partial deploy on a multi-node job surfaces hours later as
+// numerical divergence rather than as an error. What keeps the output cheap is
+// the denominator instead of the TTY: the notice is skipped unless the session
+// actually has another pod to fan out to, so single-pod sessions — the common
+// case, and every workload of type pod — stay silent.
+func printTargetOnlyNotice(w io.Writer, cc *commandContext, targetPod string, ran, sessionTotal int) {
+	if sessionTotal <= ran {
 		return
 	}
 	if cc == nil || cc.cfg == nil || normalizeWorkloadType(cc.cfg.Spec.Workload.Type) == workload.TypePod {
 		return
 	}
-	fmt.Fprintf(w, "notice: running on target pod %s only; use --all, --workers, --role, or --pod to fan out\n", target.PodName)
+	fmt.Fprintf(w, "notice: running on %d of %d session pod(s): target pod %s only; use --all, --workers, --role, or --pod to fan out\n",
+		ran, sessionTotal, targetPod)
 }
 
 func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvocation, plan execTargetPlan, container string, detach, killGroupOnExit bool, timeout time.Duration, logDir string, noPrefix bool, fanout int, jsonOutput bool, gatewayPod string, requireAll bool) error {
@@ -685,6 +710,16 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvo
 	groups, err := buildExecPodGroups(cc.sessionName, sessionPods, plan)
 	if err != nil {
 		return err
+	}
+	// Self-heal the short-name block before running anything (#220). This is
+	// the path where wrong addressing actually costs something — a launcher
+	// that follows the documented `MASTER_ADDR=master-0` advice against a
+	// stale map does not fail, it hangs in rendezvous — and the pods are
+	// already listed here, so detection is free.
+	refreshStaleHostAliases(ctx, cc, sessionPods, targetContainerForAliases(cc, container), cmd.ErrOrStderr())
+	if plan.targetOnly && len(groups) == 1 && len(groups[0].Pods) > 0 {
+		printTargetOnlyNotice(cmd.ErrOrStderr(), cc, groups[0].Pods[0].Name,
+			len(groups[0].Pods), len(filterRunningPods(sessionPods)))
 	}
 	targetContainer := container
 	if targetContainer == "" {
@@ -810,7 +845,12 @@ func buildExecPodGroups(sessionName string, sessionPods []kube.PodSummary, plan 
 	case plan.allPods:
 		// keep all
 	default:
-		// command with no selector defaults to all pods
+		// No selector: every pod the caller passed in. This helper is shared,
+		// and its callers do NOT share a default — `exec` pins itself to the
+		// target pod upstream of here (#178, pdsh.go RunE), while the
+		// selectSessionPods callers (jobs *, env-diff, port-forward) really
+		// do mean all session pods. Do not read this arm as "the project
+		// default is fanout" (#223).
 	}
 	if len(plan.exclude) > 0 {
 		filtered = excludePods(filtered, plan.exclude)
@@ -1342,6 +1382,21 @@ func noMatchKillHint(failures []podExecResult, commandDisplay string) string {
 	return ""
 }
 
+// fanoutDeliveryNote states which side produced the exit codes, and over how
+// many pods. The count is the point: the old wording said "ran on every pod"
+// unconditionally, which a selector-less run (target pod only, #178) turned
+// into a false claim of full coverage (#212). "targeted" — never "every" —
+// keeps the sentence true no matter how the plan was narrowed; the
+// target-only notice printed earlier in the run carries the session
+// denominator.
+func fanoutDeliveryNote(total int) string {
+	scope := fmt.Sprintf("all %d targeted pods", total)
+	if total == 1 {
+		scope = "the 1 targeted pod"
+	}
+	return fmt.Sprintf("(the command was delivered and ran on %s; the exit codes above are the command's own results — delivery failures report as FAILED with exit 69)", scope)
+}
+
 // reportFanoutFailures prints the per-pod failure summary and builds the
 // command error. When every failure is the remote command merely exiting
 // non-zero (grep with no match, a failing test), the run is reported as a
@@ -1370,7 +1425,7 @@ func reportFanoutFailures(ctx context.Context, client connect.ExecClient, namesp
 		fmt.Fprintf(stderr, "\nCOMMAND EXITED NON-ZERO:\n%s\n", summary)
 		// Cleanup loops routinely misread a non-zero cleanup command as a pod
 		// failure (#192) — say explicitly which side produced the status.
-		fmt.Fprintln(stderr, "(the command was delivered and ran on every pod; the exit codes above are the command's own results — delivery failures report as FAILED with exit 69)")
+		fmt.Fprintln(stderr, fanoutDeliveryNote(total))
 	} else {
 		fmt.Fprintf(stderr, "\nFAILED:\n%s\n", summary)
 	}
@@ -1743,7 +1798,7 @@ func cascadePeerKillScript(jobID string) string {
 			"  pid=$(sed -n 's/.*\"pid\":\\([0-9][0-9]*\\).*/\\1/p' \"$m\" | head -n1)\n"+
 			"  killed=\"\"\n"+
 			"  if [ -n \"$pgid\" ] && [ \"$pgid\" -gt 1 ] 2>/dev/null; then\n"+
-			"    members=$(awk -v g=\"$pgid\" '{ pid=$1; line=$0; sub(/^[0-9]+ \\(.*\\) /, \"\", line); split(line, f, \" \"); if (f[1] != \"Z\" && f[3] == g) print pid }' /proc/[0-9]*/stat 2>/dev/null)\n"+
+			"    "+procGroupMembersScript("")+"\n"+
 			"    for mp in $members; do\n"+
 			"      if tr '\\000' '\\n' < \"/proc/$mp/environ\" 2>/dev/null | grep -Fqx %s; then\n"+
 			"        kill -9 \"-$pgid\" 2>/dev/null || true\n"+
@@ -2089,9 +2144,9 @@ func filterPodsByLabels(pods []kube.PodSummary, labels []string) []kube.PodSumma
 }
 
 // resolvePodAliases maps requested pod names to session pods. Accepted
-// forms, in order: the full pod name, the short name shown by `okdev
-// status` (longest common prefix stripped — e.g. "master-0", "worker-1"),
-// or a unique "-<name>" suffix. Unknown or ambiguous names error instead of
+// forms, in order: the full pod name, the short name in the ALIAS column of
+// `okdev status` and `okdev target` (longest common prefix stripped — e.g.
+// "master-0", "worker-1"), or a unique "-<name>" suffix. Unknown or ambiguous names error instead of
 // being silently dropped.
 func resolvePodAliases(sessionPods []kube.PodSummary, names []string) ([]kube.PodSummary, error) {
 	fullNames := podSummaryNames(sessionPods)

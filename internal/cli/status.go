@@ -127,20 +127,28 @@ func newStatusCmd(opts *Options) *cobra.Command {
 					Restarts  int32  `json:"restarts"`
 					Reason    string `json:"reason"`
 					PodCount  int    `json:"podCount"`
+					// PreviousRunEnd is present only while this run is the one
+					// that replaced an ended run (#213).
+					PreviousRunEnd *session.RunEnd `json:"previousRunEnd,omitempty"`
 				}
 				rows := make([]statusRow, 0, len(views))
 				for _, view := range views {
+					var previousRunEnd *session.RunEnd
+					if record, ok := currentSessionPreviousRunEnd(view.Session); ok {
+						previousRunEnd = &record
+					}
 					rows = append(rows, statusRow{
-						Session:   view.Session,
-						Owner:     view.Owner,
-						Workload:  view.WorkloadType,
-						TargetPod: view.TargetPod,
-						Phase:     view.Phase,
-						Age:       age(view.CreatedAt),
-						Ready:     view.Ready,
-						Restarts:  view.Restarts,
-						Reason:    view.Reason,
-						PodCount:  view.PodCount,
+						Session:        view.Session,
+						Owner:          view.Owner,
+						Workload:       view.WorkloadType,
+						TargetPod:      view.TargetPod,
+						Phase:          view.Phase,
+						Age:            age(view.CreatedAt),
+						Ready:          view.Ready,
+						Restarts:       view.Restarts,
+						Reason:         view.Reason,
+						PodCount:       view.PodCount,
+						PreviousRunEnd: previousRunEnd,
 					})
 				}
 				return outputJSON(cmd.OutOrStdout(), rows)
@@ -165,13 +173,19 @@ func newStatusCmd(opts *Options) *cobra.Command {
 			if !all && len(views) == 1 && len(views[0].Pods) > 1 {
 				fmt.Fprintln(cmd.OutOrStdout(), "")
 				podRows := make([][]string, 0, len(views[0].Pods))
-				for _, pod := range views[0].Pods {
+				// ALIAS is the vocabulary --pod, --group and the in-pod
+				// /etc/hosts entries all speak, and nothing listed it: the
+				// docs said to read it here, and the only way to actually
+				// learn it was to mistype --pod and read the error (#223).
+				aliases := shortPodNames(podSummaryNames(views[0].Pods))
+				for i, pod := range views[0].Pods {
 					marker := ""
 					if pod.Name == views[0].TargetPod {
 						marker = "*"
 					}
 					podRows = append(podRows, []string{
 						marker,
+						aliases[i],
 						pod.Name,
 						pod.Phase,
 						pod.Ready,
@@ -180,7 +194,24 @@ func newStatusCmd(opts *Options) *cobra.Command {
 						age(pod.CreatedAt),
 					})
 				}
-				output.PrintTable(cmd.OutOrStdout(), []string{"SEL", "POD", "PHASE", "READY", "RESTARTS", "REASON", "AGE"}, podRows)
+				output.PrintTable(cmd.OutOrStdout(), []string{"SEL", "ALIAS", "POD", "PHASE", "READY", "RESTARTS", "REASON", "AGE"}, podRows)
+				// Report, never repair: status is a read command, and the
+				// exec path already self-heals before it runs anything (#220).
+				if record, err := session.LoadHostAliases(views[0].Session); err == nil {
+					if reason := hostAliasesStale(record, views[0].Pods); reason != "" {
+						fmt.Fprintln(cmd.OutOrStdout(), hostAliasRefreshHint(reason))
+					}
+				}
+			}
+			// A recreated session looks identical to one that never died, so
+			// carry the previous run's cause of death for as long as this run
+			// lives — the right mitigation depends on which class it was
+			// (#213).
+			if !all && len(views) == 1 {
+				if record, ok := currentSessionPreviousRunEnd(views[0].Session); ok {
+					fmt.Fprintln(cmd.OutOrStdout(), "")
+					printPreviousRunEnd(cmd.OutOrStdout(), record)
+				}
 			}
 			return nil
 		},

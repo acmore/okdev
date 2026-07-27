@@ -45,6 +45,14 @@ type syncthingSessionTargetState struct {
 	ConfigHash string `json:"configHash,omitempty"`
 }
 
+// syncChannelHint is printed whenever `okdev sync` reports a working channel.
+// The distinction it carries is the one users most often miss: `okdev sync`
+// returning successfully means the transport is up, NOT that the latest edit
+// reached the pod (#222). The string only ever appeared after `sync resume`,
+// so the command that establishes the channel never mentioned the command
+// that confirms the data arrived.
+const syncChannelHint = "sync manages the channel, not the data: run `okdev sync wait` before launching work that needs your latest edits"
+
 func newSyncCmd(opts *Options) *cobra.Command {
 	var mode string
 	var background bool
@@ -162,6 +170,7 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				// through so the foreground run re-establishes the channel.
 				if status, _ := checkSyncHealth(cc.sessionName); status == syncHealthActive {
 					fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync already active in background for session %s\n", cc.sessionName)
+					fmt.Fprintln(cmd.OutOrStdout(), syncChannelHint)
 					return nil
 				}
 			}
@@ -173,8 +182,10 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				}
 				if started {
 					fmt.Fprintf(cmd.OutOrStdout(), "Started syncthing sync in background for session %s\n", cc.sessionName)
+					fmt.Fprintln(cmd.OutOrStdout(), syncChannelHint)
 				} else if status, reason := checkSyncHealth(cc.sessionName); status == syncHealthActive {
 					fmt.Fprintf(cmd.OutOrStdout(), "Syncthing sync already running in background for session %s\n", cc.sessionName)
+					fmt.Fprintln(cmd.OutOrStdout(), syncChannelHint)
 				} else {
 					// Never claim "already running" for an unhealthy
 					// channel (#165) — that is the exact report that

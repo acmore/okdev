@@ -61,6 +61,10 @@ type upState struct {
 	previousTarget      workload.TargetRef
 	reconcileKube       reconcileWaitClient
 	teardownOnUpFailure bool
+	// previousRunEnd explains the run this one replaced. Detected before the
+	// cached snapshot is dropped, reported once the session is up (#213).
+	previousRunEnd    session.RunEnd
+	hasPreviousRunEnd bool
 }
 
 type workloadApplyOutcome int
@@ -820,10 +824,15 @@ func upSetup(state *upState) error {
 	// Stable inter-pod addressing: every pod's /etc/hosts maps the short
 	// aliases (master-0, worker-1) to current pod IPs, so launch scripts can
 	// hardcode MASTER_ADDR=master-0 once (#169). Rewritten on every up.
-	if aliasCount, aliasErr := setupHostAliases(state.ctx, state.command.kube, state.command.namespace, state.labels, target.Container, state.ui.warnf); aliasErr != nil {
+	if aliasResult, aliasErr := setupHostAliases(state.ctx, state.command.kube, state.command.namespace, state.command.sessionName, state.labels, target.Container, state.ui.warnf); aliasErr != nil {
 		state.ui.warnf("host aliases: %v", aliasErr)
-	} else if aliasCount > 0 {
-		state.ui.stepDone("host aliases", fmt.Sprintf("short-name aliases written on %d pod(s)", aliasCount))
+	} else if aliasResult.Written > 0 || len(aliasResult.Skipped) > 0 {
+		state.ui.stepDone("host aliases", aliasResult.Summary())
+		if !aliasResult.Complete() {
+			// A pod without the block is a pod where master-0 does not
+			// resolve — the count alone hid that (#220).
+			state.ui.warnf("host aliases: %s", aliasResult.Summary())
+		}
 	}
 
 	postSyncRanThisUp := false
@@ -936,9 +945,59 @@ func upSetup(state *upState) error {
 		}
 	}
 	state.ui.printWarnings()
-	state.ui.printReadyCard(state.command.sessionName, state.command.namespace, target.PodName, sshSummary, syncSummary, state.command.cfg.Spec.Ports, state.syncPairs, syncModeSymbol)
+	state.ui.printReadyCard(state.command.sessionName, state.command.namespace, target.PodName, sshSummary, syncSummary, state.command.cfg.Spec.Ports, state.syncPairs, syncModeSymbol,
+		buildUpNextSteps(
+			len(state.syncPairs) > 0,
+			postSyncCmd != "",
+			postCreateCmd != "",
+			state.flags.waitHooks,
+			upSessionPodCount(state),
+		))
+	// Seed the snapshot for this run so the *next* end has something to
+	// explain it even if no `okdev status` ever runs (#213). Reported after
+	// the card because before it the line would scroll away under it.
+	refreshSessionLastSeen(state)
+	if state.hasPreviousRunEnd {
+		printPreviousRunEnd(state.cmd.OutOrStdout(), state.previousRunEnd)
+	}
 	upgrade.NewChecker().CheckAndRemind(version.Version, state.cmd.ErrOrStderr())
 	return nil
+}
+
+// upSessionPodCount counts the pods this run brought up, which decides whether
+// the multi-pod hints apply. Best-effort: a failed listing simply drops those
+// hints rather than failing an `up` that already succeeded.
+func upSessionPodCount(state *upState) int {
+	if state == nil || state.command == nil || state.command.kube == nil {
+		return 0
+	}
+	pods, err := state.command.kube.ListPods(state.ctx, state.command.namespace, false, selectorForSessionRun(state.command.sessionName))
+	if err != nil {
+		slog.Debug("failed to count session pods for next-steps", "session", state.command.sessionName, "error", err)
+		return 0
+	}
+	return len(pods)
+}
+
+// refreshSessionLastSeen caches the live pods for the run that just came up.
+// Best-effort: `up` succeeded, and a missing cache only costs the next
+// post-mortem its detail.
+func refreshSessionLastSeen(state *upState) {
+	if state == nil || state.command == nil || state.command.kube == nil {
+		return
+	}
+	info, err := session.LoadInfo(state.command.sessionName)
+	if err != nil || strings.TrimSpace(info.Name) == "" {
+		return
+	}
+	pods, err := state.command.kube.ListPods(state.ctx, state.command.namespace, false, selectorForSessionRun(state.command.sessionName))
+	if err != nil || len(pods) == 0 {
+		slog.Debug("skipped last-seen refresh after up", "session", state.command.sessionName, "pods", len(pods), "error", err)
+		return
+	}
+	if err := session.SaveLastSeen(state.command.sessionName, buildLastSeenSnapshot(info, state.command.namespace, pods)); err != nil {
+		slog.Debug("failed to refresh last-seen snapshot after up", "session", state.command.sessionName, "error", err)
+	}
 }
 
 // persistSessionState writes the active-session pointer and session.Info
@@ -958,6 +1017,19 @@ func persistSessionState(state *upState) error {
 	if err := session.ClearShutdownRequest(state.command.sessionName); err != nil {
 		if state.ui != nil {
 			state.ui.warnf("failed to clear prior shutdown request: %v", err)
+		}
+	}
+	// A snapshot describing a *different* run is the only local evidence of
+	// how that run ended — read it before dropping it, so the recreate can
+	// say what it is recovering from instead of silently erasing the cause
+	// (#213). Intentional teardowns (down, restart) clear the snapshot
+	// themselves, so nothing here reports a recreation the user asked for.
+	if record, ok := detectPreviousRunEnd(state.ctx, state.command.kube, state.command.sessionName,
+		state.command.namespace, state.runID, state.workloadName); ok {
+		state.previousRunEnd = record
+		state.hasPreviousRunEnd = true
+		if err := session.SaveRunEnd(state.command.sessionName, record); err != nil {
+			slog.Debug("failed to save run-end record", "session", state.command.sessionName, "error", err)
 		}
 	}
 	// A fresh/resumed workload invalidates any cached death-cause snapshot.
@@ -1904,7 +1976,7 @@ func (u *upUI) warnWriter() io.Writer {
 	return upWarnSink{ui: u}
 }
 
-func (u *upUI) printReadyCard(sessionName, namespace, pod, sshSummary, syncSummary string, ports []config.PortMapping, syncPairs []syncengine.Pair, syncModeSymbol string) {
+func (u *upUI) printReadyCard(sessionName, namespace, pod, sshSummary, syncSummary string, ports []config.PortMapping, syncPairs []syncengine.Pair, syncModeSymbol string, nextSteps []nextStepHint) {
 	u.stopActive()
 	fmt.Fprintln(u.out, "\n== Ready ==")
 	fmt.Fprintf(u.out, "session:   %s\n", sessionName)
@@ -1930,6 +2002,7 @@ func (u *upUI) printReadyCard(sessionName, namespace, pod, sshSummary, syncSumma
 	fmt.Fprintf(u.out, "- ssh %s\n", sshHostAlias(sessionName))
 	fmt.Fprintln(u.out, "- okdev status")
 	fmt.Fprintln(u.out, "- okdev down")
+	printUpNextStepHints(u.out, nextSteps)
 }
 
 // pairModeSymbol renders a mapping's direction arrow, defaulting the empty

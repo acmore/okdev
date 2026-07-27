@@ -241,7 +241,20 @@ fi
 kubectl -n "$NAMESPACE" delete pod "$PVC_INIT_POD" >/dev/null 2>&1 || true
 
 echo "Starting PyTorchJob smoke session (1 master + 2 workers)"
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m
+PTJOB_UP_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m)
+echo "$PTJOB_UP_OUTPUT"
+
+# Issue #219: on a multi-pod session the ready card must name the primitives
+# that only matter here — fanout targeting and the in-pod short-name aliases.
+# Hand-rolled substitutes for exactly these (a getent-hosts IP lookup, a
+# forgotten --all) are what these hints exist to pre-empt.
+echo "Testing the next-steps hints on a multi-pod session"
+if [[ "$PTJOB_UP_OUTPUT" != *"--role worker"* || "$PTJOB_UP_OUTPUT" != *"master-0 / worker-1"* ]]; then
+  echo "ERROR: expected multi-pod fanout and alias hints, got:" >&2
+  echo "$PTJOB_UP_OUTPUT" >&2
+  exit 1
+fi
+echo "multi-pod next-steps hints verified"
 
 echo "Checking status"
 STATUS_OUTPUT=""
@@ -300,6 +313,40 @@ if [[ "$SHORT_UNKNOWN_STATUS" -eq 0 ]] || [[ "$SHORT_UNKNOWN" != *"no session po
   echo "ERROR: unknown short name must error with guidance, got status=$SHORT_UNKNOWN_STATUS: $SHORT_UNKNOWN" >&2
   exit 1
 fi
+# Issue #223: the docs told readers to learn short names from `okdev status`,
+# which never printed them — the only working way to discover one was to
+# mistype --pod and read the error. The column and the selector must agree.
+echo "Testing the ALIAS column lists the names --pod accepts"
+ALIAS_TABLE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status)
+if [[ "$ALIAS_TABLE" != *"ALIAS"* || "$ALIAS_TABLE" != *"master-0"* || "$ALIAS_TABLE" != *"worker-1"* ]]; then
+  echo "ERROR: expected an ALIAS column listing short pod names, got:" >&2
+  echo "$ALIAS_TABLE" >&2
+  exit 1
+fi
+ALIAS_TARGET_TABLE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" target show)
+if [[ "$ALIAS_TARGET_TABLE" != *"ALIAS"* || "$ALIAS_TARGET_TABLE" != *"worker-0"* ]]; then
+  echo "ERROR: expected okdev target to list aliases too, got:" >&2
+  echo "$ALIAS_TARGET_TABLE" >&2
+  exit 1
+fi
+ALIAS_DETAILS_JSON=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details --output json)
+OKDEV_ALIAS_JSON="$ALIAS_DETAILS_JSON" python3 - <<'ALIASPY'
+import json, os, sys
+detail = json.loads(os.environ["OKDEV_ALIAS_JSON"])
+aliases = sorted(p.get("alias", "") for p in detail.get("pods") or [])
+if aliases != ["master-0", "worker-0", "worker-1"]:
+    sys.exit(f"expected the three short names in status --details json, got {aliases!r}")
+ALIASPY
+# Every alias the column prints must be accepted verbatim by --pod.
+for alias in master-0 worker-0 worker-1; do
+  RESOLVED=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod "$alias" --no-tty --no-prefix -- hostname)
+  if [[ "$RESOLVED" != *"$alias"* ]]; then
+    echo "ERROR: alias $alias from the ALIAS column did not resolve via --pod, got: $RESOLVED" >&2
+    exit 1
+  fi
+done
+echo "ALIAS column verified (status, target, details json, and --pod agree)"
+
 echo "Short-name pod addressing verified"
 
 echo "Waiting for PyTorchJob pods before validating PVC mount layout"
@@ -405,13 +452,44 @@ fi
 echo "host aliases verified (master resolves $FIRST_WORKER_SHORT)"
 
 # ---------------------------------------------------------------------------
+# Rendezvous env hijack (#217): the operator injects distributed-rendezvous
+# variables into every pod, and anything single-node started in that pod joins
+# a rendezvous that never completes — it hangs with no error. This guards the
+# documented escape hatch: the variables really are injected, and the `env -u`
+# recipe in docs/troubleshooting.md really clears them. If the operator renames
+# or stops injecting them, the doc is wrong and this fails.
+# ---------------------------------------------------------------------------
+
+RENDEZVOUS_GREP='^(PET_[A-Z_]*|MASTER_ADDR|MASTER_PORT|RANK|WORLD_SIZE)='
+echo "Testing the documented rendezvous-env scrub recipe"
+RENDEZVOUS_PRESENT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod master-0 --no-tty --no-prefix -- \
+  sh -lc "env | grep -c -E '$RENDEZVOUS_GREP' || true")
+RENDEZVOUS_PRESENT=$(echo "$RENDEZVOUS_PRESENT" | tr -dc '0-9')
+if [[ -z "$RENDEZVOUS_PRESENT" || "$RENDEZVOUS_PRESENT" -lt 4 ]]; then
+  echo "ERROR: expected the operator to inject rendezvous env (MASTER_ADDR/MASTER_PORT/RANK/WORLD_SIZE), found ${RENDEZVOUS_PRESENT:-none}" >&2
+  "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod master-0 --no-tty --no-prefix -- env >&2 || true
+  exit 1
+fi
+RENDEZVOUS_SCRUBBED=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod master-0 --no-tty --no-prefix -- \
+  env -u PET_MASTER_ADDR -u PET_MASTER_PORT -u PET_NNODES -u PET_NODE_RANK -u PET_NPROC_PER_NODE \
+      -u MASTER_ADDR -u MASTER_PORT -u RANK -u WORLD_SIZE \
+  sh -lc "env | grep -c -E '$RENDEZVOUS_GREP' || true")
+RENDEZVOUS_SCRUBBED=$(echo "$RENDEZVOUS_SCRUBBED" | tr -dc '0-9')
+if [[ "$RENDEZVOUS_SCRUBBED" != "0" ]]; then
+  echo "ERROR: the documented env -u recipe left rendezvous variables behind (${RENDEZVOUS_SCRUBBED} remaining)" >&2
+  exit 1
+fi
+echo "rendezvous-env scrub recipe verified ($RENDEZVOUS_PRESENT injected, 0 after the documented scrub)"
+
+# ---------------------------------------------------------------------------
 # Multi-pod exec (pdsh) verification
 # ---------------------------------------------------------------------------
 
 # Issue #178: a command without a pod selector runs on the target pod only —
 # fanout is opt-in, so a forgotten flag can no longer mutate every pod.
 echo "Testing selector-less exec targets only the target pod"
-EXEC_DEFAULT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- hostname)
+EXEC_DEFAULT_STDERR="$WORKDIR/exec-default.stderr"
+EXEC_DEFAULT_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- hostname 2>"$EXEC_DEFAULT_STDERR")
 EXEC_DEFAULT_LINES=$(printf '%s
 ' "$EXEC_DEFAULT_OUTPUT" | grep -c . || true)
 if [[ "$EXEC_DEFAULT_LINES" -ne 1 || "$EXEC_DEFAULT_OUTPUT" != *"master-0"* ]]; then
@@ -419,7 +497,40 @@ if [[ "$EXEC_DEFAULT_LINES" -ne 1 || "$EXEC_DEFAULT_OUTPUT" != *"master-0"* ]]; 
   echo "$EXEC_DEFAULT_OUTPUT" >&2
   exit 1
 fi
-echo "selector-less exec default verified (target pod only)"
+# Issue #212: the denominator must reach a NON-TTY caller — stderr is a file
+# here, which is exactly the shape an agent or CI job sees. Before the fix the
+# only corrective output was TTY-gated, so scripts silently believed a
+# selector-less deploy had reached every pod.
+if ! grep -q 'running on 1 of 3 session pod(s)' "$EXEC_DEFAULT_STDERR"; then
+  echo "ERROR: expected the target-only notice with session counts on non-TTY stderr, got:" >&2
+  cat "$EXEC_DEFAULT_STDERR" >&2
+  exit 1
+fi
+if ! grep -q -- '--all' "$EXEC_DEFAULT_STDERR"; then
+  echo "ERROR: target-only notice must name the fanout flags, got:" >&2
+  cat "$EXEC_DEFAULT_STDERR" >&2
+  exit 1
+fi
+echo "selector-less exec default verified (target pod only, 1 of 3 reported to non-TTY)"
+
+# The failure summary must never claim coverage it does not have (#212): a
+# selector-less run that exits non-zero says "the 1 targeted pod", not
+# "every pod".
+echo "Testing selector-less exec failure summary reports the targeted count"
+set +e
+EXEC_DEFAULT_NONZERO=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'exit 3' 2>&1)
+set -e
+if [[ "$EXEC_DEFAULT_NONZERO" == *"every pod"* ]]; then
+  echo "ERROR: selector-less run must not claim it ran on every pod, got:" >&2
+  echo "$EXEC_DEFAULT_NONZERO" >&2
+  exit 1
+fi
+if [[ "$EXEC_DEFAULT_NONZERO" != *"ran on the 1 targeted pod"* ]]; then
+  echo "ERROR: expected the targeted-count delivery note, got:" >&2
+  echo "$EXEC_DEFAULT_NONZERO" >&2
+  exit 1
+fi
+echo "selector-less exec failure summary verified (1 targeted pod, no coverage claim)"
 
 echo "Testing exec --all across all session pods"
 EXEC_ALL_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-tty -- sh -lc 'echo hello-from-$(hostname)')
@@ -451,8 +562,8 @@ if [[ "$EXEC_NONZERO_OUTPUT" != *"COMMAND EXITED NON-ZERO"* || "$EXEC_NONZERO_OU
   echo "$EXEC_NONZERO_OUTPUT" >&2
   exit 1
 fi
-if [[ "$EXEC_NONZERO_OUTPUT" != *"delivered and ran on every pod"* ]]; then
-  echo "ERROR: expected the delivered-vs-failed clarifier under the non-zero summary" >&2
+if [[ "$EXEC_NONZERO_OUTPUT" != *"delivered and ran on all 3 targeted pods"* ]]; then
+  echo "ERROR: expected the delivered-vs-failed clarifier with the targeted count" >&2
   echo "$EXEC_NONZERO_OUTPUT" >&2
   exit 1
 fi
@@ -1215,6 +1326,91 @@ echo "host alias tracked the recreated worker's new IP"
 echo "restart --pod verified (worker recreated, hooks replayed, master and its detached job untouched)"
 
 # ---------------------------------------------------------------------------
+# Alias staleness after a CONTROLLER-driven recreation (#220). The case above
+# goes through `restart --pod`, which ends in runUp and therefore refreshes the
+# block. This one deletes the pod behind okdev's back — an OOM kill, eviction
+# or node drain looks the same — and runs no okdev up afterwards. The recreated
+# pod keeps its name and gets a new UID and IP, so every peer keeps mapping a
+# dead address and `MASTER_ADDR=master-0` resolves to nothing that answers.
+# ---------------------------------------------------------------------------
+
+echo "Testing host aliases self-heal after a controller-driven recreation"
+refresh_pytorchjob_pods
+REAPED_WORKER=$(echo "$WORKER_PODS" | awk '{print $1}')
+REAPED_WORKER_SHORT=$(echo "$REAPED_WORKER" | sed 's/.*-\(worker-[0-9]*\)$/\1/')
+REAPED_WORKER_UID=$(kubectl -n "$NAMESPACE" get pod "$REAPED_WORKER" -o jsonpath='{.metadata.uid}')
+# Prime the recorded block so drift is measured against a known-good write.
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m >/dev/null
+kubectl -n "$NAMESPACE" delete pod "$REAPED_WORKER" --wait=true >/dev/null
+RECREATED_UID=""
+for i in $(seq 1 60); do
+  RECREATED_UID=$(kubectl -n "$NAMESPACE" get pod "$REAPED_WORKER" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+  RECREATED_PHASE=$(kubectl -n "$NAMESPACE" get pod "$REAPED_WORKER" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+  RECREATED_IP=$(kubectl -n "$NAMESPACE" get pod "$REAPED_WORKER" -o jsonpath='{.status.podIP}' 2>/dev/null || true)
+  if [[ -n "$RECREATED_UID" && "$RECREATED_UID" != "$REAPED_WORKER_UID" && "$RECREATED_PHASE" == "Running" && -n "$RECREATED_IP" ]]; then
+    break
+  fi
+  sleep 2
+done
+if [[ -z "$RECREATED_UID" || "$RECREATED_UID" == "$REAPED_WORKER_UID" ]]; then
+  echo "ERROR: controller did not recreate $REAPED_WORKER with a new identity" >&2
+  kubectl -n "$NAMESPACE" get pods >&2
+  exit 1
+fi
+
+# status only reports — a read command must not mutate the cluster.
+ALIAS_STATUS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status)
+if [[ "$ALIAS_STATUS" != *"host aliases are stale"* ]]; then
+  echo "ERROR: expected status to report stale host aliases after the recreation, got:" >&2
+  echo "$ALIAS_STATUS" >&2
+  exit 1
+fi
+
+# exec self-heals, because this is the path where a stale map turns into a
+# rendezvous hang rather than an error.
+ALIAS_EXEC_STDERR="$WORKDIR/alias-refresh.stderr"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod master-0 --no-tty --no-prefix -- true 2>"$ALIAS_EXEC_STDERR"
+if ! grep -q "refreshing stale host aliases" "$ALIAS_EXEC_STDERR"; then
+  echo "ERROR: expected exec to refresh the stale alias block, stderr was:" >&2
+  cat "$ALIAS_EXEC_STDERR" >&2
+  exit 1
+fi
+ALIAS_AFTER_REAP=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod master-0 --no-tty --no-prefix -- getent hosts "$REAPED_WORKER_SHORT")
+if [[ "$ALIAS_AFTER_REAP" != *"$RECREATED_IP"* ]]; then
+  echo "ERROR: alias $REAPED_WORKER_SHORT should resolve to the recreated pod IP $RECREATED_IP, got: $ALIAS_AFTER_REAP" >&2
+  exit 1
+fi
+# The recreated pod's own /etc/hosts was virgin: it must now resolve its peers.
+ALIAS_FROM_RECREATED=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod "$REAPED_WORKER_SHORT" --no-tty --no-prefix -- getent hosts master-0)
+if [[ -z "$ALIAS_FROM_RECREATED" ]]; then
+  echo "ERROR: master-0 must resolve inside the recreated pod" >&2
+  exit 1
+fi
+# Once healed, a second exec is silent — the notice must not fire on every call.
+ALIAS_SECOND_STDERR="$WORKDIR/alias-second.stderr"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --pod master-0 --no-tty --no-prefix -- true 2>"$ALIAS_SECOND_STDERR"
+if grep -q "refreshing stale host aliases" "$ALIAS_SECOND_STDERR"; then
+  echo "ERROR: alias refresh must not repeat once the block matches the pods:" >&2
+  cat "$ALIAS_SECOND_STDERR" >&2
+  exit 1
+fi
+ALIAS_STATUS_AFTER=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status)
+if [[ "$ALIAS_STATUS_AFTER" == *"host aliases are stale"* ]]; then
+  echo "ERROR: status must stop reporting staleness once the block is refreshed:" >&2
+  echo "$ALIAS_STATUS_AFTER" >&2
+  exit 1
+fi
+echo "host alias self-heal verified (status reports, exec repairs, no repeat)"
+
+# Aliases are the only thing exec heals. The recreated pod also came back
+# without its interpod SSH keys and lifecycle-hook state, which only `okdev up`
+# restores — so put the session back in a fully provisioned state before the
+# tests that depend on those (the cascade test needs interpod SSH to the
+# recreated worker).
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m >/dev/null
+echo "session re-provisioned after the controller-driven recreation"
+
+# ---------------------------------------------------------------------------
 # Cascade termination (#179): with --kill-group-on-exit, the first member to
 # exit broadcasts a group-kill to its peers over interpod SSH, so surviving
 # ranks cannot hang around holding resources.
@@ -1264,6 +1460,70 @@ if [[ "$CASCADE_MARKER" != *"group"* && "$CASCADE_MARKER" != *"leader"* ]]; then
   exit 1
 fi
 echo "cascade termination verified (member exit killed all peers, marker present)"
+
+# ---------------------------------------------------------------------------
+# Scoped jobs stop (#221): a fanned-out detach shares one job id across every
+# pod, so "stop" without a selector kills the job everywhere. That is the right
+# default for ending a distributed run, but until now it was the ONLY
+# expressible intent — there was no way to end one misbehaving rank and leave
+# the others computing.
+# ---------------------------------------------------------------------------
+
+echo "Testing scoped jobs stop targets one pod and leaves the rest running"
+SCOPED_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --detach --no-tty -- sh -c 'exec sleep 7411')
+SCOPED_JOB_ID=$(printf '%s\n' "$SCOPED_OUTPUT" | sed -n 's/.*job_id=\([^ ]*\).*/\1/p' | head -n1)
+if [[ -z "$SCOPED_JOB_ID" ]]; then
+  echo "ERROR: could not extract job id from: $SCOPED_OUTPUT" >&2
+  exit 1
+fi
+scoped_running_pods() {
+  "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec-jobs --output json 2>/dev/null |
+    OKDEV_SCOPED_JOB_ID="$SCOPED_JOB_ID" python3 -c '
+import json, os, sys
+payload = json.load(sys.stdin)
+for job in payload.get("jobs", []):
+    if job.get("jobId") != os.environ["OKDEV_SCOPED_JOB_ID"]:
+        continue
+    print(" ".join(sorted(r["pod"] for r in job.get("podStates", []) if r.get("state") == "running")))
+    break
+'
+}
+SCOPED_BEFORE=$(scoped_running_pods)
+SCOPED_BEFORE_COUNT=$(printf '%s' "$SCOPED_BEFORE" | wc -w | tr -d ' ')
+if [[ "$SCOPED_BEFORE_COUNT" -ne 3 ]]; then
+  echo "ERROR: expected the detached job running on 3 pods, got $SCOPED_BEFORE_COUNT ($SCOPED_BEFORE)" >&2
+  exit 1
+fi
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs stop "$SCOPED_JOB_ID" --pod worker-1
+SCOPED_AFTER=""
+for i in $(seq 1 20); do
+  SCOPED_AFTER=$(scoped_running_pods)
+  [[ "$SCOPED_AFTER" != *"worker-1"* ]] && break
+  sleep 2
+done
+if [[ "$SCOPED_AFTER" == *"worker-1"* ]]; then
+  echo "ERROR: --pod worker-1 should have stopped that rank, still running: $SCOPED_AFTER" >&2
+  exit 1
+fi
+# The whole point: the peers keep computing.
+SCOPED_AFTER_COUNT=$(printf '%s' "$SCOPED_AFTER" | wc -w | tr -d ' ')
+if [[ "$SCOPED_AFTER_COUNT" -ne 2 || "$SCOPED_AFTER" != *"master-0"* || "$SCOPED_AFTER" != *"worker-0"* ]]; then
+  echo "ERROR: scoped stop must leave master-0 and worker-0 running, got: $SCOPED_AFTER" >&2
+  exit 1
+fi
+# And the unscoped default still ends the whole job.
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" jobs stop "$SCOPED_JOB_ID"
+SCOPED_FINAL=""
+for i in $(seq 1 20); do
+  SCOPED_FINAL=$(scoped_running_pods)
+  [[ -z "$(printf '%s' "$SCOPED_FINAL" | tr -d ' ')" ]] && break
+  sleep 2
+done
+if [[ -n "$(printf '%s' "$SCOPED_FINAL" | tr -d ' ')" ]]; then
+  echo "ERROR: unscoped jobs stop must end the whole job, still running: $SCOPED_FINAL" >&2
+  exit 1
+fi
+echo "scoped jobs stop verified (one rank stopped, peers untouched, default still stops all)"
 
 # ---------------------------------------------------------------------------
 # Hook state visibility + stale detection (in-place container restart):
