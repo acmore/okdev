@@ -1205,8 +1205,32 @@ if [[ "$DRIFT_OUTPUT" != *"workload spec changed; re-run with --reconcile to rec
 fi
 echo "Controller drift guidance verified"
 
+# Issue #214: the recreate must land under a NEW workload name. This is the
+# workload type the report came from — the operator recreates pods under the
+# job name, so reusing it makes the dead run and the new one indistinguishable
+# in discovery labels and events.
+PTJOB_WORKLOAD_BEFORE=$(session_workload_name "$NAMESPACE" "$SESSION_NAME")
+
 echo "Recreating PyTorchJob via --reconcile"
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --reconcile --wait-timeout 5m
+PTJOB_RECONCILE_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --reconcile --wait-timeout 5m)
+echo "$PTJOB_RECONCILE_OUTPUT"
+
+PTJOB_WORKLOAD_AFTER=$(session_workload_name "$NAMESPACE" "$SESSION_NAME")
+if [[ -z "$PTJOB_WORKLOAD_AFTER" || "$PTJOB_WORKLOAD_AFTER" == "$PTJOB_WORKLOAD_BEFORE" ]]; then
+  echo "ERROR: --reconcile reused the PyTorchJob name $PTJOB_WORKLOAD_BEFORE" >&2
+  kubectl -n "$NAMESPACE" get pytorchjobs >&2
+  exit 1
+fi
+if kubectl -n "$NAMESPACE" get pytorchjob "$PTJOB_WORKLOAD_BEFORE" >/dev/null 2>&1; then
+  echo "ERROR: the old PyTorchJob $PTJOB_WORKLOAD_BEFORE still exists after reconcile" >&2
+  exit 1
+fi
+if [[ "$PTJOB_RECONCILE_OUTPUT" == *"previous run"* ]]; then
+  echo "ERROR: an operator-requested --reconcile must not report a previous-run end:" >&2
+  echo "$PTJOB_RECONCILE_OUTPUT" >&2
+  exit 1
+fi
+echo "PyTorchJob run id rotated on reconcile: $PTJOB_WORKLOAD_BEFORE -> $PTJOB_WORKLOAD_AFTER"
 
 echo "Verifying PyTorchJob spec and live pods were recreated with the new image"
 RECONCILE_OK=false

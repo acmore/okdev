@@ -704,8 +704,70 @@ if [[ "$DRIFT_OUTPUT" != *"workload spec changed; re-run with --reconcile to rec
 fi
 echo "Pod drift guidance verified"
 
+# Issue #214: a delete+recreate must not step back into the dead workload's
+# name. Capture the run identity before reconciling so we can prove it rotated.
+SESSION_INFO_PATH="$HOME_DIR/.okdev/sessions/${SESSION_NAME}/session.json"
+read_run_id() { python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("runID",""))' "$SESSION_INFO_PATH"; }
+read_workload_name() { python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("workloadName",""))' "$SESSION_INFO_PATH"; }
+RUN_ID_BEFORE_RECONCILE=$(read_run_id)
+WORKLOAD_BEFORE_RECONCILE=$(read_workload_name)
+if [[ -z "$RUN_ID_BEFORE_RECONCILE" || -z "$WORKLOAD_BEFORE_RECONCILE" ]]; then
+  echo "ERROR: could not read the run identity from $SESSION_INFO_PATH" >&2
+  exit 1
+fi
+
 echo "Recreating pod workload via --reconcile"
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --reconcile --wait-timeout 5m
+RECONCILE_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --reconcile --wait-timeout 5m)
+echo "$RECONCILE_OUTPUT"
+
+RUN_ID_AFTER_RECONCILE=$(read_run_id)
+WORKLOAD_AFTER_RECONCILE=$(read_workload_name)
+if [[ "$RUN_ID_AFTER_RECONCILE" == "$RUN_ID_BEFORE_RECONCILE" ]]; then
+  echo "ERROR: --reconcile recreated the workload but kept run id $RUN_ID_BEFORE_RECONCILE" >&2
+  exit 1
+fi
+if [[ "$WORKLOAD_AFTER_RECONCILE" == "$WORKLOAD_BEFORE_RECONCILE" ]]; then
+  echo "ERROR: --reconcile reused workload name $WORKLOAD_BEFORE_RECONCILE" >&2
+  exit 1
+fi
+# The live object must carry the new name, not just the local metadata.
+if ! kubectl -n "$NAMESPACE" get pod "$WORKLOAD_AFTER_RECONCILE" >/dev/null 2>&1; then
+  echo "ERROR: expected a live workload named $WORKLOAD_AFTER_RECONCILE after reconcile" >&2
+  kubectl -n "$NAMESPACE" get pods -l "okdev.io/session=$SESSION_NAME" >&2
+  exit 1
+fi
+if kubectl -n "$NAMESPACE" get pod "$WORKLOAD_BEFORE_RECONCILE" >/dev/null 2>&1; then
+  echo "ERROR: the old workload $WORKLOAD_BEFORE_RECONCILE still exists after reconcile" >&2
+  exit 1
+fi
+# Discovery has to follow the rotation, or status/exec would select the dead run.
+RUN_LABEL=$(kubectl -n "$NAMESPACE" get pod "$WORKLOAD_AFTER_RECONCILE" -o jsonpath='{.metadata.labels.okdev\.io/run-id}')
+if [[ "$RUN_LABEL" != "$RUN_ID_AFTER_RECONCILE" ]]; then
+  echo "ERROR: pod run-id label is '$RUN_LABEL', expected $RUN_ID_AFTER_RECONCILE" >&2
+  exit 1
+fi
+# okdev performed this recreate, so it must NOT be reported as a run that died
+# on its own (#213) — that report exists for unexplained deaths.
+if [[ "$RECONCILE_OUTPUT" == *"previous run"* ]]; then
+  echo "ERROR: an operator-requested --reconcile must not report a previous-run end:" >&2
+  echo "$RECONCILE_OUTPUT" >&2
+  exit 1
+fi
+RECONCILE_STATUS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status)
+if [[ "$RECONCILE_STATUS" == *"previous run"* ]]; then
+  echo "ERROR: status must not report a previous-run end after --reconcile:" >&2
+  echo "$RECONCILE_STATUS" >&2
+  exit 1
+fi
+echo "run id rotated on reconcile: $RUN_ID_BEFORE_RECONCILE -> $RUN_ID_AFTER_RECONCILE"
+
+# A plain reuse (no delete) must keep the same identity — only recreates rotate.
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m >/dev/null
+if [[ "$(read_run_id)" != "$RUN_ID_AFTER_RECONCILE" ]]; then
+  echo "ERROR: a reused workload must keep its run id, got $(read_run_id)" >&2
+  exit 1
+fi
+echo "run id preserved on reuse"
 
 echo "Verifying pod was recreated with updated image"
 ATTACHABLE_POD_NAME=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
