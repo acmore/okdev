@@ -2,8 +2,11 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -123,6 +126,42 @@ func execSyncPreflight(cmd *cobra.Command, cc *commandContext, requireSync bool,
 	return nil
 }
 
+// isSyncthingScanStillRunning reports whether a scan request failed only
+// because it outlived the client timeout. The scan itself continues on the
+// syncthing side, so this is "not finished yet", not "did not happen".
+func isSyncthingScanStillRunning(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
+		return true
+	}
+	// net/http wraps the client timeout in a *url.Error whose Timeout() is
+	// true; the message form is checked as a last resort for wrapped errors
+	// that lose the interface.
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && urlErr.Timeout() {
+		return true
+	}
+	return strings.Contains(err.Error(), "Client.Timeout exceeded")
+}
+
+// syncthingFolderScanSettled reports whether both ends have left the scanning
+// state for a folder, which is the signal that a rescan triggered above has
+// finished indexing.
+func syncthingFolderScanSettled(ctx context.Context, localBase, localKey, remoteBase, remoteKey, folderID string) (bool, error) {
+	for _, end := range []struct{ base, key string }{{localBase, localKey}, {remoteBase, remoteKey}} {
+		info, err := syncthingFolderStatusInfoForFolder(ctx, end.base, end.key, folderID)
+		if err != nil {
+			return false, err
+		}
+		if strings.EqualFold(strings.TrimSpace(info.State), "scanning") {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 // syncWaitGateError converts a session's sync health into the gate error for
 // commands that need a live sync channel (sync wait, exec --require-sync).
 // Issue #165: a stale channel (process alive, peer disconnected — the state a
@@ -190,13 +229,31 @@ func runSyncWaitConvergence(ctx context.Context, cc *commandContext, pod string,
 	// "sync wait" are indexed now rather than after the FS-watcher delay —
 	// otherwise the loop below could observe convergence before the new file
 	// is even known to syncthing, voiding the edit-run guarantee.
+	//
+	// /rest/db/scan is synchronous: it returns when the scan finishes, so on a
+	// folder with a lot to hash the call outlives the HTTP client timeout. A
+	// timeout there does NOT mean the scan did not happen — syncthing keeps
+	// scanning — so failing the whole wait would break `sync wait` on exactly
+	// the large transfers it exists for. Instead the folder is remembered as
+	// still-scanning, and convergence below additionally requires it to have
+	// left the scanning state, which preserves the edit-run guarantee.
+	scanning := map[string]bool{}
 	for _, folder := range folders {
-		if err := syncthingScanFolder(ctx, localBase, localKey, folder.id); err != nil {
-			return fmt.Errorf("trigger local rescan of %s: %w", folder.id, err)
+		localErr := syncthingScanFolder(ctx, localBase, localKey, folder.id)
+		if isSyncthingScanStillRunning(localErr) {
+			scanning[folder.id] = true
+		} else if localErr != nil {
+			return fmt.Errorf("trigger local rescan of %s: %w", folder.id, localErr)
 		}
-		if err := syncthingScanFolder(ctx, remoteBase, remoteKey, folder.id); err != nil {
-			return fmt.Errorf("trigger remote rescan of %s: %w", folder.id, err)
+		remoteErr := syncthingScanFolder(ctx, remoteBase, remoteKey, folder.id)
+		if isSyncthingScanStillRunning(remoteErr) {
+			scanning[folder.id] = true
+		} else if remoteErr != nil {
+			return fmt.Errorf("trigger remote rescan of %s: %w", folder.id, remoteErr)
 		}
+	}
+	if len(scanning) > 0 {
+		fmt.Fprintf(out, "waiting: still indexing %d folder(s); convergence is held until the scan finishes\n", len(scanning))
 	}
 
 	deadline := time.Now().Add(timeout)
@@ -216,6 +273,16 @@ func runSyncWaitConvergence(ctx context.Context, cc *commandContext, pod string,
 			totalNeed += localNeed + remoteNeed
 			if !syncthingInitialSyncComplete(localPct, localNeed, remotePct, remoteNeed) {
 				converged = false
+			}
+			// A folder whose forced rescan is still running can report zero
+			// pending bytes simply because the new file is not indexed yet.
+			if scanning[folder.id] {
+				done, scanErr := syncthingFolderScanSettled(ctx, localBase, localKey, remoteBase, remoteKey, folder.id)
+				if scanErr != nil || !done {
+					converged = false
+				} else {
+					delete(scanning, folder.id)
+				}
 			}
 		}
 		if converged {
