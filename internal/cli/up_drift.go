@@ -173,8 +173,6 @@ func handleWorkloadDrift(state *upState) (driftAction, error) {
 
 	var currentJSON string
 	switch rt := state.runtime.(type) {
-	case *workload.PodRuntime:
-		currentJSON = rt.LastAppliedSpecJSON
 	case *workload.GenericRuntime:
 		currentJSON = rt.LastAppliedSpecJSON
 	default:

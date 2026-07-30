@@ -20,6 +20,8 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+const DefaultTargetContainer = "dev"
+
 type GenericRuntime struct {
 	SessionName          string
 	WorkloadNameOverride string

@@ -18,57 +18,61 @@ type sessionPodLister interface {
 	ListPods(context.Context, string, bool, string) ([]kube.PodSummary, error)
 }
 
-func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName, workloadName string, labels, annotations map[string]string, podSpec corev1.PodSpec, volumes []corev1.Volume, tmux bool, preStop string) (workload.Runtime, error) {
+func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName, workloadName string, labels, annotations map[string]string, volumes []corev1.Volume, tmux bool, preStop string) (workload.Runtime, error) {
 	targetContainer := resolveTargetContainer(cfg)
 	workspaceMountPath := cfg.EffectiveWorkspaceMountPath(cfgPath)
-	manifestPath := ""
-	manifestResolvedPath := ""
-	if t := strings.TrimSpace(cfg.Spec.Workload.Type); t != "" && t != workload.TypePod {
-		manifestPath = strings.TrimSpace(cfg.Spec.Workload.ManifestPath)
-		manifestResolvedPath = workload.ResolveManifestPath(cfgPath, cfg.Spec.Workload.ManifestPath)
-	}
+	manifestPath := strings.TrimSpace(cfg.Spec.Workload.ManifestPath)
+	manifestResolvedPath := workload.ResolveManifestPath(cfgPath, manifestPath)
 
 	snap := config.BuildWorkloadSnapshot(cfg, workspaceMountPath, targetContainer, tmux, cfg.Spec.SSH.Shell, preStop, manifestPath, manifestResolvedPath)
 	snapJSON, _ := snap.JSON()
 	snapHash, _ := snap.SHA256()
 
-	syncRemoteRoots := cfg.AdditionalSyncRemoteRoots()
-	switch strings.TrimSpace(cfg.Spec.Workload.Type) {
-	case "", workload.TypePod:
-		rt := workload.NewPodRuntime(
-			sessionName, labels, annotations, podSpec,
-			volumes, workspaceMountPath, cfg.Spec.Sidecar.Image, cfg.Spec.Sidecar.Resources,
-			tmux, cfg.Spec.SSH.Shell, preStop, targetContainer,
-		)
-		rt.WorkloadNameOverride = workloadName
-		rt.SyncRemoteRoots = syncRemoteRoots
-		rt.LastAppliedSpecJSON = snapJSON
-		rt.LastAppliedSpecHash = snapHash
-		return rt, nil
-	case workload.TypeJob, workload.TypeGeneric, workload.TypePyTorchJob:
-		return &workload.GenericRuntime{
-			SessionName:          sessionName,
-			WorkloadNameOverride: workloadName,
-			WorkloadKind:         strings.TrimSpace(cfg.Spec.Workload.Type),
-			ManifestPath:         manifestResolvedPath,
-			WorkspaceMountPath:   workspaceMountPath,
-			SidecarImage:         cfg.Spec.Sidecar.Image,
-			SidecarResources:     cfg.Spec.Sidecar.Resources,
-			Tmux:                 tmux,
-			Shell:                cfg.Spec.SSH.Shell,
-			PreStop:              preStop,
-			TargetContainer:      targetContainer,
-			Volumes:              volumes,
-			SyncRemoteRoots:      syncRemoteRoots,
-			Labels:               labels,
-			Annotations:          annotations,
-			Inject:               cfg.EffectiveWorkloadInject(),
-			LastAppliedSpecJSON:  snapJSON,
-			LastAppliedSpecHash:  snapHash,
-		}, nil
+	workloadType := strings.TrimSpace(cfg.Spec.Workload.Type)
+	if workloadType == "" {
+		workloadType = workload.TypePod
+	}
+	switch workloadType {
+	case workload.TypePod, workload.TypeJob, workload.TypeGeneric, workload.TypePyTorchJob:
 	default:
 		return nil, fmt.Errorf("unsupported workload type %q", cfg.Spec.Workload.Type)
 	}
+
+	rt := &workload.GenericRuntime{
+		SessionName:          sessionName,
+		WorkloadNameOverride: workloadName,
+		WorkloadKind:         workloadType,
+		ManifestPath:         manifestResolvedPath,
+		WorkspaceMountPath:   workspaceMountPath,
+		SidecarImage:         cfg.Spec.Sidecar.Image,
+		SidecarResources:     cfg.Spec.Sidecar.Resources,
+		Tmux:                 tmux,
+		Shell:                cfg.Spec.SSH.Shell,
+		PreStop:              preStop,
+		TargetContainer:      targetContainer,
+		Volumes:              volumes,
+		SyncRemoteRoots:      cfg.AdditionalSyncRemoteRoots(),
+		Labels:               labels,
+		Annotations:          annotations,
+		Inject:               cfg.EffectiveWorkloadInject(),
+		LastAppliedSpecJSON:  snapJSON,
+		LastAppliedSpecHash:  snapHash,
+	}
+	// A pod workload has no manifest file of its own: spec.podTemplate is
+	// rendered into one so it can travel the same apply path as every other
+	// workload type.
+	if workloadType == workload.TypePod && manifestResolvedPath == "" {
+		name := strings.TrimSpace(workloadName)
+		if name == "" {
+			name = podName(sessionName)
+		}
+		manifest, err := config.SynthesizePodManifest(cfg, name)
+		if err != nil {
+			return nil, err
+		}
+		rt.ManifestBytes = manifest
+	}
+	return rt, nil
 }
 
 func sessionRuntimeForExisting(ctx context.Context, cfg *config.DevEnvironment, cfgPath, namespace, sessionName string, pods sessionPodLister) (workload.Runtime, error) {
@@ -88,7 +92,7 @@ func sessionRuntimeForExisting(ctx context.Context, cfg *config.DevEnvironment, 
 			}
 		}
 	}
-	return sessionRuntime(cfg, cfgPath, sessionName, workloadName, discoveryLabelsForSession(cfg, sessionName, runID), nil, corev1.PodSpec{}, cfg.EffectiveVolumes(), cfg.Spec.SSH.PersistentSessionEnabled(), resolvePreStopCommand(cfg, cfgPath))
+	return sessionRuntime(cfg, cfgPath, sessionName, workloadName, discoveryLabelsForSession(cfg, sessionName, runID), nil, cfg.EffectiveVolumes(), cfg.Spec.SSH.PersistentSessionEnabled(), resolvePreStopCommand(cfg, cfgPath))
 }
 
 func defaultTargetRef(sessionName string) workload.TargetRef {

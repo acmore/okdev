@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -67,17 +68,47 @@ func (f *fakeTargetClient) ListPods(_ context.Context, _ string, _ bool, _ strin
 	return nil, nil
 }
 
-func TestPodRuntimeLifecycle(t *testing.T) {
-	rt := NewPodRuntime("test",
-		map[string]string{"okdev.io/managed": "true"}, nil,
-		corev1.PodSpec{},
-		[]corev1.Volume{{
-			Name:         "workspace",
-			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-		}},
-		"/workspace", "ghcr.io/acmore/okdev:edge",
-		corev1.ResourceRequirements{}, false, "", "", "",
-	)
+// podRuntimeForTest builds the runtime a pod workload gets today: a
+// GenericRuntime over a synthesized Pod manifest, injected at the object root.
+func podRuntimeForTest(sessionName, targetContainer string, volumes []corev1.Volume) *GenericRuntime {
+	return &GenericRuntime{
+		SessionName:  sessionName,
+		WorkloadKind: TypePod,
+		ManifestBytes: []byte(`
+apiVersion: v1
+kind: Pod
+metadata:
+  name: okdev-` + sessionName + `
+spec:
+  containers:
+    - name: dev
+      image: ubuntu:22.04
+`),
+		WorkspaceMountPath: "/workspace",
+		SidecarImage:       "ghcr.io/acmore/okdev:edge",
+		SidecarResources:   corev1.ResourceRequirements{},
+		TargetContainer:    targetContainer,
+		Volumes:            volumes,
+		Labels:             map[string]string{"okdev.io/managed": "true"},
+		Inject:             []config.WorkloadInjectSpec{{Path: ""}},
+	}
+}
+
+func attachablePod(name string) kube.PodSummary {
+	return kube.PodSummary{
+		Name:      name,
+		Phase:     "Running",
+		Ready:     "1/1",
+		CreatedAt: time.Now(),
+		Labels:    map[string]string{"okdev.io/attachable": "true"},
+	}
+}
+
+func TestPodViaGenericLifecycle(t *testing.T) {
+	rt := podRuntimeForTest("test", "", []corev1.Volume{{
+		Name:         "workspace",
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	}})
 	if rt.Kind() != TypePod {
 		t.Fatalf("unexpected kind: %s", rt.Kind())
 	}
@@ -97,16 +128,20 @@ func TestPodRuntimeLifecycle(t *testing.T) {
 	if !strings.Contains(manifest, "okdev-sidecar") {
 		t.Fatal("expected prepared manifest to contain okdev-sidecar container")
 	}
+	// The root inject path must not clobber apiVersion/kind.
+	if !strings.Contains(manifest, "kind: Pod") {
+		t.Fatalf("root inject dropped the Pod type meta:\n%s", manifest)
+	}
 
-	wait := &fakeWaitClient{}
-	if err := rt.WaitReady(context.Background(), wait, "default", 30*time.Second, nil); err != nil {
+	client := &fakeGenericClient{pods: []kube.PodSummary{attachablePod("okdev-test")}}
+	if err := rt.WaitReady(context.Background(), client, "default", 30*time.Second, nil); err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
-	if wait.pod != "okdev-test" || wait.timeout != 30*time.Second {
-		t.Fatalf("unexpected wait call: %+v", wait)
+	if client.pod != "okdev-test" {
+		t.Fatalf("unexpected wait call: %+v", client)
 	}
 
-	target, err := rt.SelectTarget(context.Background(), &fakeTargetClient{}, "default")
+	target, err := rt.SelectTarget(context.Background(), client, "default")
 	if err != nil {
 		t.Fatalf("SelectTarget: %v", err)
 	}
@@ -118,19 +153,17 @@ func TestPodRuntimeLifecycle(t *testing.T) {
 	if err := rt.Delete(context.Background(), del, "default", true); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if del.kind != "pod" || del.name != "okdev-test" || !del.ignore {
+	// Generic deletes go through DeleteByRef, which carries the object's own
+	// kind ("Pod") rather than the lowercase resource name.
+	if del.kind != "Pod" || del.name != "okdev-test" || !del.ignore {
 		t.Fatalf("unexpected delete call: %+v", del)
 	}
 }
 
-func TestPodRuntimeSelectTargetUsesConfiguredContainer(t *testing.T) {
-	rt := NewPodRuntime("test",
-		map[string]string{"okdev.io/managed": "true"}, nil,
-		corev1.PodSpec{},
-		nil, "/workspace", "ghcr.io/acmore/okdev:edge",
-		corev1.ResourceRequirements{}, false, "", "", "trainer",
-	)
-	target, err := rt.SelectTarget(context.Background(), &fakeTargetClient{}, "default")
+func TestPodViaGenericSelectTargetUsesConfiguredContainer(t *testing.T) {
+	rt := podRuntimeForTest("test", "trainer", nil)
+	client := &fakeGenericClient{pods: []kube.PodSummary{attachablePod("okdev-test")}}
+	target, err := rt.SelectTarget(context.Background(), client, "default")
 	if err != nil {
 		t.Fatalf("SelectTarget: %v", err)
 	}
