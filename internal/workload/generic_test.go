@@ -287,7 +287,10 @@ func TestFailFastOnPodFailureForWorkloadIgnoresCase(t *testing.T) {
 		"generic":     false,
 		"Generic":     false,
 		"":            false,
-		"pod":         false,
+		// A pod workload has exactly one pod and nothing recreates it, so a
+		// failed pod is a dead session, not a transient state worth waiting on.
+		"pod": true,
+		"Pod": true,
 	}
 	for input, want := range cases {
 		if got := failFastOnPodFailureForWorkload(input); got != want {
@@ -524,5 +527,17 @@ spec:
 	}
 	if !strings.Contains(applied, "okdev-sidecar") {
 		t.Fatalf("sidecar was not injected at the root path:\n%s", applied)
+	}
+}
+
+func TestFailFastOnPodFailureCoversPod(t *testing.T) {
+	for _, kind := range []string{TypePod, TypeJob, TypePyTorchJob} {
+		if !failFastOnPodFailureForWorkload(kind) {
+			t.Errorf("kind %q must fail fast on pod failure", kind)
+		}
+	}
+	// A Deployment replaces failed pods on its own, so waiting is correct.
+	if failFastOnPodFailureForWorkload(TypeGeneric) {
+		t.Error("generic workloads must not fail fast")
 	}
 }

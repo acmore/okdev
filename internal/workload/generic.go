@@ -164,7 +164,7 @@ func (r *GenericRuntime) WaitReady(ctx context.Context, k WaitClient, namespace 
 
 func failFastOnPodFailureForWorkload(kind string) bool {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case TypeJob, TypePyTorchJob:
+	case TypePod, TypeJob, TypePyTorchJob:
 		return true
 	default:
 		return false
