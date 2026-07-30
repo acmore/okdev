@@ -20,7 +20,7 @@ func TestSessionRuntimeReturnsGenericRuntimeForPyTorchJob(t *testing.T) {
 	cfg.Spec.Workload.ManifestPath = ".okdev/pytorchjob.yaml"
 	cfg.Spec.Workload.Inject = []config.WorkloadInjectSpec{{Path: "spec.pytorchReplicaSpecs.Master.template"}}
 
-	rt, err := sessionRuntime(cfg, "/tmp/.okdev.yaml", "sess1", "okdev-sess1-abcd1234", nil, nil, corev1.PodSpec{}, nil, false, "")
+	rt, err := sessionRuntime(cfg, "/tmp/.okdev.yaml", "sess1", "okdev-sess1-abcd1234", nil, nil, nil, false, "")
 	if err != nil {
 		t.Fatalf("sessionRuntime: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestSessionRuntimeReturnsGenericRuntimeForJob(t *testing.T) {
 	cfg.Spec.Workload.ManifestPath = ".okdev/job.yaml"
 	cfg.Spec.Workload.Inject = []config.WorkloadInjectSpec{{Path: "spec.template"}}
 
-	rt, err := sessionRuntime(cfg, "/tmp/.okdev.yaml", "sess1", "okdev-sess1-abcd1234", nil, nil, corev1.PodSpec{}, nil, false, "")
+	rt, err := sessionRuntime(cfg, "/tmp/.okdev.yaml", "sess1", "okdev-sess1-abcd1234", nil, nil, nil, false, "")
 	if err != nil {
 		t.Fatalf("sessionRuntime: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestSessionRuntimeEnablesSidecarsForInterPodSSH(t *testing.T) {
 		{Path: "spec.pytorchReplicaSpecs.Worker.template", Sidecar: &disabled},
 	}
 
-	rt, err := sessionRuntime(cfg, "/tmp/.okdev.yaml", "sess1", "okdev-sess1-abcd1234", nil, nil, corev1.PodSpec{}, nil, false, "")
+	rt, err := sessionRuntime(cfg, "/tmp/.okdev.yaml", "sess1", "okdev-sess1-abcd1234", nil, nil, nil, false, "")
 	if err != nil {
 		t.Fatalf("sessionRuntime: %v", err)
 	}
@@ -80,20 +80,24 @@ func TestSessionRuntimeEnablesSidecarsForInterPodSSH(t *testing.T) {
 	}
 }
 
-func TestSessionRuntimeReturnsPodRuntimeByDefault(t *testing.T) {
+func TestSessionRuntimeDefaultsToPodKind(t *testing.T) {
 	cfg := &config.DevEnvironment{}
 	cfg.Spec.Sidecar.Image = "ghcr.io/acmore/okdev:edge"
 
-	rt, err := sessionRuntime(cfg, "/tmp/.okdev.yaml", "sess1", "okdev-sess1-abcd1234", nil, nil, corev1.PodSpec{}, nil, false, "")
+	rt, err := sessionRuntime(cfg, "/tmp/.okdev.yaml", "sess1", "okdev-sess1-abcd1234", nil, nil, nil, false, "")
 	if err != nil {
 		t.Fatalf("sessionRuntime: %v", err)
 	}
-	_, ok := rt.(*workload.PodRuntime)
+	_, ok := rt.(*workload.GenericRuntime)
 	if !ok {
-		t.Fatalf("expected PodRuntime, got %T", rt)
+		t.Fatalf("expected GenericRuntime, got %T", rt)
 	}
 	if rt.Kind() != workload.TypePod {
 		t.Fatalf("unexpected kind: %s", rt.Kind())
+	}
+	// The override wins over the "okdev-<session>" fallback.
+	if got := rt.WorkloadName(); got != "okdev-sess1-abcd1234" {
+		t.Fatalf("WorkloadName() = %q, want okdev-sess1-abcd1234", got)
 	}
 }
 
@@ -211,5 +215,28 @@ spec:
 	}
 	if kind != "Job" || name != "okdev-sess1-abcd1234" {
 		t.Fatalf("unexpected workload ref: kind=%q name=%q", kind, name)
+	}
+}
+
+func TestSessionRuntimeBuildsGenericRuntimeForPod(t *testing.T) {
+	cfg := &config.DevEnvironment{}
+	cfg.SetDefaults()
+	cfg.Spec.PodTemplate.Spec = corev1.PodSpec{
+		Containers: []corev1.Container{{Name: "dev", Image: "alpine"}},
+	}
+
+	rt, err := sessionRuntime(cfg, "/repo/.okdev/okdev.yaml", "sess1", "", nil, nil, nil, false, "")
+	if err != nil {
+		t.Fatalf("sessionRuntime: %v", err)
+	}
+	if _, ok := rt.(*workload.GenericRuntime); !ok {
+		t.Fatalf("pod runtime = %T, want *workload.GenericRuntime", rt)
+	}
+	if rt.Kind() != workload.TypePod {
+		t.Fatalf("Kind() = %q, want pod", rt.Kind())
+	}
+	// PodRuntime named an un-overridden pod "okdev-<session>"; that must hold.
+	if got := rt.WorkloadName(); got != "okdev-sess1" {
+		t.Fatalf("WorkloadName() = %q, want okdev-sess1", got)
 	}
 }

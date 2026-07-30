@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -18,11 +17,8 @@ func (c *captureApplyClient) Apply(_ context.Context, _ string, manifest []byte)
 	return nil
 }
 
-func TestPodRuntimeApplySetsLastAppliedAnnotations(t *testing.T) {
-	rt := NewPodRuntime("sess", nil, nil,
-		corev1.PodSpec{Containers: []corev1.Container{{Name: "dev", Image: "ubuntu:22.04"}}},
-		nil, "/workspace", "sidecar:1", corev1.ResourceRequirements{}, false, "", "", "dev",
-	)
+func TestPodViaGenericApplySetsLastAppliedAnnotations(t *testing.T) {
+	rt := podRuntimeForTest("sess", "dev", nil)
 	rt.LastAppliedSpecJSON = `{"version":"v1"}`
 	rt.LastAppliedSpecHash = "abc123"
 
@@ -45,11 +41,8 @@ func TestPodRuntimeApplySetsLastAppliedAnnotations(t *testing.T) {
 	}
 }
 
-func TestPodRuntimeApplyOmitsAnnotationsWhenEmpty(t *testing.T) {
-	rt := NewPodRuntime("sess", nil, nil,
-		corev1.PodSpec{Containers: []corev1.Container{{Name: "dev", Image: "ubuntu:22.04"}}},
-		nil, "/workspace", "sidecar:1", corev1.ResourceRequirements{}, false, "", "", "dev",
-	)
+func TestPodViaGenericApplyOmitsAnnotationsWhenEmpty(t *testing.T) {
+	rt := podRuntimeForTest("sess", "dev", nil)
 
 	client := &captureApplyClient{}
 	if err := rt.Apply(context.Background(), client, "default"); err != nil {

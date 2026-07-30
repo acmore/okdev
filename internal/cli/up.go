@@ -202,7 +202,7 @@ func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, e
 		// pull the deletions back over the local files.
 		return nil, fmt.Errorf("--reset-workspace conflicts with sync direction \"down\" (the pod is the sync authority); remove the flag or switch direction")
 	}
-	runtime, err := sessionRuntime(cc.cfg, cc.cfgPath, cc.sessionName, workloadName, labels, annotations, cc.cfg.Spec.PodTemplate.Spec, volumes, enableTmux, resolvePreStopCommand(cc.cfg, cc.cfgPath))
+	runtime, err := sessionRuntime(cc.cfg, cc.cfgPath, cc.sessionName, workloadName, labels, annotations, volumes, enableTmux, resolvePreStopCommand(cc.cfg, cc.cfgPath))
 	if err != nil {
 		return nil, err
 	}
@@ -386,7 +386,7 @@ func rotateRunIdentity(state *upState) error {
 	state.labels["okdev.io/run-id"] = runID
 	cc := state.command
 	runtime, err := sessionRuntime(cc.cfg, cc.cfgPath, cc.sessionName, workloadName, state.labels, state.annotations,
-		cc.cfg.Spec.PodTemplate.Spec, state.volumes, state.enableTmux, resolvePreStopCommand(cc.cfg, cc.cfgPath))
+		state.volumes, state.enableTmux, resolvePreStopCommand(cc.cfg, cc.cfgPath))
 	if err != nil {
 		return fmt.Errorf("rebuild workload for new run id: %w", err)
 	}

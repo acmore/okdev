@@ -455,6 +455,11 @@ Full Kubernetes PodSpec overlay. Use this for the dev container image, resources
 - `metadata.labels` (`map[string]string`, optional)
 - `spec` (Kubernetes `PodSpec`)
 
+Pod workloads are applied through the same manifest pipeline as `job`,
+`pytorchjob`, and `generic`: `spec.podTemplate` is rendered into a standalone
+Pod manifest, and the sidecar is injected at the object root. This is internal —
+`spec.podTemplate` is configured exactly as before.
+
 ```yaml
 spec:
   podTemplate:

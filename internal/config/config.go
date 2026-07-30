@@ -423,8 +423,9 @@ func (d *DevEnvironment) Validate() error {
 		}
 	}
 	effectiveInject := d.EffectiveWorkloadInject()
+	isPod := isPodWorkloadType(d.Spec.Workload.Type)
 	for i, inject := range effectiveInject {
-		if strings.TrimSpace(inject.Path) == "" {
+		if strings.TrimSpace(inject.Path) == "" && !isPod {
 			return fmt.Errorf("spec.workload.inject[%d].path is required", i)
 		}
 		if inject.Attachable != nil && *inject.Attachable && inject.Sidecar != nil && !*inject.Sidecar {
@@ -515,12 +516,31 @@ func (s SyncthingSpec) AutoInstallEnabled() bool {
 	return *s.AutoInstall
 }
 
+// isPodWorkloadType reports whether the type addresses a bare Pod, where the
+// pod template is the object root rather than a nested path.
+func isPodWorkloadType(t string) bool {
+	switch strings.TrimSpace(t) {
+	case "", "pod":
+		return true
+	default:
+		return false
+	}
+}
+
 func (d *DevEnvironment) EffectiveWorkloadInject() []WorkloadInjectSpec {
-	if d == nil || len(d.Spec.Workload.Inject) == 0 {
+	if d == nil {
 		return nil
 	}
-	out := make([]WorkloadInjectSpec, len(d.Spec.Workload.Inject))
-	copy(out, d.Spec.Workload.Inject)
+	inject := d.Spec.Workload.Inject
+	if len(inject) == 0 {
+		if !isPodWorkloadType(d.Spec.Workload.Type) {
+			return nil
+		}
+		// A pod's template is the object itself, addressed by the root path.
+		inject = []WorkloadInjectSpec{{Path: ""}}
+	}
+	out := make([]WorkloadInjectSpec, len(inject))
+	copy(out, inject)
 	if !d.Spec.SSH.InterPodEnabled() {
 		return out
 	}

@@ -287,7 +287,10 @@ func TestFailFastOnPodFailureForWorkloadIgnoresCase(t *testing.T) {
 		"generic":     false,
 		"Generic":     false,
 		"":            false,
-		"pod":         false,
+		// A pod workload has exactly one pod and nothing recreates it, so a
+		// failed pod is a dead session, not a transient state worth waiting on.
+		"pod": true,
+		"Pod": true,
 	}
 	for input, want := range cases {
 		if got := failFastOnPodFailureForWorkload(input); got != want {
@@ -480,5 +483,61 @@ func TestPodTemplateSpecUnstructuredRoundTrip(t *testing.T) {
 	}
 	if first["image"] != "python:3.12" {
 		t.Fatalf("unexpected image in round-trip: %#v", first["image"])
+	}
+}
+
+func TestGenericRuntimeAppliesManifestFromBytesWithoutTemplating(t *testing.T) {
+	rt := &GenericRuntime{
+		WorkloadKind: TypePod,
+		// `{{ .Nope }}` must survive verbatim: bytes-sourced manifests are not
+		// Go templates, so a user pod spec containing braces still applies.
+		ManifestBytes: []byte(`
+apiVersion: v1
+kind: Pod
+metadata:
+  name: okdev-sess1
+spec:
+  containers:
+    - name: dev
+      image: alpine
+      args: ["{{ .Nope }}"]
+`),
+		WorkspaceMountPath: "/workspace",
+		SidecarImage:       "ghcr.io/acmore/okdev:edge",
+		TargetContainer:    "dev",
+		Labels: map[string]string{
+			"okdev.io/managed": "true",
+			"okdev.io/session": "sess1",
+		},
+		Inject: []config.WorkloadInjectSpec{{Path: ""}},
+	}
+	if got := rt.WorkloadName(); got != "okdev-sess1" {
+		t.Fatalf("WorkloadName = %q, want okdev-sess1", got)
+	}
+	client := &fakeGenericClient{}
+	if err := rt.Apply(context.Background(), client, "default"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	applied := string(client.manifest)
+	if !strings.Contains(applied, "kind: Pod") {
+		t.Fatalf("applied manifest lost its kind:\n%s", applied)
+	}
+	if !strings.Contains(applied, "{{ .Nope }}") {
+		t.Fatalf("bytes manifest was templated:\n%s", applied)
+	}
+	if !strings.Contains(applied, "okdev-sidecar") {
+		t.Fatalf("sidecar was not injected at the root path:\n%s", applied)
+	}
+}
+
+func TestFailFastOnPodFailureCoversPod(t *testing.T) {
+	for _, kind := range []string{TypePod, TypeJob, TypePyTorchJob} {
+		if !failFastOnPodFailureForWorkload(kind) {
+			t.Errorf("kind %q must fail fast on pod failure", kind)
+		}
+	}
+	// A Deployment replaces failed pods on its own, so waiting is correct.
+	if failFastOnPodFailureForWorkload(TypeGeneric) {
+		t.Error("generic workloads must not fail fast")
 	}
 }

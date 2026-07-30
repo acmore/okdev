@@ -20,25 +20,32 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+const DefaultTargetContainer = "dev"
+
 type GenericRuntime struct {
 	SessionName          string
 	WorkloadNameOverride string
 	WorkloadKind         string
 	ManifestPath         string
-	WorkspaceMountPath   string
-	SidecarImage         string
-	SidecarResources     corev1.ResourceRequirements
-	Tmux                 bool
-	Shell                string
-	PreStop              string
-	TargetContainer      string
-	Volumes              []corev1.Volume
-	SyncRemoteRoots      []string
-	Labels               map[string]string
-	Annotations          map[string]string
-	Inject               []config.WorkloadInjectSpec
-	LastAppliedSpecJSON  string
-	LastAppliedSpecHash  string
+	// ManifestBytes, when set, is the manifest source instead of ManifestPath.
+	// Bytes-sourced manifests are synthesized by okdev rather than authored by
+	// the user, so they are applied verbatim — no Go-template rendering, which
+	// would reject user pod specs that legitimately contain "{{".
+	ManifestBytes       []byte
+	WorkspaceMountPath  string
+	SidecarImage        string
+	SidecarResources    corev1.ResourceRequirements
+	Tmux                bool
+	Shell               string
+	PreStop             string
+	TargetContainer     string
+	Volumes             []corev1.Volume
+	SyncRemoteRoots     []string
+	Labels              map[string]string
+	Annotations         map[string]string
+	Inject              []config.WorkloadInjectSpec
+	LastAppliedSpecJSON string
+	LastAppliedSpecHash string
 
 	loadMu     sync.Mutex
 	loadedBase *unstructured.Unstructured
@@ -159,7 +166,7 @@ func (r *GenericRuntime) WaitReady(ctx context.Context, k WaitClient, namespace 
 
 func failFastOnPodFailureForWorkload(kind string) bool {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case TypeJob, TypePyTorchJob:
+	case TypePod, TypeJob, TypePyTorchJob:
 		return true
 	default:
 		return false
@@ -213,35 +220,54 @@ func (r *GenericRuntime) interactiveContainer() string {
 func (r *GenericRuntime) load() (*unstructured.Unstructured, error) {
 	r.loadMu.Lock()
 	defer r.loadMu.Unlock()
-	stamp, err := manifestStamp(r.ManifestPath)
-	if err != nil {
-		return nil, fmt.Errorf("stat generic manifest %q: %w", r.ManifestPath, err)
+	var raw []byte
+	if len(r.ManifestBytes) > 0 {
+		if r.loadedBase != nil && r.loadedFrom == (manifestCacheStamp{}) {
+			return r.loadedBase.DeepCopy(), nil
+		}
+		raw = r.ManifestBytes
+	} else {
+		stamp, err := manifestStamp(r.ManifestPath)
+		if err != nil {
+			return nil, fmt.Errorf("stat generic manifest %q: %w", r.ManifestPath, err)
+		}
+		if r.loadedBase != nil && r.loadedFrom == stamp {
+			return r.loadedBase.DeepCopy(), nil
+		}
+		fileRaw, err := os.ReadFile(r.ManifestPath)
+		if err != nil {
+			return nil, fmt.Errorf("read generic manifest %q: %w", r.ManifestPath, err)
+		}
+		rendered, err := r.renderManifestTemplate(fileRaw)
+		if err != nil {
+			return nil, err
+		}
+		raw = rendered
+		defer func() { r.loadedFrom = stamp }()
 	}
-	if r.loadedBase != nil && r.loadedFrom == stamp {
-		return r.loadedBase.DeepCopy(), nil
-	}
-	raw, err := os.ReadFile(r.ManifestPath)
-	if err != nil {
-		return nil, fmt.Errorf("read generic manifest %q: %w", r.ManifestPath, err)
-	}
-	raw, err = r.renderManifestTemplate(raw)
-	if err != nil {
-		return nil, err
-	}
+
 	var obj map[string]any
 	if err := yaml.Unmarshal(raw, &obj); err != nil {
-		return nil, fmt.Errorf("parse generic manifest %q: %w", r.ManifestPath, err)
+		return nil, fmt.Errorf("parse workload manifest %q: %w", r.manifestSource(), err)
 	}
 	u := &unstructured.Unstructured{Object: obj}
 	if strings.TrimSpace(u.GetAPIVersion()) == "" || strings.TrimSpace(u.GetKind()) == "" {
-		return nil, fmt.Errorf("generic manifest %q is missing apiVersion/kind", r.ManifestPath)
+		return nil, fmt.Errorf("workload manifest %q is missing apiVersion/kind", r.manifestSource())
 	}
 	if strings.TrimSpace(u.GetName()) == "" {
-		return nil, fmt.Errorf("generic manifest %q is missing metadata.name", r.ManifestPath)
+		return nil, fmt.Errorf("workload manifest %q is missing metadata.name", r.manifestSource())
 	}
 	r.loadedBase = u.DeepCopy()
-	r.loadedFrom = stamp
 	return u.DeepCopy(), nil
+}
+
+// manifestSource names the manifest in error messages: a path when one was
+// given, otherwise the synthesized-manifest marker.
+func (r *GenericRuntime) manifestSource() string {
+	if len(r.ManifestBytes) > 0 {
+		return "<synthesized " + r.Kind() + ">"
+	}
+	return r.ManifestPath
 }
 
 type WorkloadManifestTemplateVars struct {
@@ -306,11 +332,17 @@ func resolveMapPath(root map[string]any, path string) (map[string]any, error) {
 
 // writeMapPath descends to the parent of the final path segment and replaces
 // the last key. For "spec.template" it sets obj["spec"]["template"] = value.
+// The empty path addresses the object root, where the pod template is the
+// object itself (a bare Pod); there the members are merged in so apiVersion
+// and kind — which are not part of a PodTemplateSpec — survive the round trip.
 func writeMapPath(root map[string]any, path string, value map[string]any) error {
-	parts := strings.Split(strings.TrimSpace(path), ".")
-	if len(parts) == 0 {
-		return fmt.Errorf("empty path")
+	if strings.TrimSpace(path) == "" {
+		for k, v := range value {
+			root[k] = v
+		}
+		return nil
 	}
+	parts := strings.Split(strings.TrimSpace(path), ".")
 	current := root
 	for _, part := range parts[:len(parts)-1] {
 		next, ok := current[part]
