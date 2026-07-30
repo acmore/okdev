@@ -110,3 +110,89 @@ func (d *DevEnvironment) WorkloadProfileNames() []string {
 	}
 	return names
 }
+
+// validateWorkloadProfile applies the per-type rules that used to guard the
+// singular spec.workload. Every declared profile is checked, not only the one
+// that happens to be selected, so a broken profile fails fast instead of at
+// switch time.
+func validateWorkloadProfile(p WorkloadProfile, index int, interPod bool) error {
+	field := fmt.Sprintf("spec.workloads[%d]", index)
+	switch strings.TrimSpace(p.Type) {
+	case "", "pod", "job", "pytorchjob", "generic":
+	default:
+		return fmt.Errorf("%s.type must be one of pod, job, pytorchjob, generic, got %q", field, p.Type)
+	}
+	switch strings.TrimSpace(p.Type) {
+	case "job", "pytorchjob", "generic":
+		if strings.TrimSpace(p.ManifestPath) == "" {
+			return fmt.Errorf("%s.manifestPath is required when type=%q", field, p.Type)
+		}
+	}
+	isPod := isPodWorkloadType(p.Type)
+	inject := p.Inject
+	if len(inject) == 0 && isPod {
+		inject = []WorkloadInjectSpec{{Path: ""}}
+	}
+	for i, in := range inject {
+		if strings.TrimSpace(in.Path) == "" && !isPod {
+			return fmt.Errorf("%s.inject[%d].path is required", field, i)
+		}
+		sidecar := in.Sidecar
+		if interPod {
+			enabled := true
+			sidecar = &enabled
+		}
+		if in.Attachable != nil && *in.Attachable && sidecar != nil && !*sidecar {
+			return fmt.Errorf("%s.inject[%d]: attachable=true requires sidecar=true", field, i)
+		}
+	}
+	if strings.TrimSpace(p.Type) == "job" {
+		for i, in := range p.Inject {
+			if strings.TrimSpace(in.Path) != "spec.template" {
+				return fmt.Errorf("%s.inject[%d].path must be spec.template when type=job", field, i)
+			}
+		}
+	}
+	if (p.Type == "generic" || p.Type == "pytorchjob") && len(p.Inject) == 0 {
+		return fmt.Errorf("%s.inject is required when type=%q", field, p.Type)
+	}
+	return nil
+}
+
+// validateWorkloadProfiles checks names and cross-profile invariants.
+func (d *DevEnvironment) validateWorkloadProfiles() error {
+	seen := make(map[string]struct{}, len(d.Spec.Workloads))
+	for i, p := range d.Spec.Workloads {
+		name := strings.TrimSpace(p.Name)
+		if name == "" {
+			return fmt.Errorf("spec.workloads[%d].name is required", i)
+		}
+		if _, dup := seen[name]; dup {
+			return fmt.Errorf("spec.workloads[%d].name %q is declared more than once", i, name)
+		}
+		seen[name] = struct{}{}
+		if err := validateWorkloadProfile(p, i, d.Spec.SSH.InterPodEnabled()); err != nil {
+			return err
+		}
+	}
+	if def := strings.TrimSpace(d.Spec.DefaultWorkload); def != "" {
+		if _, ok := seen[def]; !ok {
+			return fmt.Errorf("spec.defaultWorkload %q names no declared workload; available: %s",
+				def, strings.Join(d.WorkloadProfileNames(), ", "))
+		}
+	}
+	// A pod profile without a manifestPath is synthesized from the shared
+	// spec.podTemplate, so two of them would be byte-identical — the very
+	// ambiguity profiles exist to remove. At most one may rely on it.
+	shared := make([]string, 0, 2)
+	for _, p := range d.Spec.Workloads {
+		if isPodWorkloadType(p.Type) && strings.TrimSpace(p.ManifestPath) == "" {
+			shared = append(shared, strings.TrimSpace(p.Name))
+		}
+	}
+	if len(shared) > 1 {
+		return fmt.Errorf("workloads %s are all pod profiles without a manifestPath, so they would share spec.podTemplate and be indistinguishable; give all but one its own manifestPath",
+			strings.Join(shared, ", "))
+	}
+	return nil
+}
