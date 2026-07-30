@@ -306,11 +306,17 @@ func resolveMapPath(root map[string]any, path string) (map[string]any, error) {
 
 // writeMapPath descends to the parent of the final path segment and replaces
 // the last key. For "spec.template" it sets obj["spec"]["template"] = value.
+// The empty path addresses the object root, where the pod template is the
+// object itself (a bare Pod); there the members are merged in so apiVersion
+// and kind — which are not part of a PodTemplateSpec — survive the round trip.
 func writeMapPath(root map[string]any, path string, value map[string]any) error {
-	parts := strings.Split(strings.TrimSpace(path), ".")
-	if len(parts) == 0 {
-		return fmt.Errorf("empty path")
+	if strings.TrimSpace(path) == "" {
+		for k, v := range value {
+			root[k] = v
+		}
+		return nil
 	}
+	parts := strings.Split(strings.TrimSpace(path), ".")
 	current := root
 	for _, part := range parts[:len(parts)-1] {
 		next, ok := current[part]
