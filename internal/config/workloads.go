@@ -1,6 +1,9 @@
 package config
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // DefaultWorkloadProfileName is the name given to the profile desugared from a
 // legacy singular spec.workload.
@@ -49,4 +52,61 @@ func (d *DevEnvironment) setWorkloadDefaults() {
 			p.Inject = []WorkloadInjectSpec{{Path: "spec.template"}}
 		}
 	}
+}
+
+// SelectWorkload collapses one profile into Spec.Workload, which every
+// downstream reader treats as the effective workload for this invocation.
+//
+// An empty name means "whatever this config says by default": Spec.DefaultWorkload
+// when set, otherwise the first declared profile.
+func (d *DevEnvironment) SelectWorkload(name string) error {
+	if d == nil || len(d.Spec.Workloads) == 0 {
+		return nil
+	}
+	want := strings.TrimSpace(name)
+	if want == "" {
+		want = strings.TrimSpace(d.Spec.DefaultWorkload)
+	}
+	if want == "" {
+		want = strings.TrimSpace(d.Spec.Workloads[0].Name)
+	}
+	for _, p := range d.Spec.Workloads {
+		if strings.TrimSpace(p.Name) != want {
+			continue
+		}
+		d.Spec.Workload = WorkloadSpec{
+			Type:         p.Type,
+			ManifestPath: p.ManifestPath,
+			Inject:       p.Inject,
+			Attach:       p.Attach,
+		}
+		d.selectedWorkload = want
+		return nil
+	}
+	return fmt.Errorf("unknown workload %q; available: %s", want, strings.Join(d.WorkloadProfileNames(), ", "))
+}
+
+// SelectedWorkload names the profile currently collapsed into Spec.Workload.
+func (d *DevEnvironment) SelectedWorkload() string {
+	if d == nil {
+		return ""
+	}
+	if s := strings.TrimSpace(d.selectedWorkload); s != "" {
+		return s
+	}
+	if len(d.Spec.Workloads) > 0 {
+		return strings.TrimSpace(d.Spec.Workloads[0].Name)
+	}
+	return ""
+}
+
+func (d *DevEnvironment) WorkloadProfileNames() []string {
+	if d == nil {
+		return nil
+	}
+	names := make([]string, 0, len(d.Spec.Workloads))
+	for _, p := range d.Spec.Workloads {
+		names = append(names, strings.TrimSpace(p.Name))
+	}
+	return names
 }
