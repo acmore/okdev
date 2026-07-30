@@ -849,3 +849,34 @@ func TestDefaultSidecarImageForBinaryVersion(t *testing.T) {
 		t.Fatalf("unexpected image for empty version: %s", got)
 	}
 }
+
+func TestPodWorkloadDefaultsToRootInjectPath(t *testing.T) {
+	cfg := &DevEnvironment{}
+	cfg.SetDefaults()
+	if cfg.Spec.Workload.Type != "pod" {
+		t.Fatalf("type = %q, want pod", cfg.Spec.Workload.Type)
+	}
+	inject := cfg.EffectiveWorkloadInject()
+	if len(inject) != 1 || inject[0].Path != "" {
+		t.Fatalf("inject = %+v, want a single root-path entry", inject)
+	}
+}
+
+func TestValidateAcceptsRootInjectPathOnlyForPod(t *testing.T) {
+	pod := &DevEnvironment{APIVersion: "okdev.io/v1alpha1", Kind: "DevEnvironment"}
+	pod.Metadata.Name = "x"
+	pod.SetDefaults()
+	if err := pod.Validate(); err != nil {
+		t.Fatalf("pod with a root inject path must validate: %v", err)
+	}
+
+	generic := &DevEnvironment{APIVersion: "okdev.io/v1alpha1", Kind: "DevEnvironment"}
+	generic.Metadata.Name = "x"
+	generic.Spec.Workload.Type = "generic"
+	generic.Spec.Workload.ManifestPath = "deploy.yaml"
+	generic.Spec.Workload.Inject = []WorkloadInjectSpec{{Path: ""}}
+	generic.SetDefaults()
+	if err := generic.Validate(); err == nil {
+		t.Fatal("generic workloads must still reject an empty inject path")
+	}
+}
