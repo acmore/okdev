@@ -222,6 +222,11 @@ func discoveryLabelsForSession(cfg *config.DevEnvironment, sessionName, runID st
 	if workloadType := strings.TrimSpace(cfg.Spec.Workload.Type); workloadType != "" {
 		labels["okdev.io/workload-type"] = workloadType
 	}
+	// Two profiles can share a type (a one-GPU "dev" pod and an eight-GPU
+	// "big" pod), so only the name can tell a workload switch from a no-op.
+	if profile := strings.TrimSpace(cfg.SelectedWorkload()); profile != "" {
+		labels["okdev.io/workload-profile"] = profile
+	}
 	return labels
 }
 
