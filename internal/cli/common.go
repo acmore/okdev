@@ -98,7 +98,24 @@ func resolveCommandContext(opts *Options, resolver sessionResolver) (*commandCon
 		return nil, err
 	}
 	cc.sessionName = sessionName
+	profile, err := resolveWorkloadProfileName(effectiveOpts, sessionName)
+	if err != nil {
+		return nil, err
+	}
+	if err := cfg.SelectWorkload(profile); err != nil {
+		return nil, err
+	}
 	return cc, nil
+}
+
+// resolveWorkloadProfileName picks the profile this invocation runs against.
+// An empty result means "let the config decide" — SelectWorkload falls through
+// to spec.defaultWorkload and then the first declared profile.
+func resolveWorkloadProfileName(opts *Options, sessionName string) (string, error) {
+	if opts != nil && strings.TrimSpace(opts.Workload) != "" {
+		return strings.TrimSpace(opts.Workload), nil
+	}
+	return session.LoadWorkloadProfile(sessionName)
 }
 
 func optionsWithSessionConfig(opts *Options) (*Options, error) {

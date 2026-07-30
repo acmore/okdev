@@ -17,6 +17,7 @@ type Options struct {
 	Namespace  string
 	Context    string
 	Output     string
+	Workload   string
 	Verbose    bool
 }
 
