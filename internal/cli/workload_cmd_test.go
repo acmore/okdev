@@ -197,3 +197,27 @@ spec:
 		t.Fatalf("rewritten config must validate: %v\n%s", err, raw)
 	}
 }
+
+// labelsForSession is the map stamped onto pods okdev creates;
+// discoveryLabelsForSession is only used to find existing ones. The profile
+// label has to be on the former or switch detection never fires.
+func TestLabelsForSessionCarryTheWorkloadProfile(t *testing.T) {
+	cfg := &config.DevEnvironment{}
+	cfg.Metadata.Name = "proj"
+	cfg.Spec.Workloads = []config.WorkloadProfile{
+		{Name: "dev", Type: "pod"},
+		{Name: "train", Type: "job", ManifestPath: "j.yaml"},
+	}
+	cfg.SetDefaults()
+	if err := cfg.SelectWorkload("train"); err != nil {
+		t.Fatal(err)
+	}
+
+	labels := labelsForSession(&Options{}, cfg, "sess1")
+	if labels["okdev.io/workload-profile"] != "train" {
+		t.Fatalf("workload-profile = %q, want train", labels["okdev.io/workload-profile"])
+	}
+	if labels["okdev.io/workload-type"] != "job" {
+		t.Fatalf("workload-type = %q, want job", labels["okdev.io/workload-type"])
+	}
+}

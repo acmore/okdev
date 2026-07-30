@@ -688,7 +688,7 @@ func labelsForSession(opts *Options, cfg *config.DevEnvironment, sessionName str
 	if root, err := session.RepoRoot(); err == nil && root != "" {
 		repo = filepath.Base(root)
 	}
-	return map[string]string{
+	labels := map[string]string{
 		"okdev.io/managed":       "true",
 		"okdev.io/name":          cfg.Metadata.Name,
 		"okdev.io/session":       sessionName,
@@ -696,6 +696,13 @@ func labelsForSession(opts *Options, cfg *config.DevEnvironment, sessionName str
 		"okdev.io/repo":          repo,
 		"okdev.io/workload-type": cfg.Spec.Workload.Type,
 	}
+	// This is the map stamped onto created pods, so the profile label has to
+	// be here — detectWorkloadSwitch reads it back off the live pods, and two
+	// profiles sharing a type are indistinguishable without it.
+	if profile := strings.TrimSpace(cfg.SelectedWorkload()); profile != "" {
+		labels["okdev.io/workload-profile"] = profile
+	}
+	return labels
 }
 
 func selectorForSessionRun(sessionName string) string {

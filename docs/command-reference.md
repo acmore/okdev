@@ -31,12 +31,16 @@ agents can react without launching a diagnostic chain on every blip:
 - `okdev template list [--all]`
 - `okdev template show <name>`
 - `okdev validate`
-- `okdev up [--wait-timeout 10m] [--dry-run] [--wait-hooks]`
+- `okdev up [--wait-timeout 10m] [--dry-run] [--wait-hooks] [--workload <name>] [--yes]`
 - `okdev down [session] [--delete-pvc] [--dry-run] [--wait] [--wait-timeout 2m] [--output json]`
 - `okdev restart [session] [--pod <name>] [--yes] [--wait-timeout 10m]`
 - `okdev status [session] [--all] [--all-users] [--details]`
 - `okdev list [--all-namespaces] [--all-users]`
 - `okdev use <session>`
+- `okdev workload list`
+- `okdev workload use <name>`
+- `okdev workload show [name]`
+- `okdev workload add --name <name> --type pod|job|pytorchjob|generic [--manifest-path <path>] [--inject-path <path>] [--force]`
 - `okdev target show`
 - `okdev target set [--pod <name> | --role <role>]`
 - `okdev agent list`
@@ -69,6 +73,28 @@ agents can react without launching a diagnostic chain on every blip:
 - `--details` is only valid when exactly one session is selected.
 - Every status refresh that sees live pods caches a per-session snapshot locally. When the session later **disappears without an `okdev down`** (TTL reclaim, quota eviction, admin delete), `okdev status` no longer stops at `No matching sessions found`: it prints the last known pod states (phase, reason, container terminations) plus any cluster events that outlived the objects (`Killing`, `Evicted`, `Preempted`, quota errors — events expire ~1h after emission). With `--output json` the same post-mortem is emitted as a structured object (`{"session", "found": false, "lastSeenAt", "workload", "pods", "events"}`) so monitoring loops can decide between "reclaimed, safe to recreate" and "evicted for resources, recreating won't help" without scraping text. `okdev up` and `okdev down` clear the snapshot — an intentional lifecycle transition is not a death cause.
 - The post-mortem above only answers while the session is still **gone**. Once it has been recreated, the same question is answered by a one-line report instead: whenever the cached snapshot describes a *different* run than the live one, `okdev up` prints `previous run <id> ended: <reason>` at the end of the recreate, and `okdev status` keeps printing it for as long as that run is the live one (`--details` under `Previous Run:`, `--output json` as `previousRunEnd`). The reason is classified — `idle-reclaim`, `evicted-or-preempted`, `oom-killed`, `container-failed`, `deleted`, or `unknown` — with the class-specific mitigation on the second line, because an idle/TTL reclaim and a preemption call for opposite responses (keep the workload busy vs. make the run resumable and chunk it). Which command to use: **`status` on a session that is gone** gives the full last-known-state post-mortem; **`up`/`status` on a session that came back** gives this one-liner. Operator-requested recreations (`okdev down && up`, `okdev restart`) report nothing, because they clear the snapshot; reused, re-applied and `--reconcile`d workloads keep their run-id and so are not run ends at all.
+
+### `okdev workload list` / `use` / `show` / `add`
+
+- Scope: **what the current session runs**, as opposed to *which session* commands target. The two are one keystroke apart and are not interchangeable:
+    - `okdev use <session>` — switch **which session** commands target. Sessions are independent: separate pods, sync channel, ports, SSH alias. Use it to move between parallel environments.
+    - `okdev workload use <name>` — switch **what the current session runs**. The session name, sync channel, ports and SSH alias all stay; only the underlying workload is replaced, and **the old one is deleted**.
+    - `okdev down` + edit the config + `okdev up` — the manual equivalent, and the right move when the change is to shared spec fields (`ports`, `sync`, `sidecar`, `podTemplate`) rather than the workload block.
+- Canonical sequence for adding a shape and switching to it:
+
+    ```console
+    $ okdev workload add --name train --type pytorchjob   # scaffold + declare
+    $ $EDITOR .okdev/pytorchjob.yaml                      # fill in image, resources
+    $ okdev workload use train                            # pin it
+    $ okdev up                                            # apply (confirms the delete)
+    ```
+
+- `workload list` shows `PINNED` and `LIVE` as **separate** columns because they diverge between `workload use` and `okdev up`. `PINNED` is what the next `up` will create; `LIVE` is what is running now. Seeing `PINNED` without `LIVE` means the switch has not been applied yet.
+- `workload use` never touches the cluster — it records the choice and reports what the next `okdev up` will destroy. The destructive step is `okdev up`, which prompts before deleting a running workload; `--yes` skips the prompt, and a non-interactive run without `--yes` fails rather than guessing.
+- `okdev up --workload <name>` selects and pins in one step. It writes the pin because the session then *is* running that workload — a stale pin would send the next `okdev ssh` to a workload whose pods no longer exist.
+- Switching is always **explicit**. Editing the config, a `git pull`, or a plain `okdev up` never replaces a running workload; only `workload use` and `up --workload` do. `spec.defaultWorkload` only decides where a **new** session starts, so changing it never moves an existing one.
+- `workload add` scaffolds the manifest for `job` and `pytorchjob` from the same templates `okdev init` uses, then appends the entry to `spec.workloads`, preserving the comments and key order in your config. `pod` and `generic` write no manifest — supply your own with `--manifest-path`.
+- Misuse guard: wanting **two shapes alive at once** is not what this does — that is two sessions (`okdev up --session train-8gpu`), not two profiles in one session.
 
 ### `okdev target show`
 
