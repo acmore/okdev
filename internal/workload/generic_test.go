@@ -482,3 +482,47 @@ func TestPodTemplateSpecUnstructuredRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected image in round-trip: %#v", first["image"])
 	}
 }
+
+func TestGenericRuntimeAppliesManifestFromBytesWithoutTemplating(t *testing.T) {
+	rt := &GenericRuntime{
+		WorkloadKind: TypePod,
+		// `{{ .Nope }}` must survive verbatim: bytes-sourced manifests are not
+		// Go templates, so a user pod spec containing braces still applies.
+		ManifestBytes: []byte(`
+apiVersion: v1
+kind: Pod
+metadata:
+  name: okdev-sess1
+spec:
+  containers:
+    - name: dev
+      image: alpine
+      args: ["{{ .Nope }}"]
+`),
+		WorkspaceMountPath: "/workspace",
+		SidecarImage:       "ghcr.io/acmore/okdev:edge",
+		TargetContainer:    "dev",
+		Labels: map[string]string{
+			"okdev.io/managed": "true",
+			"okdev.io/session": "sess1",
+		},
+		Inject: []config.WorkloadInjectSpec{{Path: ""}},
+	}
+	if got := rt.WorkloadName(); got != "okdev-sess1" {
+		t.Fatalf("WorkloadName = %q, want okdev-sess1", got)
+	}
+	client := &fakeGenericClient{}
+	if err := rt.Apply(context.Background(), client, "default"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	applied := string(client.manifest)
+	if !strings.Contains(applied, "kind: Pod") {
+		t.Fatalf("applied manifest lost its kind:\n%s", applied)
+	}
+	if !strings.Contains(applied, "{{ .Nope }}") {
+		t.Fatalf("bytes manifest was templated:\n%s", applied)
+	}
+	if !strings.Contains(applied, "okdev-sidecar") {
+		t.Fatalf("sidecar was not injected at the root path:\n%s", applied)
+	}
+}

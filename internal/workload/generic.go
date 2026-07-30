@@ -25,20 +25,25 @@ type GenericRuntime struct {
 	WorkloadNameOverride string
 	WorkloadKind         string
 	ManifestPath         string
-	WorkspaceMountPath   string
-	SidecarImage         string
-	SidecarResources     corev1.ResourceRequirements
-	Tmux                 bool
-	Shell                string
-	PreStop              string
-	TargetContainer      string
-	Volumes              []corev1.Volume
-	SyncRemoteRoots      []string
-	Labels               map[string]string
-	Annotations          map[string]string
-	Inject               []config.WorkloadInjectSpec
-	LastAppliedSpecJSON  string
-	LastAppliedSpecHash  string
+	// ManifestBytes, when set, is the manifest source instead of ManifestPath.
+	// Bytes-sourced manifests are synthesized by okdev rather than authored by
+	// the user, so they are applied verbatim — no Go-template rendering, which
+	// would reject user pod specs that legitimately contain "{{".
+	ManifestBytes       []byte
+	WorkspaceMountPath  string
+	SidecarImage        string
+	SidecarResources    corev1.ResourceRequirements
+	Tmux                bool
+	Shell               string
+	PreStop             string
+	TargetContainer     string
+	Volumes             []corev1.Volume
+	SyncRemoteRoots     []string
+	Labels              map[string]string
+	Annotations         map[string]string
+	Inject              []config.WorkloadInjectSpec
+	LastAppliedSpecJSON string
+	LastAppliedSpecHash string
 
 	loadMu     sync.Mutex
 	loadedBase *unstructured.Unstructured
@@ -213,35 +218,54 @@ func (r *GenericRuntime) interactiveContainer() string {
 func (r *GenericRuntime) load() (*unstructured.Unstructured, error) {
 	r.loadMu.Lock()
 	defer r.loadMu.Unlock()
-	stamp, err := manifestStamp(r.ManifestPath)
-	if err != nil {
-		return nil, fmt.Errorf("stat generic manifest %q: %w", r.ManifestPath, err)
+	var raw []byte
+	if len(r.ManifestBytes) > 0 {
+		if r.loadedBase != nil && r.loadedFrom == (manifestCacheStamp{}) {
+			return r.loadedBase.DeepCopy(), nil
+		}
+		raw = r.ManifestBytes
+	} else {
+		stamp, err := manifestStamp(r.ManifestPath)
+		if err != nil {
+			return nil, fmt.Errorf("stat generic manifest %q: %w", r.ManifestPath, err)
+		}
+		if r.loadedBase != nil && r.loadedFrom == stamp {
+			return r.loadedBase.DeepCopy(), nil
+		}
+		fileRaw, err := os.ReadFile(r.ManifestPath)
+		if err != nil {
+			return nil, fmt.Errorf("read generic manifest %q: %w", r.ManifestPath, err)
+		}
+		rendered, err := r.renderManifestTemplate(fileRaw)
+		if err != nil {
+			return nil, err
+		}
+		raw = rendered
+		defer func() { r.loadedFrom = stamp }()
 	}
-	if r.loadedBase != nil && r.loadedFrom == stamp {
-		return r.loadedBase.DeepCopy(), nil
-	}
-	raw, err := os.ReadFile(r.ManifestPath)
-	if err != nil {
-		return nil, fmt.Errorf("read generic manifest %q: %w", r.ManifestPath, err)
-	}
-	raw, err = r.renderManifestTemplate(raw)
-	if err != nil {
-		return nil, err
-	}
+
 	var obj map[string]any
 	if err := yaml.Unmarshal(raw, &obj); err != nil {
-		return nil, fmt.Errorf("parse generic manifest %q: %w", r.ManifestPath, err)
+		return nil, fmt.Errorf("parse workload manifest %q: %w", r.manifestSource(), err)
 	}
 	u := &unstructured.Unstructured{Object: obj}
 	if strings.TrimSpace(u.GetAPIVersion()) == "" || strings.TrimSpace(u.GetKind()) == "" {
-		return nil, fmt.Errorf("generic manifest %q is missing apiVersion/kind", r.ManifestPath)
+		return nil, fmt.Errorf("workload manifest %q is missing apiVersion/kind", r.manifestSource())
 	}
 	if strings.TrimSpace(u.GetName()) == "" {
-		return nil, fmt.Errorf("generic manifest %q is missing metadata.name", r.ManifestPath)
+		return nil, fmt.Errorf("workload manifest %q is missing metadata.name", r.manifestSource())
 	}
 	r.loadedBase = u.DeepCopy()
-	r.loadedFrom = stamp
 	return u.DeepCopy(), nil
+}
+
+// manifestSource names the manifest in error messages: a path when one was
+// given, otherwise the synthesized-manifest marker.
+func (r *GenericRuntime) manifestSource() string {
+	if len(r.ManifestBytes) > 0 {
+		return "<synthesized " + r.Kind() + ">"
+	}
+	return r.ManifestPath
 }
 
 type WorkloadManifestTemplateVars struct {
