@@ -9,6 +9,7 @@ import (
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/yaml"
 )
 
 type fakeApplyClient struct {
@@ -169,5 +170,55 @@ func TestPodViaGenericSelectTargetUsesConfiguredContainer(t *testing.T) {
 	}
 	if target.Container != "trainer" {
 		t.Fatalf("expected container trainer, got %q", target.Container)
+	}
+}
+
+// Routing pod through GenericRuntime adds three labels a PodRuntime pod never
+// carried. Each is consistent with what consumers already assume — status reads
+// attachable as != "false", mesh only selects "receiver", and target's == "true"
+// filter previously could not match a pod workload's pod at all — but they are a
+// real behavior change, so they are pinned here rather than discovered in a
+// cluster.
+func TestPodViaGenericCarriesDiscoveryLabels(t *testing.T) {
+	rt := &GenericRuntime{
+		WorkloadKind: TypePod,
+		ManifestBytes: []byte(`
+apiVersion: v1
+kind: Pod
+metadata:
+  name: okdev-sess1
+spec:
+  containers:
+    - name: dev
+      image: alpine
+`),
+		WorkspaceMountPath: "/workspace",
+		SidecarImage:       "ghcr.io/acmore/okdev:edge",
+		TargetContainer:    "dev",
+		Labels:             map[string]string{"okdev.io/managed": "true", "okdev.io/session": "sess1"},
+		Inject:             []config.WorkloadInjectSpec{{Path: ""}},
+	}
+	client := &fakeGenericClient{}
+	if err := rt.Apply(context.Background(), client, "default"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	var pod corev1.Pod
+	if err := yaml.Unmarshal(client.manifest, &pod); err != nil {
+		t.Fatalf("unmarshal applied pod: %v", err)
+	}
+	for key, want := range map[string]string{
+		"okdev.io/attachable":    "true",
+		"okdev.io/mesh-role":     "hub",
+		"okdev.io/workload-name": "okdev-sess1",
+		"okdev.io/session":       "sess1",
+	} {
+		if got := pod.Labels[key]; got != want {
+			t.Errorf("label %s = %q, want %q", key, got, want)
+		}
+	}
+	// A single pod has no replica role; the root inject path yields none.
+	if role, ok := pod.Labels["okdev.io/workload-role"]; ok {
+		t.Errorf("unexpected workload-role label %q", role)
 	}
 }
