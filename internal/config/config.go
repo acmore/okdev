@@ -46,6 +46,12 @@ type DevEnvironment struct {
 	Kind       string     `yaml:"kind"`
 	Metadata   Metadata   `yaml:"metadata"`
 	Spec       DevEnvSpec `yaml:"spec"`
+
+	// declaredWorkloadProfiles records whether spec.workloads came from the
+	// user's file rather than from desugaring. See DeclaresWorkloadProfiles.
+	declaredWorkloadProfiles bool
+	// selectedWorkload names the profile collapsed into Spec.Workload.
+	selectedWorkload string
 }
 
 type Metadata struct {
@@ -53,21 +59,27 @@ type Metadata struct {
 }
 
 type DevEnvSpec struct {
-	Namespace   string           `yaml:"namespace"`
-	KubeContext string           `yaml:"kubeContext"`
-	Template    *TemplateRef     `yaml:"template,omitempty"`
-	Session     SessionSpec      `yaml:"session"`
-	Agents      []AgentSpec      `yaml:"agents,omitempty"`
-	Workload    WorkloadSpec     `yaml:"workload"`
-	Volumes     []corev1.Volume  `yaml:"volumes"`
-	Workspace   *LegacyWorkspace `yaml:"workspace,omitempty"`
-	Sync        SyncSpec         `yaml:"sync"`
-	Ports       []PortMapping    `yaml:"ports"`
-	SSH         SSHSpec          `yaml:"ssh"`
-	Exec        ExecSpec         `yaml:"exec,omitempty"`
-	Lifecycle   LifecycleSpec    `yaml:"lifecycle"`
-	Sidecar     SidecarSpec      `yaml:"sidecar"`
-	PodTemplate PodTemplateRef   `yaml:"podTemplate"`
+	Namespace   string       `yaml:"namespace"`
+	KubeContext string       `yaml:"kubeContext"`
+	Template    *TemplateRef `yaml:"template,omitempty"`
+	Session     SessionSpec  `yaml:"session"`
+	Agents      []AgentSpec  `yaml:"agents,omitempty"`
+	Workload    WorkloadSpec `yaml:"workload"`
+	// Workloads are the named profiles a session can switch between. The
+	// singular Workload above stays as the *effective* one: SelectWorkload
+	// collapses a profile into it, so every reader of Spec.Workload keeps
+	// working unchanged.
+	Workloads       []WorkloadProfile `yaml:"workloads,omitempty"`
+	DefaultWorkload string            `yaml:"defaultWorkload,omitempty"`
+	Volumes         []corev1.Volume   `yaml:"volumes"`
+	Workspace       *LegacyWorkspace  `yaml:"workspace,omitempty"`
+	Sync            SyncSpec          `yaml:"sync"`
+	Ports           []PortMapping     `yaml:"ports"`
+	SSH             SSHSpec           `yaml:"ssh"`
+	Exec            ExecSpec          `yaml:"exec,omitempty"`
+	Lifecycle       LifecycleSpec     `yaml:"lifecycle"`
+	Sidecar         SidecarSpec       `yaml:"sidecar"`
+	PodTemplate     PodTemplateRef    `yaml:"podTemplate"`
 }
 
 // Exec fanout modes; see ExecSpec.FanoutMode.
@@ -332,6 +344,7 @@ func (d *DevEnvironment) SetDefaults() {
 	if d.Spec.Workload.Type == "job" && len(d.Spec.Workload.Inject) == 0 {
 		d.Spec.Workload.Inject = []WorkloadInjectSpec{{Path: "spec.template"}}
 	}
+	d.setWorkloadDefaults()
 	if d.Spec.Sync.Syncthing.Version == "" {
 		d.Spec.Sync.Syncthing.Version = DefaultSyncthingVersion
 	}
