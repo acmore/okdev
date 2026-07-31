@@ -165,11 +165,16 @@ func newInitCmd(opts *Options) *cobra.Command {
 			if err := os.WriteFile(abs, []byte(rendered), 0o644); err != nil {
 				return fmt.Errorf("write config %q: %w", abs, err)
 			}
+			// --stignore-preset wins, then repo detection, then whatever the
+			// template declared.
 			resolvedPreset := strings.TrimSpace(stignorePreset)
 			if resolvedPreset == "" {
 				resolvedPreset = detectSTIgnorePreset(config.RootDir(abs))
 			}
-			stignorePath, wroteSTIgnore, err := writeInitSTIgnore(abs, []byte(rendered), templateRef, resolvedPreset, projectDir)
+			if resolvedPreset == "" && meta != nil {
+				resolvedPreset = strings.TrimSpace(meta.StignorePreset)
+			}
+			stignorePath, wroteSTIgnore, err := writeInitSTIgnore(abs, []byte(rendered), resolvedPreset)
 			if err != nil {
 				return err
 			}
@@ -721,20 +726,20 @@ func isZshShellPath(shell string) bool {
 	return strings.HasSuffix(strings.TrimSpace(shell), "/zsh")
 }
 
-func writeInitSTIgnore(configPath string, rendered []byte, templateRef string, stignorePreset string, projectDirs ...string) (string, bool, error) {
+// writeInitSTIgnore writes the starter ignore file for the generated project.
+//
+// The preset is whatever the caller resolved — the template's own
+// `stignorePreset` frontmatter, or --stignore-preset overriding it. Nothing here
+// keys off the template's *name*, which is what used to force okdev to check
+// whether a name resolved to the real built-in before applying built-in-only
+// behavior.
+func writeInitSTIgnore(configPath string, rendered []byte, stignorePreset string) (string, bool, error) {
 	var cfg config.DevEnvironment
 	if err := yaml.Unmarshal(rendered, &cfg); err != nil {
 		return "", false, fmt.Errorf("parse generated config for .stignore: %w", err)
 	}
 	cfg.SetDefaults()
-	projectDir := config.RootDir(configPath)
-	if len(projectDirs) > 0 {
-		projectDir = projectDirs[0]
-	}
 	var patterns []string
-	if isActualBuiltinBasic(templateRef, projectDir) {
-		patterns = config.BuiltinTemplateLocalIgnores(templateRef)
-	}
 	if preset := strings.TrimSpace(stignorePreset); preset != "" {
 		patterns = config.STIgnorePreset(preset)
 		if patterns == nil {

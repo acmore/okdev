@@ -65,10 +65,6 @@ var stignorePresets = map[string][]string{
 	},
 }
 
-var builtinTemplateStignorePreset = map[string]string{
-	"basic": "default",
-}
-
 var templateHTTPClient templateHTTPDoer = &http.Client{Timeout: 30 * time.Second}
 
 // TemplateVars holds all variables available to templates.
@@ -436,17 +432,6 @@ func templateNamesFromEntries(entries []os.DirEntry) []string {
 	}
 	sort.Strings(names)
 	return names
-}
-
-func BuiltinTemplateLocalIgnores(ref string) []string {
-	if strings.TrimSpace(ref) == "" {
-		ref = "basic"
-	}
-	preset, ok := builtinTemplateStignorePreset[ref]
-	if !ok {
-		return nil
-	}
-	return STIgnorePreset(preset)
 }
 
 func STIgnorePreset(name string) []string {
