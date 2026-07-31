@@ -73,7 +73,7 @@ func (f *fakeTargetClient) ListPods(_ context.Context, _ string, _ bool, _ strin
 
 // podRuntimeForTest builds the runtime a pod workload gets today: a
 // GenericRuntime over a synthesized Pod manifest, injected at the object root.
-func podRuntimeForTest(t *testing.T, sessionName, targetContainer string, volumes []corev1.Volume) *GenericRuntime {
+func podRuntimeForTest(t *testing.T, sessionName, targetContainer string) *GenericRuntime {
 	return &GenericRuntime{
 		SessionName:  sessionName,
 		WorkloadKind: TypePod,
@@ -91,7 +91,6 @@ spec:
 		SidecarImage:       "ghcr.io/acmore/okdev:edge",
 		SidecarResources:   corev1.ResourceRequirements{},
 		TargetContainer:    targetContainer,
-		Volumes:            volumes,
 		Labels:             map[string]string{"okdev.io/managed": "true"},
 		Inject:             []config.WorkloadInjectSpec{{Path: ""}},
 	}
@@ -108,10 +107,7 @@ func attachablePod(name string) kube.PodSummary {
 }
 
 func TestPodViaGenericLifecycle(t *testing.T) {
-	rt := podRuntimeForTest(t, "test", "", []corev1.Volume{{
-		Name:         "workspace",
-		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-	}})
+	rt := podRuntimeForTest(t, "test", "")
 	if rt.Kind() != TypePod {
 		t.Fatalf("unexpected kind: %s", rt.Kind())
 	}
@@ -164,7 +160,7 @@ func TestPodViaGenericLifecycle(t *testing.T) {
 }
 
 func TestPodViaGenericSelectTargetUsesConfiguredContainer(t *testing.T) {
-	rt := podRuntimeForTest(t, "test", "trainer", nil)
+	rt := podRuntimeForTest(t, "test", "trainer")
 	client := &fakeGenericClient{pods: []kube.PodSummary{attachablePod("okdev-test")}}
 	target, err := rt.SelectTarget(context.Background(), client, "default")
 	if err != nil {

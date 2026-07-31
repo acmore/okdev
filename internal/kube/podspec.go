@@ -12,16 +12,16 @@ import (
 
 var semverTagPattern = regexp.MustCompile(`^v?\d+\.\d+\.\d+([.-][0-9A-Za-z.-]+)?$`)
 
-func PreparePodSpec(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, sidecarResources corev1.ResourceRequirements, tmux bool, preStop string) (corev1.PodSpec, error) {
-	return PreparePodSpecForTargetWithShell(podSpec, volumes, workspaceMountPath, sidecarImage, sidecarResources, tmux, preStop, "dev", "")
+func PreparePodSpec(podSpec corev1.PodSpec, workspaceMountPath, sidecarImage string, sidecarResources corev1.ResourceRequirements, tmux bool, preStop string) (corev1.PodSpec, error) {
+	return PreparePodSpecForTargetWithShell(podSpec, workspaceMountPath, sidecarImage, sidecarResources, tmux, preStop, "dev", "")
 }
 
-func PreparePodSpecForTarget(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, sidecarResources corev1.ResourceRequirements, tmux bool, preStop string, targetContainer string) (corev1.PodSpec, error) {
-	return PreparePodSpecForTargetWithShell(podSpec, volumes, workspaceMountPath, sidecarImage, sidecarResources, tmux, preStop, targetContainer, "")
+func PreparePodSpecForTarget(podSpec corev1.PodSpec, workspaceMountPath, sidecarImage string, sidecarResources corev1.ResourceRequirements, tmux bool, preStop string, targetContainer string) (corev1.PodSpec, error) {
+	return PreparePodSpecForTargetWithShell(podSpec, workspaceMountPath, sidecarImage, sidecarResources, tmux, preStop, targetContainer, "")
 }
 
-func PreparePodSpecForTargetWithShell(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, sidecarResources corev1.ResourceRequirements, tmux bool, preStop string, targetContainer string, shell string) (corev1.PodSpec, error) {
-	return PreparePodSpecForTargetWithShellAndSyncRoots(podSpec, volumes, workspaceMountPath, sidecarImage, sidecarResources, tmux, preStop, targetContainer, shell, nil)
+func PreparePodSpecForTargetWithShell(podSpec corev1.PodSpec, workspaceMountPath, sidecarImage string, sidecarResources corev1.ResourceRequirements, tmux bool, preStop string, targetContainer string, shell string) (corev1.PodSpec, error) {
+	return PreparePodSpecForTargetWithShellAndSyncRoots(podSpec, workspaceMountPath, sidecarImage, sidecarResources, tmux, preStop, targetContainer, shell, nil)
 }
 
 // PreparePodSpecForTargetWithShellAndSyncRoots additionally auto-provisions
@@ -30,7 +30,7 @@ func PreparePodSpecForTargetWithShell(podSpec corev1.PodSpec, volumes []corev1.V
 // (and mirrored into the sidecar), so users configure extra sync mappings
 // without writing any volume YAML. Roots covered by an existing mount (for
 // example a user PVC) are left alone.
-func PreparePodSpecForTargetWithShellAndSyncRoots(podSpec corev1.PodSpec, volumes []corev1.Volume, workspaceMountPath, sidecarImage string, sidecarResources corev1.ResourceRequirements, tmux bool, preStop string, targetContainer string, shell string, syncRemoteRoots []string) (corev1.PodSpec, error) {
+func PreparePodSpecForTargetWithShellAndSyncRoots(podSpec corev1.PodSpec, workspaceMountPath, sidecarImage string, sidecarResources corev1.ResourceRequirements, tmux bool, preStop string, targetContainer string, shell string, syncRemoteRoots []string) (corev1.PodSpec, error) {
 	if strings.TrimSpace(sidecarImage) == "" {
 		return corev1.PodSpec{}, fmt.Errorf("sidecar image cannot be empty")
 	}
@@ -56,9 +56,11 @@ func PreparePodSpecForTargetWithShellAndSyncRoots(podSpec corev1.PodSpec, volume
 	shareProcessNamespace := true
 	spec.ShareProcessNamespace = &shareProcessNamespace
 
-	for _, v := range volumes {
-		spec.Volumes = ensureVolume(spec.Volumes, v)
-	}
+	// The manifest is authoritative for its own volumes. okdev's only exception
+	// is the sync target: a manifest that declares no "workspace" gets an
+	// emptyDir so the sidecar has something to mount, and one that declares it —
+	// as a PVC, say — keeps exactly what it declared. The other two belong to
+	// the sidecar, not to the manifest.
 	spec.Volumes = ensureVolume(spec.Volumes, corev1.Volume{
 		Name:         "workspace",
 		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},

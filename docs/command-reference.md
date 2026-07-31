@@ -315,7 +315,8 @@ agents can react without launching a diagnostic chain on every blip:
 ### `okdev migrate [--template <name>] [--set key=value] [--dry-run] [--yes]`
 
 - Without `--template`, migrates older config schema fields to the current schema.
-- **Gives every pod workload a manifest.** `spec.podTemplate` is removed, so a config still carrying one is extracted into `.okdev/pod.yaml` and the workload is pointed at it; `spec.volumes` stays in the config. A config that never declared one ran on a container okdev injected by default — that gets written out as a real manifest too, with a warning, since it is a file you should review rather than a hidden default. An existing file at the target path is an error naming it, never an overwrite; move it aside and re-run.
+- **Moves `spec.volumes` into the workload manifests.** Volumes belong beside the containers that mount them; the config held the sources while the manifest held the mounts, and a name declared in both went to the manifest — so a workspace PVC in the config silently became whatever the manifest said. Every workload's manifest gets a copy, a name the manifest already declares is left alone and named in a warning, and a manifest okdev did not write is backed up before being edited.
+- **Gives every pod workload a manifest.** `spec.podTemplate` is removed, so a config still carrying one is extracted into `.okdev/pod.yaml` and the workload is pointed at it. A config that never declared one ran on a container okdev injected by default — that gets written out as a real manifest too, with a warning, since it is a file you should review rather than a hidden default. An existing file at the target path is an error naming it, never an overwrite; move it aside and re-run.
 - After that extraction the next `okdev up` reports workload drift and offers to recreate. The Pod it builds is unchanged — only the config's description of it moved, and the snapshot it is compared against now hashes the manifest instead of the inline block.
 - With `--template`, re-renders the selected template, overlays existing config values so local edits win, writes the merged config, and regenerates any template-declared companion files. Unlike the config, companion files are fully overwritten from the re-rendered template; local edits to those files will be lost (the `.bak` backup is your recovery path).
 - Existing `spec.template.vars` seed template variables during migration; `--set` overrides stored values.
@@ -360,7 +361,7 @@ agents can react without launching a diagnostic chain on every blip:
 ### `okdev restart [session] [--pod <name>] [--yes] [--wait-timeout 10m]`
 
 - One-command recovery when a container died and the restart policy will not bring it back: deletes the session workload, waits for termination, resets local per-session sync state, and runs the full `up` flow against the current config.
-- PVCs and other resources referenced by `spec.volumes` are untouched; auto-provisioned sync volumes are recreated.
+- PVCs and other resources the manifest references are untouched; auto-provisioned sync volumes are recreated.
 - Lifecycle hooks (`postCreate`/`postSync`) re-run automatically on the fresh pods — configure them for setup that must survive recreation (installed tools, editable installs).
 - Pod names change on recreation; use the short-name aliases (`master-0`, `worker-1`) with `--pod` so scripts survive restarts.
 - Prompts for confirmation; `--yes` for scripts. `--wait-timeout` caps both the deletion wait and pod readiness.

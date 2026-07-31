@@ -20,7 +20,7 @@ func TestSessionRuntimeReturnsGenericRuntimeForPyTorchJob(t *testing.T) {
 	cfg.Spec.Workload.ManifestPath = ".okdev/pytorchjob.yaml"
 	cfg.Spec.Workload.Inject = []config.WorkloadInjectSpec{{Path: "spec.pytorchReplicaSpecs.Master.template"}}
 
-	rt, err := sessionRuntime(cfg, "/tmp/.okdev.yaml", "sess1", "okdev-sess1-abcd1234", nil, nil, nil, false, "")
+	rt, err := sessionRuntime(cfg, "/tmp/.okdev.yaml", "sess1", "okdev-sess1-abcd1234", nil, nil, false, "")
 	if err != nil {
 		t.Fatalf("sessionRuntime: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestSessionRuntimeReturnsGenericRuntimeForJob(t *testing.T) {
 	cfg.Spec.Workload.ManifestPath = ".okdev/job.yaml"
 	cfg.Spec.Workload.Inject = []config.WorkloadInjectSpec{{Path: "spec.template"}}
 
-	rt, err := sessionRuntime(cfg, "/tmp/.okdev.yaml", "sess1", "okdev-sess1-abcd1234", nil, nil, nil, false, "")
+	rt, err := sessionRuntime(cfg, "/tmp/.okdev.yaml", "sess1", "okdev-sess1-abcd1234", nil, nil, false, "")
 	if err != nil {
 		t.Fatalf("sessionRuntime: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestSessionRuntimeEnablesSidecarsForInterPodSSH(t *testing.T) {
 		{Path: "spec.pytorchReplicaSpecs.Worker.template", Sidecar: &disabled},
 	}
 
-	rt, err := sessionRuntime(cfg, "/tmp/.okdev.yaml", "sess1", "okdev-sess1-abcd1234", nil, nil, nil, false, "")
+	rt, err := sessionRuntime(cfg, "/tmp/.okdev.yaml", "sess1", "okdev-sess1-abcd1234", nil, nil, false, "")
 	if err != nil {
 		t.Fatalf("sessionRuntime: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestSessionRuntimeDefaultsToPodKind(t *testing.T) {
 	cfg.Spec.Workload.ManifestPath = "pod.yaml"
 	cfg.Spec.Sidecar.Image = "ghcr.io/acmore/okdev:edge"
 
-	rt, err := sessionRuntime(cfg, cfgPath, "sess1", "okdev-sess1-abcd1234", nil, nil, nil, false, "")
+	rt, err := sessionRuntime(cfg, cfgPath, "sess1", "okdev-sess1-abcd1234", nil, nil, false, "")
 	if err != nil {
 		t.Fatalf("sessionRuntime: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestSessionRuntimeBuildsGenericRuntimeForPod(t *testing.T) {
 	cfg.Spec.Workload.ManifestPath = "pod.yaml"
 	cfg.SetDefaults()
 
-	rt, err := sessionRuntime(cfg, cfgPath, "sess1", "", nil, nil, nil, false, "")
+	rt, err := sessionRuntime(cfg, cfgPath, "sess1", "", nil, nil, false, "")
 	if err != nil {
 		t.Fatalf("sessionRuntime: %v", err)
 	}

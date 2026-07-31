@@ -25,6 +25,7 @@ Use this skill when the request involves:
 - choosing what `okdev init` scaffolds: `--template pod|job|pytorchjob|deployment|generic` or a template of their own (`--workload` and `--generic-preset` are removed and error with the replacement named)
 - sync behavior, session reuse, port forwards, or SSH access
 - any workload type — `pod`, `job`, `generic`, `pytorchjob` — all of which are manifest files under `.okdev/`
+- volumes, PVCs, or a workspace that does not persist across restarts
 - a config that still declares `spec.podTemplate`, or any error naming `okdev migrate`
 - switching what a session runs, declaring several workloads in one config (`spec.workloads`, `spec.defaultWorkload`), or adding a workload to a config that already exists
 - attachable pod behavior, multi-pod sessions, inter-pod SSH, or stable inter-pod addresses (`MASTER_ADDR`, host aliases)
@@ -39,12 +40,13 @@ Do not use this skill for:
 ## Working Style
 
 1. Identify the workload type first (`pod`, `job`, `generic`, `pytorchjob`). Every type is a manifest file — `spec.podTemplate` is removed, and a config still carrying one is refused until `okdev migrate` extracts it into `.okdev/pod.yaml`. Never suggest adding an inline pod spec to the config.
-2. Prefer `okdev` commands and documented config fields over low-level `kubectl` workarounds.
-3. For troubleshooting, ask for the smallest `okdev` output that exposes state, usually `okdev status --details`.
-4. Escalate to `kubectl` checks only when `okdev` output is not enough.
-5. When the question is about multi-pod behavior, read `references/multipod.md`.
-6. When the question is about symptoms or failures, read `references/troubleshooting.md`.
-7. When the question is about normal usage flow, read `references/workflows.md`.
+2. **Volumes go in the workload manifest, never in the config.** `spec.volumes` is removed and refused until `okdev migrate` moves it. okdev touches nothing the manifest declares; its only exception is injecting a `workspace` emptyDir when the manifest declares no volume by that name, plus the sidecar's own `syncthing-home` and `okdev-runtime`. So a persistent workspace is a PVC or an `ephemeral.volumeClaimTemplate` **named `workspace` in the manifest** — declaring it there is what makes okdev leave it alone. `--create-missing-pvc` is removed; okdev never creates PVCs.
+3. Prefer `okdev` commands and documented config fields over low-level `kubectl` workarounds.
+4. For troubleshooting, ask for the smallest `okdev` output that exposes state, usually `okdev status --details`.
+5. Escalate to `kubectl` checks only when `okdev` output is not enough.
+6. When the question is about multi-pod behavior, read `references/multipod.md`.
+7. When the question is about symptoms or failures, read `references/troubleshooting.md`.
+8. When the question is about normal usage flow, read `references/workflows.md`.
 
 ## Quick Heuristics
 

@@ -15,6 +15,9 @@ type plannedManifest struct {
 	Path   string // as recorded in the config
 	Target string // absolute path to write
 	Bytes  []byte
+	// Backup marks a file okdev did not author in this run, so the migration
+	// preserves what was there before overwriting it.
+	Backup bool
 }
 
 // podTemplateExtraction is the complete, not-yet-written result of giving every

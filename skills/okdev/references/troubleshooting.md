@@ -56,6 +56,48 @@ If the user says the workload was unexpectedly reused:
 
 Do not jump straight to deleting cluster objects manually unless `okdev` workflows are already failing.
 
+## Workspace does not survive a restart
+
+The workspace is an `emptyDir` unless the manifest says otherwise. okdev injects
+one **only when the workload manifest declares no volume named `workspace`** —
+it never overrides a declaration, and it never creates a PVC.
+
+So the fix is in the manifest, not the config:
+
+```yaml
+# .okdev/pod.yaml
+  volumes:
+    - name: workspace
+      persistentVolumeClaim:
+        claimName: team-workspace     # must already exist
+```
+
+or, for storage scoped to each session and cleaned up with the pod:
+
+```yaml
+    - name: workspace
+      ephemeral:
+        volumeClaimTemplate:
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            resources:
+              requests:
+                storage: 50Gi
+```
+
+`spec.volumes` in `.okdev/okdev.yaml` is removed — a config still carrying it is
+refused with a pointer to `okdev migrate`, which moves the entries into the
+manifests. Older okdev merged it into the pod and lost every name conflict to
+the manifest silently, which is exactly how a configured PVC became an
+`emptyDir`. If someone reports "my PVC is configured but the workspace is
+empty", check which file declares the volume.
+
+Note the PVC must exist: okdev does not create it (`--create-missing-pvc` is
+removed). A missing claim leaves the pod `Pending`; `okdev status --details`
+shows the scheduling event naming it.
+
+## Environment lost after a pod recreation
+
 If setup (installed tools, builds) is lost after a pod recreation: that is overlay-filesystem lifetime, and the fix is `spec.lifecycle` hooks, not manual re-runs. Before the recreation happens, `okdev env-diff` shows exactly what was installed by hand since the post-hook baseline and drafts the postCreate block to persist it — `postCreate` (target pod, before sync; e.g. installing kubectl) and `postSync` (all pods, after code arrives; e.g. `pip install -e .`). Both re-run automatically on recreated pods because their done-markers are pod annotations that die with the pod. An **in-place container restart** (OOMKill under restartPolicy OnFailure) is the sneaky variant: the pod and its annotations survive but the container filesystem is wiped — `okdev status --details` then reports the hook as `stale`, and the next `okdev up` re-runs it. Check `status --details` hook states (`pending|running|done|failed|stale`) before launching work on a pod; pod Ready alone does not mean the environment is installed.
 
 If a container was OOMKilled or crashed and the restart policy will not bring it back (`status --details` shows the terminated reason), the one-command recovery is `okdev restart [--yes]`: delete + recreate + full setup with the same config. When only one pod of a multi-pod session is broken, prefer `okdev restart --pod worker-3 [--yes]` — it deletes just that pod, the controller recreates it, and hooks replay only there; the other pods keep their caches and running detached jobs. PyTorchJob replicas need `restartPolicy: OnFailure` (the scaffold default) for `--pod` to work; with `Never` the operator would fail the whole job, and `restart --pod` refuses with the fix. Scripts referencing pods should use the short-name aliases (`master-0`, `worker-1`) so they survive the pod-name change.

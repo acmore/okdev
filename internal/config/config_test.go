@@ -552,29 +552,6 @@ func TestValidateRejectsLegacyWorkspace(t *testing.T) {
 	}
 }
 
-func TestEffectiveVolumesAddsImplicitWorkspace(t *testing.T) {
-	cfg := &DevEnvironment{
-		APIVersion: "okdev.io/v1alpha1",
-		Kind:       "DevEnvironment",
-		Metadata:   Metadata{Name: "x"},
-		Spec: DevEnvSpec{
-			Sync:     SyncSpec{Engine: "syncthing"},
-			Workload: WorkloadSpec{Type: "pod", ManifestPath: "pod.yaml"},
-		},
-	}
-	cfg.SetDefaults()
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("unexpected validation error: %v", err)
-	}
-	volumes := cfg.EffectiveVolumes()
-	if len(volumes) != 1 {
-		t.Fatalf("expected 1 implicit workspace volume, got %d", len(volumes))
-	}
-	if volumes[0].Name != DefaultWorkspaceName || volumes[0].EmptyDir == nil {
-		t.Fatalf("unexpected implicit workspace volume: %+v", volumes[0])
-	}
-}
-
 func TestEffectiveWorkspaceMountPathUsesInjectedManifest(t *testing.T) {
 	tmp := t.TempDir()
 	manifestDir := filepath.Join(tmp, ".okdev")
@@ -871,6 +848,27 @@ func TestValidateAcceptsRootInjectPathOnlyForPod(t *testing.T) {
 	generic.SetDefaults()
 	if err := generic.Validate(); err == nil {
 		t.Fatal("generic workloads must still reject an empty inject path")
+	}
+}
+
+func TestValidateRejectsSpecVolumes(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.Volumes = []corev1.Volume{{
+		Name:         "datasets",
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	}}
+	cfg.SetDefaults()
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("spec.volumes must be rejected")
+	}
+	var migErr *MigrationEligibleError
+	if !errors.As(err, &migErr) {
+		t.Fatalf("the error must be migration-eligible so commands print the hint, got %T", err)
+	}
+	if !strings.Contains(err.Error(), "okdev migrate") {
+		t.Fatalf("the error must name the fix, got %v", err)
 	}
 }
 
