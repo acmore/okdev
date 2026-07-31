@@ -603,7 +603,10 @@ func TestInitManifestOverwrittenWithForce(t *testing.T) {
 	}
 }
 
-func TestInitRejectsCustomTemplateWithoutRenderedWorkload(t *testing.T) {
+// A file-path template with no workload block gets the same pod default as a
+// named one — the compatibility rule is about what the template says, not how
+// it was addressed.
+func TestInitFilePathTemplateWithoutWorkloadGetsThePodDefault(t *testing.T) {
 	tmp := t.TempDir()
 	tmplPath := filepath.Join(tmp, "custom.yaml.tmpl")
 	if err := os.WriteFile(tmplPath, []byte(`apiVersion: okdev.io/v1alpha1
@@ -629,12 +632,18 @@ spec:
 	cmd.SetArgs([]string{"--yes", "--template", tmplPath})
 	cmd.SetIn(strings.NewReader(""))
 
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected custom workload validation error")
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("a template with no workload must get the pod default: %v", err)
 	}
-	if !strings.Contains(err.Error(), "rendered no spec.workload.manifestPath") {
-		t.Fatalf("unexpected error %v", err)
+	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cfgRaw), "manifestPath: pod.yaml") {
+		t.Fatalf("expected the defaulted pod workload, got:\n%s", cfgRaw)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev", "pod.yaml")); err != nil {
+		t.Fatalf("the defaulted workload needs its manifest: %v", err)
 	}
 }
 
@@ -1284,5 +1293,87 @@ spec:
 				t.Fatalf("unexpected .stignore content %q", got)
 			}
 		})
+	}
+}
+
+// A template of the user's own that predates "every workload is a manifest"
+// renders no workload block at all — pod was the default and okdev filled in
+// the rest. Those keep working: the pod shape is supplied and its starter
+// manifest written, the same resolution `okdev migrate` applies to a
+// workload-less config.
+func TestTemplateWithNoWorkloadGetsThePodDefault(t *testing.T) {
+	tmp := t.TempDir()
+	tmplDir := filepath.Join(tmp, ".okdev", "templates")
+	if err := os.MkdirAll(tmplDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmplDir, "pod.yaml.tmpl"), []byte(`apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: {{ .Name }}
+spec:
+  namespace: {{ .Namespace }}
+  sync:
+    engine: syncthing
+    paths: [".:/workspace"]
+  ssh:
+    user: root
+  sidecar:
+    image: ghcr.io/acmore/okdev:edge
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newInitCmd(&Options{})
+	cmd.SetArgs([]string{"--yes", "--name", "demo", "--template", "pod"})
+	cmd.SetIn(strings.NewReader(""))
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("an old-style pod template must keep working: %v", err)
+	}
+	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev", "okdev.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cfgRaw), "manifestPath: pod.yaml") {
+		t.Fatalf("expected the defaulted pod workload, got:\n%s", cfgRaw)
+	}
+	// The manifest it now points at has to exist, or the config is a promise
+	// okdev cannot keep.
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev", "pod.yaml")); err != nil {
+		t.Fatalf("the defaulted workload needs its manifest: %v", err)
+	}
+}
+
+// A template that *did* declare a workload but left out where its manifest is
+// still fails: it stated an intent okdev cannot complete, which is different
+// from stating nothing. The built-in "generic" without --manifest-path is
+// exactly this shape.
+func TestTemplateWithWorkloadButNoManifestPathIsRefused(t *testing.T) {
+	tmp := t.TempDir()
+	oldwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newInitCmd(&Options{})
+	cmd.SetArgs([]string{"--yes", "--name", "demo", "--template", "generic"})
+	cmd.SetIn(strings.NewReader(""))
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("a workload with no manifestPath must be refused")
+	}
+	for _, want := range []string{"manifestPath:", "files:"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error must show what to add (%q), got:\n%s", want, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev", "okdev.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("a refused init must write no config, err=%v", err)
 	}
 }
