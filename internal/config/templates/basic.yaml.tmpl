@@ -20,18 +20,18 @@ spec:
     - name: app
       local: 8080
       remote: 8080
-{{- if ne .WorkloadType "pod" }}
   workload:
     type: {{ .WorkloadType }}
     manifestPath: {{ .ManifestPath }}
+{{- if .InjectPaths }}
     inject:
 {{- range .InjectPaths }}
       - path: "{{ . }}"
 {{- end }}
+{{- end }}
 {{- if .AttachContainer }}
     attach:
       container: {{ .AttachContainer }}
-{{- end }}
 {{- end }}
   ssh:
     user: {{ .SSHUser }}
@@ -51,18 +51,3 @@ spec:
       limits:
         cpu: "{{ .SidecarCPU }}"
         memory: {{ .SidecarMemory }}
-{{- if eq .WorkloadType "pod" }}
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: {{ .DevImage }}
-          command: ["sleep", "infinity"]
-          resources:
-            requests:
-              cpu: "{{ .DevCPURequest }}"
-              memory: {{ .DevMemoryRequest }}
-            limits:
-              cpu: "{{ .DevCPULimit }}"
-              memory: {{ .DevMemoryLimit }}
-{{- end }}

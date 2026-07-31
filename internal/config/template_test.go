@@ -71,20 +71,38 @@ func TestRenderBuiltinBasic(t *testing.T) {
 	if strings.Contains(out, "\n    exclude:\n") {
 		t.Fatalf("expected starter template to keep local ignore rules out of .okdev.yaml, got:\n%s", out)
 	}
-	if !strings.Contains(out, "podTemplate:") {
-		t.Fatalf("expected default pod template, got:\n%s", out)
+	// The dev container lives in its own manifest now; the config only points
+	// at it. Everything the config still owns must survive.
+	if strings.Contains(out, "podTemplate:") {
+		t.Fatalf("the config template must not define a workload inline, got:\n%s", out)
+	}
+	if !strings.Contains(out, "type: pod") {
+		t.Fatalf("expected the workload type, got:\n%s", out)
+	}
+	if strings.Count(out, "cpu: \"250m\"") != 2 || strings.Count(out, "memory: 512Mi") != 2 {
+		t.Fatalf("expected equal default sidecar request/limit, got:\n%s", out)
+	}
+}
+
+// The dev container's shape moved to the pod manifest template, so that is
+// where --dev-image and the resource defaults have to land.
+func TestRenderBuiltinPodManifest(t *testing.T) {
+	vars := NewTemplateVars()
+	out, err := RenderEmbeddedTemplate("templates/manifests/pod.yaml.tmpl", vars)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if !strings.Contains(out, "image: ubuntu:22.04") {
 		t.Fatalf("expected default dev image, got:\n%s", out)
 	}
-	if !strings.Contains(out, "cpu: \"500m\"") || !strings.Contains(out, "memory: 512Mi") {
-		t.Fatalf("expected default dev resource requests, got:\n%s", out)
+	if !strings.Contains(out, "mountPath: /workspace") {
+		t.Fatalf("expected the workspace mount, got:\n%s", out)
 	}
-	if strings.Count(out, "cpu: \"500m\"") != 2 || strings.Count(out, "memory: 512Mi") != 4 {
-		t.Fatalf("expected default dev resource limits, got:\n%s", out)
+	if !strings.Contains(out, "{{ .WorkloadName }}") {
+		t.Fatalf("expected the runtime name placeholder to survive, got:\n%s", out)
 	}
-	if strings.Count(out, "cpu: \"250m\"") != 2 {
-		t.Fatalf("expected equal default sidecar CPU request/limit, got:\n%s", out)
+	if strings.Count(out, "cpu: \"500m\"") != 2 || strings.Count(out, "memory: 512Mi") != 2 {
+		t.Fatalf("expected equal default dev request/limit for Guaranteed QoS, got:\n%s", out)
 	}
 }
 

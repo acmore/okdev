@@ -655,8 +655,11 @@ spec:
 	if !strings.Contains(manifest, "name: dev") {
 		t.Fatalf("expected a starter container:\n%s", manifest)
 	}
-	if !strings.Contains(manifest, "TODO") {
-		t.Fatalf("the starter must flag the image as needing the user's input:\n%s", manifest)
+	// The starter now carries the default dev image rather than a TODO comment:
+	// a `# TODO` in the image field parses as `image: null`, which is the very
+	// unusable-manifest failure this test exists to prevent.
+	if !strings.Contains(manifest, "image: ubuntu:22.04") {
+		t.Fatalf("the starter must carry a usable image:\n%s", manifest)
 	}
 	if !strings.Contains(manifest, "{{ .WorkloadName }}") {
 		t.Fatalf("the WorkloadName placeholder must survive:\n%s", manifest)

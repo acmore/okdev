@@ -105,13 +105,6 @@ func planWorkloadAddition(cfgPath string, raw []byte, cfg *config.DevEnvironment
 	}
 	vars.ManifestPath = manifestPath
 	applyWorkloadDefaults(vars)
-	// applyWorkloadDefaults clears ManifestPath for pod, because init's
-	// fresh-config path renders spec.podTemplate instead of a file. An added pod
-	// always needs its own file: at most one workload may rely on the shared
-	// podTemplate, and the config it is being added to already has that one.
-	if manifestPath != "" {
-		vars.ManifestPath = manifestPath
-	}
 	if err := validateInitWorkloadVars(vars); err != nil {
 		return nil, err
 	}

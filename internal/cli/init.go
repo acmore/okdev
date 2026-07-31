@@ -392,6 +392,10 @@ func normalizeInitManifestPathForTarget(configPath string, vars *config.Template
 	}
 
 	switch strings.TrimSpace(vars.WorkloadType) {
+	case "pod":
+		if vars.ManifestPath == ".okdev/pod.yaml" {
+			vars.ManifestPath = "pod.yaml"
+		}
 	case "job":
 		if vars.ManifestPath == ".okdev/job.yaml" {
 			vars.ManifestPath = "job.yaml"
@@ -415,9 +419,15 @@ func applyWorkloadDefaults(vars *config.TemplateVars) {
 	switch strings.TrimSpace(vars.WorkloadType) {
 	case "", "pod":
 		vars.WorkloadType = "pod"
-		vars.ManifestPath = ""
+		if strings.TrimSpace(vars.ManifestPath) == "" {
+			vars.ManifestPath = ".okdev/pod.yaml"
+		}
+		// A Pod manifest is injected at its own root, which the runtime
+		// supplies; there is no path to name.
 		vars.InjectPaths = nil
-		vars.AttachContainer = ""
+		if strings.TrimSpace(vars.AttachContainer) == "" {
+			vars.AttachContainer = "dev"
+		}
 	case "job":
 		if strings.TrimSpace(vars.ManifestPath) == "" {
 			vars.ManifestPath = ".okdev/job.yaml"
@@ -505,6 +515,8 @@ func scaffoldInitWorkload(configPath, templateRef string, vars *config.TemplateV
 	}
 	var templatePath string
 	switch vars.WorkloadType {
+	case "pod":
+		templatePath = "templates/manifests/pod.yaml.tmpl"
 	case "job":
 		templatePath = "templates/manifests/job.yaml.tmpl"
 	case "pytorchjob":
@@ -621,7 +633,7 @@ func scaffoldsInitWorkload(templateRef string, vars *config.TemplateVars, projec
 		return false
 	}
 	switch strings.TrimSpace(vars.WorkloadType) {
-	case "job", "pytorchjob":
+	case "pod", "job", "pytorchjob":
 		return true
 	case "generic":
 		return strings.TrimSpace(vars.GenericPreset) == "deployment"
