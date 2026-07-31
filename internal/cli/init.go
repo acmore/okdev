@@ -80,7 +80,10 @@ func newInitCmd(opts *Options) *cobra.Command {
 			// different operation from creating one: it never prompts, never
 			// renders the config template, and never touches project-level
 			// settings. Decide before any of that machinery runs.
-			existing := existingConfigPath(opts)
+			existing, err := existingConfigPath(opts)
+			if err != nil {
+				return err
+			}
 			inv := initInvocation{
 				ConfigExists:    existing != "",
 				WorkloadName:    workloadName,
