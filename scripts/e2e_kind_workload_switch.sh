@@ -74,7 +74,7 @@ replace_all_in_file "$CFG_PATH" 'persistentSession: true' 'persistentSession: fa
 insert_after_line_once "$CFG_PATH" '  ssh:' '    persistentSession: false'
 
 echo "Declaring a second workload"
-"$OKDEV_BIN" --config "$CFG_PATH" init --yes --workload job --workload-name batch
+"$OKDEV_BIN" --config "$CFG_PATH" init --yes --template job --workload-name batch
 replace_all_in_file "$MANIFEST_PATH" 'image: # TODO: replace with your image' 'image: ubuntu:22.04'
 replace_all_in_file "$MANIFEST_PATH" 'command: ["sleep", "infinity"]' 'command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]'
 
