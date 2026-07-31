@@ -639,8 +639,11 @@ spec:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(cfgRaw), "manifestPath: pod.yaml") {
-		t.Fatalf("expected the defaulted pod workload, got:\n%s", cfgRaw)
+	// Assert the effective workload, not the literal shape: the resolution
+	// writes spec.workloads, the built-in templates write spec.workload, and
+	// both are correct.
+	if !strings.Contains(string(cfgRaw), "pod.yaml") || strings.Contains(string(cfgRaw), "podTemplate") {
+		t.Fatalf("expected a pod workload pointing at a manifest, got:\n%s", cfgRaw)
 	}
 	if _, err := os.Stat(filepath.Join(tmp, ".okdev", "pod.yaml")); err != nil {
 		t.Fatalf("the defaulted workload needs its manifest: %v", err)
@@ -1339,8 +1342,11 @@ spec:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(cfgRaw), "manifestPath: pod.yaml") {
-		t.Fatalf("expected the defaulted pod workload, got:\n%s", cfgRaw)
+	// Assert the effective workload, not the literal shape: the resolution
+	// writes spec.workloads, the built-in templates write spec.workload, and
+	// both are correct.
+	if !strings.Contains(string(cfgRaw), "pod.yaml") || strings.Contains(string(cfgRaw), "podTemplate") {
+		t.Fatalf("expected a pod workload pointing at a manifest, got:\n%s", cfgRaw)
 	}
 	// The manifest it now points at has to exist, or the config is a promise
 	// okdev cannot keep.
@@ -1375,5 +1381,72 @@ func TestTemplateWithWorkloadButNoManifestPathIsRefused(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(tmp, ".okdev", "okdev.yaml")); !os.IsNotExist(err) {
 		t.Fatalf("a refused init must write no config, err=%v", err)
+	}
+}
+
+// The shape that was reported: a template of the user's own that still defines
+// the pod inline under spec.podTemplate. Telling them to run `okdev migrate`
+// was useless — init had written no config to migrate — so init applies the
+// same extraction itself.
+func TestTemplateWithInlinePodTemplateIsExtracted(t *testing.T) {
+	tmp := t.TempDir()
+	tmplDir := filepath.Join(tmp, ".okdev", "templates")
+	if err := os.MkdirAll(tmplDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmplDir, "pod.yaml.tmpl"), []byte(`apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: {{ .Name }}
+spec:
+  namespace: {{ .Namespace }}
+  sync:
+    engine: syncthing
+    paths: [".:/workspace"]
+  ssh:
+    user: root
+  sidecar:
+    image: ghcr.io/acmore/okdev:edge
+  podTemplate:
+    metadata:
+      labels:
+        team: ml
+    spec:
+      containers:
+        - name: dev
+          image: nvidia/cuda:12.4.1-devel
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newInitCmd(&Options{})
+	cmd.SetArgs([]string{"--yes", "--name", "demo", "--template", "pod"})
+	cmd.SetIn(strings.NewReader(""))
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("an inline podTemplate must be extracted, not refused: %v", err)
+	}
+
+	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev", "okdev.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(cfgRaw), "podTemplate") {
+		t.Fatalf("podTemplate must not survive into the config:\n%s", cfgRaw)
+	}
+	// The template's own container and labels have to reach the manifest —
+	// silently scaffolding a default one would lose the user's pod spec.
+	manifest, err := os.ReadFile(filepath.Join(tmp, ".okdev", "pod.yaml"))
+	if err != nil {
+		t.Fatalf("the extracted manifest must exist: %v", err)
+	}
+	for _, want := range []string{"kind: Pod", "nvidia/cuda:12.4.1-devel", "team: ml"} {
+		if !strings.Contains(string(manifest), want) {
+			t.Fatalf("expected %q in the extracted manifest, got:\n%s", want, manifest)
+		}
 	}
 }
