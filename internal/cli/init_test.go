@@ -1130,3 +1130,45 @@ func TestInitAlwaysTargetsTheFolderConfig(t *testing.T) {
 		}
 	}
 }
+
+// A valid --generic-preset supplies the manifest path and inject paths, so a
+// missing manifest path is a *symptom* of the preset being unknown, not an
+// independent problem. Reporting the symptom sends the user to fix the wrong
+// thing.
+func TestInitReportsUnknownPresetBeforeItsDownstreamSymptoms(t *testing.T) {
+	vars := config.NewTemplateVars()
+	vars.WorkloadType = "generic"
+	vars.GenericPreset = "statefulset"
+	// Deliberately no ManifestPath/InjectPaths: with a valid preset,
+	// applyWorkloadDefaults would have filled both.
+	applyWorkloadDefaults(vars)
+
+	err := validateInitWorkloadVars(vars)
+	if err == nil {
+		t.Fatal("expected an error for an unknown preset")
+	}
+	if !strings.Contains(err.Error(), "unknown --generic-preset") {
+		t.Fatalf("error should name the unknown preset, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "statefulset") {
+		t.Fatalf("error should quote what the user typed, got %v", err)
+	}
+}
+
+// The manifest-path and inject-path requirements still fire on their own when
+// no preset is involved at all.
+func TestInitStillRequiresGenericManifestAndInjectWithoutAPreset(t *testing.T) {
+	vars := config.NewTemplateVars()
+	vars.WorkloadType = "generic"
+	applyWorkloadDefaults(vars)
+	err := validateInitWorkloadVars(vars)
+	if err == nil || !strings.Contains(err.Error(), "--manifest-path is required") {
+		t.Fatalf("expected the manifest-path requirement, got %v", err)
+	}
+
+	vars.ManifestPath = "mine.yaml"
+	err = validateInitWorkloadVars(vars)
+	if err == nil || !strings.Contains(err.Error(), "--inject-path is required") {
+		t.Fatalf("expected the inject-path requirement, got %v", err)
+	}
+}

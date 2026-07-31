@@ -463,6 +463,13 @@ func validateInitWorkloadVars(vars *config.TemplateVars) error {
 	default:
 		return fmt.Errorf("unsupported workload type %q", vars.WorkloadType)
 	}
+	// The preset is checked first because a valid one supplies the manifest
+	// path and inject paths via applyWorkloadDefaults. When the preset is a
+	// typo, those fields are simply never filled — so reporting them as
+	// missing would name a symptom and send the user to fix the wrong thing.
+	if preset := strings.TrimSpace(vars.GenericPreset); preset != "" && !knownGenericPresets[preset] {
+		return fmt.Errorf("unknown --generic-preset %q; known presets: deployment", preset)
+	}
 	if vars.WorkloadType == "generic" {
 		if strings.TrimSpace(vars.ManifestPath) == "" {
 			return fmt.Errorf("--manifest-path is required when --workload=generic")
@@ -470,9 +477,6 @@ func validateInitWorkloadVars(vars *config.TemplateVars) error {
 		if len(vars.InjectPaths) == 0 {
 			return fmt.Errorf("at least one --inject-path is required when --workload=generic")
 		}
-	}
-	if preset := strings.TrimSpace(vars.GenericPreset); preset != "" && !knownGenericPresets[preset] {
-		return fmt.Errorf("unknown --generic-preset %q; known presets: deployment", preset)
 	}
 	return nil
 }

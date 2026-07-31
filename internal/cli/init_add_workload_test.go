@@ -538,9 +538,10 @@ func TestInitAdditiveRejectsUnknownGenericPreset(t *testing.T) {
 	if _, err := runInit(t, dir, "--yes", "--name", "p", "--namespace", "default"); err != nil {
 		t.Fatalf("first init: %v", err)
 	}
+	// No --manifest-path: that is what a user typing a wrong preset actually
+	// runs, and the error must name the preset rather than its symptom.
 	_, err := runInit(t, dir, "--yes", "--workload", "generic", "--workload-name", "gen",
-		"--generic-preset", "statefulset", "--manifest-path", "mine.yaml",
-		"--inject-path", "spec.template")
+		"--generic-preset", "statefulset")
 	if err == nil || !strings.Contains(err.Error(), "statefulset") {
 		t.Fatalf("expected an unknown-preset rejection, got %v", err)
 	}
