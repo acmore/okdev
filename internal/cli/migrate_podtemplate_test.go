@@ -363,3 +363,48 @@ func TestPlanPodTemplateExtractionGivesEveryPodProfileAManifest(t *testing.T) {
 		t.Fatal("identical manifests for two profiles must be called out")
 	}
 }
+
+// `podTemplate:` with nothing under it is a present key whose value decodes to
+// a nil pointer. Deciding whether there was anything to extract from the key
+// alone dereferenced that nil and panicked — in `okdev migrate` and, once init
+// shared this resolution, in `okdev init` too.
+func TestPlanPodTemplateExtractionSurvivesAnEmptyPodTemplateKey(t *testing.T) {
+	for _, tc := range []struct{ name, block string }{
+		{name: "null", block: "  podTemplate:\n"},
+		{name: "empty mapping", block: "  podTemplate: {}\n"},
+		{name: "spec with no containers", block: "  podTemplate:\n    spec: {}\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := `apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: proj
+spec:
+  namespace: default
+  sync:
+    engine: syncthing
+    paths:
+      - ".:/workspace"
+` + tc.block
+			got, err := planPodTemplateExtraction("/repo/.okdev/okdev.yaml", []byte(raw))
+			if err != nil {
+				t.Fatalf("planPodTemplateExtraction: %v", err)
+			}
+			if !got.Applied {
+				t.Fatal("a pod workload with no manifest still needs one")
+			}
+			if got.Extracted {
+				t.Fatal("there was no container to extract")
+			}
+			if len(got.Manifests) != 1 {
+				t.Fatalf("expected the starter manifest, got %+v", got.Manifests)
+			}
+			if !strings.Contains(string(got.Manifests[0].Bytes), "image: ubuntu:22.04") {
+				t.Fatalf("expected the starter container:\n%s", got.Manifests[0].Bytes)
+			}
+			if _, _, err := config.LoadFromBytes(got.ConfigBytes, "/repo/.okdev/okdev.yaml"); err != nil {
+				t.Fatalf("migrated config must load: %v\n%s", err, got.ConfigBytes)
+			}
+		})
+	}
+}
