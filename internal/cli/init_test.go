@@ -1286,3 +1286,59 @@ spec:
 		})
 	}
 }
+
+// A template of the user's own that predates "every workload is a manifest"
+// renders no workload block. Pod used to be exempt from needing one, so this is
+// the shape people actually hit — and the message has to point at their file,
+// not tell them to pass a flag that would not help.
+func TestMissingWorkloadErrorNamesTheShadowingTemplate(t *testing.T) {
+	tmp := t.TempDir()
+	tmplDir := filepath.Join(tmp, ".okdev", "templates")
+	if err := os.MkdirAll(tmplDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmplDir, "pod.yaml.tmpl"), []byte(`apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: {{ .Name }}
+spec:
+  namespace: {{ .Namespace }}
+  sync:
+    engine: syncthing
+    paths: [".:/workspace"]
+  ssh:
+    user: root
+  sidecar:
+    image: ghcr.io/acmore/okdev:edge
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newInitCmd(&Options{})
+	cmd.SetArgs([]string{"--yes", "--name", "demo", "--template", "pod"})
+	cmd.SetIn(strings.NewReader(""))
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("a template rendering no workload must be refused")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"pod.yaml.tmpl",     // the file to edit
+		"shadows the built", // why their template was used
+		"manifestPath:",     // what to add to the body
+		"files:",            // and to the frontmatter
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("error must contain %q, got:\n%s", want, msg)
+		}
+	}
+	// Nothing is written when init refuses.
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev", "okdev.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("a refused init must write no config, err=%v", err)
+	}
+}

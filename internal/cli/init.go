@@ -435,9 +435,8 @@ func validateRenderedInitConfig(rendered, templateRef string, vars *config.Templ
 	// templates now, and the built-in "generic" shape genuinely can render an
 	// empty manifestPath when --manifest-path was not supplied.
 	if strings.TrimSpace(cfg.Spec.Workload.ManifestPath) == "" {
-		return fmt.Errorf("template %q rendered no spec.workload.manifestPath; "+
-			"every workload is a manifest file, so pass --manifest-path or use a template that ships one",
-			templateName(templateRef))
+		return fmt.Errorf("template %q rendered no spec.workload.manifestPath.\n\n%s",
+			templateName(templateRef), missingWorkloadHelp(templateName(templateRef), projectDir))
 	}
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("generated config is invalid: %w", err)
@@ -667,4 +666,54 @@ func rejectRemovedWorkloadFlags(cmd *cobra.Command) error {
 
 func availableTemplatesHint() string {
 	return "(available: " + strings.Join(config.BuiltinTemplateNames(), ", ") + "; run `okdev template list` to include your own)"
+}
+
+// missingWorkloadHelp explains how to fix a template that renders no workload.
+//
+// Pod used to be exempt: it was the default shape, okdev filled the manifest
+// path in, and a template could omit spec.workload entirely. Both of those went
+// away — every workload is a manifest now — so a template written before that
+// fails here, and the reader is most often looking at a template of their own
+// that shadows a built-in name. Naming that case is the whole point: telling
+// them to "pass --manifest-path" would send them to fix the wrong thing.
+func missingWorkloadHelp(name, projectDir string) string {
+	var b strings.Builder
+	if shadowed := shadowedBuiltinLocation(name, projectDir); shadowed != "" {
+		fmt.Fprintf(&b, "%s shadows the built-in %q template, and okdev used it as written.\n\n", shadowed, name)
+	}
+	b.WriteString(`Every workload is a manifest file, so a template has to render a workload
+block and ship the manifest it points at:
+
+  # in the template body
+  spec:
+    workload:
+      type: pod
+      manifestPath: pod.yaml
+
+  # in the template frontmatter
+  files:
+    - path: .okdev/pod.yaml
+      template: manifests/pod.yaml.tmpl
+
+Or drop the shadowing template to use the built-in, and run
+` + "`okdev template list --all`" + ` to see what is shadowing what.`)
+	return b.String()
+}
+
+// shadowedBuiltinLocation reports where a template shadowing a built-in name
+// lives, so the message can point at the file to edit.
+func shadowedBuiltinLocation(name, projectDir string) string {
+	if !containsString(config.BuiltinTemplateNames(), name) {
+		return ""
+	}
+	if names, _ := config.ProjectTemplateNames(projectDir); containsString(names, name) {
+		return filepath.Join(projectDir, ".okdev", "templates", name+".yaml.tmpl")
+	}
+	if names, _ := config.UserTemplateNames(); containsString(names, name) {
+		if dir, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(dir, ".okdev", "templates", name+".yaml.tmpl")
+		}
+		return "~/.okdev/templates/" + name + ".yaml.tmpl"
+	}
+	return ""
 }
