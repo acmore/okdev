@@ -10,15 +10,20 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
-// podTemplateExtraction is the complete, not-yet-written result of giving a
+// plannedManifest is one manifest file the migration will write.
+type plannedManifest struct {
+	Path   string // as recorded in the config
+	Target string // absolute path to write
+	Bytes  []byte
+}
+
+// podTemplateExtraction is the complete, not-yet-written result of giving every
 // pod workload a manifest of its own.
 type podTemplateExtraction struct {
-	ConfigBytes    []byte
-	ManifestPath   string // as recorded in the config
-	ManifestTarget string // absolute path to write
-	ManifestBytes  []byte // empty when no workload needed one
-	Warnings       []string
-	Applied        bool
+	ConfigBytes []byte
+	Manifests   []plannedManifest
+	Warnings    []string
+	Applied     bool
 	// Extracted distinguishes the two cases for reporting: an inline
 	// spec.podTemplate moved into a file, or a pod that never had one getting
 	// the starter manifest.
@@ -64,27 +69,40 @@ func planPodTemplateExtraction(cfgPath string, raw []byte) (*podTemplateExtracti
 	}
 
 	out := &podTemplateExtraction{Applied: true}
-	target := podTemplateTargetProfile(spec)
+	targets := podTemplateTargetProfiles(spec)
 	switch {
-	case target == nil:
+	case len(targets) == 0:
 		out.Warnings = append(out.Warnings,
 			"spec.podTemplate was not used by any workload and has been dropped")
 	default:
-		out.ManifestPath = extractedManifestPath(cfgPath)
-		out.ManifestTarget = workload.ResolveManifestPath(cfgPath, out.ManifestPath)
 		manifest, err := podManifestForMigration(cfg)
 		if err != nil {
 			return nil, err
 		}
-		out.ManifestBytes = manifest
 		out.Extracted = hasPodTemplate && len(cfg.Spec.PodTemplate.Spec.Containers) > 0
 		if !out.Extracted {
 			out.Warnings = append(out.Warnings,
 				"this pod workload declared no container of its own; wrote the starter manifest okdev used to apply by default")
 		}
-		setYAMLNode(target, "manifestPath", yamlScalar(out.ManifestPath))
-		if findYAMLNode(target, "type") == nil {
-			setYAMLNode(target, "type", yamlScalar(workload.TypePod))
+		// Every manifest-less pod profile was synthesized from the same shared
+		// podTemplate, so they all get the same starting content and a file
+		// named after the profile. Migrating only the first would report
+		// success and leave the config invalid.
+		for _, target := range targets {
+			path := extractedManifestPath(cfgPath, profileManifestBasename(target, len(targets)))
+			out.Manifests = append(out.Manifests, plannedManifest{
+				Path:   path,
+				Target: workload.ResolveManifestPath(cfgPath, path),
+				Bytes:  manifest,
+			})
+			setYAMLNode(target, "manifestPath", yamlScalar(path))
+			if findYAMLNode(target, "type") == nil {
+				setYAMLNode(target, "type", yamlScalar(workload.TypePod))
+			}
+		}
+		if len(targets) > 1 {
+			out.Warnings = append(out.Warnings,
+				"several pod workloads shared one spec.podTemplate; each now has its own manifest with identical content — edit them to differ")
 		}
 	}
 
@@ -180,18 +198,30 @@ func synthesizePodManifestTemplate(cfg *config.DevEnvironment) ([]byte, error) {
 // extractedManifestPath keeps the manifest inside .okdev/ for either config
 // shape: a folder config's own directory already is .okdev/, a flat config's
 // is the project root.
-func extractedManifestPath(cfgPath string) string {
+func extractedManifestPath(cfgPath, basename string) string {
 	if isFolderConfigPath(cfgPath) {
-		return "pod.yaml"
+		return basename
 	}
-	return filepath.Join(".okdev", "pod.yaml")
+	return filepath.Join(".okdev", basename)
 }
 
-// podTemplateTargetProfile finds the workload that was using spec.podTemplate:
-// the pod with no manifestPath. Validation guarantees at most one. It
-// materializes spec.workloads with a "default" entry when the config declares
-// none, and returns nil when every profile already has its own manifest.
-func podTemplateTargetProfile(spec *yamlv3.Node) *yamlv3.Node {
+// profileManifestBasename names the file after its workload when several need
+// one, and "pod.yaml" for the ordinary single-workload config.
+func profileManifestBasename(profile *yamlv3.Node, total int) string {
+	if total < 2 {
+		return "pod.yaml"
+	}
+	if name := findYAMLNode(profile, "name"); name != nil && strings.TrimSpace(name.Value) != "" {
+		return strings.TrimSpace(name.Value) + ".yaml"
+	}
+	return "pod.yaml"
+}
+
+// podTemplateTargetProfiles finds the workloads that were using
+// spec.podTemplate: the pods with no manifestPath. It materializes
+// spec.workloads with a "default" entry when the config declares none, and
+// returns nothing when every profile already has its own manifest.
+func podTemplateTargetProfiles(spec *yamlv3.Node) []*yamlv3.Node {
 	workloads := findYAMLNode(spec, "workloads")
 	if workloads == nil {
 		if legacy := findYAMLNode(spec, "workload"); legacy != nil {
@@ -219,18 +249,19 @@ func podTemplateTargetProfile(spec *yamlv3.Node) *yamlv3.Node {
 		seq := &yamlv3.Node{Kind: yamlv3.SequenceNode, Content: []*yamlv3.Node{entry}}
 		setYAMLNode(spec, "workloads", seq)
 		removeYAMLKey(spec, "workload")
-		return entry
+		return []*yamlv3.Node{entry}
 	}
+	var targets []*yamlv3.Node
 	for _, entry := range workloads.Content {
 		t := findYAMLNode(entry, "type")
 		if t != nil && !isPodTypeValue(t.Value) {
 			continue
 		}
 		if findYAMLNode(entry, "manifestPath") == nil {
-			return entry
+			targets = append(targets, entry)
 		}
 	}
-	return nil
+	return targets
 }
 
 func isPodTypeValue(v string) bool {

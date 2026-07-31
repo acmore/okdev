@@ -44,15 +44,15 @@ func TestPlanPodTemplateExtraction(t *testing.T) {
 	if !got.Applied {
 		t.Fatal("a config with podTemplate must be extracted")
 	}
-	if got.ManifestPath != "pod.yaml" {
-		t.Fatalf("ManifestPath = %q, want pod.yaml", got.ManifestPath)
+	if got.Manifests[0].Path != "pod.yaml" {
+		t.Fatalf("ManifestPath = %q, want pod.yaml", got.Manifests[0].Path)
 	}
 
 	// The manifest carries the container and its mounts, with the runtime
 	// placeholder for the name so each run gets a fresh object.
 	var pod corev1.Pod
-	if err := yaml.Unmarshal(got.ManifestBytes, &pod); err != nil {
-		t.Fatalf("unmarshal manifest: %v\n%s", err, got.ManifestBytes)
+	if err := yaml.Unmarshal(got.Manifests[0].Bytes, &pod); err != nil {
+		t.Fatalf("unmarshal manifest: %v\n%s", err, got.Manifests[0].Bytes)
 	}
 	if pod.Kind != "Pod" || pod.APIVersion != "v1" {
 		t.Fatalf("type meta = %q/%q", pod.APIVersion, pod.Kind)
@@ -66,8 +66,8 @@ func TestPlanPodTemplateExtraction(t *testing.T) {
 	if len(pod.Spec.Containers[0].VolumeMounts) != 1 {
 		t.Fatalf("volumeMounts travel with the container: %+v", pod.Spec.Containers[0].VolumeMounts)
 	}
-	if !strings.Contains(string(got.ManifestBytes), "{{ .WorkloadName }}") {
-		t.Fatalf("manifest must keep the WorkloadName placeholder:\n%s", got.ManifestBytes)
+	if !strings.Contains(string(got.Manifests[0].Bytes), "{{ .WorkloadName }}") {
+		t.Fatalf("manifest must keep the WorkloadName placeholder:\n%s", got.Manifests[0].Bytes)
 	}
 
 	// The config loses podTemplate, keeps volumes, keeps comments, and points
@@ -122,8 +122,8 @@ func TestPlanPodTemplateExtractionFlatConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planPodTemplateExtraction: %v", err)
 	}
-	if got.ManifestPath != ".okdev/pod.yaml" {
-		t.Fatalf("ManifestPath = %q, want .okdev/pod.yaml", got.ManifestPath)
+	if got.Manifests[0].Path != ".okdev/pod.yaml" {
+		t.Fatalf("ManifestPath = %q, want .okdev/pod.yaml", got.Manifests[0].Path)
 	}
 }
 
@@ -163,8 +163,8 @@ func TestPlanPodTemplateExtractionDropsAnUnusedPodTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planPodTemplateExtraction: %v", err)
 	}
-	if len(got.ManifestBytes) != 0 {
-		t.Fatalf("no workload needs a manifest:\n%s", got.ManifestBytes)
+	if len(got.Manifests) != 0 {
+		t.Fatalf("no workload needs a manifest:\n%+v", got.Manifests)
 	}
 	if len(got.Warnings) == 0 {
 		t.Fatal("dropping user config must warn")
@@ -220,7 +220,7 @@ spec:
 	if err != nil {
 		t.Fatalf("planPodTemplateExtraction: %v", err)
 	}
-	manifest := string(got.ManifestBytes)
+	manifest := string(got.Manifests[0].Bytes)
 	// Rendering the way the runtime does must give back exactly what the user
 	// wrote, with only the name substituted.
 	tmpl, err := template.New("m").Option("missingkey=error").Parse(manifest)
@@ -265,7 +265,7 @@ spec:
 	if got.Extracted {
 		t.Fatal("there was no podTemplate to extract")
 	}
-	manifest := string(got.ManifestBytes)
+	manifest := string(got.Manifests[0].Bytes)
 	if !strings.Contains(manifest, "image: ubuntu:22.04") {
 		t.Fatalf("must reproduce the container okdev used to inject:\n%s", manifest)
 	}
@@ -307,13 +307,13 @@ func TestMigratedConfigAppliesAnEquivalentPod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planPodTemplateExtraction: %v", err)
 	}
-	tmpl, err := template.New("m").Option("missingkey=error").Parse(string(got.ManifestBytes))
+	tmpl, err := template.New("m").Option("missingkey=error").Parse(string(got.Manifests[0].Bytes))
 	if err != nil {
-		t.Fatalf("migrated manifest is not a valid template: %v\n%s", err, got.ManifestBytes)
+		t.Fatalf("migrated manifest is not a valid template: %v\n%s", err, got.Manifests[0].Bytes)
 	}
 	var rendered bytes.Buffer
 	if err := tmpl.Execute(&rendered, struct{ WorkloadName string }{runtimeName}); err != nil {
-		t.Fatalf("render migrated manifest: %v\n%s", err, got.ManifestBytes)
+		t.Fatalf("render migrated manifest: %v\n%s", err, got.Manifests[0].Bytes)
 	}
 
 	var beforePod, afterPod corev1.Pod
@@ -325,5 +325,41 @@ func TestMigratedConfigAppliesAnEquivalentPod(t *testing.T) {
 	}
 	if !reflect.DeepEqual(beforePod, afterPod) {
 		t.Fatalf("migration changed the Pod:\n--- before ---\n%s\n--- after ---\n%s", before, rendered.String())
+	}
+}
+
+// Several pod profiles could share one spec.podTemplate. Migrating only the
+// first would report success and leave the config invalid, since manifestPath
+// is now required on every profile.
+func TestPlanPodTemplateExtractionGivesEveryPodProfileAManifest(t *testing.T) {
+	raw := inlinePodConfig + `  workloads:
+    - name: dev
+      type: pod
+    - name: big
+      type: pod
+    - name: train
+      type: job
+      manifestPath: train.yaml
+`
+	got, err := planPodTemplateExtraction("/repo/.okdev/okdev.yaml", []byte(raw))
+	if err != nil {
+		t.Fatalf("planPodTemplateExtraction: %v", err)
+	}
+	if len(got.Manifests) != 2 {
+		t.Fatalf("both manifest-less pod profiles need a file, got %+v", got.Manifests)
+	}
+	// Named after the profile, so the two do not collide.
+	if got.Manifests[0].Path != "dev.yaml" || got.Manifests[1].Path != "big.yaml" {
+		t.Fatalf("manifests must be named after their profile: %+v", got.Manifests)
+	}
+	cfg, _, err := config.LoadFromBytes(got.ConfigBytes, "/repo/.okdev/okdev.yaml")
+	if err != nil {
+		t.Fatalf("the migrated config must be valid, not just closer: %v\n%s", err, got.ConfigBytes)
+	}
+	if cfg.Spec.Workloads[2].ManifestPath != "train.yaml" {
+		t.Fatalf("the job profile must be untouched: %+v", cfg.Spec.Workloads[2])
+	}
+	if len(got.Warnings) == 0 {
+		t.Fatal("identical manifests for two profiles must be called out")
 	}
 }

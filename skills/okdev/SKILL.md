@@ -20,10 +20,11 @@ Primary docs:
 
 Use this skill when the request involves:
 
-- `okdev init`, `up` (including `up --workload <name>`), `restart`, `status`, `ssh`, `exec`, `cp`, `sync` (including `sync pause`/`resume`/`wait`), `ports`, `down`, `jobs`, `env-diff`, `use`, `workload` (`workload list`/`use`/`show`)
+- `okdev init`, `up` (including `up --workload <name>`), `restart`, `status`, `ssh`, `exec`, `cp`, `sync` (including `sync pause`/`resume`/`wait`), `ports`, `down`, `jobs`, `env-diff`, `use`, `migrate`, `workload` (`workload list`/`use`/`show`)
 - config discovery or `.okdev.yaml` / `.okdev/okdev.yaml`
 - sync behavior, session reuse, port forwards, or SSH access
-- manifest-backed workloads such as `job`, `generic`, or `pytorchjob`
+- any workload type — `pod`, `job`, `generic`, `pytorchjob` — all of which are manifest files under `.okdev/`
+- a config that still declares `spec.podTemplate`, or any error naming `okdev migrate`
 - switching what a session runs, declaring several workloads in one config (`spec.workloads`, `spec.defaultWorkload`), or adding a workload to a config that already exists
 - attachable pod behavior, multi-pod sessions, inter-pod SSH, or stable inter-pod addresses (`MASTER_ADDR`, host aliases)
 - exec fanout controls: pod grouping (`--group`), uploaded `--script`, background `--detach` jobs (`okdev jobs list`), cross-pod cascade termination (`--kill-group-on-exit`), targeted log reads (`okdev jobs logs <job-id> --pod/--role --tail N --since 90s --grep <regex> --dedup`), blocking on a job or a log pattern (`okdev jobs wait <id> [--grep <regex>]`), pattern-based process kill (`--pkill`), GPU cleanup with verification (`--reset-gpu`), or structured `--json` output
@@ -36,7 +37,7 @@ Do not use this skill for:
 
 ## Working Style
 
-1. Identify the workload shape first: simple pod vs manifest-backed workload.
+1. Identify the workload type first (`pod`, `job`, `generic`, `pytorchjob`). Every type is a manifest file — `spec.podTemplate` is removed, and a config still carrying one is refused until `okdev migrate` extracts it into `.okdev/pod.yaml`. Never suggest adding an inline pod spec to the config.
 2. Prefer `okdev` commands and documented config fields over low-level `kubectl` workarounds.
 3. For troubleshooting, ask for the smallest `okdev` output that exposes state, usually `okdev status --details`.
 4. Escalate to `kubectl` checks only when `okdev` output is not enough.

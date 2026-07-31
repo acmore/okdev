@@ -508,7 +508,9 @@ func validateRenderedInitConfig(rendered, templateRef string, vars *config.Templ
 	// otherwise trip on. Pod is no longer exempt: it has a manifest like every
 	// other type now.
 	if !isActualBuiltinBasic(templateRef, projectDir) && strings.TrimSpace(cfg.Spec.Workload.ManifestPath) == "" {
-		return fmt.Errorf("custom template must render spec.workload for workload type %q", vars.WorkloadType)
+		return fmt.Errorf("custom template must render spec.workload with a manifestPath for workload type %q; "+
+			"every workload is a manifest file, so the template also needs a `files:` entry that writes it",
+			vars.WorkloadType)
 	}
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("generated config is invalid: %w", err)

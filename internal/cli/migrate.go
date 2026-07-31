@@ -69,9 +69,9 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			if extraction.Applied {
-				if extraction.ManifestTarget != "" {
-					if _, err := os.Stat(extraction.ManifestTarget); err == nil {
-						return fmt.Errorf("a manifest already exists at %q; move it aside before migrating", extraction.ManifestTarget)
+				for _, m := range extraction.Manifests {
+					if _, err := os.Stat(m.Target); err == nil {
+						return fmt.Errorf("a manifest already exists at %q; move it aside before migrating", m.Target)
 					}
 				}
 				out = extraction.ConfigBytes
@@ -89,12 +89,12 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 
 			if extraction.Applied {
 				fmt.Fprintf(w, "✓ %s\n", extraction.Label())
-				switch {
-				case extraction.ManifestTarget == "":
-				case extraction.Extracted:
-					fmt.Fprintf(w, "  Extracted spec.podTemplate → %s\n", extraction.ManifestTarget)
-				default:
-					fmt.Fprintf(w, "  Wrote %s\n", extraction.ManifestTarget)
+				for _, m := range extraction.Manifests {
+					if extraction.Extracted {
+						fmt.Fprintf(w, "  Extracted spec.podTemplate → %s\n", m.Target)
+					} else {
+						fmt.Fprintf(w, "  Wrote %s\n", m.Target)
+					}
 				}
 				for _, warning := range extraction.Warnings {
 					fmt.Fprintf(w, "  ⚠ %s\n", warning)
@@ -122,12 +122,12 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 
 			// The manifest goes first: a failure there still leaves the config
 			// as the user had it.
-			if extraction.Applied && extraction.ManifestTarget != "" {
-				if err := os.MkdirAll(filepath.Dir(extraction.ManifestTarget), 0o755); err != nil {
+			for _, m := range extraction.Manifests {
+				if err := os.MkdirAll(filepath.Dir(m.Target), 0o755); err != nil {
 					return fmt.Errorf("create manifest directory: %w", err)
 				}
-				if err := os.WriteFile(extraction.ManifestTarget, extraction.ManifestBytes, 0o644); err != nil {
-					return fmt.Errorf("write manifest %q: %w", extraction.ManifestTarget, err)
+				if err := os.WriteFile(m.Target, m.Bytes, 0o644); err != nil {
+					return fmt.Errorf("write manifest %q: %w", m.Target, err)
 				}
 			}
 
@@ -144,13 +144,13 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 				fmt.Fprintf(w, " (backup: %s.bak)", cfgPath)
 			}
 			fmt.Fprintln(w)
-			if extraction.Applied && extraction.ManifestTarget != "" {
+			if len(extraction.Manifests) > 0 {
 				fmt.Fprintln(w, "\nNote: the next `okdev up` will report workload drift and offer to")
 				fmt.Fprintln(w, "recreate. The resulting Pod is unchanged — only how the config")
 				fmt.Fprintln(w, "describes it moved.")
 			}
-			if extraction.Applied && !extraction.Extracted && extraction.ManifestTarget != "" {
-				fmt.Fprintf(w, "\nReview %s before the next `okdev up`.\n", extraction.ManifestTarget)
+			if !extraction.Extracted && len(extraction.Manifests) > 0 {
+				fmt.Fprintf(w, "\nReview %s before the next `okdev up`.\n", extraction.Manifests[0].Target)
 			}
 			return nil
 		},
