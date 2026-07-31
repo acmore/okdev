@@ -24,6 +24,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 	var nsOverride string
 	var contextOverride string
 	var workloadType string
+	var workloadName string
 	var manifestPath string
 	var injectPaths []string
 	var genericPreset string
@@ -188,6 +189,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&nsOverride, "namespace", "", "Namespace")
 	cmd.Flags().StringVar(&contextOverride, "context", "", "Kubeconfig context (defaults to active context)")
 	cmd.Flags().StringVar(&workloadType, "workload", "pod", "Workload type: pod, job, pytorchjob, generic")
+	cmd.Flags().StringVar(&workloadName, "workload-name", "", "Name for the workload being added to an existing config")
 	cmd.Flags().StringVar(&manifestPath, "manifest-path", "", "Path to workload manifest")
 	cmd.Flags().StringArrayVar(&injectPaths, "inject-path", nil, "Workload inject path (repeatable)")
 	cmd.Flags().StringVar(&genericPreset, "generic-preset", "", "Optional generic scaffold preset, for example deployment")
