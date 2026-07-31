@@ -2,7 +2,12 @@ package cli
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
+
+	"github.com/acmore/okdev/internal/config"
+	"github.com/acmore/okdev/internal/workload"
+	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // initInvocation is what the user asked for, reduced to the facts that decide
@@ -54,4 +59,198 @@ func validateInitInvocation(inv initInvocation) error {
 			strings.Join(inv.ProjectFlagsSet, ", --"))
 	}
 	return nil
+}
+
+// additiveManifestPath is where a newly declared workload's manifest goes,
+// expressed relative to the config the way ResolveWorkloadManifestPath expects.
+// Manifests always live in .okdev/: for a folder config that is the config's
+// own directory, for a pre-existing flat config it is a sibling folder.
+func additiveManifestPath(cfgPath, workloadName string) string {
+	if isFolderConfigPath(cfgPath) {
+		return workloadName + ".yaml"
+	}
+	return filepath.Join(".okdev", workloadName+".yaml")
+}
+
+// workloadAddition is a complete, not-yet-written change set.
+type workloadAddition struct {
+	ConfigBytes    []byte
+	ManifestTarget string
+	ManifestBytes  []byte
+}
+
+// planWorkloadAddition computes everything the additive path will write and
+// proves the result is valid, without touching the filesystem.
+func planWorkloadAddition(cfgPath string, raw []byte, cfg *config.DevEnvironment, vars *config.TemplateVars, workloadName string) (*workloadAddition, error) {
+	name := strings.TrimSpace(workloadName)
+	if name == "" {
+		return nil, fmt.Errorf("--workload-name is required")
+	}
+	for _, existing := range cfg.WorkloadProfileNames() {
+		if existing == name {
+			return nil, fmt.Errorf("workload %q is already declared; existing workloads: %s",
+				name, strings.Join(cfg.WorkloadProfileNames(), ", "))
+		}
+	}
+
+	// The location is this path's business; the inject paths and attach
+	// container remain init's. Setting the path first keeps applyWorkloadDefaults
+	// from substituting its own `.okdev/<type>.yaml`, which two workloads of the
+	// same type would collide on.
+	manifestPath := strings.TrimSpace(vars.ManifestPath)
+	if manifestPath == "" && strings.TrimSpace(vars.WorkloadType) != workload.TypeGeneric {
+		manifestPath = additiveManifestPath(cfgPath, name)
+	}
+	vars.ManifestPath = manifestPath
+	applyWorkloadDefaults(vars)
+	// applyWorkloadDefaults clears ManifestPath for pod, because init's
+	// fresh-config path renders spec.podTemplate instead of a file. An added pod
+	// always needs its own file: at most one workload may rely on the shared
+	// podTemplate, and the config it is being added to already has that one.
+	if manifestPath != "" {
+		vars.ManifestPath = manifestPath
+	}
+	if err := validateInitWorkloadVars(vars); err != nil {
+		return nil, err
+	}
+
+	manifestBytes, err := planWorkloadManifest(cfg, vars)
+	if err != nil {
+		return nil, err
+	}
+
+	profile := config.WorkloadProfile{
+		Name:         name,
+		Type:         vars.WorkloadType,
+		ManifestPath: vars.ManifestPath,
+	}
+	for _, p := range vars.InjectPaths {
+		if p = strings.TrimSpace(p); p != "" {
+			profile.Inject = append(profile.Inject, config.WorkloadInjectSpec{Path: p})
+		}
+	}
+	if c := strings.TrimSpace(vars.AttachContainer); c != "" {
+		profile.Attach = config.WorkloadAttachSpec{Container: c}
+	}
+
+	configBytes, err := appendWorkloadProfileToConfigBytes(raw, profile)
+	if err != nil {
+		return nil, err
+	}
+
+	// The guarantee: nothing is written unless the edited config decodes,
+	// defaults and validates. LoadFromBytes does all three, so a successful
+	// call is the proof.
+	if _, _, err := config.LoadFromBytes(configBytes, cfgPath); err != nil {
+		return nil, fmt.Errorf("adding workload %q would make the config invalid: %w", name, err)
+	}
+
+	add := &workloadAddition{ConfigBytes: configBytes, ManifestBytes: manifestBytes}
+	if len(manifestBytes) > 0 {
+		add.ManifestTarget = workload.ResolveManifestPath(cfgPath, vars.ManifestPath)
+	}
+	return add, nil
+}
+
+// planWorkloadManifest renders the manifest for a newly declared workload, or
+// returns nil when the user is supplying their own file.
+func planWorkloadManifest(cfg *config.DevEnvironment, vars *config.TemplateVars) ([]byte, error) {
+	var asset string
+	switch strings.TrimSpace(vars.WorkloadType) {
+	case workload.TypePod:
+		// A new pod workload starts as a copy of what the project already runs,
+		// so the common case — the same container with different resources —
+		// is an edit rather than a rewrite. The name stays a placeholder so
+		// each run still gets a fresh object name.
+		return config.SynthesizePodManifest(cfg, "{{ .WorkloadName }}")
+	case workload.TypeJob:
+		asset = "templates/manifests/job.yaml.tmpl"
+	case workload.TypePyTorchJob:
+		asset = "templates/manifests/pytorchjob.yaml.tmpl"
+	case workload.TypeGeneric:
+		if strings.TrimSpace(vars.GenericPreset) != "deployment" {
+			return nil, nil // the user supplies the manifest
+		}
+		asset = "templates/manifests/deployment.yaml.tmpl"
+	default:
+		return nil, fmt.Errorf("unsupported workload type %q", vars.WorkloadType)
+	}
+	rendered, err := config.RenderEmbeddedTemplate(asset, vars)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(rendered), nil
+}
+
+// appendWorkloadProfileToConfigBytes adds a profile to spec.workloads in place.
+//
+// It edits the YAML node tree rather than round-tripping through the config
+// struct: a full unmarshal/marshal would silently strip the user's comments and
+// reorder their keys.
+func appendWorkloadProfileToConfigBytes(raw []byte, p config.WorkloadProfile) ([]byte, error) {
+	var doc yamlv3.Node
+	if err := yamlv3.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	root := yamlDocumentRoot(&doc)
+	if root == nil || root.Kind != yamlv3.MappingNode {
+		return nil, fmt.Errorf("config is not a mapping")
+	}
+	spec := ensureYAMLMapping(root, "spec")
+
+	workloads := findYAMLNode(spec, "workloads")
+	if workloads == nil {
+		workloads = &yamlv3.Node{Kind: yamlv3.SequenceNode}
+		// Materialize the workload this config already runs as the first
+		// profile, or declaring a second one silently drops the first.
+		//
+		// It is materialized even when spec.workload is absent: `okdev init`
+		// omits that block entirely for pod configs, since pod is the default,
+		// and the pod workload is no less real for being implicit.
+		existing := &yamlv3.Node{Kind: yamlv3.MappingNode}
+		setYAMLNode(existing, "name", yamlScalar(config.DefaultWorkloadProfileName))
+		if legacy := findYAMLNode(spec, "workload"); legacy != nil {
+			for _, key := range []string{"type", "manifestPath", "inject", "attach"} {
+				if v := findYAMLNode(legacy, key); v != nil {
+					setYAMLNode(existing, key, v)
+				}
+			}
+		}
+		if findYAMLNode(existing, "type") == nil {
+			setYAMLNode(existing, "type", yamlScalar(workload.TypePod))
+		}
+		workloads.Content = append(workloads.Content, existing)
+		setYAMLNode(spec, "workloads", workloads)
+	}
+	if workloads.Kind != yamlv3.SequenceNode {
+		return nil, fmt.Errorf("spec.workloads is not a list")
+	}
+	for _, entry := range workloads.Content {
+		if name := findYAMLNode(entry, "name"); name != nil && strings.TrimSpace(name.Value) == strings.TrimSpace(p.Name) {
+			return nil, fmt.Errorf("workload %q already exists in the config", p.Name)
+		}
+	}
+
+	entry := &yamlv3.Node{Kind: yamlv3.MappingNode}
+	setYAMLNode(entry, "name", yamlScalar(p.Name))
+	setYAMLNode(entry, "type", yamlScalar(p.Type))
+	if strings.TrimSpace(p.ManifestPath) != "" {
+		setYAMLNode(entry, "manifestPath", yamlScalar(p.ManifestPath))
+	}
+	if len(p.Inject) > 0 {
+		injects := &yamlv3.Node{Kind: yamlv3.SequenceNode}
+		for _, in := range p.Inject {
+			node := &yamlv3.Node{Kind: yamlv3.MappingNode}
+			setYAMLNode(node, "path", yamlScalar(in.Path))
+			injects.Content = append(injects.Content, node)
+		}
+		setYAMLNode(entry, "inject", injects)
+	}
+	workloads.Content = append(workloads.Content, entry)
+
+	out, err := yamlv3.Marshal(&doc)
+	if err != nil {
+		return nil, fmt.Errorf("render config: %w", err)
+	}
+	return out, nil
 }
