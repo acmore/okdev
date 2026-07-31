@@ -222,11 +222,61 @@ func podIsAttachable(pod kube.PodSummary) bool {
 	return !strings.EqualFold(strings.TrimSpace(pod.Labels["okdev.io/attachable"]), "false")
 }
 
+// interactiveContainer is the container okdev attaches to.
+//
+// It resolves against the manifest with the same rule kube's injector uses:
+// the configured name when a pod template has it, otherwise that template's
+// first container. Injection already fell back that way; this did not, so a
+// manifest whose only container is not named "dev" produced a correctly built
+// pod that `okdev ssh` and `okdev exec` could not enter. One rule, both sides.
 func (r *GenericRuntime) interactiveContainer() string {
-	if strings.TrimSpace(r.TargetContainer) != "" {
-		return strings.TrimSpace(r.TargetContainer)
+	// A configured attach.container is honored as written. Overriding it would
+	// silently ignore what the user asked for; if it names a container the
+	// manifest lacks, that is a config error to surface, not to paper over.
+	if configured := strings.TrimSpace(r.TargetContainer); configured != "" {
+		return configured
+	}
+	// Nothing configured: fall back the same way the injector does, so exec
+	// reaches the container that actually received the workspace mount.
+	names := r.injectedContainerNames()
+	for _, name := range names {
+		if name == DefaultTargetContainer {
+			return DefaultTargetContainer
+		}
+	}
+	if len(names) > 0 {
+		return names[0]
 	}
 	return DefaultTargetContainer
+}
+
+// injectedContainerNames lists the containers of the first injected pod
+// template. An unreadable manifest yields nothing, leaving the caller with the
+// configured name — the manifest's own errors are reported elsewhere.
+func (r *GenericRuntime) injectedContainerNames() []string {
+	obj, err := r.load()
+	if err != nil {
+		return nil
+	}
+	for _, inject := range r.Inject {
+		templateMap, err := resolveMapPath(obj.Object, inject.Path)
+		if err != nil {
+			continue
+		}
+		template, err := decodePodTemplateSpec(templateMap)
+		if err != nil {
+			continue
+		}
+		if len(template.Spec.Containers) == 0 {
+			continue
+		}
+		names := make([]string, 0, len(template.Spec.Containers))
+		for _, c := range template.Spec.Containers {
+			names = append(names, c.Name)
+		}
+		return names
+	}
+	return nil
 }
 
 func (r *GenericRuntime) load() (*unstructured.Unstructured, error) {
