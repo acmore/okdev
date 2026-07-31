@@ -106,3 +106,13 @@ func TestLiveWorkloadProfilePrefersTheLabel(t *testing.T) {
 		t.Fatalf("live = %q, want train", got)
 	}
 }
+
+func TestWorkloadGroupHasNoAddSubcommand(t *testing.T) {
+	// Declaring a workload belongs to `okdev init`; this group only inspects
+	// and switches. Two commands for one job is what shipped broken in v0.9.0.
+	for _, sub := range newWorkloadCmd(&Options{}).Commands() {
+		if sub.Name() == "add" {
+			t.Fatal("okdev workload add must be gone; use okdev init --workload-name")
+		}
+	}
+}

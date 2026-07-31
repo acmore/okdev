@@ -24,12 +24,15 @@ func newWorkloadCmd(opts *Options) *cobra.Command {
 
 Switching replaces the running workload: the session name, sync channel, ports
 and SSH alias all stay, and the old workload is deleted. To run two shapes at
-the same time, use two sessions instead (okdev up --session other).`,
+the same time, use two sessions instead (okdev up --session other).
+
+This group inspects and switches; to declare a new workload, use
+okdev init --workload <type> --workload-name <name>.`,
 		Example: `  # See what this config declares, and what is pinned and live
   okdev workload list
 
   # Declare a new workload and scaffold its manifest
-  okdev workload add --name train --type pytorchjob
+  okdev init --workload pytorchjob --workload-name train
 
   # Switch this session to it (applies on the next okdev up)
   okdev workload use train
