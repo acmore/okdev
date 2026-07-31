@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/acmore/okdev/internal/config"
+	"github.com/acmore/okdev/internal/workload"
 )
 
 func TestValidateInitInvocation(t *testing.T) {
@@ -428,4 +429,167 @@ func TestInitRejectsProjectFlagsOnAnExistingConfig(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "namespace") {
 		t.Fatalf("expected a rejection naming --namespace, got %v", err)
 	}
+}
+
+// Four types on a fresh config and four added to an existing one. Every cell
+// asserts the config validates AND the declared manifest exists — v0.9.0
+// shipped cells that satisfied neither.
+func TestWorkloadTypeMatrix(t *testing.T) {
+	fresh := []struct {
+		workloadType string
+		extraArgs    []string
+	}{
+		{workloadType: "pod"},
+		{workloadType: "job"},
+		{workloadType: "pytorchjob"},
+		{workloadType: "generic", extraArgs: []string{
+			"--generic-preset", "deployment",
+			"--manifest-path", "deployment.yaml",
+			"--inject-path", "spec.template",
+		}},
+	}
+	for _, tc := range fresh {
+		t.Run("fresh/"+tc.workloadType, func(t *testing.T) {
+			dir := t.TempDir()
+			args := append([]string{"--yes", "--name", "p", "--namespace", "default",
+				"--workload", tc.workloadType}, tc.extraArgs...)
+			if _, err := runInit(t, dir, args...); err != nil {
+				t.Fatalf("init: %v", err)
+			}
+			assertConfigUsable(t, filepath.Join(dir, ".okdev", "okdev.yaml"))
+		})
+	}
+
+	added := []struct {
+		workloadType string
+		extraArgs    []string
+	}{
+		{workloadType: "pod"},
+		{workloadType: "job"},
+		{workloadType: "pytorchjob"},
+		{workloadType: "generic", extraArgs: []string{"--generic-preset", "deployment"}},
+	}
+	for _, tc := range added {
+		t.Run("added/"+tc.workloadType, func(t *testing.T) {
+			dir := t.TempDir()
+			if _, err := runInit(t, dir, "--yes", "--name", "p", "--namespace", "default"); err != nil {
+				t.Fatalf("first init: %v", err)
+			}
+			args := append([]string{"--yes", "--workload", tc.workloadType,
+				"--workload-name", "extra"}, tc.extraArgs...)
+			if _, err := runInit(t, dir, args...); err != nil {
+				t.Fatalf("additive init: %v", err)
+			}
+			assertConfigUsable(t, filepath.Join(dir, ".okdev", "okdev.yaml"))
+		})
+	}
+}
+
+// assertConfigUsable is the assertion v0.9.0 lacked: not just "the command
+// succeeded" but "the config validates and every declared manifest exists".
+func assertConfigUsable(t *testing.T, cfgPath string) {
+	t.Helper()
+	cfg, resolved, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load %s: %v", cfgPath, err)
+	}
+	for _, p := range cfg.Spec.Workloads {
+		if strings.TrimSpace(p.ManifestPath) == "" {
+			continue
+		}
+		target := workload.ResolveManifestPath(resolved, p.ManifestPath)
+		if _, err := os.Stat(target); err != nil {
+			t.Fatalf("workload %q declares manifestPath %q but %s does not exist",
+				p.Name, p.ManifestPath, target)
+		}
+	}
+}
+
+func TestInitRefusesToClobberAnExistingManifest(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := runInit(t, dir, "--yes", "--name", "p", "--namespace", "default"); err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+	target := filepath.Join(dir, ".okdev", "batch.yaml")
+	if err := os.WriteFile(target, []byte("mine: keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runInit(t, dir, "--yes", "--workload", "job", "--workload-name", "batch"); err == nil {
+		t.Fatal("expected a refusal rather than clobbering the manifest")
+	}
+	// --force means "rewrite the config", never "clobber a manifest".
+	if _, err := runInit(t, dir, "--yes", "--force", "--workload", "job", "--workload-name", "batch"); err == nil {
+		t.Fatal("--force must not override an existing manifest")
+	}
+	kept, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(kept) != "mine: keep\n" {
+		t.Fatalf("the existing manifest was modified: %q", kept)
+	}
+}
+
+// The fresh path has its own coverage in init_test.go; this asserts the
+// additive path inherits the same preset gate rather than reimplementing it.
+func TestInitAdditiveRejectsUnknownGenericPreset(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := runInit(t, dir, "--yes", "--name", "p", "--namespace", "default"); err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+	_, err := runInit(t, dir, "--yes", "--workload", "generic", "--workload-name", "gen",
+		"--generic-preset", "statefulset", "--manifest-path", "mine.yaml",
+		"--inject-path", "spec.template")
+	if err == nil || !strings.Contains(err.Error(), "statefulset") {
+		t.Fatalf("expected an unknown-preset rejection, got %v", err)
+	}
+}
+
+// A project created before okdev always used the folder keeps its flat config,
+// and anything added to it must still land in .okdev/ rather than the root.
+func TestAddingToAPreExistingFlatConfigKeepsManifestsInDotOkdev(t *testing.T) {
+	dir := t.TempDir()
+	flat := filepath.Join(dir, ".okdev.yaml")
+	if err := os.WriteFile(flat, []byte(`apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: legacy
+spec:
+  namespace: default
+  podTemplate:
+    spec:
+      containers:
+        - name: dev
+          image: alpine
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runInit(t, dir, "--yes", "--workload", "job", "--workload-name", "batch"); err != nil {
+		t.Fatalf("additive init on a flat config: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".okdev", "batch.yaml")); err != nil {
+		t.Fatalf("the manifest must land in .okdev/: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "batch.yaml")); err == nil {
+		t.Fatal("the manifest must not land in the project root")
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".okdev", "okdev.yaml")); err == nil {
+		t.Fatal("an existing flat config must be edited in place, not replaced by a folder config")
+	}
+	assertConfigUsable(t, flat)
+}
+
+func TestAddingTwoWorkloadsOfTheSameTypeDoesNotCollide(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := runInit(t, dir, "--yes", "--name", "p", "--namespace", "default"); err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+	for _, name := range []string{"a", "b"} {
+		if _, err := runInit(t, dir, "--yes", "--workload", "job", "--workload-name", name); err != nil {
+			t.Fatalf("adding %q: %v", name, err)
+		}
+	}
+	assertConfigUsable(t, filepath.Join(dir, ".okdev", "okdev.yaml"))
 }
