@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/acmore/okdev/internal/config"
+	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/output"
 	"github.com/acmore/okdev/internal/session"
 	"github.com/acmore/okdev/internal/workload"
@@ -103,6 +104,17 @@ func liveWorkloadProfile(ctx context.Context, cc *commandContext) string {
 	if err != nil {
 		return ""
 	}
+	return liveProfileFromPods(cc.cfg, pods)
+}
+
+// liveProfileFromPods names the profile the session's pods belong to.
+//
+// Pods created before the profile label existed carry none. Falling back to the
+// workload type — the same signal detectWorkloadSwitch uses for those pods —
+// keeps `workload list` from showing PINNED without LIVE on a healthy upgraded
+// session, which the docs define as "the switch has not been applied yet".
+func liveProfileFromPods(cfg *config.DevEnvironment, pods []kube.PodSummary) string {
+	unlabelledMatchesSelection := false
 	for _, pod := range pods {
 		if pod.Deleting {
 			continue
@@ -110,6 +122,12 @@ func liveWorkloadProfile(ctx context.Context, cc *commandContext) string {
 		if p := strings.TrimSpace(pod.Labels["okdev.io/workload-profile"]); p != "" {
 			return p
 		}
+		if normalizeWorkloadType(pod.Labels["okdev.io/workload-type"]) == normalizeWorkloadType(cfg.Spec.Workload.Type) {
+			unlabelledMatchesSelection = true
+		}
+	}
+	if unlabelledMatchesSelection {
+		return cfg.SelectedWorkload()
 	}
 	return ""
 }

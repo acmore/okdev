@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/acmore/okdev/internal/config"
+	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
 )
 
@@ -219,5 +220,49 @@ func TestLabelsForSessionCarryTheWorkloadProfile(t *testing.T) {
 	}
 	if labels["okdev.io/workload-type"] != "job" {
 		t.Fatalf("workload-type = %q, want job", labels["okdev.io/workload-type"])
+	}
+}
+
+// A pod created before the profile label existed carries none. It is still the
+// live workload, so LIVE must mark it — otherwise `workload list` shows PINNED
+// without LIVE on a perfectly healthy session, which the docs define as "the
+// switch has not been applied yet".
+func TestLiveWorkloadProfileFallsBackToTypeForUnlabelledPods(t *testing.T) {
+	cfg := &config.DevEnvironment{}
+	cfg.SetDefaults()
+
+	pods := []kube.PodSummary{{
+		Name:   "okdev-legacy-ab9c784b",
+		Labels: map[string]string{"okdev.io/workload-type": "pod"},
+	}}
+	if got := liveProfileFromPods(cfg, pods); got != config.DefaultWorkloadProfileName {
+		t.Fatalf("live = %q, want %q for an unlabelled pod of the selected type", got, config.DefaultWorkloadProfileName)
+	}
+
+	// A label-less pod of a *different* type is not this profile — that is a
+	// pending switch, and LIVE must stay blank.
+	other := []kube.PodSummary{{
+		Name:   "okdev-legacy-ab9c784b",
+		Labels: map[string]string{"okdev.io/workload-type": "job"},
+	}}
+	if got := liveProfileFromPods(cfg, other); got != "" {
+		t.Fatalf("live = %q, want empty for an unlabelled pod of another type", got)
+	}
+}
+
+func TestLiveWorkloadProfilePrefersTheLabel(t *testing.T) {
+	cfg := &config.DevEnvironment{}
+	cfg.Spec.Workloads = []config.WorkloadProfile{
+		{Name: "dev", Type: "pod"},
+		{Name: "train", Type: "job", ManifestPath: "j.yaml"},
+	}
+	cfg.SetDefaults()
+
+	pods := []kube.PodSummary{{
+		Name:   "okdev-x",
+		Labels: map[string]string{"okdev.io/workload-profile": "train", "okdev.io/workload-type": "job"},
+	}}
+	if got := liveProfileFromPods(cfg, pods); got != "train" {
+		t.Fatalf("live = %q, want train", got)
 	}
 }
