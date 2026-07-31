@@ -57,6 +57,16 @@ func validateInitInvocation(inv initInvocation) error {
 	}
 
 	if len(inv.ProjectFlagsSet) > 0 {
+		// --template and --workload are one word apart, and their values look
+		// alike from the outside: "pytorchjob" is both a workload type and a
+		// plausible template name. Someone reaching for --template while naming
+		// a workload almost certainly wants --workload, so say that instead of
+		// the generic advice, which answers a question they did not ask.
+		for _, flag := range inv.ProjectFlagsSet {
+			if flag == "template" {
+				return fmt.Errorf("--template selects the template that renders a whole config and cannot add a workload to an existing one; use --workload <pod|job|pytorchjob|generic> to choose the workload type")
+			}
+		}
 		return fmt.Errorf("--%s configures a project at creation and cannot be changed by adding a workload; edit the config file instead",
 			strings.Join(inv.ProjectFlagsSet, ", --"))
 	}

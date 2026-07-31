@@ -674,3 +674,43 @@ func TestPlanWorkloadAdditionStillCopiesANonEmptyPodTemplate(t *testing.T) {
 		t.Fatalf("expected the podTemplate's image to be copied:\n%s", add.ManifestBytes)
 	}
 }
+
+// --template and --workload are one word apart and their values overlap in the
+// user's head ("pytorchjob" is both a workload type and a plausible template
+// name). Telling someone who typed `--template=pytorchjob --workload-name=x` to
+// "edit the config file" answers a question they did not ask.
+func TestRejectingTemplateOnTheAdditivePathPointsAtWorkload(t *testing.T) {
+	err := validateInitInvocation(initInvocation{
+		ConfigExists:    true,
+		WorkloadName:    "pytorch",
+		ProjectFlagsSet: []string{"template"},
+	})
+	if err == nil {
+		t.Fatal("--template must still be rejected when adding a workload")
+	}
+	if !strings.Contains(err.Error(), "--workload") {
+		t.Fatalf("the error should point at --workload, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "--template") {
+		t.Fatalf("the error should name the flag that was rejected, got %v", err)
+	}
+}
+
+// Other project-level flags keep the generic advice — editing the config really
+// is how you change a namespace.
+func TestRejectingOtherProjectFlagsKeepsTheGenericAdvice(t *testing.T) {
+	err := validateInitInvocation(initInvocation{
+		ConfigExists:    true,
+		WorkloadName:    "x",
+		ProjectFlagsSet: []string{"namespace"},
+	})
+	if err == nil {
+		t.Fatal("--namespace must be rejected when adding a workload")
+	}
+	if strings.Contains(err.Error(), "--workload ") {
+		t.Fatalf("--namespace is not a --workload confusion, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "edit the config") {
+		t.Fatalf("expected the generic advice, got %v", err)
+	}
+}
