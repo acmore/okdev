@@ -78,7 +78,7 @@ agents can react without launching a diagnostic chain on every blip:
 - Scope: **what the current session runs**, as opposed to *which session* commands target. The two are one keystroke apart and are not interchangeable:
     - `okdev use <session>` — switch **which session** commands target. Sessions are independent: separate pods, sync channel, ports, SSH alias. Use it to move between parallel environments.
     - `okdev workload use <name>` — switch **what the current session runs**. The session name, sync channel, ports and SSH alias all stay; only the underlying workload is replaced, and **the old one is deleted**.
-    - `okdev down` + edit the config + `okdev up` — the manual equivalent, and the right move when the change is to shared spec fields (`ports`, `sync`, `sidecar`, `podTemplate`) rather than the workload block.
+    - `okdev down` + edit the config + `okdev up` — the manual equivalent, and the right move when the change is to shared spec fields (`ports`, `sync`, `sidecar`, `volumes`) rather than the workload block.
 - Canonical sequence for adding a shape and switching to it:
 
     ```console
@@ -264,7 +264,7 @@ agents can react without launching a diagnostic chain on every blip:
 
 ### `okdev init [--workload pod|job|pytorchjob|generic] [--workload-name <name>] [--template <name>|<path>|<url>] [--set key=value] [--stignore-preset default|python|node|go|rust] [--force]`
 
-- Writes a starter config manifest at `.okdev/okdev.yaml`, for every workload type. Manifests live beside it in `.okdev/`.
+- Writes a starter config at `.okdev/okdev.yaml` **plus the workload's manifest** beside it — `.okdev/pod.yaml` for the default pod workload, `.okdev/job.yaml` for `--workload job`, and so on. Every workload type, pod included, is a manifest file.
 - **On a project that already has a config, `okdev init` adds a workload to it** rather than refusing. That is the additive mode, and it requires `--workload-name`:
 
     ```console
@@ -273,14 +273,14 @@ agents can react without launching a diagnostic chain on every blip:
       Declared workload "train" in .okdev/okdev.yaml
     ```
 
-    The manifest is named after the workload, not its type, so two workloads of the same type never collide. A `pod` workload added this way starts as a **copy of the project's current `spec.podTemplate`** — the common case is the same container with different resources, so it is an edit rather than a rewrite.
+    The manifest is named after the workload, not its type, so two workloads of the same type never collide. A `pod` workload added this way gets the same starter manifest `okdev init` scaffolds, so it is a file to edit rather than a blank.
 
     Additive mode never prompts and never changes project-level settings. Passing a project-level flag (`--name`, `--namespace`, `--context`, `--template`, `--set`, `--dev-image`, `--sidecar-image`, `--sync-local`, `--sync-remote`, `--ssh-user`, `--shell`, `--stignore-preset`) is **refused** rather than ignored, so one flag never means two things; edit the config to change those. `--force` still means "rewrite the whole config", and giving it together with `--workload-name` is refused because they state opposite intents.
 
     Nothing is written unless the resulting config validates: a rejected addition leaves the config and `.okdev/` byte-identical. An existing file at the target manifest path is an error naming the file — `--force` does not clobber manifests.
 - Configs written before okdev always used the folder — a flat `.okdev.yaml`, or a bare `okdev.yaml` — keep working and are never migrated. Workloads added to them still land in `.okdev/`.
 - `--workload`: chooses the scaffold mode. `pod` keeps the current simple config shape; `job` and `pytorchjob` add a `spec.workload` block plus a starter manifest; `generic` requires explicit inject information and can optionally use a preset such as `--generic-preset deployment`.
-- `--dev-image`: sets the dev container image for pod workloads. Pod configs generated from the built-in template include a `podTemplate` with the dev container image plus equal CPU/memory requests and limits for the dev container and sidecar, so the starter pod is eligible for Kubernetes `Guaranteed` QoS.
+- `--dev-image`: sets the dev container image in the scaffolded `.okdev/pod.yaml`. The generated manifest gives the dev container equal CPU/memory requests and limits, as the config does for the sidecar, so the starter pod is eligible for Kubernetes `Guaranteed` QoS.
 - `--template`: accepts a project template from `.okdev/templates/<name>.yaml.tmpl`, a user template from `~/.okdev/templates/<name>.yaml.tmpl`, built-in `basic`, a file path, or a URL. Run `okdev template list` to see available names.
 - `--set`: sets a frontmatter-declared template variable. Repeat it for multiple variables, for example `--set numWorkers=4 --set baseImage=pytorch:latest`.
 - Templates can declare `string`, `int`, and `bool` variables in YAML frontmatter. Resolved values are available as `.Vars.<name>` during rendering and are persisted under `spec.template.vars`.
@@ -304,6 +304,8 @@ agents can react without launching a diagnostic chain on every blip:
 ### `okdev migrate [--template <name>] [--set key=value] [--dry-run] [--yes]`
 
 - Without `--template`, migrates older config schema fields to the current schema.
+- **Gives every pod workload a manifest.** `spec.podTemplate` is removed, so a config still carrying one is extracted into `.okdev/pod.yaml` and the workload is pointed at it; `spec.volumes` stays in the config. A config that never declared one ran on a container okdev injected by default — that gets written out as a real manifest too, with a warning, since it is a file you should review rather than a hidden default. An existing file at the target path is an error naming it, never an overwrite; move it aside and re-run.
+- After that extraction the next `okdev up` reports workload drift and offers to recreate. The Pod it builds is unchanged — only the config's description of it moved, and the snapshot it is compared against now hashes the manifest instead of the inline block.
 - With `--template`, re-renders the selected template, overlays existing config values so local edits win, writes the merged config, and regenerates any template-declared companion files. Unlike the config, companion files are fully overwritten from the re-rendered template; local edits to those files will be lost (the `.bak` backup is your recovery path).
 - Existing `spec.template.vars` seed template variables during migration; `--set` overrides stored values.
 - Unless `--no-backup` is set, `okdev migrate --template` writes `.bak` backups for the config and any rewritten companion files before overwriting them.

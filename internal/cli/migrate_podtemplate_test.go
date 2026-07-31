@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"reflect"
 	"strings"
 	"testing"
 	"text/template"
@@ -282,5 +283,47 @@ spec:
 	}
 	if cfg.Spec.Workloads[0].ManifestPath != "pod.yaml" {
 		t.Fatalf("workload must point at the manifest: %+v", cfg.Spec.Workloads[0])
+	}
+}
+
+// The migration must preserve meaning: the Pod okdev applies after migrating
+// has to match what the inline config produced. This is the assertion the whole
+// round exists to satisfy.
+func TestMigratedConfigAppliesAnEquivalentPod(t *testing.T) {
+	const runtimeName = "okdev-sess-1234"
+
+	// What the inline config would have applied, built the old way.
+	legacy, err := config.LoadPodTemplateOnly([]byte(inlinePodConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := config.SynthesizePodManifest(legacy, runtimeName)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Migrate, then render the manifest the way the runtime now will.
+	got, err := planPodTemplateExtraction("/repo/.okdev/okdev.yaml", []byte(inlinePodConfig))
+	if err != nil {
+		t.Fatalf("planPodTemplateExtraction: %v", err)
+	}
+	tmpl, err := template.New("m").Option("missingkey=error").Parse(string(got.ManifestBytes))
+	if err != nil {
+		t.Fatalf("migrated manifest is not a valid template: %v\n%s", err, got.ManifestBytes)
+	}
+	var rendered bytes.Buffer
+	if err := tmpl.Execute(&rendered, struct{ WorkloadName string }{runtimeName}); err != nil {
+		t.Fatalf("render migrated manifest: %v\n%s", err, got.ManifestBytes)
+	}
+
+	var beforePod, afterPod corev1.Pod
+	if err := yaml.Unmarshal(before, &beforePod); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(rendered.Bytes(), &afterPod); err != nil {
+		t.Fatalf("unmarshal migrated manifest: %v\n%s", err, rendered.String())
+	}
+	if !reflect.DeepEqual(beforePod, afterPod) {
+		t.Fatalf("migration changed the Pod:\n--- before ---\n%s\n--- after ---\n%s", before, rendered.String())
 	}
 }
