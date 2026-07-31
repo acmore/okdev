@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/acmore/okdev/internal/config"
@@ -114,5 +116,73 @@ func TestWorkloadGroupHasNoAddSubcommand(t *testing.T) {
 		if sub.Name() == "add" {
 			t.Fatal("okdev workload add must be gone; use okdev init --workload-name")
 		}
+	}
+}
+
+// A pin naming a workload the config no longer declares must not brick the
+// session. It happens from an ordinary rename, or a branch where that workload
+// does not exist — and before this, every command failed identically, including
+// `okdev workload use <valid-name>`, the one command that could fix it.
+func TestStaleWorkloadPinFallsBackInsteadOfBricking(t *testing.T) {
+	cfg := &config.DevEnvironment{}
+	cfg.Spec.Workloads = []config.WorkloadProfile{
+		{Name: "default", Type: "pod"},
+		{Name: "dev-renamed", Type: "job", ManifestPath: "j.yaml"},
+	}
+	cfg.SetDefaults()
+
+	var warnings []string
+	err := selectWorkloadForSession(cfg, "dev", false, func(format string, args ...any) {
+		warnings = append(warnings, fmt.Sprintf(format, args...))
+	})
+	if err != nil {
+		t.Fatalf("a stale pin must not be fatal, got %v", err)
+	}
+	if cfg.SelectedWorkload() != "default" {
+		t.Fatalf("expected a fall back to the config default, got %q", cfg.SelectedWorkload())
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected exactly one warning, got %v", warnings)
+	}
+	for _, want := range []string{"dev", "dev-renamed", "workload use"} {
+		if !strings.Contains(warnings[0], want) {
+			t.Fatalf("warning %q should mention %q", warnings[0], want)
+		}
+	}
+}
+
+// An unknown name the user typed on the command line is still fatal: they made
+// a mistake this invocation, and silently running something else would be worse.
+func TestUnknownWorkloadFlagIsStillFatal(t *testing.T) {
+	cfg := &config.DevEnvironment{}
+	cfg.Spec.Workloads = []config.WorkloadProfile{{Name: "default", Type: "pod"}}
+	cfg.SetDefaults()
+
+	err := selectWorkloadForSession(cfg, "nope", true, func(string, ...any) {})
+	if err == nil {
+		t.Fatal("--workload with an unknown name must fail")
+	}
+	if !strings.Contains(err.Error(), "nope") {
+		t.Fatalf("error should quote what the user typed, got %v", err)
+	}
+}
+
+func TestValidPinSelectsNormally(t *testing.T) {
+	cfg := &config.DevEnvironment{}
+	cfg.Spec.Workloads = []config.WorkloadProfile{
+		{Name: "default", Type: "pod"},
+		{Name: "train", Type: "job", ManifestPath: "j.yaml"},
+	}
+	cfg.SetDefaults()
+
+	warned := false
+	if err := selectWorkloadForSession(cfg, "train", false, func(string, ...any) { warned = true }); err != nil {
+		t.Fatalf("selectWorkloadForSession: %v", err)
+	}
+	if cfg.SelectedWorkload() != "train" {
+		t.Fatalf("SelectedWorkload = %q, want train", cfg.SelectedWorkload())
+	}
+	if warned {
+		t.Fatal("a valid pin must not warn")
 	}
 }

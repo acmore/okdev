@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{`{{ .WorkloadName }}`}}
+  labels:
+    app.kubernetes.io/name: {{`{{ .WorkloadName }}`}}
+spec:
+  containers:
+    - name: dev
+      image: # TODO: replace with your image
+      command: ["sleep", "infinity"]
+      volumeMounts:
+        - name: workspace
+          mountPath: {{ .SyncRemote }}
+  volumes:
+    - name: workspace
+      emptyDir: {}
