@@ -541,3 +541,51 @@ func TestFailFastOnPodFailureCoversPod(t *testing.T) {
 		t.Error("generic workloads must not fail fast")
 	}
 }
+
+// Pods created before okdev labelled attachability carry no
+// okdev.io/attachable label at all. They are still the session's target — a
+// pod workload has exactly one pod — so they must not be filtered out, or
+// upgrading okdev strands every existing pod session the moment its target
+// needs re-resolving.
+func TestSelectCandidateTreatsUnlabelledPodsAsAttachable(t *testing.T) {
+	rt := &GenericRuntime{
+		WorkloadKind: TypePod,
+		Labels:       map[string]string{"okdev.io/managed": "true", "okdev.io/session": "legacy"},
+	}
+	client := &fakeGenericClient{pods: []kube.PodSummary{{
+		Name:      "okdev-legacy-57201843",
+		Phase:     "Running",
+		Ready:     "2/2",
+		CreatedAt: time.Now(),
+		Labels: map[string]string{
+			"okdev.io/managed":                "true",
+			"okdev.io/session":                "legacy",
+			"okdev.io/workload-resource-kind": "Pod",
+		},
+	}}}
+	target, _, err := rt.selectCandidate(context.Background(), client, "default")
+	if err != nil {
+		t.Fatalf("selectCandidate on a pre-attachable-label pod: %v", err)
+	}
+	if target.PodName != "okdev-legacy-57201843" {
+		t.Fatalf("target = %q, want the unlabelled legacy pod", target.PodName)
+	}
+}
+
+// An explicit attachable=false still excludes the pod: multi-pod workloads
+// label their non-attachable replicas, and those must never become the target.
+func TestSelectCandidateStillExcludesExplicitlyNonAttachablePods(t *testing.T) {
+	rt := &GenericRuntime{
+		WorkloadKind: TypePyTorchJob,
+		Labels:       map[string]string{"okdev.io/managed": "true", "okdev.io/session": "s"},
+	}
+	client := &fakeGenericClient{pods: []kube.PodSummary{{
+		Name:      "worker-0",
+		Phase:     "Running",
+		CreatedAt: time.Now(),
+		Labels:    map[string]string{"okdev.io/attachable": "false"},
+	}}}
+	if _, _, err := rt.selectCandidate(context.Background(), client, "default"); err == nil {
+		t.Fatal("attachable=false must still be excluded")
+	}
+}
