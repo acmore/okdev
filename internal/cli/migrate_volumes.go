@@ -58,6 +58,11 @@ func planVolumeMove(cfgPath string, raw []byte, pending []plannedManifest) (*vol
 		return &volumeMove{ConfigBytes: rendered, Applied: true}, nil
 	}
 
+	// A comment on spec.volumes describes those volumes, so it travels with
+	// them. Losing it would leave the user's own note only in the .bak they
+	// will never open again.
+	comment := yamlKeyComment(spec, "volumes")
+
 	out := &volumeMove{Applied: true}
 	byPath := map[string]*plannedManifest{}
 	for i := range pending {
@@ -85,7 +90,7 @@ func planVolumeMove(cfgPath string, raw []byte, pending []plannedManifest) (*vol
 			body = read
 		}
 
-		merged, skipped, err := addVolumesToManifest(body, cfg.Spec.Volumes)
+		merged, skipped, err := addVolumesToManifest(body, cfg.Spec.Volumes, comment)
 		if err != nil {
 			return nil, fmt.Errorf("add volumes to %q: %w", target, err)
 		}
@@ -138,7 +143,7 @@ func configManifestPaths(cfg *config.DevEnvironment) []string {
 // addVolumesToManifest appends volumes the manifest does not already declare,
 // and reports the names it skipped. A name the manifest declares is left alone:
 // that definition was already the one in effect.
-func addVolumesToManifest(manifest []byte, volumes []corev1.Volume) ([]byte, []string, error) {
+func addVolumesToManifest(manifest []byte, volumes []corev1.Volume, comment string) ([]byte, []string, error) {
 	var doc yamlv3.Node
 	if err := yamlv3.Unmarshal(manifest, &doc); err != nil {
 		return nil, nil, err
@@ -160,6 +165,9 @@ func addVolumesToManifest(manifest []byte, volumes []corev1.Volume) ([]byte, []s
 		if list == nil {
 			list = &yamlv3.Node{Kind: yamlv3.SequenceNode}
 			setYAMLNode(podSpec, "volumes", list)
+			// Only on a key this migration created; one the manifest already
+			// had may carry a comment of its own.
+			setYAMLKeyComment(podSpec, "volumes", comment)
 		}
 		declared := map[string]struct{}{}
 		for _, item := range list.Content {
@@ -263,3 +271,26 @@ func renderYAMLDoc(doc *yamlv3.Node) ([]byte, error) {
 }
 
 func sigsYAMLMarshal(v any) ([]byte, error) { return sigsyaml.Marshal(v) }
+
+// yamlKeyComment returns the comment written above a mapping key, which yaml.v3
+// attaches to the key node rather than its value.
+func yamlKeyComment(mapping *yamlv3.Node, key string) string {
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			return mapping.Content[i].HeadComment
+		}
+	}
+	return ""
+}
+
+func setYAMLKeyComment(mapping *yamlv3.Node, key, comment string) {
+	if strings.TrimSpace(comment) == "" {
+		return
+	}
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			mapping.Content[i].HeadComment = comment
+			return
+		}
+	}
+}

@@ -37,5 +37,17 @@ func SynthesizePodManifest(cfg *DevEnvironment, workloadName string) ([]byte, er
 	if err != nil {
 		return nil, fmt.Errorf("synthesize pod manifest: %w", err)
 	}
+	// corev1.Pod.Status has no omitempty, so it always marshals as "status: {}".
+	// This file is one the user will edit; it should not open with a line that
+	// means nothing.
+	var obj map[string]any
+	if err := yaml.Unmarshal(raw, &obj); err != nil {
+		return nil, fmt.Errorf("synthesize pod manifest: %w", err)
+	}
+	delete(obj, "status")
+	raw, err = yaml.Marshal(obj)
+	if err != nil {
+		return nil, fmt.Errorf("synthesize pod manifest: %w", err)
+	}
 	return raw, nil
 }
