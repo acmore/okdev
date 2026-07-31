@@ -193,7 +193,7 @@ func (r *GenericRuntime) selectCandidate(ctx context.Context, k podLister, names
 	}
 	eligible := make([]kube.PodSummary, 0, len(pods))
 	for _, pod := range pods {
-		if strings.EqualFold(strings.TrimSpace(pod.Labels["okdev.io/attachable"]), "true") {
+		if podIsAttachable(pod) {
 			eligible = append(eligible, pod)
 		}
 	}
@@ -208,6 +208,18 @@ func (r *GenericRuntime) selectCandidate(ctx context.Context, k podLister, names
 		Container: r.interactiveContainer(),
 		Role:      strings.TrimSpace(eligible[0].Labels["okdev.io/workload-role"]),
 	}, pods, nil
+}
+
+// podIsAttachable reports whether a pod may serve as the session target.
+//
+// A missing label means attachable, matching how `okdev status` has always read
+// it. Only an explicit "false" excludes a pod, which is what multi-pod
+// workloads stamp on their non-target replicas. The distinction matters on
+// upgrade: pods created before okdev labelled attachability carry no label at
+// all, and treating that as "not attachable" strands every existing pod session
+// the moment its target has to be re-resolved.
+func podIsAttachable(pod kube.PodSummary) bool {
+	return !strings.EqualFold(strings.TrimSpace(pod.Labels["okdev.io/attachable"]), "false")
 }
 
 func (r *GenericRuntime) interactiveContainer() string {

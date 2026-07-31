@@ -44,7 +44,15 @@ func BuildWorkloadSnapshot(cfg *DevEnvironment, workspaceMountPath, targetContai
 		kind = "pod"
 	}
 	workloadSpec := cfg.Spec.Workload
-	workloadSpec.Inject = cfg.EffectiveWorkloadInject()
+	// Only a configured inject enters the snapshot. A pod's root inject path is
+	// synthesized at apply time and does not change the resulting object, so
+	// recording it would shift the hash of every pod session created before it
+	// existed — turning a plain `okdev up` into a demand to recreate the
+	// workload. Job/generic/pytorchjob always have a configured inject (set by
+	// the user or by SetDefaults), so they are unaffected.
+	if len(cfg.Spec.Workload.Inject) > 0 {
+		workloadSpec.Inject = cfg.EffectiveWorkloadInject()
+	}
 	snap := LastAppliedWorkloadSpec{
 		Version:            SnapshotVersion,
 		WorkloadKind:       kind,

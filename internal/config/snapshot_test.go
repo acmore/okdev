@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -226,5 +227,39 @@ func TestWorkloadSnapshotHashIgnoresManifestPath(t *testing.T) {
 	}
 	if h1 != h2 {
 		t.Fatalf("expected manifest path to be excluded from workload hash: %s != %s", h1, h2)
+	}
+}
+
+// The pod root inject path is synthesized at apply time and does not change the
+// resulting object. It must stay out of the snapshot: pods created before it
+// existed recorded `Inject: null`, and stamping it would make every existing
+// pod session report drift and demand a recreate on its next `okdev up`.
+func TestSnapshotOmitsTheSynthesizedPodInject(t *testing.T) {
+	cfg := &DevEnvironment{}
+	cfg.SetDefaults()
+
+	snap := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "", "", "")
+	if snap.Workload.Inject != nil {
+		t.Fatalf("Workload.Inject = %+v, want nil for a default pod config", snap.Workload.Inject)
+	}
+	raw, err := snap.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw, `"Inject":null`) {
+		t.Fatalf("snapshot must record a null pod inject:\n%s", raw)
+	}
+}
+
+// A user-configured inject is real intent and must still be captured.
+func TestSnapshotKeepsAConfiguredInject(t *testing.T) {
+	cfg := &DevEnvironment{}
+	cfg.Spec.Workload.Type = "job"
+	cfg.Spec.Workload.ManifestPath = "job.yaml"
+	cfg.SetDefaults()
+
+	snap := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "", "job.yaml", "")
+	if len(snap.Workload.Inject) != 1 || snap.Workload.Inject[0].Path != "spec.template" {
+		t.Fatalf("Workload.Inject = %+v, want the job's spec.template entry", snap.Workload.Inject)
 	}
 }
