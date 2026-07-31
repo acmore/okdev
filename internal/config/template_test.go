@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	sigsyaml "sigs.k8s.io/yaml"
 )
 
 func TestDefaultTemplateVars(t *testing.T) {
@@ -36,9 +38,6 @@ func TestDefaultTemplateVars(t *testing.T) {
 	}
 	if vars.SidecarCPU != "250m" || vars.SidecarMemory != "512Mi" {
 		t.Fatalf("unexpected default sidecar resources: %#v", vars)
-	}
-	if vars.WorkloadType != "pod" {
-		t.Fatalf("expected pod workload type, got %q", vars.WorkloadType)
 	}
 }
 
@@ -106,19 +105,22 @@ func TestRenderBuiltinPodManifest(t *testing.T) {
 	}
 }
 
-func TestBuiltinTemplateLocalIgnores(t *testing.T) {
-	if got := BuiltinTemplateLocalIgnores(""); len(got) == 0 {
-		t.Fatal("expected empty template ref to use basic local ignore patterns")
+func TestBuiltinTemplateDeclaresItsSTIgnorePreset(t *testing.T) {
+	// The preset is frontmatter, not a name lookup, so a user template shadowing
+	// this name inherits nothing.
+	raw, err := ResolveTemplate("basic")
+	if err != nil {
+		t.Fatal(err)
 	}
-	patterns := BuiltinTemplateLocalIgnores("basic")
-	if len(patterns) == 0 {
-		t.Fatal("expected built-in local ignore patterns")
+	meta, _, err := ParseFrontmatter(raw)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if patterns[0] != ".venv/" {
-		t.Fatalf("unexpected first pattern %q", patterns[0])
+	if meta.StignorePreset != "default" {
+		t.Fatalf("basic must declare stignorePreset, got %q", meta.StignorePreset)
 	}
-	if got := BuiltinTemplateLocalIgnores("./custom.yaml"); got != nil {
-		t.Fatalf("expected nil ignores for custom template, got %+v", got)
+	if len(STIgnorePreset(meta.StignorePreset)) == 0 {
+		t.Fatalf("declared preset %q resolves to nothing", meta.StignorePreset)
 	}
 }
 
@@ -292,8 +294,9 @@ func TestRenderTemplateContextFetchesURLTemplate(t *testing.T) {
 }
 
 func TestBuiltinTemplateNames(t *testing.T) {
-	if got := BuiltinTemplateNames(); !slices.Equal(got, []string{"basic"}) {
-		t.Fatalf("unexpected builtins: %+v", got)
+	want := []string{"basic", "deployment", "generic", "job", "pod", "pytorchjob"}
+	if got := BuiltinTemplateNames(); !slices.Equal(got, want) {
+		t.Fatalf("builtins = %+v, want %+v", got, want)
 	}
 }
 
@@ -473,5 +476,59 @@ func TestTemplateCanUseUserAndRepoVars(t *testing.T) {
 	}
 	if !strings.Contains(out, "repo: my-project") {
 		t.Fatalf("expected repo in output, got %q", out)
+	}
+}
+
+// Every built-in must render a config that validates and declare a manifest for
+// the workload it describes. Config-valid *and* manifest-present is the pairing
+// whose absence let a broken scaffold ship before.
+func TestEveryBuiltinTemplateDeclaresItsWorkloadManifest(t *testing.T) {
+	for _, name := range BuiltinTemplateNames() {
+		t.Run(name, func(t *testing.T) {
+			raw, err := ResolveTemplate(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			meta, body, err := ParseFrontmatter(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			vars := NewTemplateVars()
+			vars.Name = "demo"
+			// "generic" is the bring-your-own-manifest shape; the others carry
+			// their own, so only it needs these supplied.
+			vars.ManifestPath = "mine.yaml"
+			vars.InjectPaths = []string{"spec.template"}
+			out, err := RenderTemplateContent("okdev", body, vars, nil)
+			if err != nil {
+				t.Fatalf("render: %v", err)
+			}
+			var cfg DevEnvironment
+			if err := sigsyaml.Unmarshal([]byte(out), &cfg); err != nil {
+				t.Fatalf("parse rendered config: %v\n%s", err, out)
+			}
+			cfg.SetDefaults()
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("rendered config invalid: %v\n%s", err, out)
+			}
+			if name == "generic" {
+				if len(meta.Files) != 0 {
+					t.Fatalf("generic brings its own manifest and must declare no files, got %+v", meta.Files)
+				}
+				return
+			}
+			// The declared companion file must be the workload's manifest.
+			base := filepath.Base(cfg.Spec.Workload.ManifestPath)
+			found := false
+			for _, f := range meta.Files {
+				if filepath.Base(f.Path) == base {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("%s declares manifestPath %q but no matching file: %+v",
+					name, cfg.Spec.Workload.ManifestPath, meta.Files)
+			}
+		})
 	}
 }

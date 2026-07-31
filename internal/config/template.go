@@ -27,8 +27,16 @@ type templateHTTPDoer interface {
 var embeddedTemplates embed.FS
 
 // builtinNames maps template names to their embedded file paths.
+// builtinNames maps template names to their embedded file paths. "basic" is
+// kept as an alias for "pod": it is the default ref and is persisted in existing
+// configs as spec.template.name, so it has to keep resolving.
 var builtinNames = map[string]string{
-	"basic": "templates/basic.yaml.tmpl",
+	"basic":      "templates/pod.yaml.tmpl",
+	"pod":        "templates/pod.yaml.tmpl",
+	"job":        "templates/job.yaml.tmpl",
+	"pytorchjob": "templates/pytorchjob.yaml.tmpl",
+	"deployment": "templates/deployment.yaml.tmpl",
+	"generic":    "templates/generic.yaml.tmpl",
 }
 
 var stignorePresets = map[string][]string{
@@ -65,10 +73,6 @@ var stignorePresets = map[string][]string{
 	},
 }
 
-var builtinTemplateStignorePreset = map[string]string{
-	"basic": "default",
-}
-
 var templateHTTPClient templateHTTPDoer = &http.Client{Timeout: 30 * time.Second}
 
 // TemplateVars holds all variables available to templates.
@@ -92,11 +96,9 @@ type TemplateVars struct {
 	SSHUser          string
 	Shell            string
 	Ports            []PortVar
-	WorkloadType     string
 	ManifestPath     string
 	InjectPaths      []string
 	AttachContainer  string
-	GenericPreset    string
 }
 
 type PortVar struct {
@@ -124,7 +126,6 @@ func NewTemplateVars() *TemplateVars {
 		SyncLocal:        ".",
 		SyncRemote:       "/workspace",
 		SSHUser:          "root",
-		WorkloadType:     "pod",
 	}
 }
 
@@ -436,17 +437,6 @@ func templateNamesFromEntries(entries []os.DirEntry) []string {
 	}
 	sort.Strings(names)
 	return names
-}
-
-func BuiltinTemplateLocalIgnores(ref string) []string {
-	if strings.TrimSpace(ref) == "" {
-		ref = "basic"
-	}
-	preset, ok := builtinTemplateStignorePreset[ref]
-	if !ok {
-		return nil
-	}
-	return STIgnorePreset(preset)
 }
 
 func STIgnorePreset(name string) []string {

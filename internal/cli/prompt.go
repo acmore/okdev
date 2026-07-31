@@ -14,19 +14,17 @@ import (
 
 // InitOverrides holds flag-provided values that skip prompting.
 type InitOverrides struct {
-	Name          string
-	Namespace     string
-	KubeContext   string
-	WorkloadType  string
-	ManifestPath  string
-	InjectPaths   []string
-	GenericPreset string
-	DevImage      string
-	SidecarImage  string
-	SyncLocal     string
-	SyncRemote    string
-	SSHUser       string
-	Shell         string
+	Name         string
+	Namespace    string
+	KubeContext  string
+	ManifestPath string
+	InjectPaths  []string
+	DevImage     string
+	SidecarImage string
+	SyncLocal    string
+	SyncRemote   string
+	SSHUser      string
+	Shell        string
 }
 
 // applyOverrides applies non-empty flag values to template vars.
@@ -40,17 +38,11 @@ func applyOverrides(vars *config.TemplateVars, o InitOverrides) {
 	if o.KubeContext != "" {
 		vars.KubeContext = o.KubeContext
 	}
-	if o.WorkloadType != "" {
-		vars.WorkloadType = o.WorkloadType
-	}
 	if o.ManifestPath != "" {
 		vars.ManifestPath = o.ManifestPath
 	}
 	if len(o.InjectPaths) > 0 {
 		vars.InjectPaths = append([]string(nil), o.InjectPaths...)
-	}
-	if o.GenericPreset != "" {
-		vars.GenericPreset = o.GenericPreset
 	}
 	if o.DevImage != "" {
 		vars.DevImage = o.DevImage
@@ -82,16 +74,14 @@ func detectDefaultName() string {
 	return filepath.Base(wd)
 }
 
-func (o InitOverrides) hasName() bool          { return o.Name != "" }
-func (o InitOverrides) hasNamespace() bool     { return o.Namespace != "" }
-func (o InitOverrides) hasKubeContext() bool   { return o.KubeContext != "" }
-func (o InitOverrides) hasWorkloadType() bool  { return o.WorkloadType != "" }
-func (o InitOverrides) hasManifestPath() bool  { return o.ManifestPath != "" }
-func (o InitOverrides) hasInjectPaths() bool   { return len(o.InjectPaths) > 0 }
-func (o InitOverrides) hasGenericPreset() bool { return o.GenericPreset != "" }
-func (o InitOverrides) hasSyncLocal() bool     { return o.SyncLocal != "" }
-func (o InitOverrides) hasSyncRemote() bool    { return o.SyncRemote != "" }
-func (o InitOverrides) hasSSHUser() bool       { return o.SSHUser != "" }
+func (o InitOverrides) hasName() bool         { return o.Name != "" }
+func (o InitOverrides) hasNamespace() bool    { return o.Namespace != "" }
+func (o InitOverrides) hasKubeContext() bool  { return o.KubeContext != "" }
+func (o InitOverrides) hasManifestPath() bool { return o.ManifestPath != "" }
+func (o InitOverrides) hasInjectPaths() bool  { return len(o.InjectPaths) > 0 }
+func (o InitOverrides) hasSyncLocal() bool    { return o.SyncLocal != "" }
+func (o InitOverrides) hasSyncRemote() bool   { return o.SyncRemote != "" }
+func (o InitOverrides) hasSSHUser() bool      { return o.SSHUser != "" }
 
 // promptInteractive runs interactive prompts to fill in template vars.
 // Only prompts for values not already set by flags.
@@ -140,47 +130,10 @@ func promptInteractive(vars *config.TemplateVars, overrides InitOverrides, in io
 		}
 	}
 
-	if !overrides.hasWorkloadType() {
-		input, err := promptWorkloadType(reader, out, vars.WorkloadType)
-		if err != nil {
-			return err
-		}
-		if input != "" {
-			vars.WorkloadType = input
-		}
-	}
-
-	if vars.WorkloadType == "generic" && !overrides.hasGenericPreset() {
-		input, err := promptString(reader, out, "Generic scaffold preset (optional, e.g. deployment)", vars.GenericPreset)
-		if err != nil {
-			return err
-		}
-		if input != "" {
-			vars.GenericPreset = input
-		}
-	}
-
+	// Which workload shape to scaffold is --template's job now, and the two
+	// flags the "generic" template needs are named by its own error, so
+	// interactive init only walks project settings.
 	applyWorkloadDefaults(vars)
-
-	if vars.WorkloadType == "generic" && !overrides.hasManifestPath() {
-		input, err := promptString(reader, out, "Generic manifest path (local YAML to apply)", vars.ManifestPath)
-		if err != nil {
-			return err
-		}
-		if input != "" {
-			vars.ManifestPath = input
-		}
-	}
-
-	if vars.WorkloadType == "generic" && !overrides.hasInjectPaths() {
-		input, err := promptString(reader, out, "Generic inject paths (comma-separated Kubernetes spec paths)", strings.Join(vars.InjectPaths, ","))
-		if err != nil {
-			return err
-		}
-		if input != "" {
-			vars.InjectPaths = splitCommaList(input)
-		}
-	}
 
 	if !overrides.hasSyncLocal() {
 		input, err := promptString(reader, out, "Sync local path (project directory on this machine)", vars.SyncLocal)
@@ -262,26 +215,6 @@ func promptString(reader *bufio.Reader, out io.Writer, label, defaultVal string)
 		return "", fmt.Errorf("read %s: %w", strings.ToLower(label), err)
 	}
 	return strings.TrimSpace(line), nil
-}
-
-func promptWorkloadType(reader *bufio.Reader, out io.Writer, defaultVal string) (string, error) {
-	for {
-		input, err := promptString(reader, out, "Workload type (pod=simple dev pod, job=batch workload, pytorchjob=distributed training, generic=custom manifest)", defaultVal)
-		if err != nil {
-			return "", err
-		}
-		if input == "" {
-			return defaultVal, nil
-		}
-		switch strings.TrimSpace(input) {
-		case "pod", "job", "pytorchjob", "generic":
-			return strings.TrimSpace(input), nil
-		default:
-			if _, err := fmt.Fprintf(out, "invalid workload type %q; choose pod, job, pytorchjob, or generic\n", input); err != nil {
-				return "", err
-			}
-		}
-	}
 }
 
 // applyKubeDefaults detects the active kubeconfig context and namespace and

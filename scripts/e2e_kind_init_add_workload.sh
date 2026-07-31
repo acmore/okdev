@@ -73,7 +73,7 @@ replace_all_in_file "$CFG_PATH" 'persistentSession: true' 'persistentSession: fa
 insert_after_line_once "$CFG_PATH" '  ssh:' '    persistentSession: false'
 
 echo "Declaring a second workload on the existing config"
-"$OKDEV_BIN" --config "$CFG_PATH" init --yes --workload job --workload-name batch
+"$OKDEV_BIN" --config "$CFG_PATH" init --yes --template job --workload-name batch
 
 if [[ ! -f "$MANIFEST_PATH" ]]; then
   echo "ERROR: expected the manifest at $MANIFEST_PATH" >&2
@@ -88,7 +88,7 @@ okdev validate >/dev/null
 echo "second workload declared, manifest in .okdev/, config still valid"
 
 echo "Refusing project-level flags on an existing config"
-if "$OKDEV_BIN" --config "$CFG_PATH" init --yes --workload job --workload-name other \
+if "$OKDEV_BIN" --config "$CFG_PATH" init --yes --template job --workload-name other \
   --namespace someother >/dev/null 2>&1; then
   echo "ERROR: a project-level flag on an existing config must be refused" >&2
   exit 1

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -23,11 +24,9 @@ func newInitCmd(opts *Options) *cobra.Command {
 	var nameOverride string
 	var nsOverride string
 	var contextOverride string
-	var workloadType string
 	var workloadName string
 	var manifestPath string
 	var injectPaths []string
-	var genericPreset string
 	var devImageOverride string
 	var sidecarImageOverride string
 	var syncLocalOverride string
@@ -58,21 +57,22 @@ func newInitCmd(opts *Options) *cobra.Command {
   # Use a specific kube context
   okdev init --context my-cluster --namespace staging`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := rejectRemovedWorkloadFlags(cmd); err != nil {
+				return err
+			}
 			vars := config.NewTemplateVars()
 			overrides := InitOverrides{
-				Name:          nameOverride,
-				Namespace:     nsOverride,
-				KubeContext:   contextOverride,
-				WorkloadType:  workloadType,
-				ManifestPath:  manifestPath,
-				InjectPaths:   injectPaths,
-				GenericPreset: genericPreset,
-				DevImage:      devImageOverride,
-				SidecarImage:  sidecarImageOverride,
-				SyncLocal:     syncLocalOverride,
-				SyncRemote:    syncRemoteOverride,
-				SSHUser:       sshUserOverride,
-				Shell:         shellOverride,
+				Name:         nameOverride,
+				Namespace:    nsOverride,
+				KubeContext:  contextOverride,
+				ManifestPath: manifestPath,
+				InjectPaths:  injectPaths,
+				DevImage:     devImageOverride,
+				SidecarImage: sidecarImageOverride,
+				SyncLocal:    syncLocalOverride,
+				SyncRemote:   syncRemoteOverride,
+				SSHUser:      sshUserOverride,
+				Shell:        shellOverride,
 			}
 			applyOverrides(vars, overrides)
 
@@ -94,7 +94,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			if initAdditiveMode(inv) {
-				return runInitAddWorkload(cmd, existing, vars, workloadName)
+				return runInitAddWorkload(cmd, existing, vars, workloadName, templateRef)
 			}
 
 			applyWorkloadDefaults(vars)
@@ -144,8 +144,6 @@ func newInitCmd(opts *Options) *cobra.Command {
 			if _, err := os.Stat(abs); err == nil && !force {
 				return fmt.Errorf("config already exists at %q (use --force to overwrite)", abs)
 			}
-			normalizeInitManifestPathForTarget(abs, vars, overrides.hasManifestPath())
-
 			rendered, err = config.RenderTemplateContent("okdev", body, vars, customVars)
 			if err != nil {
 				return err
@@ -165,23 +163,22 @@ func newInitCmd(opts *Options) *cobra.Command {
 			if err := os.WriteFile(abs, []byte(rendered), 0o644); err != nil {
 				return fmt.Errorf("write config %q: %w", abs, err)
 			}
+			// --stignore-preset wins, then repo detection, then whatever the
+			// template declared.
 			resolvedPreset := strings.TrimSpace(stignorePreset)
 			if resolvedPreset == "" {
 				resolvedPreset = detectSTIgnorePreset(config.RootDir(abs))
 			}
-			stignorePath, wroteSTIgnore, err := writeInitSTIgnore(abs, []byte(rendered), templateRef, resolvedPreset, projectDir)
+			if resolvedPreset == "" && meta != nil {
+				resolvedPreset = strings.TrimSpace(meta.StignorePreset)
+			}
+			stignorePath, wroteSTIgnore, err := writeInitSTIgnore(abs, []byte(rendered), resolvedPreset)
 			if err != nil {
 				return err
 			}
 			scaffolded, err := scaffoldInitTemplateFiles(abs, templateRef, meta, vars, customVars, force, projectDir)
 			if err != nil {
 				return err
-			}
-			if len(scaffolded) == 0 {
-				scaffolded, err = scaffoldInitWorkload(abs, templateRef, vars, force, projectDir)
-				if err != nil {
-					return err
-				}
 			}
 
 			zshFiles, err := scaffoldZshFiles(abs, vars, force, cmd.OutOrStdout())
@@ -209,15 +206,19 @@ func newInitCmd(opts *Options) *cobra.Command {
 
 	cmd.Flags().BoolVar(&force, "force", false, "Overwrite an existing config file")
 	cmd.Flags().StringVar(&templateRef, "template", "", initTemplateUsage())
+	// Kept only so the removal can name a replacement instead of cobra saying
+	// "unknown flag". Hidden, so they do not appear as options.
+	cmd.Flags().String("workload", "", "removed; use --template <name>")
+	cmd.Flags().String("generic-preset", "", "removed; use --template deployment")
+	_ = cmd.Flags().MarkHidden("workload")
+	_ = cmd.Flags().MarkHidden("generic-preset")
 	cmd.Flags().BoolVar(&yes, "yes", false, "Non-interactive mode, accept all defaults")
 	cmd.Flags().StringVar(&nameOverride, "name", "", "Environment name")
 	cmd.Flags().StringVar(&nsOverride, "namespace", "", "Namespace")
 	cmd.Flags().StringVar(&contextOverride, "context", "", "Kubeconfig context (defaults to active context)")
-	cmd.Flags().StringVar(&workloadType, "workload", "pod", "Workload type: pod, job, pytorchjob, generic")
 	cmd.Flags().StringVar(&workloadName, "workload-name", "", "Name for the workload being added to an existing config")
 	cmd.Flags().StringVar(&manifestPath, "manifest-path", "", "Path to workload manifest")
 	cmd.Flags().StringArrayVar(&injectPaths, "inject-path", nil, "Workload inject path (repeatable)")
-	cmd.Flags().StringVar(&genericPreset, "generic-preset", "", "Optional generic scaffold preset, for example deployment")
 	cmd.Flags().StringVar(&devImageOverride, "dev-image", "", "Dev container image for pod workloads")
 	cmd.Flags().StringVar(&sidecarImageOverride, "sidecar-image", "", "Sidecar image")
 	cmd.Flags().StringVar(&syncLocalOverride, "sync-local", "", "Local sync path")
@@ -297,9 +298,6 @@ func persistTemplateRefIfNeeded(rendered, templateRef string, customVars map[str
 	if ref == "" {
 		ref = "basic"
 	}
-	if isActualBuiltinBasic(ref, projectDir) && len(customVars) == 0 {
-		return rendered, nil
-	}
 
 	var doc yamlv3.Node
 	if err := yamlv3.Unmarshal([]byte(rendered), &doc); err != nil {
@@ -321,7 +319,19 @@ func persistTemplateRefIfNeeded(rendered, templateRef string, customVars map[str
 	}
 	setYAMLNode(spec, "template", templateNode)
 
-	out, err := yamlv3.Marshal(&doc)
+	// yaml.v3 defaults to 4-space indent; the templates are written with 2, and
+	// this rewrite is now on the path of every init rather than only templates
+	// with variables, so matching them keeps generated configs looking hand-written.
+	var buf bytes.Buffer
+	enc := yamlv3.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
+		return "", fmt.Errorf("render config with template metadata: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return "", fmt.Errorf("render config with template metadata: %w", err)
+	}
+	out, err := buf.Bytes(), error(nil)
 	if err != nil {
 		return "", fmt.Errorf("marshal generated config with template metadata: %w", err)
 	}
@@ -389,110 +399,26 @@ func defaultInitTargetPath(*config.TemplateVars, *config.TemplateMeta, string) s
 	return config.FolderFile
 }
 
-func normalizeInitManifestPathForTarget(configPath string, vars *config.TemplateVars, explicit bool) {
-	if explicit || !isFolderConfigPath(configPath) {
-		return
-	}
-
-	switch strings.TrimSpace(vars.WorkloadType) {
-	case "pod":
-		if vars.ManifestPath == ".okdev/pod.yaml" {
-			vars.ManifestPath = "pod.yaml"
-		}
-	case "job":
-		if vars.ManifestPath == ".okdev/job.yaml" {
-			vars.ManifestPath = "job.yaml"
-		}
-	case "pytorchjob":
-		if vars.ManifestPath == ".okdev/pytorchjob.yaml" {
-			vars.ManifestPath = "pytorchjob.yaml"
-		}
-	case "generic":
-		if strings.TrimSpace(vars.GenericPreset) == "deployment" && vars.ManifestPath == ".okdev/deployment.yaml" {
-			vars.ManifestPath = "deployment.yaml"
-		}
-	}
-}
-
 func isFolderConfigPath(configPath string) bool {
 	return filepath.Base(configPath) == "okdev.yaml" && filepath.Base(filepath.Dir(configPath)) == ".okdev"
 }
 
+// applyWorkloadDefaults fills in only what a template cannot state for itself.
+// Manifest paths and inject paths used to be defaulted per workload type here;
+// each built-in template writes its own now.
 func applyWorkloadDefaults(vars *config.TemplateVars) {
-	switch strings.TrimSpace(vars.WorkloadType) {
-	case "", "pod":
-		vars.WorkloadType = "pod"
-		if strings.TrimSpace(vars.ManifestPath) == "" {
-			vars.ManifestPath = ".okdev/pod.yaml"
-		}
-		// A Pod manifest is injected at its own root, which the runtime
-		// supplies; there is no path to name.
-		vars.InjectPaths = nil
-		if strings.TrimSpace(vars.AttachContainer) == "" {
-			vars.AttachContainer = "dev"
-		}
-	case "job":
-		if strings.TrimSpace(vars.ManifestPath) == "" {
-			vars.ManifestPath = ".okdev/job.yaml"
-		}
-		if len(vars.InjectPaths) == 0 {
-			vars.InjectPaths = []string{"spec.template"}
-		}
-		if strings.TrimSpace(vars.AttachContainer) == "" {
-			vars.AttachContainer = "dev"
-		}
-	case "pytorchjob":
-		if strings.TrimSpace(vars.ManifestPath) == "" {
-			vars.ManifestPath = ".okdev/pytorchjob.yaml"
-		}
-		if len(vars.InjectPaths) == 0 {
-			vars.InjectPaths = []string{
-				"spec.pytorchReplicaSpecs.Master.template",
-				"spec.pytorchReplicaSpecs.Worker.template",
-			}
-		}
-		if strings.TrimSpace(vars.AttachContainer) == "" {
-			vars.AttachContainer = "dev"
-		}
-	case "generic":
-		if strings.TrimSpace(vars.GenericPreset) == "deployment" {
-			if strings.TrimSpace(vars.ManifestPath) == "" {
-				vars.ManifestPath = ".okdev/deployment.yaml"
-			}
-			if len(vars.InjectPaths) == 0 {
-				vars.InjectPaths = []string{"spec.template"}
-			}
-			if strings.TrimSpace(vars.AttachContainer) == "" {
-				vars.AttachContainer = "dev"
-			}
-		}
+	if strings.TrimSpace(vars.AttachContainer) == "" {
+		vars.AttachContainer = "dev"
 	}
 }
 
-var knownGenericPresets = map[string]bool{
-	"deployment": true,
-}
-
+// validateInitWorkloadVars checks the flags that only the "generic" shape uses.
+// Which shape is in play is now the template's business, so this cannot know
+// whether they are required — the rendered config is checked instead, in
+// validateRenderedInitConfig.
 func validateInitWorkloadVars(vars *config.TemplateVars) error {
-	switch strings.TrimSpace(vars.WorkloadType) {
-	case "pod", "job", "pytorchjob", "generic":
-	default:
-		return fmt.Errorf("unsupported workload type %q", vars.WorkloadType)
-	}
-	// The preset is checked first because a valid one supplies the manifest
-	// path and inject paths via applyWorkloadDefaults. When the preset is a
-	// typo, those fields are simply never filled — so reporting them as
-	// missing would name a symptom and send the user to fix the wrong thing.
-	if preset := strings.TrimSpace(vars.GenericPreset); preset != "" && !knownGenericPresets[preset] {
-		return fmt.Errorf("unknown --generic-preset %q; known presets: deployment", preset)
-	}
-	if vars.WorkloadType == "generic" {
-		if strings.TrimSpace(vars.ManifestPath) == "" {
-			return fmt.Errorf("--manifest-path is required when --workload=generic")
-		}
-		if len(vars.InjectPaths) == 0 {
-			return fmt.Errorf("at least one --inject-path is required when --workload=generic")
-		}
+	if len(vars.InjectPaths) > 0 && strings.TrimSpace(vars.ManifestPath) == "" {
+		return fmt.Errorf("--inject-path needs --manifest-path: inject paths address a manifest")
 	}
 	return nil
 }
@@ -503,56 +429,20 @@ func validateRenderedInitConfig(rendered, templateRef string, vars *config.Templ
 		return fmt.Errorf("parse generated config: %w", err)
 	}
 	cfg.SetDefaults()
-	// Before Validate, so a custom template that forgot spec.workload is told
-	// exactly that instead of the generic "manifestPath is required" it would
-	// otherwise trip on. Pod is no longer exempt: it has a manifest like every
-	// other type now.
-	if !isActualBuiltinBasic(templateRef, projectDir) && strings.TrimSpace(cfg.Spec.Workload.ManifestPath) == "" {
-		return fmt.Errorf("custom template must render spec.workload with a manifestPath for workload type %q; "+
-			"every workload is a manifest file, so the template also needs a `files:` entry that writes it",
-			vars.WorkloadType)
+	// Before Validate, so a template that rendered no workload is told exactly
+	// that instead of the generic "manifestPath is required" it would otherwise
+	// trip on. Every template is checked, built-ins included — they are ordinary
+	// templates now, and the built-in "generic" shape genuinely can render an
+	// empty manifestPath when --manifest-path was not supplied.
+	if strings.TrimSpace(cfg.Spec.Workload.ManifestPath) == "" {
+		return fmt.Errorf("template %q rendered no spec.workload.manifestPath; "+
+			"every workload is a manifest file, so pass --manifest-path or use a template that ships one",
+			templateName(templateRef))
 	}
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("generated config is invalid: %w", err)
 	}
 	return nil
-}
-
-func scaffoldInitWorkload(configPath, templateRef string, vars *config.TemplateVars, force bool, projectDir string) ([]string, error) {
-	if !scaffoldsInitWorkload(templateRef, vars, projectDir) {
-		return nil, nil
-	}
-	var templatePath string
-	switch vars.WorkloadType {
-	case "pod":
-		templatePath = "templates/manifests/pod.yaml.tmpl"
-	case "job":
-		templatePath = "templates/manifests/job.yaml.tmpl"
-	case "pytorchjob":
-		templatePath = "templates/manifests/pytorchjob.yaml.tmpl"
-	case "generic":
-		if strings.TrimSpace(vars.GenericPreset) == "deployment" {
-			templatePath = "templates/manifests/deployment.yaml.tmpl"
-		}
-	}
-	if templatePath == "" || strings.TrimSpace(vars.ManifestPath) == "" {
-		return nil, nil
-	}
-	target := resolveInitScaffoldFilePath(configPath, vars.ManifestPath)
-	if _, err := os.Stat(target); err == nil && !force {
-		return nil, nil
-	}
-	rendered, err := config.RenderEmbeddedTemplate(templatePath, vars)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return nil, fmt.Errorf("create manifest directory: %w", err)
-	}
-	if err := os.WriteFile(target, []byte(rendered), 0o644); err != nil {
-		return nil, fmt.Errorf("write scaffolded manifest %q: %w", target, err)
-	}
-	return []string{target}, nil
 }
 
 func scaffoldInitTemplateFiles(configPath, templateRef string, meta *config.TemplateMeta, vars *config.TemplateVars, customVars map[string]any, force bool, projectDir string) ([]string, error) {
@@ -615,40 +505,6 @@ func resolveInitScaffoldFilePath(configPath, path string) string {
 func pathStartsWithDotOkdev(path string) bool {
 	cleaned := filepath.Clean(strings.TrimSpace(path))
 	return cleaned == ".okdev" || strings.HasPrefix(cleaned, ".okdev"+string(filepath.Separator))
-}
-
-func usesBuiltinBasicTemplate(ref string) bool {
-	return strings.TrimSpace(ref) == "" || strings.TrimSpace(ref) == "basic"
-}
-
-// isActualBuiltinBasic checks whether the ref resolves to the actual built-in
-// basic template, not a project/user template that shadows the name.
-func isActualBuiltinBasic(ref, projectDir string) bool {
-	if !usesBuiltinBasicTemplate(ref) {
-		return false
-	}
-	// If a project-local or user template shadows "basic", it's not the built-in.
-	if names, _ := config.ProjectTemplateNames(projectDir); containsString(names, "basic") {
-		return false
-	}
-	if names, _ := config.UserTemplateNames(); containsString(names, "basic") {
-		return false
-	}
-	return true
-}
-
-func scaffoldsInitWorkload(templateRef string, vars *config.TemplateVars, projectDir string) bool {
-	if !isActualBuiltinBasic(templateRef, projectDir) {
-		return false
-	}
-	switch strings.TrimSpace(vars.WorkloadType) {
-	case "pod", "job", "pytorchjob":
-		return true
-	case "generic":
-		return strings.TrimSpace(vars.GenericPreset) == "deployment"
-	default:
-		return false
-	}
 }
 
 func detectSTIgnorePreset(dir string) string {
@@ -721,20 +577,20 @@ func isZshShellPath(shell string) bool {
 	return strings.HasSuffix(strings.TrimSpace(shell), "/zsh")
 }
 
-func writeInitSTIgnore(configPath string, rendered []byte, templateRef string, stignorePreset string, projectDirs ...string) (string, bool, error) {
+// writeInitSTIgnore writes the starter ignore file for the generated project.
+//
+// The preset is whatever the caller resolved — the template's own
+// `stignorePreset` frontmatter, or --stignore-preset overriding it. Nothing here
+// keys off the template's *name*, which is what used to force okdev to check
+// whether a name resolved to the real built-in before applying built-in-only
+// behavior.
+func writeInitSTIgnore(configPath string, rendered []byte, stignorePreset string) (string, bool, error) {
 	var cfg config.DevEnvironment
 	if err := yaml.Unmarshal(rendered, &cfg); err != nil {
 		return "", false, fmt.Errorf("parse generated config for .stignore: %w", err)
 	}
 	cfg.SetDefaults()
-	projectDir := config.RootDir(configPath)
-	if len(projectDirs) > 0 {
-		projectDir = projectDirs[0]
-	}
 	var patterns []string
-	if isActualBuiltinBasic(templateRef, projectDir) {
-		patterns = config.BuiltinTemplateLocalIgnores(templateRef)
-	}
 	if preset := strings.TrimSpace(stignorePreset); preset != "" {
 		patterns = config.STIgnorePreset(preset)
 		if patterns == nil {
@@ -775,4 +631,40 @@ func writeInitSTIgnore(configPath string, rendered []byte, templateRef string, s
 		return "", false, fmt.Errorf("write .stignore %q: %w", stignorePath, err)
 	}
 	return stignorePath, true, nil
+}
+
+// templateName is the ref as the user typed it, or the default when omitted.
+func templateName(ref string) string {
+	if r := strings.TrimSpace(ref); r != "" {
+		return r
+	}
+	return "basic"
+}
+
+// rejectRemovedWorkloadFlags turns --workload / --generic-preset into an error
+// naming the template that replaced them.
+//
+// Silently ignoring them would be worse than removing them: someone asking for
+// a Job would get a pod and only find out on the cluster.
+func rejectRemovedWorkloadFlags(cmd *cobra.Command) error {
+	preset := ""
+	if f := cmd.Flags().Lookup("generic-preset"); f != nil && f.Changed {
+		preset = strings.TrimSpace(f.Value.String())
+	}
+	f := cmd.Flags().Lookup("workload")
+	if f == nil || !f.Changed {
+		if preset != "" {
+			return fmt.Errorf("--generic-preset is removed; use --template %s instead\n%s", preset, availableTemplatesHint())
+		}
+		return nil
+	}
+	replacement := strings.TrimSpace(f.Value.String())
+	if replacement == "generic" && preset != "" {
+		replacement = preset
+	}
+	return fmt.Errorf("--workload is removed; use --template %s instead\n%s", replacement, availableTemplatesHint())
+}
+
+func availableTemplatesHint() string {
+	return "(available: " + strings.Join(config.BuiltinTemplateNames(), ", ") + "; run `okdev template list` to include your own)"
 }

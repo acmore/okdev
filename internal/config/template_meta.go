@@ -14,6 +14,10 @@ type TemplateMeta struct {
 	Description string             `yaml:"description"`
 	Variables   []TemplateVariable `yaml:"variables"`
 	Files       []TemplateFile     `yaml:"files"`
+	// StignorePreset names the starter .stignore patterns this template wants.
+	// Declaring it here rather than looking it up by template name is what lets
+	// a user template shadow a built-in without inheriting its behavior.
+	StignorePreset string `yaml:"stignorePreset,omitempty"`
 }
 
 // TemplateVariable declares a custom variable that a template accepts.

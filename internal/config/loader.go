@@ -14,6 +14,8 @@ const (
 	DefaultFile = ".okdev.yaml"
 	FolderFile  = ".okdev/okdev.yaml"
 	LegacyFile  = "okdev.yaml"
+	// FolderDir is where manifests live, whichever config shape a project has.
+	FolderDir = ".okdev"
 )
 
 func Load(configPath string) (*DevEnvironment, string, error) {
@@ -164,7 +166,7 @@ func RootDir(configPath string) string {
 		return ""
 	}
 	dir := filepath.Dir(p)
-	if filepath.Base(dir) == ".okdev" && filepath.Base(p) == "okdev.yaml" {
+	if filepath.Base(dir) == FolderDir && filepath.Base(p) == "okdev.yaml" {
 		return filepath.Dir(dir)
 	}
 	return dir
@@ -201,6 +203,16 @@ func ResolveWorkloadManifestPath(configPath, manifestPath string) string {
 		rootCandidate := filepath.Clean(filepath.Join(rootDir, p))
 		if _, err := os.Stat(rootCandidate); err == nil {
 			return rootCandidate
+		}
+		// Manifests always live in .okdev/, whichever shape the config has.
+		// A folder config's own directory already is .okdev/, so the first
+		// candidate found it; a flat .okdev.yaml sits beside .okdev/ instead,
+		// and without this a bare "job.yaml" would resolve to nothing. Looking
+		// here makes the documented invariant true for every config layout,
+		// rather than making each template know which layout it is in.
+		dotOkdev := filepath.Clean(filepath.Join(rootDir, FolderDir, p))
+		if _, err := os.Stat(dotOkdev); err == nil {
+			return dotOkdev
 		}
 	}
 

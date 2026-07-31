@@ -44,8 +44,7 @@ trap cleanup EXIT
 echo "Scaffolding deployment config via okdev init"
 cd "$WORKDIR"
 "$OKDEV_BIN" init \
-  --workload generic \
-  --generic-preset deployment \
+  --template deployment \
   --yes \
   --name "$SESSION_NAME" \
   --namespace "$NAMESPACE" \

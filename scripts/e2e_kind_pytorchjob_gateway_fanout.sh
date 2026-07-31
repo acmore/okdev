@@ -59,7 +59,7 @@ refresh_pytorchjob_pods() {
 echo "Scaffolding PyTorchJob gateway fanout config"
 cd "$WORKDIR"
 "$OKDEV_BIN" init \
-  --workload pytorchjob \
+  --template pytorchjob \
   --yes \
   --name "$SESSION_NAME" \
   --namespace "$NAMESPACE" \

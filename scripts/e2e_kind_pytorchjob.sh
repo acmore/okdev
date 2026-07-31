@@ -81,7 +81,7 @@ wait_for_pod_file_content() {
 echo "Scaffolding PyTorchJob config via okdev init"
 cd "$WORKDIR"
 "$OKDEV_BIN" init \
-  --workload pytorchjob \
+  --template pytorchjob \
   --yes \
   --name e2e-ptjob \
   --namespace "$NAMESPACE" \
@@ -1727,7 +1727,7 @@ dump_mesh_diagnostics() {
 echo "Scaffolding mesh PyTorchJob config"
 cd "$MESH_WORKDIR"
 HOME="$MESH_HOME" "$OKDEV_BIN" init \
-  --workload pytorchjob \
+  --template pytorchjob \
   --yes \
   --name "$MESH_SESSION" \
   --namespace "$NAMESPACE" \
