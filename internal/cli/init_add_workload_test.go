@@ -96,16 +96,17 @@ func TestAdditiveManifestPathKeepsManifestsInsideDotOkdev(t *testing.T) {
 	}
 }
 
-func planFixture(t *testing.T, raw string, workloadType, name string, inject []string) (*workloadAddition, error) {
+// planFixture adds a workload of the shape named by templateRef, which is the
+// built-in template name — pod, job, pytorchjob, deployment or generic.
+func planFixture(t *testing.T, raw string, templateRef, name string, inject []string) (*workloadAddition, error) {
 	t.Helper()
 	cfg, _, err := config.LoadFromBytes([]byte(raw), "/repo/.okdev/okdev.yaml")
 	if err != nil {
 		t.Fatalf("load fixture config: %v", err)
 	}
 	vars := config.NewTemplateVars()
-	vars.WorkloadType = workloadType
 	vars.InjectPaths = inject
-	return planWorkloadAddition("/repo/.okdev/okdev.yaml", []byte(raw), cfg, vars, name)
+	return planWorkloadAddition("/repo/.okdev/okdev.yaml", []byte(raw), cfg, vars, name, templateRef, "")
 }
 
 const podOnlyConfig = `apiVersion: okdev.io/v1alpha1
@@ -363,7 +364,7 @@ func TestInitAddsAWorkloadToAnExistingConfig(t *testing.T) {
 		t.Fatalf("init must write the folder config: %v", err)
 	}
 
-	if _, err := runInit(t, dir, "--yes", "--workload", "job", "--workload-name", "batch"); err != nil {
+	if _, err := runInit(t, dir, "--yes", "--template", "job", "--workload-name", "batch"); err != nil {
 		t.Fatalf("additive init: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".okdev", "batch.yaml")); err != nil {
@@ -391,7 +392,7 @@ func TestInitAdditiveFailureLeavesDiskUnchanged(t *testing.T) {
 	}
 
 	// generic without --inject-path cannot produce a valid config.
-	if _, err := runInit(t, dir, "--yes", "--workload", "generic", "--workload-name", "gen",
+	if _, err := runInit(t, dir, "--yes", "--template", "generic", "--workload-name", "gen",
 		"--manifest-path", "mine.yaml"); err == nil {
 		t.Fatal("expected the invalid addition to be refused")
 	}
@@ -419,7 +420,7 @@ func TestInitRejectsProjectFlagsOnAnExistingConfig(t *testing.T) {
 	if _, err := runInit(t, dir, "--yes", "--name", "proj", "--namespace", "default"); err != nil {
 		t.Fatalf("first init: %v", err)
 	}
-	_, err := runInit(t, dir, "--yes", "--workload", "job", "--workload-name", "batch", "--namespace", "other")
+	_, err := runInit(t, dir, "--yes", "--template", "job", "--workload-name", "batch", "--namespace", "other")
 	if err == nil || !strings.Contains(err.Error(), "namespace") {
 		t.Fatalf("expected a rejection naming --namespace, got %v", err)
 	}
@@ -436,17 +437,26 @@ func TestWorkloadTypeMatrix(t *testing.T) {
 		{workloadType: "pod"},
 		{workloadType: "job"},
 		{workloadType: "pytorchjob"},
+		{workloadType: "deployment"},
 		{workloadType: "generic", extraArgs: []string{
-			"--generic-preset", "deployment",
-			"--manifest-path", "deployment.yaml",
+			"--manifest-path", "mine.yaml",
 			"--inject-path", "spec.template",
 		}},
 	}
 	for _, tc := range fresh {
 		t.Run("fresh/"+tc.workloadType, func(t *testing.T) {
 			dir := t.TempDir()
+			if tc.workloadType == "generic" {
+				// generic means "I brought my own manifest"; put it there.
+				if err := os.MkdirAll(filepath.Join(dir, ".okdev"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, ".okdev", "mine.yaml"), []byte(genericManifest), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
 			args := append([]string{"--yes", "--name", "p", "--namespace", "default",
-				"--workload", tc.workloadType}, tc.extraArgs...)
+				"--template", tc.workloadType}, tc.extraArgs...)
 			if _, err := runInit(t, dir, args...); err != nil {
 				t.Fatalf("init: %v", err)
 			}
@@ -461,7 +471,7 @@ func TestWorkloadTypeMatrix(t *testing.T) {
 		{workloadType: "pod"},
 		{workloadType: "job"},
 		{workloadType: "pytorchjob"},
-		{workloadType: "generic", extraArgs: []string{"--generic-preset", "deployment"}},
+		{workloadType: "deployment"},
 	}
 	for _, tc := range added {
 		t.Run("added/"+tc.workloadType, func(t *testing.T) {
@@ -469,7 +479,7 @@ func TestWorkloadTypeMatrix(t *testing.T) {
 			if _, err := runInit(t, dir, "--yes", "--name", "p", "--namespace", "default"); err != nil {
 				t.Fatalf("first init: %v", err)
 			}
-			args := append([]string{"--yes", "--workload", tc.workloadType,
+			args := append([]string{"--yes", "--template", tc.workloadType,
 				"--workload-name", "extra"}, tc.extraArgs...)
 			if _, err := runInit(t, dir, args...); err != nil {
 				t.Fatalf("additive init: %v", err)
@@ -509,11 +519,11 @@ func TestInitRefusesToClobberAnExistingManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := runInit(t, dir, "--yes", "--workload", "job", "--workload-name", "batch"); err == nil {
+	if _, err := runInit(t, dir, "--yes", "--template", "job", "--workload-name", "batch"); err == nil {
 		t.Fatal("expected a refusal rather than clobbering the manifest")
 	}
 	// --force means "rewrite the config", never "clobber a manifest".
-	if _, err := runInit(t, dir, "--yes", "--force", "--workload", "job", "--workload-name", "batch"); err == nil {
+	if _, err := runInit(t, dir, "--yes", "--force", "--template", "job", "--workload-name", "batch"); err == nil {
 		t.Fatal("--force must not override an existing manifest")
 	}
 	kept, err := os.ReadFile(target)
@@ -522,22 +532,6 @@ func TestInitRefusesToClobberAnExistingManifest(t *testing.T) {
 	}
 	if string(kept) != "mine: keep\n" {
 		t.Fatalf("the existing manifest was modified: %q", kept)
-	}
-}
-
-// The fresh path has its own coverage in init_test.go; this asserts the
-// additive path inherits the same preset gate rather than reimplementing it.
-func TestInitAdditiveRejectsUnknownGenericPreset(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := runInit(t, dir, "--yes", "--name", "p", "--namespace", "default"); err != nil {
-		t.Fatalf("first init: %v", err)
-	}
-	// No --manifest-path: that is what a user typing a wrong preset actually
-	// runs, and the error must name the preset rather than its symptom.
-	_, err := runInit(t, dir, "--yes", "--workload", "generic", "--workload-name", "gen",
-		"--generic-preset", "statefulset")
-	if err == nil || !strings.Contains(err.Error(), "statefulset") {
-		t.Fatalf("expected an unknown-preset rejection, got %v", err)
 	}
 }
 
@@ -572,7 +566,7 @@ spec:
 		t.Fatal(err)
 	}
 
-	if _, err := runInit(t, dir, "--yes", "--workload", "job", "--workload-name", "batch"); err != nil {
+	if _, err := runInit(t, dir, "--yes", "--template", "job", "--workload-name", "batch"); err != nil {
 		t.Fatalf("additive init on a flat config: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".okdev", "batch.yaml")); err != nil {
@@ -593,7 +587,7 @@ func TestAddingTwoWorkloadsOfTheSameTypeDoesNotCollide(t *testing.T) {
 		t.Fatalf("first init: %v", err)
 	}
 	for _, name := range []string{"a", "b"} {
-		if _, err := runInit(t, dir, "--yes", "--workload", "job", "--workload-name", name); err != nil {
+		if _, err := runInit(t, dir, "--yes", "--template", "job", "--workload-name", name); err != nil {
 			t.Fatalf("adding %q: %v", name, err)
 		}
 	}
@@ -611,7 +605,7 @@ func TestInitSurfacesANamedConfigThatDoesNotResolve(t *testing.T) {
 	}
 
 	t.Setenv("OKDEV_CONFIG", filepath.Join(dir, "nope", ".okdev.yaml"))
-	_, err := runInit(t, dir, "--yes", "--workload", "job", "--workload-name", "batch")
+	_, err := runInit(t, dir, "--yes", "--template", "job", "--workload-name", "batch")
 	if err == nil {
 		t.Fatal("expected the unresolvable OKDEV_CONFIG to be reported")
 	}
@@ -627,3 +621,21 @@ func TestInitTreatsNoDiscoverableConfigAsFresh(t *testing.T) {
 		t.Fatalf("a fresh init in an empty dir must succeed: %v", err)
 	}
 }
+
+const genericManifest = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: '{{ .WorkloadName }}'
+spec:
+  selector:
+    matchLabels:
+      app: demo
+  template:
+    metadata:
+      labels:
+        app: demo
+    spec:
+      containers:
+        - name: dev
+          image: alpine
+`

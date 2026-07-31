@@ -27,8 +27,16 @@ type templateHTTPDoer interface {
 var embeddedTemplates embed.FS
 
 // builtinNames maps template names to their embedded file paths.
+// builtinNames maps template names to their embedded file paths. "basic" is
+// kept as an alias for "pod": it is the default ref and is persisted in existing
+// configs as spec.template.name, so it has to keep resolving.
 var builtinNames = map[string]string{
-	"basic": "templates/basic.yaml.tmpl",
+	"basic":      "templates/pod.yaml.tmpl",
+	"pod":        "templates/pod.yaml.tmpl",
+	"job":        "templates/job.yaml.tmpl",
+	"pytorchjob": "templates/pytorchjob.yaml.tmpl",
+	"deployment": "templates/deployment.yaml.tmpl",
+	"generic":    "templates/generic.yaml.tmpl",
 }
 
 var stignorePresets = map[string][]string{
@@ -92,7 +100,6 @@ type TemplateVars struct {
 	ManifestPath     string
 	InjectPaths      []string
 	AttachContainer  string
-	GenericPreset    string
 }
 
 type PortVar struct {

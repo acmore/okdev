@@ -1,0 +1,55 @@
+---
+name: job
+description: Kubernetes Job workload with a starter manifest
+stignorePreset: default
+files:
+  - path: .okdev/job.yaml
+    template: manifests/job.yaml.tmpl
+---
+apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: {{ .Name }}
+spec:
+  namespace: {{ .Namespace }}
+{{- if .KubeContext }}
+  kubeContext: {{ .KubeContext }}
+{{- end }}
+  session:
+    defaultNameTemplate: '{{`{{ .Repo }}-{{ .User }}`}}'
+  sync:
+    engine: syncthing
+    syncthing:
+      version: {{ .SyncthingVersion }}
+      autoInstall: true
+    paths:
+      - "{{ .SyncLocal }}:{{ .SyncRemote }}"
+  ports:
+    - name: app
+      local: 8080
+      remote: 8080
+  workload:
+    type: job
+    manifestPath: job.yaml
+    inject:
+      - path: "spec.template"
+    attach:
+      container: dev
+  ssh:
+    user: {{ .SSHUser }}
+{{- if .Shell }}
+    shell: {{ .Shell }}
+{{- end }}
+    keepAliveIntervalSeconds: 30
+    keepAliveTimeoutSeconds: 90
+  sidecar:
+{{- if .SidecarImage }}
+    image: {{ .SidecarImage }}
+{{- end }}
+    resources:
+      requests:
+        cpu: "{{ .SidecarCPU }}"
+        memory: {{ .SidecarMemory }}
+      limits:
+        cpu: "{{ .SidecarCPU }}"
+        memory: {{ .SidecarMemory }}

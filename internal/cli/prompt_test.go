@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"bytes"
 	"strings"
 	"testing"
@@ -66,9 +65,8 @@ func TestPromptInteractiveRequiresTTYUnlessYes(t *testing.T) {
 func TestPromptInteractiveSkipsOverriddenFields(t *testing.T) {
 	vars := config.NewTemplateVars()
 	overrides := InitOverrides{
-		Name:         "flag-name",
-		Namespace:    "flag-ns",
-		WorkloadType: "pod",
+		Name:      "flag-name",
+		Namespace: "flag-ns",
 	}
 	applyOverrides(vars, overrides)
 
@@ -112,7 +110,6 @@ func TestPromptInteractiveUsesExplanatoryLabels(t *testing.T) {
 		"Environment name (used for session labels and default naming)",
 		"Namespace (where the dev workload will run)",
 		"Kube context (kubeconfig context to use)",
-		"Workload type (pod=simple dev pod, job=batch workload, pytorchjob=distributed training, generic=custom manifest)",
 		"Sync local path (project directory on this machine)",
 		"Sync remote path (workspace path in the container)",
 		"SSH user (login user inside the dev container)",
@@ -158,10 +155,9 @@ func TestApplyKubeDefaultsNoOverrides(t *testing.T) {
 func TestPromptInteractiveSkipsKubeContextWhenOverridden(t *testing.T) {
 	vars := config.NewTemplateVars()
 	overrides := InitOverrides{
-		Name:         "flag-name",
-		Namespace:    "flag-ns",
-		KubeContext:  "flag-ctx",
-		WorkloadType: "pod",
+		Name:        "flag-name",
+		Namespace:   "flag-ns",
+		KubeContext: "flag-ctx",
 	}
 	applyOverrides(vars, overrides)
 
@@ -189,21 +185,5 @@ func TestSplitCommaList(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("unexpected split result %#v", got)
 		}
-	}
-}
-
-func TestPromptWorkloadTypeRejectsInvalidThenAcceptsValid(t *testing.T) {
-	in := strings.NewReader("deployment\njob\n")
-	reader := bufio.NewReader(in)
-	var out bytes.Buffer
-	got, err := promptWorkloadType(reader, &out, "pod")
-	if err != nil {
-		t.Fatalf("promptWorkloadType error: %v", err)
-	}
-	if got != "job" {
-		t.Fatalf("expected job, got %q", got)
-	}
-	if !strings.Contains(out.String(), "invalid workload type") {
-		t.Fatalf("expected invalid-workload warning, got %q", out.String())
 	}
 }
