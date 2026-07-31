@@ -44,7 +44,7 @@ spec:
     image: ghcr.io/acmore/okdev:edge
 `)
 
-	stignorePath, wrote, err := writeInitSTIgnore(configPath, rendered, "basic", "")
+	stignorePath, wrote, err := writeInitSTIgnore(configPath, rendered, "default")
 	if err != nil {
 		t.Fatalf("writeInitSTIgnore: %v", err)
 	}
@@ -87,7 +87,7 @@ spec:
     image: ghcr.io/acmore/okdev:edge
 `)
 
-	gotPath, wrote, err := writeInitSTIgnore(configPath, rendered, "basic", "")
+	gotPath, wrote, err := writeInitSTIgnore(configPath, rendered, "default")
 	if err != nil {
 		t.Fatalf("writeInitSTIgnore: %v", err)
 	}
@@ -106,7 +106,7 @@ spec:
 	}
 }
 
-func TestWriteInitSTIgnoreSkipsUnknownTemplate(t *testing.T) {
+func TestWriteInitSTIgnoreSkipsWhenNoPresetIsDeclared(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, ".okdev.yaml")
 	rendered := []byte(`
@@ -126,12 +126,12 @@ spec:
     image: ghcr.io/acmore/okdev:edge
 `)
 
-	stignorePath, wrote, err := writeInitSTIgnore(configPath, rendered, "./custom.yaml", "")
+	stignorePath, wrote, err := writeInitSTIgnore(configPath, rendered, "")
 	if err != nil {
 		t.Fatalf("writeInitSTIgnore: %v", err)
 	}
 	if wrote || stignorePath != "" {
-		t.Fatalf("expected unknown template to skip .stignore generation, got path=%q wrote=%v", stignorePath, wrote)
+		t.Fatalf("a template declaring no preset must write nothing, got path=%q wrote=%v", stignorePath, wrote)
 	}
 }
 
@@ -155,7 +155,7 @@ spec:
     image: ghcr.io/acmore/okdev:edge
 `)
 
-	stignorePath, wrote, err := writeInitSTIgnore(configPath, rendered, "basic", "go")
+	stignorePath, wrote, err := writeInitSTIgnore(configPath, rendered, "go")
 	if err != nil {
 		t.Fatalf("writeInitSTIgnore: %v", err)
 	}
@@ -191,7 +191,7 @@ spec:
     image: ghcr.io/acmore/okdev:edge
 `)
 
-	_, _, err := writeInitSTIgnore(configPath, rendered, "basic", "unknown")
+	_, _, err := writeInitSTIgnore(configPath, rendered, "unknown")
 	if err == nil {
 		t.Fatal("expected unknown preset error")
 	}
@@ -1279,5 +1279,55 @@ func TestInitForceDoesNotOverwriteSTIgnore(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Kept existing") {
 		t.Fatalf("keeping the existing .stignore must be reported:\n%s", out.String())
+	}
+}
+
+// The .stignore preset is declared by the template, not looked up by its name.
+// Name lookup is what forced isActualBuiltinBasic to exist: a user template
+// shadowing a built-in name must not inherit built-in-only behavior.
+func TestSTIgnorePresetComesFromTemplateFrontmatter(t *testing.T) {
+	rendered := []byte(`apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: demo
+spec:
+  namespace: default
+  sync:
+    engine: syncthing
+    paths:
+      - ".:/workspace"
+`)
+	for _, tc := range []struct {
+		name   string
+		preset string
+		want   string
+	}{
+		{name: "declared", preset: "go", want: "bin/\ndist/\n.coverprofile\ncoverage.out\n.DS_Store\n"},
+		{name: "omitted", preset: "", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			cfgPath := filepath.Join(tmp, ".okdev.yaml")
+			path, wrote, err := writeInitSTIgnore(cfgPath, rendered, tc.preset)
+			if err != nil {
+				t.Fatalf("writeInitSTIgnore: %v", err)
+			}
+			if tc.want == "" {
+				if wrote || path != "" {
+					t.Fatalf("a template declaring no preset must write nothing, got path=%q wrote=%v", path, wrote)
+				}
+				return
+			}
+			if !wrote {
+				t.Fatal("expected .stignore to be written")
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("unexpected .stignore content %q", got)
+			}
+		})
 	}
 }

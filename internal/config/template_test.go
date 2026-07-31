@@ -106,19 +106,22 @@ func TestRenderBuiltinPodManifest(t *testing.T) {
 	}
 }
 
-func TestBuiltinTemplateLocalIgnores(t *testing.T) {
-	if got := BuiltinTemplateLocalIgnores(""); len(got) == 0 {
-		t.Fatal("expected empty template ref to use basic local ignore patterns")
+func TestBuiltinTemplateDeclaresItsSTIgnorePreset(t *testing.T) {
+	// The preset is frontmatter, not a name lookup, so a user template shadowing
+	// this name inherits nothing.
+	raw, err := ResolveTemplate("basic")
+	if err != nil {
+		t.Fatal(err)
 	}
-	patterns := BuiltinTemplateLocalIgnores("basic")
-	if len(patterns) == 0 {
-		t.Fatal("expected built-in local ignore patterns")
+	meta, _, err := ParseFrontmatter(raw)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if patterns[0] != ".venv/" {
-		t.Fatalf("unexpected first pattern %q", patterns[0])
+	if meta.StignorePreset != "default" {
+		t.Fatalf("basic must declare stignorePreset, got %q", meta.StignorePreset)
 	}
-	if got := BuiltinTemplateLocalIgnores("./custom.yaml"); got != nil {
-		t.Fatalf("expected nil ignores for custom template, got %+v", got)
+	if len(STIgnorePreset(meta.StignorePreset)) == 0 {
+		t.Fatalf("declared preset %q resolves to nothing", meta.StignorePreset)
 	}
 }
 
