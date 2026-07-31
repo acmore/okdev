@@ -39,9 +39,6 @@ func TestDefaultTemplateVars(t *testing.T) {
 	if vars.SidecarCPU != "250m" || vars.SidecarMemory != "512Mi" {
 		t.Fatalf("unexpected default sidecar resources: %#v", vars)
 	}
-	if vars.WorkloadType != "pod" {
-		t.Fatalf("expected pod workload type, got %q", vars.WorkloadType)
-	}
 }
 
 type fakeTemplateHTTPDoer struct {

@@ -22,6 +22,7 @@ Use this skill when the request involves:
 
 - `okdev init`, `up` (including `up --workload <name>`), `restart`, `status`, `ssh`, `exec`, `cp`, `sync` (including `sync pause`/`resume`/`wait`), `ports`, `down`, `jobs`, `env-diff`, `use`, `migrate`, `workload` (`workload list`/`use`/`show`)
 - config discovery or `.okdev.yaml` / `.okdev/okdev.yaml`
+- choosing what `okdev init` scaffolds: `--template pod|job|pytorchjob|deployment|generic` or a template of their own (`--workload` and `--generic-preset` are removed and error with the replacement named)
 - sync behavior, session reuse, port forwards, or SSH access
 - any workload type — `pod`, `job`, `generic`, `pytorchjob` — all of which are manifest files under `.okdev/`
 - a config that still declares `spec.podTemplate`, or any error naming `okdev migrate`

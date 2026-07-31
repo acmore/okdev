@@ -27,7 +27,7 @@ agents can react without launching a diagnostic chain on every blip:
 ## Commands
 
 - `okdev version`
-- `okdev init [--workload pod|job|pytorchjob|generic] [--workload-name <name>] [--dev-image <image>] [--template <name>|<path>|<url>] [--set key=value] [--stignore-preset default|python|node|go|rust] [--force]`
+- `okdev init [--template <name>|<path>|<url>] [--workload-name <name>] [--dev-image <image>] [--set key=value] [--stignore-preset default|python|node|go|rust] [--force]`
 - `okdev template list [--all]`
 - `okdev template show <name>`
 - `okdev validate`
@@ -262,31 +262,42 @@ agents can react without launching a diagnostic chain on every blip:
 - `--verify`: verify single-file download SHA-256 after copy.
 - `--all`, `--pod`, `--role`, and `--label` are mutually exclusive.
 
-### `okdev init [--workload pod|job|pytorchjob|generic] [--workload-name <name>] [--template <name>|<path>|<url>] [--set key=value] [--stignore-preset default|python|node|go|rust] [--force]`
+### `okdev init [--template <name>|<path>|<url>] [--workload-name <name>] [--set key=value] [--stignore-preset default|python|node|go|rust] [--force]`
 
-- Writes a starter config at `.okdev/okdev.yaml` **plus the workload's manifest** beside it — `.okdev/pod.yaml` for the default pod workload, `.okdev/job.yaml` for `--workload job`, and so on. Every workload type, pod included, is a manifest file.
+- Writes a starter config at `.okdev/okdev.yaml` **plus the workload's manifest** beside it — `.okdev/pod.yaml` for the default pod workload, `.okdev/job.yaml` for `--template job`, and so on. Every workload type, pod included, is a manifest file.
 - **On a project that already has a config, `okdev init` adds a workload to it** rather than refusing. That is the additive mode, and it requires `--workload-name`:
 
     ```console
-    $ okdev init --workload pytorchjob --workload-name train
+    $ okdev init --template pytorchjob --workload-name train
       Wrote .okdev/train.yaml
       Declared workload "train" in .okdev/okdev.yaml
     ```
 
+    `--template` selects the shape being added, and works with a template of your own as readily as a built-in. Only its workload block is taken; the template's project-level content is rendered and discarded, because adding a workload changes nothing project-wide.
+
     The manifest is named after the workload, not its type, so two workloads of the same type never collide. A `pod` workload added this way gets the same starter manifest `okdev init` scaffolds, so it is a file to edit rather than a blank.
 
-    Additive mode never prompts and never changes project-level settings. Passing a project-level flag (`--name`, `--namespace`, `--context`, `--template`, `--set`, `--dev-image`, `--sidecar-image`, `--sync-local`, `--sync-remote`, `--ssh-user`, `--shell`, `--stignore-preset`) is **refused** rather than ignored, so one flag never means two things; edit the config to change those. `--force` still means "rewrite the whole config", and giving it together with `--workload-name` is refused because they state opposite intents.
+    Additive mode never prompts and never changes project-level settings. Passing a project-level flag (`--name`, `--namespace`, `--context`, `--set`, `--dev-image`, `--sidecar-image`, `--sync-local`, `--sync-remote`, `--ssh-user`, `--shell`, `--stignore-preset`) is **refused** rather than ignored, so one flag never means two things; edit the config to change those. `--force` still means "rewrite the whole config", and giving it together with `--workload-name` is refused because they state opposite intents.
 
     Nothing is written unless the resulting config validates: a rejected addition leaves the config and `.okdev/` byte-identical. An existing file at the target manifest path is an error naming the file — `--force` does not clobber manifests.
 - Configs written before okdev always used the folder — a flat `.okdev.yaml`, or a bare `okdev.yaml` — keep working and are never migrated. Workloads added to them still land in `.okdev/`.
-- `--workload`: chooses the scaffold mode. `pod` keeps the current simple config shape; `job` and `pytorchjob` add a `spec.workload` block plus a starter manifest; `generic` requires explicit inject information and can optionally use a preset such as `--generic-preset deployment`.
+- **`--workload` and `--generic-preset` are removed.** The shape to scaffold is a template now, so `--template` selects it. Passing the old flags is an error naming the replacement rather than a silent no-op — asking for a Job and getting a pod is a failure you would only notice on the cluster.
+
+    | was | now |
+    |---|---|
+    | `--workload job` | `--template job` |
+    | `--workload pytorchjob` | `--template pytorchjob` |
+    | `--workload generic --generic-preset deployment` | `--template deployment` |
+    | `--workload generic --manifest-path X --inject-path Y` | `--template generic --manifest-path X --inject-path Y` |
+    | *(omitted)* | *(omitted — `basic`, which is the `pod` template)* |
 - `--dev-image`: sets the dev container image in the scaffolded `.okdev/pod.yaml`. The generated manifest gives the dev container equal CPU/memory requests and limits, as the config does for the sidecar, so the starter pod is eligible for Kubernetes `Guaranteed` QoS.
 - `--template`: accepts a project template from `.okdev/templates/<name>.yaml.tmpl`, a user template from `~/.okdev/templates/<name>.yaml.tmpl`, built-in `basic`, a file path, or a URL. Run `okdev template list` to see available names.
 - `--set`: sets a frontmatter-declared template variable. Repeat it for multiple variables, for example `--set numWorkers=4 --set baseImage=pytorch:latest`.
 - Templates can declare `string`, `int`, and `bool` variables in YAML frontmatter. Resolved values are available as `.Vars.<name>` during rendering and are persisted under `spec.template.vars`.
 - Templates can also declare companion `files` in frontmatter. Each file has a rendered `path` and a `template` path resolved relative to the selected template, which lets a PyTorch template render both `okdev.yaml` and a matching `pytorchjob.yaml`.
 - For built-in templates, it also writes a starter local `.stignore` file for the initialized sync root. **An existing `.stignore` is never replaced, not even with `--force`** — it accumulates hand-written rules, and `--force` regenerates the config, not your ignore list. `okdev init` reports `Kept existing <path>` so it is clear the starter patterns were not applied.
-- For built-in `basic`, `job` and `pytorchjob` scaffold `.okdev/job.yaml` or `.okdev/pytorchjob.yaml`. When the config itself is `.okdev/okdev.yaml`, the generated `manifestPath` stays relative to that directory, for example `job.yaml` or `pytorchjob.yaml`. okdev resolves those paths from `.okdev/` first and falls back to the project root for compatibility with older layouts. `generic --generic-preset deployment` scaffolds `.okdev/deployment.yaml` while still using `spec.workload.type=generic`.
+- The built-in templates are `pod` (aliased as `basic`, the default), `job`, `pytorchjob`, `deployment` and `generic`. Each declares its own starter manifest and `.stignore` preset in frontmatter — exactly as your own templates do — so a template of yours that shadows one of those names simply replaces it and inherits none of its behavior. `generic` declares no manifest: it is the bring-your-own shape, and needs `--manifest-path` plus `--inject-path`.
+- Generated `manifestPath` values are bare filenames (`job.yaml`). okdev resolves a manifest from the config's own directory, then the project root, then `.okdev/` — so the same value works whether the config is `.okdev/okdev.yaml` or a flat `.okdev.yaml` beside `.okdev/`.
 - `--stignore-preset`: override the starter `.stignore` patterns with a project-oriented preset.
 - When `--stignore-preset` is omitted, `okdev init` tries to detect a preset from common repo markers like `go.mod`, `package.json`, `Cargo.toml`, and `pyproject.toml`.
 

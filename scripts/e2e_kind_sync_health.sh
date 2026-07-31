@@ -45,7 +45,7 @@ trap cleanup EXIT
 echo "Scaffolding sync health config via okdev init"
 cd "$WORKDIR"
 "$OKDEV_BIN" init \
-  --workload pod \
+  --template pod \
   --yes \
   --name e2e-sync-health \
   --namespace "$NAMESPACE" \

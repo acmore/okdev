@@ -94,7 +94,7 @@ git -C "$LARGE_REPO_PATH" worktree add --detach "$SYNC_REPO" "$HEAD_SHA" >/dev/n
 echo "Scaffolding large-repo pod config"
 cd "$WORKDIR"
 "$OKDEV_BIN" init \
-  --workload pod \
+  --template pod \
   --yes \
   --name e2e-large-repo \
   --namespace "$NAMESPACE" \

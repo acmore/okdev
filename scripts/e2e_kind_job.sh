@@ -44,7 +44,7 @@ trap cleanup EXIT
 echo "Scaffolding job config via okdev init"
 cd "$WORKDIR"
 "$OKDEV_BIN" init \
-  --workload job \
+  --template job \
   --yes \
   --name "$SESSION_NAME" \
   --namespace "$NAMESPACE" \

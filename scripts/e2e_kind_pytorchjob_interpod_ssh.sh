@@ -52,7 +52,7 @@ refresh_pytorchjob_pods() {
 echo "Scaffolding focused PyTorchJob inter-pod SSH config"
 cd "$WORKDIR"
 "$OKDEV_BIN" init \
-  --workload pytorchjob \
+  --template pytorchjob \
   --yes \
   --name "$SESSION_NAME" \
   --namespace "$NAMESPACE" \

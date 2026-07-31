@@ -26,9 +26,9 @@ go build -o bin/okdev ./cmd/okdev
 ```bash
 okdev init
 # Job scaffold with starter manifest
-okdev init --workload job
+okdev init --template job
 # Generic deployment-style scaffold
-okdev init --workload generic --generic-preset deployment
+okdev init --template deployment
 # Go project with a Go-oriented local sync ignore preset
 okdev init --template basic --stignore-preset go
 # See project, user, and built-in templates
