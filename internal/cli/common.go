@@ -102,10 +102,45 @@ func resolveCommandContext(opts *Options, resolver sessionResolver) (*commandCon
 	if err != nil {
 		return nil, err
 	}
-	if err := cfg.SelectWorkload(profile); err != nil {
+	fromFlag := effectiveOpts != nil && strings.TrimSpace(effectiveOpts.Workload) != ""
+	if err := selectWorkloadForSession(cfg, profile, fromFlag, func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, "warning: "+format+"\n", args...)
+	}); err != nil {
 		return nil, err
 	}
 	return cc, nil
+}
+
+// selectWorkloadForSession applies the profile choice, tolerating a pinned name
+// the config no longer declares.
+//
+// A pin goes stale from an ordinary rename, or from checking out a branch where
+// that workload does not exist. Treating it as fatal bricks the session: every
+// command fails the same way, including `okdev workload use <valid-name>`, the
+// one command that could repair it. So a stale pin warns and falls back to the
+// config's own default, and the pin is left alone — the user may be switching
+// back to the branch that has it.
+//
+// A name the user typed this invocation is different, and stays fatal: they
+// asked for something specific, and quietly running a different workload is
+// worse than stopping.
+func selectWorkloadForSession(cfg *config.DevEnvironment, profile string, fromFlag bool, warnf func(string, ...any)) error {
+	err := cfg.SelectWorkload(profile)
+	if err == nil {
+		return nil
+	}
+	if fromFlag {
+		return err
+	}
+	fallback := cfg.SelectWorkload("")
+	if fallback != nil {
+		return err
+	}
+	if warnf != nil {
+		warnf("session is pinned to workload %q, which this config does not declare (available: %s); using %q. Run `okdev workload use <name>` to repin.",
+			strings.TrimSpace(profile), strings.Join(cfg.WorkloadProfileNames(), ", "), cfg.SelectedWorkload())
+	}
+	return nil
 }
 
 // resolveWorkloadProfileName picks the profile this invocation runs against.

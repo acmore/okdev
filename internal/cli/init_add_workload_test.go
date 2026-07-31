@@ -622,3 +622,55 @@ func TestInitTreatsNoDiscoverableConfigAsFresh(t *testing.T) {
 		t.Fatalf("a fresh init in an empty dir must succeed: %v", err)
 	}
 }
+
+// A config with no spec.podTemplate — a pytorchjob-only project, say — has
+// nothing to copy. Synthesizing from it produced `containers: null`, which
+// `okdev validate` happily accepted and the apiserver rejected at `okdev up`.
+// Fall back to the starter template so the user gets a fillable skeleton, the
+// same as job and pytorchjob.
+func TestPlanWorkloadAdditionFallsBackWhenPodTemplateIsEmpty(t *testing.T) {
+	const pytorchOnly = `apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: proj
+spec:
+  namespace: default
+  sync:
+    paths:
+      - ".:/workspace"
+  workload:
+    type: pytorchjob
+    manifestPath: pytorchjob.yaml
+    inject:
+      - path: spec.pytorchReplicaSpecs.Worker.template
+`
+	add, err := planFixture(t, pytorchOnly, "pod", "dev", nil)
+	if err != nil {
+		t.Fatalf("planWorkloadAddition: %v", err)
+	}
+	manifest := string(add.ManifestBytes)
+	if strings.Contains(manifest, "containers: null") {
+		t.Fatalf("a containerless pod manifest is unusable:\n%s", manifest)
+	}
+	if !strings.Contains(manifest, "name: dev") {
+		t.Fatalf("expected a starter container:\n%s", manifest)
+	}
+	if !strings.Contains(manifest, "TODO") {
+		t.Fatalf("the starter must flag the image as needing the user's input:\n%s", manifest)
+	}
+	if !strings.Contains(manifest, "{{ .WorkloadName }}") {
+		t.Fatalf("the WorkloadName placeholder must survive:\n%s", manifest)
+	}
+}
+
+// When there *is* a podTemplate, copying it stays the behavior — that is the
+// motivating case (same container, different resources).
+func TestPlanWorkloadAdditionStillCopiesANonEmptyPodTemplate(t *testing.T) {
+	add, err := planFixture(t, podOnlyConfig, "pod", "big", nil)
+	if err != nil {
+		t.Fatalf("planWorkloadAddition: %v", err)
+	}
+	if !strings.Contains(string(add.ManifestBytes), "alpine") {
+		t.Fatalf("expected the podTemplate's image to be copied:\n%s", add.ManifestBytes)
+	}
+}

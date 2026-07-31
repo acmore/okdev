@@ -164,7 +164,16 @@ func planWorkloadManifest(cfg *config.DevEnvironment, vars *config.TemplateVars)
 		// so the common case — the same container with different resources —
 		// is an edit rather than a rewrite. The name stays a placeholder so
 		// each run still gets a fresh object name.
-		return config.SynthesizePodManifest(cfg, "{{ .WorkloadName }}")
+		//
+		// A project with no spec.podTemplate (a pytorchjob-only config, say) has
+		// nothing to copy: synthesizing from it yields `containers: null`, which
+		// the config validator accepts and the apiserver rejects at apply time.
+		// Fall through to the starter template so the user gets a fillable
+		// skeleton, the same as job and pytorchjob.
+		if len(cfg.Spec.PodTemplate.Spec.Containers) > 0 {
+			return config.SynthesizePodManifest(cfg, "{{ .WorkloadName }}")
+		}
+		asset = "templates/manifests/pod.yaml.tmpl"
 	case workload.TypeJob:
 		asset = "templates/manifests/job.yaml.tmpl"
 	case workload.TypePyTorchJob:
