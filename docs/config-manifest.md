@@ -1,6 +1,6 @@
 # Config Manifest
 
-okdev is configured by a single YAML manifest. Simple pod setups default to `.okdev.yaml`; manifest-backed workload setups initialized by `okdev init` default to `.okdev/okdev.yaml` with generated workload manifests beside it.
+okdev is configured by a single YAML manifest at `.okdev/okdev.yaml`, with any workload manifests beside it. Configs written before okdev always used the folder — a flat `.okdev.yaml`, or a bare `okdev.yaml` — keep working and are not migrated.
 
 ## Config Resolution
 
@@ -490,8 +490,11 @@ actually in play.
 
 Only one profile may be a `pod` with no `manifestPath`, because such a profile
 is synthesized from the shared `spec.podTemplate`; two of them would be
-identical. Give the others their own `manifestPath` — `okdev workload add` does
-this for you.
+identical. Give the others their own `manifestPath` — `okdev init --workload pod
+--workload-name <name>` does this for you, seeding the new manifest from the
+project's current `spec.podTemplate` so you only edit what differs.
+
+Workload manifests always live in `.okdev/`, whichever shape the config has.
 
 ### Which profile is active
 

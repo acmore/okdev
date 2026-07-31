@@ -24,6 +24,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 	var nsOverride string
 	var contextOverride string
 	var workloadType string
+	var workloadName string
 	var manifestPath string
 	var injectPaths []string
 	var genericPreset string
@@ -74,6 +75,25 @@ func newInitCmd(opts *Options) *cobra.Command {
 				Shell:         shellOverride,
 			}
 			applyOverrides(vars, overrides)
+
+			// Adding a workload to a project that already has a config is a
+			// different operation from creating one: it never prompts, never
+			// renders the config template, and never touches project-level
+			// settings. Decide before any of that machinery runs.
+			existing := existingConfigPath(opts)
+			inv := initInvocation{
+				ConfigExists:    existing != "",
+				WorkloadName:    workloadName,
+				Force:           force,
+				ProjectFlagsSet: changedProjectFlags(cmd),
+			}
+			if err := validateInitInvocation(inv); err != nil {
+				return err
+			}
+			if initAdditiveMode(inv) {
+				return runInitAddWorkload(cmd, existing, vars, workloadName)
+			}
+
 			applyWorkloadDefaults(vars)
 
 			if err := promptInteractive(vars, overrides, cmd.InOrStdin(), cmd.OutOrStdout(), yes, isTerminalReader(cmd.InOrStdin())); err != nil {
@@ -188,6 +208,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&nsOverride, "namespace", "", "Namespace")
 	cmd.Flags().StringVar(&contextOverride, "context", "", "Kubeconfig context (defaults to active context)")
 	cmd.Flags().StringVar(&workloadType, "workload", "pod", "Workload type: pod, job, pytorchjob, generic")
+	cmd.Flags().StringVar(&workloadName, "workload-name", "", "Name for the workload being added to an existing config")
 	cmd.Flags().StringVar(&manifestPath, "manifest-path", "", "Path to workload manifest")
 	cmd.Flags().StringArrayVar(&injectPaths, "inject-path", nil, "Workload inject path (repeatable)")
 	cmd.Flags().StringVar(&genericPreset, "generic-preset", "", "Optional generic scaffold preset, for example deployment")
@@ -355,38 +376,11 @@ func initProjectDir(configPath string) (string, error) {
 	return wd, nil
 }
 
-func defaultInitTargetPath(vars *config.TemplateVars, meta *config.TemplateMeta, rendered string) string {
-	if initUsesWorkloadManifest(vars) || templateDeclaresCompanionFiles(meta) || renderedInitUsesWorkloadManifest(rendered) {
-		return config.FolderFile
-	}
-	return config.DefaultFile
-}
-
-func templateDeclaresCompanionFiles(meta *config.TemplateMeta) bool {
-	return meta != nil && len(meta.Files) > 0
-}
-
-func initUsesWorkloadManifest(vars *config.TemplateVars) bool {
-	if vars == nil {
-		return false
-	}
-	switch strings.TrimSpace(vars.WorkloadType) {
-	case "job", "pytorchjob", "generic":
-		return true
-	default:
-		return false
-	}
-}
-
-func renderedInitUsesWorkloadManifest(rendered string) bool {
-	if strings.TrimSpace(rendered) == "" {
-		return false
-	}
-	var cfg config.DevEnvironment
-	if err := yaml.Unmarshal([]byte(rendered), &cfg); err != nil {
-		return false
-	}
-	return strings.TrimSpace(cfg.Spec.Workload.ManifestPath) != ""
+// defaultInitTargetPath is always the folder config. A flat .okdev.yaml puts
+// ManifestDir at the project root, so every manifest added to the project
+// later would land there; the folder gives manifests a home from the start.
+func defaultInitTargetPath(*config.TemplateVars, *config.TemplateMeta, string) string {
+	return config.FolderFile
 }
 
 func normalizeInitManifestPathForTarget(configPath string, vars *config.TemplateVars, explicit bool) {
@@ -469,6 +463,13 @@ func validateInitWorkloadVars(vars *config.TemplateVars) error {
 	default:
 		return fmt.Errorf("unsupported workload type %q", vars.WorkloadType)
 	}
+	// The preset is checked first because a valid one supplies the manifest
+	// path and inject paths via applyWorkloadDefaults. When the preset is a
+	// typo, those fields are simply never filled — so reporting them as
+	// missing would name a symptom and send the user to fix the wrong thing.
+	if preset := strings.TrimSpace(vars.GenericPreset); preset != "" && !knownGenericPresets[preset] {
+		return fmt.Errorf("unknown --generic-preset %q; known presets: deployment", preset)
+	}
 	if vars.WorkloadType == "generic" {
 		if strings.TrimSpace(vars.ManifestPath) == "" {
 			return fmt.Errorf("--manifest-path is required when --workload=generic")
@@ -476,9 +477,6 @@ func validateInitWorkloadVars(vars *config.TemplateVars) error {
 		if len(vars.InjectPaths) == 0 {
 			return fmt.Errorf("at least one --inject-path is required when --workload=generic")
 		}
-	}
-	if preset := strings.TrimSpace(vars.GenericPreset); preset != "" && !knownGenericPresets[preset] {
-		return fmt.Errorf("unknown --generic-preset %q; known presets: deployment", preset)
 	}
 	return nil
 }

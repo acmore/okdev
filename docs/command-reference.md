@@ -27,7 +27,7 @@ agents can react without launching a diagnostic chain on every blip:
 ## Commands
 
 - `okdev version`
-- `okdev init [--workload pod|job|pytorchjob|generic] [--dev-image <image>] [--template <name>|<path>|<url>] [--set key=value] [--stignore-preset default|python|node|go|rust] [--force]`
+- `okdev init [--workload pod|job|pytorchjob|generic] [--workload-name <name>] [--dev-image <image>] [--template <name>|<path>|<url>] [--set key=value] [--stignore-preset default|python|node|go|rust] [--force]`
 - `okdev template list [--all]`
 - `okdev template show <name>`
 - `okdev validate`
@@ -40,7 +40,6 @@ agents can react without launching a diagnostic chain on every blip:
 - `okdev workload list`
 - `okdev workload use <name>`
 - `okdev workload show [name]`
-- `okdev workload add --name <name> --type pod|job|pytorchjob|generic [--manifest-path <path>] [--inject-path <path>] [--force]`
 - `okdev target show`
 - `okdev target set [--pod <name> | --role <role>]`
 - `okdev agent list`
@@ -83,17 +82,17 @@ agents can react without launching a diagnostic chain on every blip:
 - Canonical sequence for adding a shape and switching to it:
 
     ```console
-    $ okdev workload add --name train --type pytorchjob   # scaffold + declare
-    $ $EDITOR .okdev/pytorchjob.yaml                      # fill in image, resources
-    $ okdev workload use train                            # pin it
-    $ okdev up                                            # apply (confirms the delete)
+    $ okdev init --workload pytorchjob --workload-name train   # scaffold + declare
+    $ $EDITOR .okdev/train.yaml                                # fill in image, resources
+    $ okdev workload use train                                 # pin it
+    $ okdev up                                                 # apply (confirms the delete)
     ```
 
 - `workload list` shows `PINNED` and `LIVE` as **separate** columns because they diverge between `workload use` and `okdev up`. `PINNED` is what the next `up` will create; `LIVE` is what is running now. Seeing `PINNED` without `LIVE` means the switch has not been applied yet.
 - `workload use` never touches the cluster — it records the choice and reports what the next `okdev up` will destroy. The destructive step is `okdev up`, which prompts before deleting a running workload; `--yes` skips the prompt, and a non-interactive run without `--yes` fails rather than guessing.
 - `okdev up --workload <name>` selects and pins in one step. It writes the pin because the session then *is* running that workload — a stale pin would send the next `okdev ssh` to a workload whose pods no longer exist.
 - Switching is always **explicit**. Editing the config, a `git pull`, or a plain `okdev up` never replaces a running workload; only `workload use` and `up --workload` do. `spec.defaultWorkload` only decides where a **new** session starts, so changing it never moves an existing one.
-- `workload add` scaffolds the manifest for `job` and `pytorchjob` from the same templates `okdev init` uses, then appends the entry to `spec.workloads`, preserving the comments and key order in your config. `pod` and `generic` write no manifest — supply your own with `--manifest-path`.
+- Declaring a workload is `okdev init`'s job, not this group's — see `okdev init` below. This group only inspects and switches.
 - Misuse guard: wanting **two shapes alive at once** is not what this does — that is two sessions (`okdev up --session train-8gpu`), not two profiles in one session.
 
 ### `okdev target show`
@@ -263,11 +262,23 @@ agents can react without launching a diagnostic chain on every blip:
 - `--verify`: verify single-file download SHA-256 after copy.
 - `--all`, `--pod`, `--role`, and `--label` are mutually exclusive.
 
-### `okdev init [--workload pod|job|pytorchjob|generic] [--template <name>|<path>|<url>] [--set key=value] [--stignore-preset default|python|node|go|rust] [--force]`
+### `okdev init [--workload pod|job|pytorchjob|generic] [--workload-name <name>] [--template <name>|<path>|<url>] [--set key=value] [--stignore-preset default|python|node|go|rust] [--force]`
 
-- Writes a starter config manifest.
-- Pod-only setups default to `.okdev.yaml`.
-- When built-in workload scaffolding also writes files under `.okdev/`, the config is written as `.okdev/okdev.yaml`.
+- Writes a starter config manifest at `.okdev/okdev.yaml`, for every workload type. Manifests live beside it in `.okdev/`.
+- **On a project that already has a config, `okdev init` adds a workload to it** rather than refusing. That is the additive mode, and it requires `--workload-name`:
+
+    ```console
+    $ okdev init --workload pytorchjob --workload-name train
+      Wrote .okdev/train.yaml
+      Declared workload "train" in .okdev/okdev.yaml
+    ```
+
+    The manifest is named after the workload, not its type, so two workloads of the same type never collide. A `pod` workload added this way starts as a **copy of the project's current `spec.podTemplate`** — the common case is the same container with different resources, so it is an edit rather than a rewrite.
+
+    Additive mode never prompts and never changes project-level settings. Passing a project-level flag (`--name`, `--namespace`, `--context`, `--template`, `--set`, `--dev-image`, `--sidecar-image`, `--sync-local`, `--sync-remote`, `--ssh-user`, `--shell`, `--stignore-preset`) is **refused** rather than ignored, so one flag never means two things; edit the config to change those. `--force` still means "rewrite the whole config", and giving it together with `--workload-name` is refused because they state opposite intents.
+
+    Nothing is written unless the resulting config validates: a rejected addition leaves the config and `.okdev/` byte-identical. An existing file at the target manifest path is an error naming the file — `--force` does not clobber manifests.
+- Configs written before okdev always used the folder — a flat `.okdev.yaml`, or a bare `okdev.yaml` — keep working and are never migrated. Workloads added to them still land in `.okdev/`.
 - `--workload`: chooses the scaffold mode. `pod` keeps the current simple config shape; `job` and `pytorchjob` add a `spec.workload` block plus a starter manifest; `generic` requires explicit inject information and can optionally use a preset such as `--generic-preset deployment`.
 - `--dev-image`: sets the dev container image for pod workloads. Pod configs generated from the built-in template include a `podTemplate` with the dev container image plus equal CPU/memory requests and limits for the dev container and sidecar, so the starter pod is eligible for Kubernetes `Guaranteed` QoS.
 - `--template`: accepts a project template from `.okdev/templates/<name>.yaml.tmpl`, a user template from `~/.okdev/templates/<name>.yaml.tmpl`, built-in `basic`, a file path, or a URL. Run `okdev template list` to see available names.

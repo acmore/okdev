@@ -12,11 +12,10 @@ SESSION_NAME="${SESSION_NAME:-e2e-wl-switch}"
 NAMESPACE="${NAMESPACE:-default}"
 WORKDIR="$(make_workdir)"
 HOME_DIR="${HOME_DIR:-$WORKDIR/home}"
-# A pod-workload `okdev init` writes the flat .okdev.yaml; the .okdev/ folder
-# layout only appears for the manifest-backed types. `workload add` resolves
-# manifest paths relative to the config, so job.yaml lands beside it.
-CFG_PATH="$WORKDIR/.okdev.yaml"
-MANIFEST_PATH="$WORKDIR/job.yaml"
+CFG_PATH="$WORKDIR/.okdev/okdev.yaml"
+# Added workloads are named after the workload, not its type, so two of the
+# same type never collide.
+MANIFEST_PATH="$WORKDIR/.okdev/batch.yaml"
 SYNC_DIR="$WORKDIR/workspace"
 ORIG_HOME="${HOME}"
 ORIG_KUBECONFIG="${KUBECONFIG:-}"
@@ -75,7 +74,7 @@ replace_all_in_file "$CFG_PATH" 'persistentSession: true' 'persistentSession: fa
 insert_after_line_once "$CFG_PATH" '  ssh:' '    persistentSession: false'
 
 echo "Declaring a second workload"
-okdev workload add --name batch --type job
+"$OKDEV_BIN" --config "$CFG_PATH" init --yes --workload job --workload-name batch
 replace_all_in_file "$MANIFEST_PATH" 'image: # TODO: replace with your image' 'image: ubuntu:22.04'
 replace_all_in_file "$MANIFEST_PATH" 'command: ["sleep", "infinity"]' 'command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]'
 

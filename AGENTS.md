@@ -50,6 +50,9 @@ This file is the canonical repository guidance for coding agents working in `okd
 - For `okdev` session tests, prefer tearing down with `okdev down` after verification when the session was created only for the test.
 - If cleanup cannot be completed, say exactly what was left behind and where.
 - Prefer `bash scripts/e2e_local_kind.sh` before merge for local validation; enable `RUN_PYTORCHJOB=1` or `RUN_LARGE_REPO=1` with either `LARGE_REPO_PATH=/path/to/repo` or `LARGE_REPO_URL=https://...` only when the change touches sync, session state, or reconcile-heavy paths.
+- Never judge an e2e run through a pipe. `bash scripts/e2e_local_kind.sh 2>&1 | tail -40` reports **`tail`'s** exit status, so a failed suite looks like a pass, and the truncation discards the log needed to diagnose it. Redirect the whole run and capture the real status: `bash scripts/e2e_local_kind.sh >run.log 2>&1; echo "REAL_EXIT=$?" >>run.log`, then read the log. The same applies to `echo "EXIT=$?"` after a wrapper — that reports the echo's status, not the script's.
+- Do not report an e2e suite as passing without having seen its real exit status. "The last lines looked fine" is not evidence: the suite runs with `set -euo pipefail` and aborts at the first failing scenario, so a truncated tail can show a healthy-looking teardown from a run that already failed earlier.
+- `wait for sshd ready: command terminated with exit code 1` during Setup is a known race, not a regression. Re-run that single scenario before investigating.
 
 ## Repo-Specific Expectations
 

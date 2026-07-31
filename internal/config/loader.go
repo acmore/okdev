@@ -26,21 +26,28 @@ func Load(configPath string) (*DevEnvironment, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("read config %q: %w", path, err)
 	}
+	return LoadFromBytes(raw, path)
+}
+
+// LoadFromBytes decodes, defaults and validates a config already in memory.
+// It is what lets a change set be proven valid before anything is written.
+// configPath appears in messages and anchors relative paths; it is not read.
+func LoadFromBytes(raw []byte, configPath string) (*DevEnvironment, string, error) {
 	if removed := removedSyncIgnoreField(raw); removed != "" {
 		msg := fmt.Sprintf("%s is removed; manage local ignores with .stignore in the synced local workspace instead", removed)
-		return nil, "", fmt.Errorf("validate config %q: %w", path, &MigrationEligibleError{Err: errors.New(msg)})
+		return nil, "", fmt.Errorf("validate config %q: %w", configPath, &MigrationEligibleError{Err: errors.New(msg)})
 	}
 
 	var cfg DevEnvironment
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		return nil, "", fmt.Errorf("parse config %q: %w", path, err)
+		return nil, "", fmt.Errorf("parse config %q: %w", configPath, err)
 	}
 	cfg.SetDefaults()
 	if err := cfg.Validate(); err != nil {
-		return nil, "", fmt.Errorf("validate config %q: %w", path, err)
+		return nil, "", fmt.Errorf("validate config %q: %w", configPath, err)
 	}
 
-	return &cfg, path, nil
+	return &cfg, configPath, nil
 }
 
 func removedSyncIgnoreField(raw []byte) string {
