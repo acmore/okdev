@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/acmore/okdev/internal/config"
 )
 
 func TestParseSetFlags(t *testing.T) {
@@ -302,7 +304,9 @@ func TestInitUsesFolderConfigWhenScaffoldingWorkload(t *testing.T) {
 	}
 }
 
-func TestInitUsesRootConfigForPod(t *testing.T) {
+// A pod project now gets the folder config too, so manifests added later
+// have a home instead of landing in the project root.
+func TestInitUsesFolderConfigForPod(t *testing.T) {
 	tmp := t.TempDir()
 	oldwd, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(oldwd) })
@@ -318,10 +322,10 @@ func TestInitUsesRootConfigForPod(t *testing.T) {
 		t.Fatalf("init execute: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(tmp, ".okdev.yaml")); err != nil {
-		t.Fatalf("expected root config, got err=%v", err)
+	if _, err := os.Stat(filepath.Join(tmp, ".okdev", "okdev.yaml")); err != nil {
+		t.Fatalf("expected folder config, got err=%v", err)
 	}
-	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev.yaml"))
+	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev", "okdev.yaml"))
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
@@ -689,7 +693,7 @@ spec:
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init execute: %v", err)
 	}
-	raw, err := os.ReadFile(filepath.Join(tmp, ".okdev.yaml"))
+	raw, err := os.ReadFile(filepath.Join(tmp, ".okdev", "okdev.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1064,7 +1068,7 @@ spec:
 	if _, err := os.Stat(filepath.Join(tmp, ".stignore")); !os.IsNotExist(err) {
 		t.Fatalf("expected no built-in .stignore for shadowed basic, err=%v", err)
 	}
-	raw, err := os.ReadFile(filepath.Join(tmp, ".okdev.yaml"))
+	raw, err := os.ReadFile(filepath.Join(tmp, ".okdev", "okdev.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1102,7 +1106,7 @@ func TestInitWithZshShellScaffoldsZshFiles(t *testing.T) {
 		t.Fatalf("expected .okdev/zsh-setup.example.sh to be scaffolded: %v", err)
 	}
 
-	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev.yaml"))
+	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev", "okdev.yaml"))
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
@@ -1112,5 +1116,17 @@ func TestInitWithZshShellScaffoldsZshFiles(t *testing.T) {
 
 	if !strings.Contains(out.String(), "zsh-setup.example.sh") {
 		t.Fatalf("expected guidance message in output, got %q", out.String())
+	}
+}
+
+func TestInitAlwaysTargetsTheFolderConfig(t *testing.T) {
+	// A pod project used to get a flat .okdev.yaml, which put ManifestDir at
+	// the project root — so any manifest added later landed in the repo root.
+	for _, workloadType := range []string{"pod", "job", "pytorchjob", "generic", ""} {
+		vars := config.NewTemplateVars()
+		vars.WorkloadType = workloadType
+		if got := defaultInitTargetPath(vars, nil, ""); got != config.FolderFile {
+			t.Errorf("workload %q: target = %q, want %q", workloadType, got, config.FolderFile)
+		}
 	}
 }

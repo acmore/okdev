@@ -1,6 +1,6 @@
 # Config Manifest
 
-okdev is configured by a single YAML manifest. Simple pod setups default to `.okdev.yaml`; manifest-backed workload setups initialized by `okdev init` default to `.okdev/okdev.yaml` with generated workload manifests beside it.
+okdev is configured by a single YAML manifest at `.okdev/okdev.yaml`, with any workload manifests beside it. Configs written before okdev always used the folder — a flat `.okdev.yaml`, or a bare `okdev.yaml` — keep working and are not migrated.
 
 ## Config Resolution
 

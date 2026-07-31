@@ -355,38 +355,11 @@ func initProjectDir(configPath string) (string, error) {
 	return wd, nil
 }
 
-func defaultInitTargetPath(vars *config.TemplateVars, meta *config.TemplateMeta, rendered string) string {
-	if initUsesWorkloadManifest(vars) || templateDeclaresCompanionFiles(meta) || renderedInitUsesWorkloadManifest(rendered) {
-		return config.FolderFile
-	}
-	return config.DefaultFile
-}
-
-func templateDeclaresCompanionFiles(meta *config.TemplateMeta) bool {
-	return meta != nil && len(meta.Files) > 0
-}
-
-func initUsesWorkloadManifest(vars *config.TemplateVars) bool {
-	if vars == nil {
-		return false
-	}
-	switch strings.TrimSpace(vars.WorkloadType) {
-	case "job", "pytorchjob", "generic":
-		return true
-	default:
-		return false
-	}
-}
-
-func renderedInitUsesWorkloadManifest(rendered string) bool {
-	if strings.TrimSpace(rendered) == "" {
-		return false
-	}
-	var cfg config.DevEnvironment
-	if err := yaml.Unmarshal([]byte(rendered), &cfg); err != nil {
-		return false
-	}
-	return strings.TrimSpace(cfg.Spec.Workload.ManifestPath) != ""
+// defaultInitTargetPath is always the folder config. A flat .okdev.yaml puts
+// ManifestDir at the project root, so every manifest added to the project
+// later would land there; the folder gives manifests a home from the start.
+func defaultInitTargetPath(*config.TemplateVars, *config.TemplateMeta, string) string {
+	return config.FolderFile
 }
 
 func normalizeInitManifestPathForTarget(configPath string, vars *config.TemplateVars, explicit bool) {

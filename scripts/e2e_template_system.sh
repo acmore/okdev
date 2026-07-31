@@ -7,7 +7,7 @@ OKDEV_BIN="${OKDEV_BIN:-$(pwd)/bin/okdev}"
 WORKDIR="$(make_workdir)"
 PROJECT_DIR="$WORKDIR/project"
 HOME_DIR="$WORKDIR/home"
-CFG_PATH="$PROJECT_DIR/.okdev.yaml"
+CFG_PATH="$PROJECT_DIR/.okdev/okdev.yaml"
 
 cleanup() {
   status=$?
@@ -278,7 +278,7 @@ if [[ -f "$SHADOW_DIR/.stignore" ]]; then
   echo "ERROR: shadowed basic should not receive built-in .stignore" >&2
   exit 1
 fi
-if ! grep -Fq "template:" "$SHADOW_DIR/.okdev.yaml"; then
+if ! grep -Fq "template:" "$SHADOW_DIR/.okdev/okdev.yaml"; then
   echo "ERROR: shadowed basic should persist spec.template" >&2
   exit 1
 fi

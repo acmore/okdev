@@ -12,11 +12,8 @@ SESSION_NAME="${SESSION_NAME:-e2e-wl-switch}"
 NAMESPACE="${NAMESPACE:-default}"
 WORKDIR="$(make_workdir)"
 HOME_DIR="${HOME_DIR:-$WORKDIR/home}"
-# A pod-workload `okdev init` writes the flat .okdev.yaml; the .okdev/ folder
-# layout only appears for the manifest-backed types. `workload add` resolves
-# manifest paths relative to the config, so job.yaml lands beside it.
-CFG_PATH="$WORKDIR/.okdev.yaml"
-MANIFEST_PATH="$WORKDIR/job.yaml"
+CFG_PATH="$WORKDIR/.okdev/okdev.yaml"
+MANIFEST_PATH="$WORKDIR/.okdev/job.yaml"
 SYNC_DIR="$WORKDIR/workspace"
 ORIG_HOME="${HOME}"
 ORIG_KUBECONFIG="${KUBECONFIG:-}"
