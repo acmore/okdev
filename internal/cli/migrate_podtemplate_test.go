@@ -79,12 +79,13 @@ func TestPlanPodTemplateExtraction(t *testing.T) {
 	if !strings.Contains(cfgStr, "# keep me") {
 		t.Fatalf("the edit stripped comments:\n%s", cfgStr)
 	}
-	cfg, _, err := config.LoadFromBytes(got.ConfigBytes, "/repo/.okdev/okdev.yaml")
+	cfg, _, err := config.LoadFromBytes(migratedConfig(t, got), "/repo/.okdev/okdev.yaml")
 	if err != nil {
 		t.Fatalf("migrated config must load: %v\n%s", err, cfgStr)
 	}
-	if len(cfg.Spec.Volumes) != 1 {
-		t.Fatalf("spec.volumes stays in the config: %+v", cfg.Spec.Volumes)
+	// Volumes belong to the manifest now, so the config keeps none.
+	if len(cfg.Spec.Volumes) != 0 {
+		t.Fatalf("spec.volumes must move to the manifest: %+v", cfg.Spec.Volumes)
 	}
 	names := cfg.WorkloadProfileNames()
 	if len(names) != 1 || names[0] != config.DefaultWorkloadProfileName {
@@ -140,7 +141,7 @@ func TestPlanPodTemplateExtractionAttachesToTheManifestlessProfile(t *testing.T)
 	if err != nil {
 		t.Fatalf("planPodTemplateExtraction: %v", err)
 	}
-	cfg, _, err := config.LoadFromBytes(got.ConfigBytes, "/repo/.okdev/okdev.yaml")
+	cfg, _, err := config.LoadFromBytes(migratedConfig(t, got), "/repo/.okdev/okdev.yaml")
 	if err != nil {
 		t.Fatalf("migrated config must load: %v\n%s", err, got.ConfigBytes)
 	}
@@ -189,7 +190,7 @@ func TestPlanPodTemplateExtractionCarriesLegacyWorkloadSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planPodTemplateExtraction: %v", err)
 	}
-	cfg, _, err := config.LoadFromBytes(got.ConfigBytes, "/repo/.okdev/okdev.yaml")
+	cfg, _, err := config.LoadFromBytes(migratedConfig(t, got), "/repo/.okdev/okdev.yaml")
 	if err != nil {
 		t.Fatalf("migrated config must load: %v\n%s", err, got.ConfigBytes)
 	}
@@ -277,7 +278,7 @@ spec:
 	if len(got.Warnings) == 0 {
 		t.Fatal("writing a manifest the user did not author must be reported")
 	}
-	cfg, _, err := config.LoadFromBytes(got.ConfigBytes, "/repo/.okdev/okdev.yaml")
+	cfg, _, err := config.LoadFromBytes(migratedConfig(t, got), "/repo/.okdev/okdev.yaml")
 	if err != nil {
 		t.Fatalf("migrated config must load: %v\n%s", err, got.ConfigBytes)
 	}
@@ -352,7 +353,7 @@ func TestPlanPodTemplateExtractionGivesEveryPodProfileAManifest(t *testing.T) {
 	if got.Manifests[0].Path != "dev.yaml" || got.Manifests[1].Path != "big.yaml" {
 		t.Fatalf("manifests must be named after their profile: %+v", got.Manifests)
 	}
-	cfg, _, err := config.LoadFromBytes(got.ConfigBytes, "/repo/.okdev/okdev.yaml")
+	cfg, _, err := config.LoadFromBytes(migratedConfig(t, got), "/repo/.okdev/okdev.yaml")
 	if err != nil {
 		t.Fatalf("the migrated config must be valid, not just closer: %v\n%s", err, got.ConfigBytes)
 	}
@@ -402,9 +403,24 @@ spec:
 			if !strings.Contains(string(got.Manifests[0].Bytes), "image: ubuntu:22.04") {
 				t.Fatalf("expected the starter container:\n%s", got.Manifests[0].Bytes)
 			}
-			if _, _, err := config.LoadFromBytes(got.ConfigBytes, "/repo/.okdev/okdev.yaml"); err != nil {
+			if _, _, err := config.LoadFromBytes(migratedConfig(t, got), "/repo/.okdev/okdev.yaml"); err != nil {
 				t.Fatalf("migrated config must load: %v\n%s", err, got.ConfigBytes)
 			}
 		})
 	}
+}
+
+// migratedConfig runs the whole migration the way `okdev migrate` composes it:
+// the podTemplate extraction, then the volume move. Either step alone leaves an
+// intermediate config that does not load, by design.
+func migratedConfig(t *testing.T, got *podTemplateExtraction) []byte {
+	t.Helper()
+	moved, err := planVolumeMove("/repo/.okdev/okdev.yaml", got.ConfigBytes, got.Manifests)
+	if err != nil {
+		t.Fatalf("planVolumeMove: %v", err)
+	}
+	if moved.Applied {
+		return moved.ConfigBytes
+	}
+	return got.ConfigBytes
 }

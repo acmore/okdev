@@ -167,6 +167,20 @@ func newInitCmd(opts *Options) *cobra.Command {
 			if extraction.Applied {
 				rendered = string(extraction.ConfigBytes)
 			}
+			// A template rendering spec.volumes gets the same treatment, for the
+			// same reason: telling the user to run `okdev migrate` cannot work
+			// when no config exists yet.
+			volumeMove, err := planVolumeMove(abs, []byte(rendered), extraction.Manifests)
+			if err != nil {
+				return err
+			}
+			if volumeMove.Applied {
+				rendered = string(volumeMove.ConfigBytes)
+			}
+			pendingManifests := extraction.Manifests
+			if len(volumeMove.Manifests) > 0 {
+				pendingManifests = volumeMove.Manifests
+			}
 
 			if err := validateRenderedInitConfig(rendered, templateRef, vars, projectDir); err != nil {
 				return err
@@ -196,7 +210,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			// ...and the manifest that resolution now points at.
-			for _, m := range extraction.Manifests {
+			for _, m := range pendingManifests {
 				if _, err := os.Stat(m.Target); err == nil && !force {
 					continue
 				}

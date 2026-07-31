@@ -77,7 +77,21 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 				out = extraction.ConfigBytes
 			}
 
-			if len(result.Applied) == 0 && !extraction.Applied {
+			// Last, so it sees both what the migrations above produced and the
+			// manifest the extraction just planned.
+			volumes, err := planVolumeMove(cfgPath, out, extraction.Manifests)
+			if err != nil {
+				return err
+			}
+			if volumes.Applied {
+				out = volumes.ConfigBytes
+			}
+			pending := extraction.Manifests
+			if len(volumes.Manifests) > 0 {
+				pending = volumes.Manifests
+			}
+
+			if len(result.Applied) == 0 && !extraction.Applied && !volumes.Applied {
 				if err := scaffoldMigrateZshFiles(cfgPath, cmd.OutOrStdout()); err != nil {
 					fmt.Fprintf(cmd.OutOrStdout(), "warning: failed to scaffold zsh files: %v\n", err)
 				}
@@ -97,6 +111,15 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 					}
 				}
 				for _, warning := range extraction.Warnings {
+					fmt.Fprintf(w, "  ⚠ %s\n", warning)
+				}
+			}
+			if volumes.Applied {
+				fmt.Fprintln(w, "✓ volumes-to-manifest")
+				for _, m := range volumes.Manifests {
+					fmt.Fprintf(w, "  Moved spec.volumes into %s\n", m.Target)
+				}
+				for _, warning := range volumes.Warnings {
 					fmt.Fprintf(w, "  ⚠ %s\n", warning)
 				}
 			}
@@ -122,9 +145,18 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 
 			// The manifest goes first: a failure there still leaves the config
 			// as the user had it.
-			for _, m := range extraction.Manifests {
+			for _, m := range pending {
 				if err := os.MkdirAll(filepath.Dir(m.Target), 0o755); err != nil {
 					return fmt.Errorf("create manifest directory: %w", err)
+				}
+				// A manifest okdev did not author in this run is the user's, so
+				// keep what was there before rewriting it.
+				if m.Backup && !noBackup {
+					if existing, err := os.ReadFile(m.Target); err == nil {
+						if err := os.WriteFile(m.Target+".bak", existing, 0o644); err != nil {
+							return fmt.Errorf("write backup %q: %w", m.Target+".bak", err)
+						}
+					}
 				}
 				if err := os.WriteFile(m.Target, m.Bytes, 0o644); err != nil {
 					return fmt.Errorf("write manifest %q: %w", m.Target, err)

@@ -11,14 +11,13 @@ import (
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
 	"github.com/acmore/okdev/internal/workload"
-	corev1 "k8s.io/api/core/v1"
 )
 
 type sessionPodLister interface {
 	ListPods(context.Context, string, bool, string) ([]kube.PodSummary, error)
 }
 
-func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName, workloadName string, labels, annotations map[string]string, volumes []corev1.Volume, tmux bool, preStop string) (workload.Runtime, error) {
+func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName, workloadName string, labels, annotations map[string]string, tmux bool, preStop string) (workload.Runtime, error) {
 	targetContainer := resolveTargetContainer(cfg)
 	workspaceMountPath := cfg.EffectiveWorkspaceMountPath(cfgPath)
 	manifestPath := strings.TrimSpace(cfg.Spec.Workload.ManifestPath)
@@ -58,7 +57,6 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName, workloadNa
 		Shell:                cfg.Spec.SSH.Shell,
 		PreStop:              preStop,
 		TargetContainer:      targetContainer,
-		Volumes:              volumes,
 		SyncRemoteRoots:      cfg.AdditionalSyncRemoteRoots(),
 		Labels:               labels,
 		Annotations:          annotations,
@@ -86,7 +84,7 @@ func sessionRuntimeForExisting(ctx context.Context, cfg *config.DevEnvironment, 
 			}
 		}
 	}
-	return sessionRuntime(cfg, cfgPath, sessionName, workloadName, discoveryLabelsForSession(cfg, sessionName, runID), nil, cfg.EffectiveVolumes(), cfg.Spec.SSH.PersistentSessionEnabled(), resolvePreStopCommand(cfg, cfgPath))
+	return sessionRuntime(cfg, cfgPath, sessionName, workloadName, discoveryLabelsForSession(cfg, sessionName, runID), nil, cfg.Spec.SSH.PersistentSessionEnabled(), resolvePreStopCommand(cfg, cfgPath))
 }
 
 func defaultTargetRef(sessionName string) workload.TargetRef {

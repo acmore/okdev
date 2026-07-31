@@ -34,7 +34,6 @@ type GenericRuntime struct {
 	Shell                string
 	PreStop              string
 	TargetContainer      string
-	Volumes              []corev1.Volume
 	SyncRemoteRoots      []string
 	Labels               map[string]string
 	Annotations          map[string]string
@@ -123,7 +122,7 @@ func (r *GenericRuntime) Apply(ctx context.Context, k ApplyClient, namespace str
 			} else {
 				templateLabels["okdev.io/mesh-role"] = "receiver"
 			}
-			template.Spec, err = kube.PreparePodSpecForTargetWithShellAndSyncRoots(template.Spec, r.Volumes, r.WorkspaceMountPath, r.SidecarImage, r.SidecarResources, r.Tmux, r.PreStop, r.interactiveContainer(), r.Shell, r.SyncRemoteRoots)
+			template.Spec, err = kube.PreparePodSpecForTargetWithShellAndSyncRoots(template.Spec, r.WorkspaceMountPath, r.SidecarImage, r.SidecarResources, r.Tmux, r.PreStop, r.interactiveContainer(), r.Shell, r.SyncRemoteRoots)
 			if err != nil {
 				return err
 			}

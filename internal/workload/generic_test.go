@@ -44,10 +44,6 @@ spec:
 		SidecarImage:       "ghcr.io/acmore/okdev:edge",
 		SidecarResources:   corev1.ResourceRequirements{},
 		TargetContainer:    "trainer",
-		Volumes: []corev1.Volume{{
-			Name:         "workspace",
-			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-		}},
 		Labels: map[string]string{
 			"okdev.io/managed": "true",
 			"okdev.io/session": "sess1",
@@ -123,10 +119,6 @@ spec:
 		SidecarImage:         "ghcr.io/acmore/okdev:edge",
 		SidecarResources:     corev1.ResourceRequirements{},
 		TargetContainer:      "trainer",
-		Volumes: []corev1.Volume{{
-			Name:         "workspace",
-			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-		}},
 		Labels: map[string]string{
 			"okdev.io/managed": "true",
 			"okdev.io/session": "my-session",

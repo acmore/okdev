@@ -29,17 +29,14 @@ import (
 )
 
 type upOptions struct {
-	waitTimeout            time.Duration
-	dryRun                 bool
-	reconcile              bool
-	tmux                   bool
-	noTmux                 bool
-	resetWorkspace         bool
-	waitHooks              bool
-	createMissingPVC       bool
-	missingPVCSize         string
-	missingPVCStorageClass string
-	yes                    bool
+	waitTimeout    time.Duration
+	dryRun         bool
+	reconcile      bool
+	tmux           bool
+	noTmux         bool
+	resetWorkspace bool
+	waitHooks      bool
+	yes            bool
 }
 
 type upState struct {
@@ -52,7 +49,6 @@ type upState struct {
 	cancel              context.CancelFunc
 	labels              map[string]string
 	annotations         map[string]string
-	volumes             []corev1.Volume
 	syncPairs           []syncengine.Pair
 	enableTmux          bool
 	runtime             workload.Runtime
@@ -89,9 +85,6 @@ func newUpCmd(opts *Options) *cobra.Command {
 	var noTmux bool
 	var resetWorkspace bool
 	var waitHooks bool
-	var createMissingPVC bool
-	var missingPVCSize string
-	var missingPVCStorageClass string
 
 	cmd := &cobra.Command{
 		Use:   "up",
@@ -109,17 +102,14 @@ func newUpCmd(opts *Options) *cobra.Command {
   okdev up --no-tmux`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runUp(cmd, opts, upOptions{
-				waitTimeout:            waitTimeout,
-				dryRun:                 dryRun,
-				reconcile:              reconcile,
-				tmux:                   tmux,
-				noTmux:                 noTmux,
-				resetWorkspace:         resetWorkspace,
-				waitHooks:              waitHooks,
-				createMissingPVC:       createMissingPVC,
-				missingPVCSize:         missingPVCSize,
-				missingPVCStorageClass: missingPVCStorageClass,
-				yes:                    yes,
+				waitTimeout:    waitTimeout,
+				dryRun:         dryRun,
+				reconcile:      reconcile,
+				tmux:           tmux,
+				noTmux:         noTmux,
+				resetWorkspace: resetWorkspace,
+				waitHooks:      waitHooks,
+				yes:            yes,
 			})
 		},
 	}
@@ -133,9 +123,6 @@ func newUpCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&noTmux, "no-tmux", false, "Disable tmux persistent shell sessions for this pod")
 	cmd.Flags().BoolVar(&resetWorkspace, "reset-workspace", false, "Clear remote workspace and re-sync from local before starting")
 	cmd.Flags().BoolVar(&waitHooks, "wait-hooks", false, "Keep converging postSync until every session pod (including late-created ones) has completed it")
-	cmd.Flags().BoolVar(&createMissingPVC, "create-missing-pvc", false, "Create missing PVCs referenced by spec.volumes")
-	cmd.Flags().StringVar(&missingPVCSize, "missing-pvc-size", config.DefaultWorkspacePVCSize, "Size to use when creating a missing PVC")
-	cmd.Flags().StringVar(&missingPVCStorageClass, "missing-pvc-storage-class", "", "StorageClass to use when creating a missing PVC")
 	return cmd
 }
 
@@ -195,7 +182,6 @@ func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, e
 	labels := labelsForSession(opts, cc.cfg, cc.sessionName)
 	labels["okdev.io/run-id"] = runID
 	annotations := annotationsForSession(cc.cfg)
-	volumes := cc.cfg.EffectiveVolumes()
 	syncPairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
 	if err != nil {
 		return nil, err
@@ -207,7 +193,7 @@ func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, e
 		// pull the deletions back over the local files.
 		return nil, fmt.Errorf("--reset-workspace conflicts with sync direction \"down\" (the pod is the sync authority); remove the flag or switch direction")
 	}
-	runtime, err := sessionRuntime(cc.cfg, cc.cfgPath, cc.sessionName, workloadName, labels, annotations, volumes, enableTmux, resolvePreStopCommand(cc.cfg, cc.cfgPath))
+	runtime, err := sessionRuntime(cc.cfg, cc.cfgPath, cc.sessionName, workloadName, labels, annotations, enableTmux, resolvePreStopCommand(cc.cfg, cc.cfgPath))
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +209,6 @@ func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, e
 		cancel:         cancel,
 		labels:         labels,
 		annotations:    annotations,
-		volumes:        volumes,
 		syncPairs:      syncPairs,
 		enableTmux:     enableTmux,
 		runtime:        runtime,
@@ -316,19 +301,6 @@ func upReconcile(state *upState, applyWorkload bool) error {
 		}
 	}
 	state.ui.stepDone("workload", normalizeWorkloadType(state.command.cfg.Spec.Workload.Type))
-	if state.flags.createMissingPVC {
-		createdPVCs, err := reconcileMissingPVCs(state.ctx, state.command.kube, state.command.namespace, state.volumes, state.flags.missingPVCSize, state.flags.missingPVCStorageClass, state.labels, state.annotations)
-		if err != nil {
-			return err
-		}
-		if len(createdPVCs) == 0 {
-			state.ui.stepDone("pvc", "all referenced claims already exist")
-		} else {
-			state.ui.stepDone("pvc", "created: "+strings.Join(createdPVCs, ", "))
-		}
-	} else {
-		state.ui.stepDone("pvc", "not managed (use pre-created PVCs in spec.volumes)")
-	}
 	if !applyWorkload {
 		return nil
 	}
@@ -402,7 +374,7 @@ func rotateRunIdentity(state *upState) error {
 	state.labels["okdev.io/run-id"] = runID
 	cc := state.command
 	runtime, err := sessionRuntime(cc.cfg, cc.cfgPath, cc.sessionName, workloadName, state.labels, state.annotations,
-		state.volumes, state.enableTmux, resolvePreStopCommand(cc.cfg, cc.cfgPath))
+		state.enableTmux, resolvePreStopCommand(cc.cfg, cc.cfgPath))
 	if err != nil {
 		return fmt.Errorf("rebuild workload for new run id: %w", err)
 	}
@@ -693,10 +665,6 @@ func performWorkloadSwitch(state *upState, liveProfile string) error {
 func upDryRun(state *upState) error {
 	state.ui.section("Dry Run")
 	fmt.Fprintf(state.cmd.OutOrStdout(), "DRY RUN: session=%s namespace=%s\n", state.command.sessionName, state.command.namespace)
-	fmt.Fprintf(state.cmd.OutOrStdout(), "- using %d configured volume(s)\n", len(state.volumes))
-	if state.flags.createMissingPVC {
-		fmt.Fprintf(state.cmd.OutOrStdout(), "- would create missing PVC references (size=%s storageClass=%q)\n", state.flags.missingPVCSize, state.flags.missingPVCStorageClass)
-	}
 	if state.flags.reconcile {
 		verb := "reapply"
 		if state.runtime.Kind() == workload.TypePod {
@@ -1483,43 +1451,6 @@ func upCommandContext(parent context.Context, waitTimeout time.Duration) (contex
 		timeout = needed
 	}
 	return context.WithTimeout(parent, timeout)
-}
-
-func reconcileMissingPVCs(ctx context.Context, k interface {
-	PersistentVolumeClaimExists(context.Context, string, string) (bool, error)
-	Apply(context.Context, string, []byte) error
-}, namespace string, volumes []corev1.Volume, size, storageClass string, labels, annotations map[string]string) ([]string, error) {
-	seen := map[string]struct{}{}
-	var created []string
-	for _, v := range volumes {
-		claim := ""
-		if v.PersistentVolumeClaim != nil {
-			claim = strings.TrimSpace(v.PersistentVolumeClaim.ClaimName)
-		}
-		if claim == "" {
-			continue
-		}
-		if _, ok := seen[claim]; ok {
-			continue
-		}
-		seen[claim] = struct{}{}
-		exists, err := k.PersistentVolumeClaimExists(ctx, namespace, claim)
-		if err != nil {
-			return nil, fmt.Errorf("check pvc/%s: %w", claim, err)
-		}
-		if exists {
-			continue
-		}
-		manifest, err := kube.BuildPVCManifest(namespace, claim, size, storageClass, labels, annotations)
-		if err != nil {
-			return nil, fmt.Errorf("build pvc/%s manifest: %w", claim, err)
-		}
-		if err := k.Apply(ctx, namespace, manifest); err != nil {
-			return nil, fmt.Errorf("create pvc/%s: %w", claim, err)
-		}
-		created = append(created, claim)
-	}
-	return created, nil
 }
 
 type postCreateClient interface {

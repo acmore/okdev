@@ -67,6 +67,7 @@ bash scripts/e2e_kind_multi_session.sh
 bash scripts/e2e_kind_init_add_workload.sh
 bash scripts/e2e_kind_migrate_podtemplate.sh
 bash scripts/e2e_kind_workload_switch.sh
+bash scripts/e2e_kind_volumes.sh
 
 if [[ "$RUN_SYNC_HEALTH" == "1" ]]; then
   bash scripts/e2e_kind_sync_health.sh

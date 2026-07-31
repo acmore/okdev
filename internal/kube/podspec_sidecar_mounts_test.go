@@ -20,12 +20,13 @@ func TestPreparePodSpecMirrorsTargetMountsIntoSidecar(t *testing.T) {
 				{Name: "datasets", MountPath: "/data2", SubPath: "sets"},
 			},
 		}},
+		// Declared by the manifest, which is where volumes live.
+		Volumes: []corev1.Volume{
+			{Name: "results-vol", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+			{Name: "datasets", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		},
 	}
-	volumes := []corev1.Volume{
-		{Name: "results-vol", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		{Name: "datasets", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-	}
-	prepared, err := PreparePodSpec(spec, volumes, "/workspace", "sidecar:test", corev1.ResourceRequirements{}, false, "")
+	prepared, err := PreparePodSpec(spec, "/workspace", "sidecar:test", corev1.ResourceRequirements{}, false, "")
 	if err != nil {
 		t.Fatalf("PreparePodSpec: %v", err)
 	}
@@ -67,11 +68,12 @@ func TestPreparePodSpecAutoProvisionsSyncRemoteRoots(t *testing.T) {
 				{Name: "shared-pvc", MountPath: "/shared"},
 			},
 		}},
+		// Declared by the manifest, which is where volumes live.
+		Volumes: []corev1.Volume{
+			{Name: "shared-pvc", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "shared"}}},
+		},
 	}
-	volumes := []corev1.Volume{
-		{Name: "shared-pvc", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "shared"}}},
-	}
-	prepared, err := PreparePodSpecForTargetWithShellAndSyncRoots(spec, volumes, "/workspace", "sidecar:test", corev1.ResourceRequirements{}, false, "", "dev", "", []string{
+	prepared, err := PreparePodSpecForTargetWithShellAndSyncRoots(spec, "/workspace", "sidecar:test", corev1.ResourceRequirements{}, false, "", "dev", "", []string{
 		"/data/results",     // uncovered -> emptyDir auto-provisioned
 		"/shared/results",   // under the user PVC -> untouched
 		"/workspace/nested", // under workspace -> untouched (also overlap-rejected upstream)

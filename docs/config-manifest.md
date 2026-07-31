@@ -138,15 +138,66 @@ Note: earlier versions accepted `ttlHours` / `idleTimeoutMinutes` here and shipp
 
 ---
 
-## `spec.volumes`
+## Volumes (`spec.volumes` is removed)
 
-Uses native Kubernetes `corev1.Volume` schema. Volume *sources* stay in the config, because okdev manages them identically for every workload type. The `volumeMounts` that reference them live in the workload manifest, beside the container they belong to.
+**Volumes belong to the workload manifest**, declared beside the containers that
+mount them, exactly as in any Kubernetes object.
 
-### Workspace Behavior
+`spec.volumes` used to hold the sources while the manifest held the mounts. That
+split one object across two files, and — because a name declared in both went to
+the manifest — a workspace PVC in the config silently became whatever the
+manifest said. Run `okdev migrate` to move them; it copies them into every
+workload's manifest and leaves any name the manifest already declares alone,
+naming it.
 
-- If no volume named `workspace` is provided, okdev injects `emptyDir: {}` automatically.
-- okdev ensures `workspace` is mounted on both the `dev` container and sidecar.
-- Mount path defaults to `/workspace`, or follows the `volumeMounts` entry for `workspace` in the workload manifest.
+### What okdev still injects
+
+okdev does not touch what the manifest declares. Its one exception is the sync
+target:
+
+- **`workspace`** — injected as `emptyDir: {}` **only when the manifest declares
+  no volume by that name.** Declare it yourself — a PVC, an `ephemeral`
+  volumeClaimTemplate, an `emptyDir` with a `sizeLimit` — and okdev uses exactly
+  that.
+- **`syncthing-home`, `okdev-runtime`** — the sidecar's own state, always
+  injected. They belong to okdev's machinery, not to your object.
+
+okdev mounts `workspace` into the sidecar as well as the attach container, and
+the mount path follows the `volumeMounts` entry for `workspace` in the manifest
+(default `/workspace`).
+
+### Persistent workspace
+
+```yaml
+# .okdev/pod.yaml
+spec:
+  containers:
+    - name: dev
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+  volumes:
+    - name: workspace
+      persistentVolumeClaim:
+        claimName: team-workspace
+```
+
+### Per-session storage
+
+`ephemeral` gives each session its own claim, created and deleted with the pod —
+no PVC to manage by hand:
+
+```yaml
+  volumes:
+    - name: workspace
+      ephemeral:
+        volumeClaimTemplate:
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            resources:
+              requests:
+                storage: 50Gi
+```
 
 ### PVC
 
@@ -559,7 +610,7 @@ injected at the object root, because a Pod minus `apiVersion`/`kind` *is* a pod
 template.
 
 Run `okdev migrate` to convert an existing config: it writes `.okdev/pod.yaml`
-and points the workload at it, keeping `spec.volumes` where it is. The first
+and points the workload at it. The first
 `okdev up` afterwards reports drift and offers to recreate — the Pod it builds
 is unchanged, only the config's description of it moved.
 

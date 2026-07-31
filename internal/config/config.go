@@ -71,14 +71,17 @@ type DevEnvSpec struct {
 	// working unchanged.
 	Workloads       []WorkloadProfile `yaml:"workloads,omitempty"`
 	DefaultWorkload string            `yaml:"defaultWorkload,omitempty"`
-	Volumes         []corev1.Volume   `yaml:"volumes"`
-	Workspace       *LegacyWorkspace  `yaml:"workspace,omitempty"`
-	Sync            SyncSpec          `yaml:"sync"`
-	Ports           []PortMapping     `yaml:"ports"`
-	SSH             SSHSpec           `yaml:"ssh"`
-	Exec            ExecSpec          `yaml:"exec,omitempty"`
-	Lifecycle       LifecycleSpec     `yaml:"lifecycle"`
-	Sidecar         SidecarSpec       `yaml:"sidecar"`
+	// Volumes is removed. It merged volumes into a Kubernetes object the user
+	// wrote and lost every name conflict to it silently; volumes belong to the
+	// manifest. It survives only to produce a migration error.
+	Volumes   []corev1.Volume  `yaml:"volumes,omitempty"`
+	Workspace *LegacyWorkspace `yaml:"workspace,omitempty"`
+	Sync      SyncSpec         `yaml:"sync"`
+	Ports     []PortMapping    `yaml:"ports"`
+	SSH       SSHSpec          `yaml:"ssh"`
+	Exec      ExecSpec         `yaml:"exec,omitempty"`
+	Lifecycle LifecycleSpec    `yaml:"lifecycle"`
+	Sidecar   SidecarSpec      `yaml:"sidecar"`
 
 	// PodTemplate is removed. It survives as a pointer purely so a config
 	// still carrying it produces a migration error instead of being silently
@@ -428,6 +431,9 @@ func (d *DevEnvironment) Validate() error {
 	if d.Spec.Workspace != nil {
 		return &MigrationEligibleError{Err: errors.New("spec.workspace is removed; use spec.volumes (k8s Volume) and the workload manifest's containers[*].volumeMounts, or run \"okdev migrate\" to automatically update your config")}
 	}
+	if len(d.Spec.Volumes) > 0 {
+		return &MigrationEligibleError{Err: errors.New("spec.volumes is removed; declare volumes in the workload manifest — run \"okdev migrate\" to move them automatically")}
+	}
 	if d.Spec.PodTemplate != nil {
 		return &MigrationEligibleError{Err: errors.New("spec.podTemplate is removed; every workload now has its own manifest — run \"okdev migrate\" to extract it automatically")}
 	}
@@ -538,26 +544,6 @@ func (d *DevEnvironment) EffectiveWorkloadInject() []WorkloadInjectSpec {
 	}
 	for i := range out {
 		out[i].Sidecar = boolPtr(true)
-	}
-	return out
-}
-
-func (d *DevEnvironment) EffectiveVolumes() []corev1.Volume {
-	out := make([]corev1.Volume, 0, len(d.Spec.Volumes)+1)
-	hasWorkspace := false
-	for _, v := range d.Spec.Volumes {
-		if v.Name == DefaultWorkspaceName {
-			hasWorkspace = true
-		}
-		out = append(out, v)
-	}
-	if !hasWorkspace {
-		out = append(out, corev1.Volume{
-			Name: DefaultWorkspaceName,
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
-			},
-		})
 	}
 	return out
 }
