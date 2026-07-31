@@ -41,6 +41,9 @@ spec: {}
 | `ports` | `array` | — | Port forwarding rules |
 | `ssh` | `object` | — | SSH and tmux settings |
 | `lifecycle` | `object` | — | Post-create, post-sync, and pre-stop hooks |
+| `workload` | `object` | — | The workload to run. The *effective* one: after profile selection this holds whichever profile is active |
+| `workloads` | `array` | — | Named workload profiles this session can switch between |
+| `defaultWorkload` | `string` | first entry | Which profile a **new** session starts on |
 | `sidecar` | `object` | — | Sidecar container image |
 | `podTemplate` | `object` | — | Full Kubernetes PodSpec overlay |
 
@@ -445,6 +448,66 @@ spec:
 ```
 
 This applies to the injected `okdev-sidecar` container. To get `Guaranteed` QoS, set equal requests and limits on every container in the pod, including both `dev` and `okdev-sidecar`.
+
+---
+
+## `spec.workloads` and `spec.defaultWorkload`
+
+Declare several workloads in one config and switch the session between them with
+`okdev workload use <name>` — no re-`init`, and no second session.
+
+```yaml
+spec:
+  workloads:
+    - name: dev
+      type: pod                    # spec.podTemplate supplies the pod
+    - name: train
+      type: pytorchjob
+      manifestPath: pytorchjob.yaml
+      inject:
+        - path: spec.pytorchReplicaSpecs.Worker.template
+  defaultWorkload: dev
+```
+
+A profile owns exactly `name`, `type`, `manifestPath`, `inject`, and `attach`.
+Everything else — `ports`, `sync`, `sidecar`, `volumes`, `namespace`,
+`podTemplate` — is shared and identical across profiles. To vary those, use a
+separate session.
+
+### The singular `spec.workload`
+
+`spec.workload` still works, unchanged, and is desugared into a one-entry list:
+
+| what your config says | what okdev sees |
+|---|---|
+| `spec.workload: {type: job, …}` | one profile named `default` carrying those fields |
+| neither `spec.workload` nor `spec.workloads` | one profile named `default` of type `pod` |
+| `spec.workloads: [...]` | exactly those profiles |
+
+After selection, `spec.workload` holds **the effective workload** — whichever
+profile is active for this command. Reading it always gives you the workload
+actually in play.
+
+Only one profile may be a `pod` with no `manifestPath`, because such a profile
+is synthesized from the shared `spec.podTemplate`; two of them would be
+identical. Give the others their own `manifestPath` — `okdev workload add` does
+this for you.
+
+### Which profile is active
+
+```
+okdev up --workload <name>  →  session pin  →  spec.defaultWorkload  →  workloads[0]
+```
+
+The pin lives with the session, not the repo: two sessions in one repo would
+otherwise contend for one slot, and a repo-level pin moved by `git pull` could
+silently swap out a running workload. `spec.defaultWorkload` therefore only
+decides where a **new** session starts — it never moves an existing one.
+
+Switching is always explicit and always destructive: `okdev up` deletes the
+running workload before creating the newly selected one, and prompts first
+unless `--yes` is given. See `okdev workload` in the command reference for the
+full contrast against `okdev use <session>`.
 
 ---
 

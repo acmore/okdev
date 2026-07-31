@@ -759,8 +759,10 @@ func TestValidateAcceptsValidConfig(t *testing.T) {
 
 func TestValidateRejectsInvalidWorkloadType(t *testing.T) {
 	cfg := validConfig()
-	cfg.SetDefaults()
+	// Set before SetDefaults: defaulting desugars spec.workload into
+	// spec.workloads, and validation reads the profiles from there.
 	cfg.Spec.Workload.Type = "statefulset"
+	cfg.SetDefaults()
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error for invalid workload type")
 	}
@@ -778,9 +780,9 @@ func TestSetDefaultsJobInjectPath(t *testing.T) {
 
 func TestValidateJobRequiresManifestPath(t *testing.T) {
 	cfg := validConfig()
-	cfg.SetDefaults()
 	cfg.Spec.Workload.Type = "job"
 	cfg.Spec.Workload.ManifestPath = ""
+	cfg.SetDefaults()
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error for missing job manifestPath")
 	}

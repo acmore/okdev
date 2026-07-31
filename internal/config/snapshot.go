@@ -30,6 +30,13 @@ type LastAppliedWorkloadSpec struct {
 	PreStop            string                      `json:"preStop"`
 	ManifestPath       string                      `json:"manifestPath,omitempty"`
 	ManifestSHA256     string                      `json:"manifestSHA256,omitempty"`
+	// WorkloadProfile distinguishes two profiles that share a type (a one-GPU
+	// "dev" pod and an eight-GPU "big" pod produce otherwise identical
+	// snapshots). It is stamped only for configs that declare spec.workloads:
+	// omitting it for desugared legacy configs keeps their hash bit-for-bit
+	// what it was before profiles existed, so existing sessions do not all
+	// report drift on their next `okdev up`.
+	WorkloadProfile string `json:"workloadProfile,omitempty"`
 	// SyncRemoteRoots are the remote roots of additional sync mappings.
 	// They shape the pod spec (auto-provisioned volumes + sidecar mounts),
 	// so adding or removing a mapping must surface as workload drift and
@@ -68,6 +75,9 @@ func BuildWorkloadSnapshot(cfg *DevEnvironment, workspaceMountPath, targetContai
 		PreStop:            preStop,
 		ManifestPath:       manifestPath,
 		SyncRemoteRoots:    cfg.AdditionalSyncRemoteRoots(),
+	}
+	if cfg.DeclaresWorkloadProfiles() {
+		snap.WorkloadProfile = cfg.SelectedWorkload()
 	}
 	if manifestResolvedPath != "" {
 		hash, err := ComputeManifestSHA256(manifestResolvedPath)

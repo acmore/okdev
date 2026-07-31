@@ -17,6 +17,7 @@ type Options struct {
 	Namespace  string
 	Context    string
 	Output     string
+	Workload   string
 	Verbose    bool
 }
 
@@ -55,6 +56,7 @@ func newRootCmdWithOptions() (*cobra.Command, *Options) {
 	cmd.AddCommand(newStatusCmd(opts))
 	cmd.AddCommand(newListCmd(opts))
 	cmd.AddCommand(newUseCmd(opts))
+	cmd.AddCommand(newWorkloadCmd(opts))
 	cmd.AddCommand(newTargetCmd(opts))
 	cmd.AddCommand(newAgentCmd(opts))
 	cmd.AddCommand(newExecCmd(opts))

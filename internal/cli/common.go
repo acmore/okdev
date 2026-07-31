@@ -98,7 +98,24 @@ func resolveCommandContext(opts *Options, resolver sessionResolver) (*commandCon
 		return nil, err
 	}
 	cc.sessionName = sessionName
+	profile, err := resolveWorkloadProfileName(effectiveOpts, sessionName)
+	if err != nil {
+		return nil, err
+	}
+	if err := cfg.SelectWorkload(profile); err != nil {
+		return nil, err
+	}
 	return cc, nil
+}
+
+// resolveWorkloadProfileName picks the profile this invocation runs against.
+// An empty result means "let the config decide" — SelectWorkload falls through
+// to spec.defaultWorkload and then the first declared profile.
+func resolveWorkloadProfileName(opts *Options, sessionName string) (string, error) {
+	if opts != nil && strings.TrimSpace(opts.Workload) != "" {
+		return strings.TrimSpace(opts.Workload), nil
+	}
+	return session.LoadWorkloadProfile(sessionName)
 }
 
 func optionsWithSessionConfig(opts *Options) (*Options, error) {
@@ -671,7 +688,7 @@ func labelsForSession(opts *Options, cfg *config.DevEnvironment, sessionName str
 	if root, err := session.RepoRoot(); err == nil && root != "" {
 		repo = filepath.Base(root)
 	}
-	return map[string]string{
+	labels := map[string]string{
 		"okdev.io/managed":       "true",
 		"okdev.io/name":          cfg.Metadata.Name,
 		"okdev.io/session":       sessionName,
@@ -679,6 +696,13 @@ func labelsForSession(opts *Options, cfg *config.DevEnvironment, sessionName str
 		"okdev.io/repo":          repo,
 		"okdev.io/workload-type": cfg.Spec.Workload.Type,
 	}
+	// This is the map stamped onto created pods, so the profile label has to
+	// be here — detectWorkloadSwitch reads it back off the live pods, and two
+	// profiles sharing a type are indistinguishable without it.
+	if profile := strings.TrimSpace(cfg.SelectedWorkload()); profile != "" {
+		labels["okdev.io/workload-profile"] = profile
+	}
+	return labels
 }
 
 func selectorForSessionRun(sessionName string) string {

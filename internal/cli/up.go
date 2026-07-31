@@ -39,6 +39,7 @@ type upOptions struct {
 	createMissingPVC       bool
 	missingPVCSize         string
 	missingPVCStorageClass string
+	yes                    bool
 }
 
 type upState struct {
@@ -83,6 +84,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 	var waitTimeout time.Duration
 	var dryRun bool
 	var reconcile bool
+	var yes bool
 	var tmux bool
 	var noTmux bool
 	var resetWorkspace bool
@@ -117,6 +119,7 @@ func newUpCmd(opts *Options) *cobra.Command {
 				createMissingPVC:       createMissingPVC,
 				missingPVCSize:         missingPVCSize,
 				missingPVCStorageClass: missingPVCStorageClass,
+				yes:                    yes,
 			})
 		},
 	}
@@ -124,6 +127,8 @@ func newUpCmd(opts *Options) *cobra.Command {
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", upDefaultWaitTimeout, "Wait timeout for pod readiness")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview actions without applying resources")
 	cmd.Flags().BoolVar(&reconcile, "reconcile", false, "Reconcile existing workloads by reapplying rolling controllers or recreating immutable workloads")
+	cmd.Flags().StringVar(&opts.Workload, "workload", "", "Workload profile to run (pins it for this session)")
+	cmd.Flags().BoolVar(&yes, "yes", false, "Skip the confirmation prompt when switching workloads deletes the running one")
 	cmd.Flags().BoolVar(&tmux, "tmux", false, "Enable tmux persistent shell sessions in the dev container")
 	cmd.Flags().BoolVar(&noTmux, "no-tmux", false, "Disable tmux persistent shell sessions for this pod")
 	cmd.Flags().BoolVar(&resetWorkspace, "reset-workspace", false, "Clear remote workspace and re-sync from local before starting")
@@ -296,8 +301,19 @@ func upReconcile(state *upState, applyWorkload bool) error {
 		return err
 	}
 	state.ui.stepDone("ownership", "ok")
-	if err := ensureCompatibleExistingSessionWorkload(state.ctx, state.command.kube, state.command.namespace, state.command.sessionName, state.command.cfg.Spec.Workload.Type); err != nil {
+	liveProfile, liveType, isSwitch, err := detectWorkloadSwitch(
+		state.ctx, state.command.kube, state.command.namespace, state.command.sessionName,
+		state.command.cfg.SelectedWorkload(), state.command.cfg.Spec.Workload.Type)
+	if err != nil {
 		return err
+	}
+	if isSwitch {
+		if err := confirmWorkloadSwitch(state, liveProfile, liveType); err != nil {
+			return err
+		}
+		if err := performWorkloadSwitch(state, liveProfile); err != nil {
+			return err
+		}
 	}
 	state.ui.stepDone("workload", normalizeWorkloadType(state.command.cfg.Spec.Workload.Type))
 	if state.flags.createMissingPVC {
@@ -575,35 +591,103 @@ func normalizeWorkloadType(workloadType string) string {
 	return strings.TrimSpace(workloadType)
 }
 
-func ensureCompatibleExistingSessionWorkload(ctx context.Context, k sessionAccessReader, namespace, sessionName, desiredType string) error {
+// detectWorkloadSwitch reports whether the session's live pods belong to a
+// different workload profile than the one about to be applied.
+//
+// Profile name is the signal, not type: two profiles may share a type (a
+// one-GPU "dev" pod and an eight-GPU "big" pod), so type alone cannot tell them
+// apart. Pods created before profiles existed carry no profile label, and for
+// those the type is the only thing to compare.
+func detectWorkloadSwitch(ctx context.Context, k sessionPodLister, namespace, sessionName, desiredProfile, desiredType string) (string, string, bool, error) {
 	pods, err := k.ListPods(ctx, namespace, false, "okdev.io/managed=true,okdev.io/session="+sessionName)
 	if err != nil {
-		return err
+		return "", "", false, err
 	}
-	if len(pods) == 0 {
-		return nil
-	}
-
-	desired := normalizeWorkloadType(desiredType)
-	seen := map[string]struct{}{}
-	found := make([]string, 0, len(pods))
+	desiredType = normalizeWorkloadType(desiredType)
+	desiredProfile = strings.TrimSpace(desiredProfile)
 	for _, pod := range pods {
-		workloadType := normalizeWorkloadType(pod.Labels["okdev.io/workload-type"])
-		if _, ok := seen[workloadType]; ok {
+		if pod.Deleting {
 			continue
 		}
-		seen[workloadType] = struct{}{}
-		found = append(found, workloadType)
+		liveProfile := strings.TrimSpace(pod.Labels["okdev.io/workload-profile"])
+		liveType := normalizeWorkloadType(pod.Labels["okdev.io/workload-type"])
+		if liveProfile == "" {
+			if liveType != desiredType {
+				return liveProfile, liveType, true, nil
+			}
+			continue
+		}
+		if liveProfile != desiredProfile {
+			return liveProfile, liveType, true, nil
+		}
 	}
-	sort.Strings(found)
+	return "", "", false, nil
+}
 
-	if len(found) == 1 && found[0] == desired {
+// confirmWorkloadSwitch gates the delete. `okdev up` is otherwise
+// non-destructive, so switching must never destroy a running workload without
+// the user saying so.
+func confirmWorkloadSwitch(state *upState, liveProfile, liveType string) error {
+	desired := state.command.cfg.SelectedWorkload()
+	from := liveProfile
+	if from == "" {
+		from = liveType
+	}
+	if state.flags.yes {
+		state.ui.warnf("switching workload %s -> %s; deleting the running workload", from, desired)
 		return nil
 	}
-	if len(found) == 1 {
-		return fmt.Errorf("session %q already exists in namespace %q with workload type %q; current config expects %q. Run `okdev down --session %s` before recreating it, or choose a different --session name", sessionName, namespace, found[0], desired, sessionName)
+	if !isTerminalReader(state.cmd.InOrStdin()) {
+		return fmt.Errorf("session %q is running workload %q and the config selects %q; switching deletes the running workload. Re-run with --yes to confirm, or `okdev workload use %s` to stay on it",
+			state.command.sessionName, from, desired, from)
 	}
-	return fmt.Errorf("session %q already exists in namespace %q with multiple workload types (%s); run `okdev down --session %s` before recreating it, or choose a different --session name", sessionName, namespace, strings.Join(found, ", "), sessionName)
+	fmt.Fprintf(state.cmd.OutOrStdout(), "session %q is running profile %q (%s). Switching to %q will delete it. Continue? [y/N]: ",
+		state.command.sessionName, from, liveType, desired)
+	reader := bufio.NewReader(state.cmd.InOrStdin())
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("read confirmation: %w", err)
+	}
+	switch strings.TrimSpace(strings.ToLower(line)) {
+	case "y", "yes":
+		return nil
+	}
+	return fmt.Errorf("workload switch cancelled")
+}
+
+// performWorkloadSwitch deletes the workload the session is currently running
+// so the newly selected profile can be created in its place.
+//
+// The runtime must be built from the profile that is *live*, not the one being
+// switched to: the object to delete has the old profile's kind and name, and
+// state.command.cfg already has the new profile collapsed into it. So this
+// re-loads the config and selects the live profile into that separate copy.
+func performWorkloadSwitch(state *upState, liveProfile string) error {
+	state.ui.stepRun("workload", "deleting the previous workload")
+
+	previous, _, err := config.Load(state.command.cfgPath)
+	if err != nil {
+		return fmt.Errorf("load config for switch: %w", err)
+	}
+	// An unlabelled legacy pod has no profile name; its config is whatever the
+	// singular spec.workload desugared to, which is the default selection.
+	if strings.TrimSpace(liveProfile) != "" {
+		if err := previous.SelectWorkload(liveProfile); err != nil {
+			return fmt.Errorf("the running workload %q is no longer declared in the config, so okdev cannot delete it; restore it or run `okdev down` first: %w", liveProfile, err)
+		}
+	}
+
+	runtime, err := sessionRuntimeForExisting(state.ctx, previous, state.command.cfgPath,
+		state.command.namespace, state.command.sessionName, state.command.kube)
+	if err != nil {
+		return fmt.Errorf("resolve the running workload for switch: %w", err)
+	}
+	if err := runtime.Delete(state.ctx, state.command.kube, state.command.namespace, true); err != nil {
+		return fmt.Errorf("delete the running workload for switch: %w", err)
+	}
+	state.ui.stepDone("workload", "previous workload deleted")
+	state.recreatedThisRun = true
+	return nil
 }
 
 func upDryRun(state *upState) error {
@@ -1063,6 +1147,14 @@ func persistSessionState(state *upState) error {
 	}
 	if err := session.SaveActiveSession(state.command.sessionName); err != nil {
 		return err
+	}
+	// The session now *is* running this profile, so the pin has to follow, or
+	// the next `okdev ssh` resolves to the old one and looks for pods that no
+	// longer exist.
+	if profile := strings.TrimSpace(state.command.cfg.SelectedWorkload()); profile != "" {
+		if err := session.SaveWorkloadProfile(state.command.sessionName, profile); err != nil {
+			return err
+		}
 	}
 	if state.ui != nil {
 		state.ui.stepDone("active session", state.command.sessionName)

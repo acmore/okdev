@@ -678,51 +678,70 @@ func TestUpReconcileDoesNotFailWhenSessionInfoCannotBePersisted(t *testing.T) {
 	}
 }
 
-func TestEnsureCompatibleExistingSessionWorkloadAllowsSameType(t *testing.T) {
-	err := ensureCompatibleExistingSessionWorkload(context.Background(), fakeSessionAccessReader{
+// These four cases were the ensureCompatibleExistingSessionWorkload guard,
+// which refused to run when live pods disagreed with the config. Profiles turn
+// that refusal into a switch, so the same inputs are now asserted against
+// detectWorkloadSwitch: "compatible" became "not a switch".
+func TestWorkloadSwitchNotTriggeredForSameType(t *testing.T) {
+	_, _, isSwitch, err := detectWorkloadSwitch(context.Background(), fakeSessionAccessReader{
 		pods: []kube.PodSummary{{
 			Name:   "okdev-sess-a",
 			Labels: map[string]string{"okdev.io/workload-type": workload.TypeJob},
 		}},
-	}, "default", "sess-a", workload.TypeJob)
+	}, "default", "sess-a", config.DefaultWorkloadProfileName, workload.TypeJob)
 	if err != nil {
-		t.Fatalf("expected matching workload type to be allowed, got %v", err)
+		t.Fatalf("detectWorkloadSwitch: %v", err)
+	}
+	if isSwitch {
+		t.Fatal("a matching workload type must not register as a switch")
 	}
 }
 
-func TestEnsureCompatibleExistingSessionWorkloadTreatsEmptyTypeAsPod(t *testing.T) {
-	err := ensureCompatibleExistingSessionWorkload(context.Background(), fakeSessionAccessReader{
+func TestWorkloadSwitchTreatsEmptyTypeAsPod(t *testing.T) {
+	_, _, isSwitch, err := detectWorkloadSwitch(context.Background(), fakeSessionAccessReader{
 		pods: []kube.PodSummary{{
 			Name:   "okdev-sess-a",
 			Labels: map[string]string{},
 		}},
-	}, "default", "sess-a", "")
+	}, "default", "sess-a", config.DefaultWorkloadProfileName, "")
 	if err != nil {
-		t.Fatalf("expected empty workload type to normalize to pod, got %v", err)
+		t.Fatalf("detectWorkloadSwitch: %v", err)
+	}
+	if isSwitch {
+		t.Fatal("an empty workload type must normalize to pod and not register as a switch")
 	}
 }
 
-func TestEnsureCompatibleExistingSessionWorkloadRejectsConflictingType(t *testing.T) {
-	err := ensureCompatibleExistingSessionWorkload(context.Background(), fakeSessionAccessReader{
+func TestWorkloadSwitchTriggeredForConflictingType(t *testing.T) {
+	live, liveType, isSwitch, err := detectWorkloadSwitch(context.Background(), fakeSessionAccessReader{
 		pods: []kube.PodSummary{{
 			Name:   "okdev-sess-a",
 			Labels: map[string]string{"okdev.io/workload-type": workload.TypePod},
 		}},
-	}, "default", "sess-a", workload.TypeJob)
-	if err == nil || !strings.Contains(err.Error(), `already exists in namespace "default" with workload type "pod"; current config expects "job"`) {
-		t.Fatalf("expected workload conflict error, got %v", err)
+	}, "default", "sess-a", config.DefaultWorkloadProfileName, workload.TypeJob)
+	if err != nil {
+		t.Fatalf("detectWorkloadSwitch: %v", err)
+	}
+	if !isSwitch {
+		t.Fatal("a conflicting workload type must register as a switch")
+	}
+	if live != "" || liveType != workload.TypePod {
+		t.Fatalf("live = %q/%q, want \"\"/pod", live, liveType)
 	}
 }
 
-func TestEnsureCompatibleExistingSessionWorkloadRejectsMixedExistingTypes(t *testing.T) {
-	err := ensureCompatibleExistingSessionWorkload(context.Background(), fakeSessionAccessReader{
+func TestWorkloadSwitchTriggeredForMixedExistingTypes(t *testing.T) {
+	_, _, isSwitch, err := detectWorkloadSwitch(context.Background(), fakeSessionAccessReader{
 		pods: []kube.PodSummary{
 			{Name: "okdev-sess-a", Labels: map[string]string{"okdev.io/workload-type": workload.TypePod}},
 			{Name: "okdev-hx2n9", Labels: map[string]string{"okdev.io/workload-type": workload.TypeJob}},
 		},
-	}, "default", "sess-a", workload.TypeJob)
-	if err == nil || !strings.Contains(err.Error(), `multiple workload types (job, pod)`) {
-		t.Fatalf("expected mixed workload type error, got %v", err)
+	}, "default", "sess-a", config.DefaultWorkloadProfileName, workload.TypeJob)
+	if err != nil {
+		t.Fatalf("detectWorkloadSwitch: %v", err)
+	}
+	if !isSwitch {
+		t.Fatal("a session holding a foreign workload type must register as a switch")
 	}
 }
 

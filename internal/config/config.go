@@ -46,6 +46,12 @@ type DevEnvironment struct {
 	Kind       string     `yaml:"kind"`
 	Metadata   Metadata   `yaml:"metadata"`
 	Spec       DevEnvSpec `yaml:"spec"`
+
+	// declaredWorkloadProfiles records whether spec.workloads came from the
+	// user's file rather than from desugaring. See DeclaresWorkloadProfiles.
+	declaredWorkloadProfiles bool
+	// selectedWorkload names the profile collapsed into Spec.Workload.
+	selectedWorkload string
 }
 
 type Metadata struct {
@@ -53,21 +59,27 @@ type Metadata struct {
 }
 
 type DevEnvSpec struct {
-	Namespace   string           `yaml:"namespace"`
-	KubeContext string           `yaml:"kubeContext"`
-	Template    *TemplateRef     `yaml:"template,omitempty"`
-	Session     SessionSpec      `yaml:"session"`
-	Agents      []AgentSpec      `yaml:"agents,omitempty"`
-	Workload    WorkloadSpec     `yaml:"workload"`
-	Volumes     []corev1.Volume  `yaml:"volumes"`
-	Workspace   *LegacyWorkspace `yaml:"workspace,omitempty"`
-	Sync        SyncSpec         `yaml:"sync"`
-	Ports       []PortMapping    `yaml:"ports"`
-	SSH         SSHSpec          `yaml:"ssh"`
-	Exec        ExecSpec         `yaml:"exec,omitempty"`
-	Lifecycle   LifecycleSpec    `yaml:"lifecycle"`
-	Sidecar     SidecarSpec      `yaml:"sidecar"`
-	PodTemplate PodTemplateRef   `yaml:"podTemplate"`
+	Namespace   string       `yaml:"namespace"`
+	KubeContext string       `yaml:"kubeContext"`
+	Template    *TemplateRef `yaml:"template,omitempty"`
+	Session     SessionSpec  `yaml:"session"`
+	Agents      []AgentSpec  `yaml:"agents,omitempty"`
+	Workload    WorkloadSpec `yaml:"workload"`
+	// Workloads are the named profiles a session can switch between. The
+	// singular Workload above stays as the *effective* one: SelectWorkload
+	// collapses a profile into it, so every reader of Spec.Workload keeps
+	// working unchanged.
+	Workloads       []WorkloadProfile `yaml:"workloads,omitempty"`
+	DefaultWorkload string            `yaml:"defaultWorkload,omitempty"`
+	Volumes         []corev1.Volume   `yaml:"volumes"`
+	Workspace       *LegacyWorkspace  `yaml:"workspace,omitempty"`
+	Sync            SyncSpec          `yaml:"sync"`
+	Ports           []PortMapping     `yaml:"ports"`
+	SSH             SSHSpec           `yaml:"ssh"`
+	Exec            ExecSpec          `yaml:"exec,omitempty"`
+	Lifecycle       LifecycleSpec     `yaml:"lifecycle"`
+	Sidecar         SidecarSpec       `yaml:"sidecar"`
+	PodTemplate     PodTemplateRef    `yaml:"podTemplate"`
 }
 
 // Exec fanout modes; see ExecSpec.FanoutMode.
@@ -332,6 +344,7 @@ func (d *DevEnvironment) SetDefaults() {
 	if d.Spec.Workload.Type == "job" && len(d.Spec.Workload.Inject) == 0 {
 		d.Spec.Workload.Inject = []WorkloadInjectSpec{{Path: "spec.template"}}
 	}
+	d.setWorkloadDefaults()
 	if d.Spec.Sync.Syncthing.Version == "" {
 		d.Spec.Sync.Syncthing.Version = DefaultSyncthingVersion
 	}
@@ -411,36 +424,8 @@ func (d *DevEnvironment) Validate() error {
 	if d.Spec.Workspace != nil {
 		return &MigrationEligibleError{Err: errors.New("spec.workspace is removed; use spec.volumes (k8s Volume) and podTemplate.spec.containers[*].volumeMounts, or run \"okdev migrate\" to automatically update your config")}
 	}
-	switch strings.TrimSpace(d.Spec.Workload.Type) {
-	case "", "pod", "job", "pytorchjob", "generic":
-	default:
-		return fmt.Errorf("spec.workload.type must be one of pod, job, pytorchjob, generic, got %q", d.Spec.Workload.Type)
-	}
-	switch strings.TrimSpace(d.Spec.Workload.Type) {
-	case "job", "pytorchjob", "generic":
-		if strings.TrimSpace(d.Spec.Workload.ManifestPath) == "" {
-			return fmt.Errorf("spec.workload.manifestPath is required when spec.workload.type=%q", d.Spec.Workload.Type)
-		}
-	}
-	effectiveInject := d.EffectiveWorkloadInject()
-	isPod := isPodWorkloadType(d.Spec.Workload.Type)
-	for i, inject := range effectiveInject {
-		if strings.TrimSpace(inject.Path) == "" && !isPod {
-			return fmt.Errorf("spec.workload.inject[%d].path is required", i)
-		}
-		if inject.Attachable != nil && *inject.Attachable && inject.Sidecar != nil && !*inject.Sidecar {
-			return fmt.Errorf("spec.workload.inject[%d]: attachable=true requires sidecar=true", i)
-		}
-	}
-	if d.Spec.Workload.Type == "job" {
-		for i, inject := range d.Spec.Workload.Inject {
-			if strings.TrimSpace(inject.Path) != "spec.template" {
-				return fmt.Errorf("spec.workload.inject[%d].path must be spec.template when spec.workload.type=job", i)
-			}
-		}
-	}
-	if (d.Spec.Workload.Type == "generic" || d.Spec.Workload.Type == "pytorchjob") && len(d.Spec.Workload.Inject) == 0 {
-		return fmt.Errorf("spec.workload.inject is required when spec.workload.type=%q", d.Spec.Workload.Type)
+	if err := d.validateWorkloadProfiles(); err != nil {
+		return err
 	}
 	if d.Spec.Sync.Engine != "syncthing" {
 		return fmt.Errorf("spec.sync.engine must be syncthing, got %q", d.Spec.Sync.Engine)

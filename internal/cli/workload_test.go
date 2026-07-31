@@ -240,3 +240,24 @@ func TestSessionRuntimeBuildsGenericRuntimeForPod(t *testing.T) {
 		t.Fatalf("WorkloadName() = %q, want okdev-sess1", got)
 	}
 }
+
+func TestDiscoveryLabelsCarryTheWorkloadProfile(t *testing.T) {
+	cfg := &config.DevEnvironment{}
+	cfg.Metadata.Name = "proj"
+	cfg.Spec.Workloads = []config.WorkloadProfile{
+		{Name: "dev", Type: "pod"},
+		{Name: "train", Type: "job", ManifestPath: "j.yaml"},
+	}
+	cfg.SetDefaults()
+	if err := cfg.SelectWorkload("train"); err != nil {
+		t.Fatal(err)
+	}
+
+	labels := discoveryLabelsForSession(cfg, "sess1", "run1")
+	if labels["okdev.io/workload-profile"] != "train" {
+		t.Fatalf("workload-profile = %q, want train", labels["okdev.io/workload-profile"])
+	}
+	if labels["okdev.io/workload-type"] != "job" {
+		t.Fatalf("workload-type = %q, want job", labels["okdev.io/workload-type"])
+	}
+}

@@ -263,3 +263,55 @@ func TestSnapshotKeepsAConfiguredInject(t *testing.T) {
 		t.Fatalf("Workload.Inject = %+v, want the job's spec.template entry", snap.Workload.Inject)
 	}
 }
+
+func TestSnapshotHashUnchangedForLegacySingularWorkload(t *testing.T) {
+	cfg := &DevEnvironment{}
+	cfg.Spec.Workload.Type = "pod"
+	cfg.SetDefaults()
+
+	snap := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "", "", "")
+	if snap.WorkloadProfile != "" {
+		t.Fatalf("a desugared config must not stamp a profile name, got %q", snap.WorkloadProfile)
+	}
+	raw, err := snap.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(raw, "workloadProfile") {
+		t.Fatalf("legacy snapshot JSON must not carry workloadProfile:\n%s", raw)
+	}
+}
+
+func TestSnapshotCarriesProfileWhenDeclared(t *testing.T) {
+	cfg := &DevEnvironment{}
+	cfg.Spec.Workloads = []WorkloadProfile{{Name: "dev", Type: "pod"}, {Name: "big", Type: "pod", ManifestPath: "big.yaml"}}
+	cfg.SetDefaults()
+	if err := cfg.SelectWorkload("big"); err != nil {
+		t.Fatal(err)
+	}
+
+	snap := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "", "", "")
+	if snap.WorkloadProfile != "big" {
+		t.Fatalf("WorkloadProfile = %q, want big", snap.WorkloadProfile)
+	}
+}
+
+func TestSnapshotHashDistinguishesSameTypeProfiles(t *testing.T) {
+	build := func(profile string) string {
+		cfg := &DevEnvironment{}
+		cfg.Spec.Workloads = []WorkloadProfile{{Name: "dev", Type: "pod"}, {Name: "big", Type: "pod", ManifestPath: "big.yaml"}}
+		cfg.SetDefaults()
+		if err := cfg.SelectWorkload(profile); err != nil {
+			t.Fatal(err)
+		}
+		snap := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "", "", "")
+		h, err := snap.SHA256()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	if build("dev") == build("big") {
+		t.Fatal("two same-type profiles must not share a snapshot hash")
+	}
+}
