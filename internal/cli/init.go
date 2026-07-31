@@ -169,7 +169,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 			if resolvedPreset == "" {
 				resolvedPreset = detectSTIgnorePreset(config.RootDir(abs))
 			}
-			stignorePath, wroteSTIgnore, err := writeInitSTIgnore(abs, []byte(rendered), templateRef, resolvedPreset, force, projectDir)
+			stignorePath, wroteSTIgnore, err := writeInitSTIgnore(abs, []byte(rendered), templateRef, resolvedPreset, projectDir)
 			if err != nil {
 				return err
 			}
@@ -194,8 +194,11 @@ func newInitCmd(opts *Options) *cobra.Command {
 			if resolvedPreset != "" {
 				fmt.Fprintf(cmd.OutOrStdout(), "Using .stignore preset: %s\n", resolvedPreset)
 			}
-			if wroteSTIgnore {
+			switch {
+			case wroteSTIgnore:
 				fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", stignorePath)
+			case stignorePath != "":
+				fmt.Fprintf(cmd.OutOrStdout(), "Kept existing %s\n", stignorePath)
 			}
 			for _, path := range scaffolded {
 				fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", path)
@@ -712,7 +715,7 @@ func isZshShellPath(shell string) bool {
 	return strings.HasSuffix(strings.TrimSpace(shell), "/zsh")
 }
 
-func writeInitSTIgnore(configPath string, rendered []byte, templateRef string, stignorePreset string, force bool, projectDirs ...string) (string, bool, error) {
+func writeInitSTIgnore(configPath string, rendered []byte, templateRef string, stignorePreset string, projectDirs ...string) (string, bool, error) {
 	var cfg config.DevEnvironment
 	if err := yaml.Unmarshal(rendered, &cfg); err != nil {
 		return "", false, fmt.Errorf("parse generated config for .stignore: %w", err)
@@ -751,8 +754,12 @@ func writeInitSTIgnore(configPath string, rendered []byte, templateRef string, s
 	if err := os.MkdirAll(localRoot, 0o755); err != nil {
 		return "", false, fmt.Errorf("create local sync root for .stignore: %w", err)
 	}
+	// An existing .stignore is never replaced, not even with --force. It
+	// accumulates hand-written rules — the dataset directory someone excluded
+	// after a slow first sync — and --force is about regenerating the config,
+	// not about discarding that.
 	stignorePath := filepath.Join(localRoot, ".stignore")
-	if _, err := os.Stat(stignorePath); err == nil && !force {
+	if _, err := os.Stat(stignorePath); err == nil {
 		return stignorePath, false, nil
 	}
 	if err := os.WriteFile(stignorePath, []byte(content), 0o644); err != nil {

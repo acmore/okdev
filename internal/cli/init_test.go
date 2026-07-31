@@ -44,7 +44,7 @@ spec:
     image: ghcr.io/acmore/okdev:edge
 `)
 
-	stignorePath, wrote, err := writeInitSTIgnore(configPath, rendered, "basic", "", false)
+	stignorePath, wrote, err := writeInitSTIgnore(configPath, rendered, "basic", "")
 	if err != nil {
 		t.Fatalf("writeInitSTIgnore: %v", err)
 	}
@@ -63,7 +63,7 @@ spec:
 	}
 }
 
-func TestWriteInitSTIgnoreDoesNotOverwriteWithoutForce(t *testing.T) {
+func TestWriteInitSTIgnoreNeverOverwrites(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, ".okdev.yaml")
 	stignorePath := filepath.Join(tmp, ".stignore")
@@ -87,12 +87,12 @@ spec:
     image: ghcr.io/acmore/okdev:edge
 `)
 
-	gotPath, wrote, err := writeInitSTIgnore(configPath, rendered, "basic", "", false)
+	gotPath, wrote, err := writeInitSTIgnore(configPath, rendered, "basic", "")
 	if err != nil {
 		t.Fatalf("writeInitSTIgnore: %v", err)
 	}
 	if wrote {
-		t.Fatal("expected existing .stignore to be preserved without force")
+		t.Fatal("expected existing .stignore to be preserved")
 	}
 	if gotPath != stignorePath {
 		t.Fatalf("unexpected returned path %q", gotPath)
@@ -126,7 +126,7 @@ spec:
     image: ghcr.io/acmore/okdev:edge
 `)
 
-	stignorePath, wrote, err := writeInitSTIgnore(configPath, rendered, "./custom.yaml", "", false)
+	stignorePath, wrote, err := writeInitSTIgnore(configPath, rendered, "./custom.yaml", "")
 	if err != nil {
 		t.Fatalf("writeInitSTIgnore: %v", err)
 	}
@@ -155,7 +155,7 @@ spec:
     image: ghcr.io/acmore/okdev:edge
 `)
 
-	stignorePath, wrote, err := writeInitSTIgnore(configPath, rendered, "basic", "go", false)
+	stignorePath, wrote, err := writeInitSTIgnore(configPath, rendered, "basic", "go")
 	if err != nil {
 		t.Fatalf("writeInitSTIgnore: %v", err)
 	}
@@ -191,7 +191,7 @@ spec:
     image: ghcr.io/acmore/okdev:edge
 `)
 
-	_, _, err := writeInitSTIgnore(configPath, rendered, "basic", "unknown", false)
+	_, _, err := writeInitSTIgnore(configPath, rendered, "basic", "unknown")
 	if err == nil {
 		t.Fatal("expected unknown preset error")
 	}
@@ -1221,5 +1221,42 @@ func TestInitScaffoldsAPodManifestInsteadOfAnInlineTemplate(t *testing.T) {
 	}
 	if !strings.Contains(string(cfgRaw), "pod.yaml") {
 		t.Fatalf("the config must point at the manifest:\n%s", cfgRaw)
+	}
+}
+
+// .stignore accumulates hand-written rules, so --force — which is about
+// replacing the generated config — must not take it with it.
+func TestInitForceDoesNotOverwriteSTIgnore(t *testing.T) {
+	tmp := t.TempDir()
+	oldwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	mine := "# mine\n/my-huge-dataset\n"
+	if err := os.WriteFile(filepath.Join(tmp, ".stignore"), []byte(mine), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newInitCmd(&Options{})
+	cmd.SetArgs([]string{"--yes", "--force"})
+	cmd.SetIn(strings.NewReader(""))
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init execute: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(tmp, ".stignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != mine {
+		t.Fatalf("--force must leave .stignore alone, got:\n%s", got)
+	}
+	if !strings.Contains(out.String(), "Kept existing") {
+		t.Fatalf("keeping the existing .stignore must be reported:\n%s", out.String())
 	}
 }
