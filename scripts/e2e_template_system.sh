@@ -16,7 +16,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$PROJECT_DIR/.okdev/templates" "$PROJECT_DIR/src/pkg" "$HOME_DIR"
+mkdir -p "$PROJECT_DIR/.okdev/templates/manifests" "$PROJECT_DIR/src/pkg" "$HOME_DIR"
 export HOME="$HOME_DIR"
 
 # Seed a config file so template list/show from nested directories can resolve
@@ -36,6 +36,9 @@ variables:
     description: Expose debug port
     type: bool
     default: false
+files:
+  - path: .okdev/pod.yaml
+    template: manifests/pod.yaml.tmpl
 ---
 apiVersion: okdev.io/v1alpha1
 kind: DevEnvironment
@@ -56,11 +59,21 @@ spec:
 {{- end }}
   sidecar:
     image: ghcr.io/acmore/okdev:edge
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: {{ .Vars.baseImage | quote }}
+  workload:
+    type: pod
+    manifestPath: pod.yaml
+EOF
+
+cat >"$PROJECT_DIR/.okdev/templates/manifests/pod.yaml.tmpl" <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: '{{`{{ .WorkloadName }}`}}'
+spec:
+  containers:
+    - name: dev
+      image: {{ .Vars.baseImage | quote }}
+      command: ["sleep", "infinity"]
 EOF
 
 cat >"$PROJECT_DIR/.okdev/templates/basic.yaml.tmpl" <<'EOF'
@@ -77,14 +90,11 @@ spec:
     user: root
   sidecar:
     image: ghcr.io/acmore/okdev:edge
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: ubuntu:22.04
+  workload:
+    type: pod
+    manifestPath: pod.yaml
 EOF
 
-mkdir -p "$PROJECT_DIR/.okdev/templates/manifests"
 cat >"$PROJECT_DIR/.okdev/templates/pytorch.yaml.tmpl" <<'EOF'
 ---
 name: pytorch
@@ -204,13 +214,26 @@ for needle in \
   "name: team" \
   "baseImage: debian:12" \
   "exposeDebug: true" \
-  "image: \"debian:12\"" \
+  "manifestPath: pod.yaml" \
   "name: debug"; do
   if ! grep -Fq "$needle" "$CFG_PATH"; then
     echo "ERROR: expected generated config to contain: $needle" >&2
     exit 1
   fi
 done
+
+# The dev container lives in the template's companion manifest now.
+TEAM_MANIFEST="$PROJECT_DIR/.okdev/pod.yaml"
+if [[ ! -f "$TEAM_MANIFEST" ]]; then
+  echo "ERROR: expected the template to write $TEAM_MANIFEST" >&2
+  ls -la "$PROJECT_DIR/.okdev" >&2
+  exit 1
+fi
+cat "$TEAM_MANIFEST"
+if ! grep -Fq 'image: "debian:12"' "$TEAM_MANIFEST"; then
+  echo "ERROR: expected the template variable to reach the manifest" >&2
+  exit 1
+fi
 
 echo "Initializing PyTorchJob template with companion manifest"
 PYTORCH_DIR="$WORKDIR/pytorch"
@@ -306,11 +329,9 @@ spec:
     user: root
   sidecar:
     image: ghcr.io/acmore/okdev:edge
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: {{ .Vars.requiredImage }}
+  workload:
+    type: pod
+    manifestPath: pod.yaml
 EOF
 
 replace_all_in_file "$CFG_PATH" "namespace: default" "namespace: custom-ns"
@@ -328,6 +349,7 @@ echo "$MIGRATE_OUTPUT"
 for needle in \
   "name: required" \
   "requiredImage: alpine:3.20" \
+  "manifestPath: pod.yaml" \
   "namespace: custom-ns"; do
   if ! grep -Fq "$needle" "$CFG_PATH"; then
     echo "ERROR: expected migrated config to contain: $needle" >&2

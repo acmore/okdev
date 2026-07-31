@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,8 +19,9 @@ func validConfig() *DevEnvironment {
 		Kind:       "DevEnvironment",
 		Metadata:   Metadata{Name: "x"},
 		Spec: DevEnvSpec{
-			Sync:    SyncSpec{Engine: "syncthing"},
-			Session: SessionSpec{},
+			Sync:     SyncSpec{Engine: "syncthing"},
+			Session:  SessionSpec{},
+			Workload: WorkloadSpec{Type: "pod", ManifestPath: "pod.yaml"},
 		},
 	}
 }
@@ -556,7 +558,8 @@ func TestEffectiveVolumesAddsImplicitWorkspace(t *testing.T) {
 		Kind:       "DevEnvironment",
 		Metadata:   Metadata{Name: "x"},
 		Spec: DevEnvSpec{
-			Sync: SyncSpec{Engine: "syncthing"},
+			Sync:     SyncSpec{Engine: "syncthing"},
+			Workload: WorkloadSpec{Type: "pod", ManifestPath: "pod.yaml"},
 		},
 	}
 	cfg.SetDefaults()
@@ -569,19 +572,6 @@ func TestEffectiveVolumesAddsImplicitWorkspace(t *testing.T) {
 	}
 	if volumes[0].Name != DefaultWorkspaceName || volumes[0].EmptyDir == nil {
 		t.Fatalf("unexpected implicit workspace volume: %+v", volumes[0])
-	}
-}
-
-func TestWorkspaceMountPathPrefersDevVolumeMount(t *testing.T) {
-	cfg := validConfig()
-	cfg.Spec.PodTemplate.Spec.Containers = []corev1.Container{{
-		Name: "dev",
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: "workspace", MountPath: "/code"},
-		},
-	}}
-	if got := cfg.WorkspaceMountPath(); got != "/code" {
-		t.Fatalf("expected /code workspace mount path, got %q", got)
 	}
 }
 
@@ -867,6 +857,7 @@ func TestPodWorkloadDefaultsToRootInjectPath(t *testing.T) {
 func TestValidateAcceptsRootInjectPathOnlyForPod(t *testing.T) {
 	pod := &DevEnvironment{APIVersion: "okdev.io/v1alpha1", Kind: "DevEnvironment"}
 	pod.Metadata.Name = "x"
+	pod.Spec.Workload.ManifestPath = "pod.yaml"
 	pod.SetDefaults()
 	if err := pod.Validate(); err != nil {
 		t.Fatalf("pod with a root inject path must validate: %v", err)
@@ -880,5 +871,76 @@ func TestValidateAcceptsRootInjectPathOnlyForPod(t *testing.T) {
 	generic.SetDefaults()
 	if err := generic.Validate(); err == nil {
 		t.Fatal("generic workloads must still reject an empty inject path")
+	}
+}
+
+func TestValidateRejectsInlinePodTemplate(t *testing.T) {
+	cfg := validConfig()
+	cfg.Spec.PodTemplate = &PodTemplateRef{
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "dev", Image: "alpine"}}},
+	}
+	cfg.SetDefaults()
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("spec.podTemplate must be rejected")
+	}
+	var migErr *MigrationEligibleError
+	if !errors.As(err, &migErr) {
+		t.Fatalf("the error must be migration-eligible so commands print the hint, got %T", err)
+	}
+	if !strings.Contains(err.Error(), "okdev migrate") {
+		t.Fatalf("the error must name the fix, got %v", err)
+	}
+}
+
+func TestSnapshotNoLongerCarriesPodTemplate(t *testing.T) {
+	cfg := &DevEnvironment{}
+	cfg.Spec.Workload.Type = "pod"
+	cfg.Spec.Workload.ManifestPath = "pod.yaml"
+	cfg.SetDefaults()
+
+	snap := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "", "pod.yaml", "")
+	raw, err := snap.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(raw, "podTemplate") {
+		t.Fatalf("the snapshot must not carry podTemplate:\n%s", raw)
+	}
+}
+
+// A pod manifest is injected at its own root, so it declares no inject path.
+// Resolving the mount path must still find the dev container there — otherwise
+// a project with a non-default --sync-remote silently reverts to /workspace.
+func TestEffectiveWorkspaceMountPathReadsAPodManifestWithNoInjectPath(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".okdev", "okdev.yaml")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `apiVersion: v1
+kind: Pod
+metadata:
+  name: '{{ .WorkloadName }}'
+spec:
+  containers:
+    - name: dev
+      image: alpine
+      volumeMounts:
+        - name: workspace
+          mountPath: /work
+`
+	if err := os.WriteFile(filepath.Join(dir, ".okdev", "pod.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := validConfig()
+	cfg.Spec.Workload.Type = "pod"
+	cfg.Spec.Workload.ManifestPath = "pod.yaml"
+	cfg.SetDefaults()
+
+	if got := cfg.EffectiveWorkspaceMountPath(cfgPath); got != "/work" {
+		t.Fatalf("EffectiveWorkspaceMountPath = %q, want /work", got)
 	}
 }

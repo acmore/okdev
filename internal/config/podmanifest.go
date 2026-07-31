@@ -10,21 +10,20 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// SynthesizePodManifest renders spec.podTemplate as a standalone Pod manifest.
+// SynthesizePodManifest renders a removed spec.podTemplate as a standalone Pod
+// manifest. A Pod is a PodTemplateSpec plus apiVersion, kind and a name, so the
+// conversion is lossless — which is what makes `okdev migrate` able to promise
+// the resulting Pod is unchanged.
 //
-// It is what lets pod workloads share the manifest-based runtime with job,
-// pytorchjob and generic: a Pod is a PodTemplateSpec plus apiVersion, kind and
-// a name. The name is baked in rather than left as a "{{ .WorkloadName }}"
-// placeholder because synthesized manifests are applied verbatim — a user pod
-// spec may legitimately contain "{{".
+// Its only caller is that migration. Nothing produces a podTemplate any more.
 func SynthesizePodManifest(cfg *DevEnvironment, workloadName string) ([]byte, error) {
 	name := strings.TrimSpace(workloadName)
 	if name == "" {
 		return nil, errors.New("synthesize pod manifest: workload name is required")
 	}
 	template := PodTemplateRef{}
-	if cfg != nil {
-		template = cfg.Spec.PodTemplate
+	if cfg != nil && cfg.Spec.PodTemplate != nil {
+		template = *cfg.Spec.PodTemplate
 	}
 	pod := corev1.Pod{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},

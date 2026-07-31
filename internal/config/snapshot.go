@@ -19,7 +19,6 @@ type LastAppliedWorkloadSpec struct {
 	Version            string                      `json:"version"`
 	WorkloadKind       string                      `json:"workloadKind"`
 	Workload           WorkloadSpec                `json:"workload"`
-	PodTemplate        PodTemplateRef              `json:"podTemplate"`
 	Volumes            []corev1.Volume             `json:"volumes"`
 	SidecarImage       string                      `json:"sidecarImage"`
 	SidecarResources   corev1.ResourceRequirements `json:"sidecarResources,omitempty"`
@@ -64,7 +63,6 @@ func BuildWorkloadSnapshot(cfg *DevEnvironment, workspaceMountPath, targetContai
 		Version:            SnapshotVersion,
 		WorkloadKind:       kind,
 		Workload:           workloadSpec,
-		PodTemplate:        cfg.Spec.PodTemplate,
 		Volumes:            cfg.Spec.Volumes,
 		SidecarImage:       cfg.Spec.Sidecar.Image,
 		SidecarResources:   cfg.Spec.Sidecar.Resources,

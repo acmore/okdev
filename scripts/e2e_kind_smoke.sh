@@ -71,6 +71,16 @@ else
   exit 1
 fi
 
+# The dev container lives in the pod manifest now, like every other workload
+# type, so that is the file drift tests edit.
+POD_MANIFEST="$(dirname "$CFG_PATH")/pod.yaml"
+if [[ ! -f "$POD_MANIFEST" ]]; then
+  echo "ERROR: okdev init did not scaffold $POD_MANIFEST" >&2
+  ls -la "$(dirname "$CFG_PATH")" >&2
+  exit 1
+fi
+echo "okdev init scaffolded the pod manifest beside the config"
+
 # Verify `okdev init --shell /bin/zsh` scaffolded the zsh starter files
 # alongside the config.
 ZSH_DIR="$WORKDIR/.okdev"
@@ -686,7 +696,7 @@ ORIGINAL_POD_UID=$(kubectl -n "$NAMESPACE" get pod "$ATTACHABLE_POD_NAME" -o jso
 echo "Original pod UID: $ORIGINAL_POD_UID"
 
 echo "Changing pod workload spec to trigger drift detection"
-replace_first_in_file "$CFG_PATH" 'image: ubuntu:22.04' 'image: ubuntu:24.04'
+replace_first_in_file "$POD_MANIFEST" 'image: ubuntu:22.04' 'image: ubuntu:24.04'
 
 echo "Verifying non-interactive up fails with reconcile guidance"
 set +e

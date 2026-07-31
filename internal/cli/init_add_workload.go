@@ -105,13 +105,6 @@ func planWorkloadAddition(cfgPath string, raw []byte, cfg *config.DevEnvironment
 	}
 	vars.ManifestPath = manifestPath
 	applyWorkloadDefaults(vars)
-	// applyWorkloadDefaults clears ManifestPath for pod, because init's
-	// fresh-config path renders spec.podTemplate instead of a file. An added pod
-	// always needs its own file: at most one workload may rely on the shared
-	// podTemplate, and the config it is being added to already has that one.
-	if manifestPath != "" {
-		vars.ManifestPath = manifestPath
-	}
 	if err := validateInitWorkloadVars(vars); err != nil {
 		return nil, err
 	}
@@ -160,19 +153,6 @@ func planWorkloadManifest(cfg *config.DevEnvironment, vars *config.TemplateVars)
 	var asset string
 	switch strings.TrimSpace(vars.WorkloadType) {
 	case workload.TypePod:
-		// A new pod workload starts as a copy of what the project already runs,
-		// so the common case — the same container with different resources —
-		// is an edit rather than a rewrite. The name stays a placeholder so
-		// each run still gets a fresh object name.
-		//
-		// A project with no spec.podTemplate (a pytorchjob-only config, say) has
-		// nothing to copy: synthesizing from it yields `containers: null`, which
-		// the config validator accepts and the apiserver rejects at apply time.
-		// Fall through to the starter template so the user gets a fillable
-		// skeleton, the same as job and pytorchjob.
-		if len(cfg.Spec.PodTemplate.Spec.Containers) > 0 {
-			return config.SynthesizePodManifest(cfg, "{{ .WorkloadName }}")
-		}
 		asset = "templates/manifests/pod.yaml.tmpl"
 	case workload.TypeJob:
 		asset = "templates/manifests/job.yaml.tmpl"

@@ -169,7 +169,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 			if resolvedPreset == "" {
 				resolvedPreset = detectSTIgnorePreset(config.RootDir(abs))
 			}
-			stignorePath, wroteSTIgnore, err := writeInitSTIgnore(abs, []byte(rendered), templateRef, resolvedPreset, force, projectDir)
+			stignorePath, wroteSTIgnore, err := writeInitSTIgnore(abs, []byte(rendered), templateRef, resolvedPreset, projectDir)
 			if err != nil {
 				return err
 			}
@@ -194,8 +194,11 @@ func newInitCmd(opts *Options) *cobra.Command {
 			if resolvedPreset != "" {
 				fmt.Fprintf(cmd.OutOrStdout(), "Using .stignore preset: %s\n", resolvedPreset)
 			}
-			if wroteSTIgnore {
+			switch {
+			case wroteSTIgnore:
 				fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", stignorePath)
+			case stignorePath != "":
+				fmt.Fprintf(cmd.OutOrStdout(), "Kept existing %s\n", stignorePath)
 			}
 			for _, path := range scaffolded {
 				fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", path)
@@ -392,6 +395,10 @@ func normalizeInitManifestPathForTarget(configPath string, vars *config.Template
 	}
 
 	switch strings.TrimSpace(vars.WorkloadType) {
+	case "pod":
+		if vars.ManifestPath == ".okdev/pod.yaml" {
+			vars.ManifestPath = "pod.yaml"
+		}
 	case "job":
 		if vars.ManifestPath == ".okdev/job.yaml" {
 			vars.ManifestPath = "job.yaml"
@@ -415,9 +422,15 @@ func applyWorkloadDefaults(vars *config.TemplateVars) {
 	switch strings.TrimSpace(vars.WorkloadType) {
 	case "", "pod":
 		vars.WorkloadType = "pod"
-		vars.ManifestPath = ""
+		if strings.TrimSpace(vars.ManifestPath) == "" {
+			vars.ManifestPath = ".okdev/pod.yaml"
+		}
+		// A Pod manifest is injected at its own root, which the runtime
+		// supplies; there is no path to name.
 		vars.InjectPaths = nil
-		vars.AttachContainer = ""
+		if strings.TrimSpace(vars.AttachContainer) == "" {
+			vars.AttachContainer = "dev"
+		}
 	case "job":
 		if strings.TrimSpace(vars.ManifestPath) == "" {
 			vars.ManifestPath = ".okdev/job.yaml"
@@ -490,11 +503,17 @@ func validateRenderedInitConfig(rendered, templateRef string, vars *config.Templ
 		return fmt.Errorf("parse generated config: %w", err)
 	}
 	cfg.SetDefaults()
+	// Before Validate, so a custom template that forgot spec.workload is told
+	// exactly that instead of the generic "manifestPath is required" it would
+	// otherwise trip on. Pod is no longer exempt: it has a manifest like every
+	// other type now.
+	if !isActualBuiltinBasic(templateRef, projectDir) && strings.TrimSpace(cfg.Spec.Workload.ManifestPath) == "" {
+		return fmt.Errorf("custom template must render spec.workload with a manifestPath for workload type %q; "+
+			"every workload is a manifest file, so the template also needs a `files:` entry that writes it",
+			vars.WorkloadType)
+	}
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("generated config is invalid: %w", err)
-	}
-	if vars.WorkloadType != "pod" && !isActualBuiltinBasic(templateRef, projectDir) && strings.TrimSpace(cfg.Spec.Workload.ManifestPath) == "" {
-		return fmt.Errorf("custom template must render spec.workload for workload type %q", vars.WorkloadType)
 	}
 	return nil
 }
@@ -505,6 +524,8 @@ func scaffoldInitWorkload(configPath, templateRef string, vars *config.TemplateV
 	}
 	var templatePath string
 	switch vars.WorkloadType {
+	case "pod":
+		templatePath = "templates/manifests/pod.yaml.tmpl"
 	case "job":
 		templatePath = "templates/manifests/job.yaml.tmpl"
 	case "pytorchjob":
@@ -621,7 +642,7 @@ func scaffoldsInitWorkload(templateRef string, vars *config.TemplateVars, projec
 		return false
 	}
 	switch strings.TrimSpace(vars.WorkloadType) {
-	case "job", "pytorchjob":
+	case "pod", "job", "pytorchjob":
 		return true
 	case "generic":
 		return strings.TrimSpace(vars.GenericPreset) == "deployment"
@@ -700,7 +721,7 @@ func isZshShellPath(shell string) bool {
 	return strings.HasSuffix(strings.TrimSpace(shell), "/zsh")
 }
 
-func writeInitSTIgnore(configPath string, rendered []byte, templateRef string, stignorePreset string, force bool, projectDirs ...string) (string, bool, error) {
+func writeInitSTIgnore(configPath string, rendered []byte, templateRef string, stignorePreset string, projectDirs ...string) (string, bool, error) {
 	var cfg config.DevEnvironment
 	if err := yaml.Unmarshal(rendered, &cfg); err != nil {
 		return "", false, fmt.Errorf("parse generated config for .stignore: %w", err)
@@ -724,7 +745,10 @@ func writeInitSTIgnore(configPath string, rendered []byte, templateRef string, s
 	if !ok {
 		return "", false, nil
 	}
-	pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.WorkspaceMountPath())
+	// Only pairs[0].Local is used below, so the default remote is immaterial —
+	// and the workload manifest this would otherwise be read from has not been
+	// scaffolded yet at this point in init.
+	pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, config.DefaultWorkspacePath)
 	if err != nil {
 		return "", false, fmt.Errorf("resolve generated sync paths for .stignore: %w", err)
 	}
@@ -739,8 +763,12 @@ func writeInitSTIgnore(configPath string, rendered []byte, templateRef string, s
 	if err := os.MkdirAll(localRoot, 0o755); err != nil {
 		return "", false, fmt.Errorf("create local sync root for .stignore: %w", err)
 	}
+	// An existing .stignore is never replaced, not even with --force. It
+	// accumulates hand-written rules — the dataset directory someone excluded
+	// after a slow first sync — and --force is about regenerating the config,
+	// not about discarding that.
 	stignorePath := filepath.Join(localRoot, ".stignore")
-	if _, err := os.Stat(stignorePath); err == nil && !force {
+	if _, err := os.Stat(stignorePath); err == nil {
 		return stignorePath, false, nil
 	}
 	if err := os.WriteFile(stignorePath, []byte(content), 0o644); err != nil {

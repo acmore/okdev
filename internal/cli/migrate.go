@@ -43,6 +43,8 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("read config %q: %w", cfgPath, err)
 			}
+			// The backup must capture what the user had before anything ran.
+			original := raw
 
 			var doc yaml.Node
 			if err := yaml.Unmarshal(raw, &doc); err != nil {
@@ -54,7 +56,28 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 				return fmt.Errorf("migration failed: %w", err)
 			}
 
-			if len(result.Applied) == 0 {
+			out, err := yaml.Marshal(&doc)
+			if err != nil {
+				return fmt.Errorf("marshal migrated config: %w", err)
+			}
+
+			// The extraction runs last because workspace-to-volumes *creates* a
+			// spec.podTemplate to hang the workspace volumeMount on. Extracting
+			// first would leave that one behind, still rejected by Validate.
+			extraction, err := planPodTemplateExtraction(cfgPath, out)
+			if err != nil {
+				return err
+			}
+			if extraction.Applied {
+				for _, m := range extraction.Manifests {
+					if _, err := os.Stat(m.Target); err == nil {
+						return fmt.Errorf("a manifest already exists at %q; move it aside before migrating", m.Target)
+					}
+				}
+				out = extraction.ConfigBytes
+			}
+
+			if len(result.Applied) == 0 && !extraction.Applied {
 				if err := scaffoldMigrateZshFiles(cfgPath, cmd.OutOrStdout()); err != nil {
 					fmt.Fprintf(cmd.OutOrStdout(), "warning: failed to scaffold zsh files: %v\n", err)
 				}
@@ -62,13 +85,21 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 				return nil
 			}
 
-			out, err := yaml.Marshal(&doc)
-			if err != nil {
-				return fmt.Errorf("marshal migrated config: %w", err)
-			}
-
 			w := cmd.OutOrStdout()
 
+			if extraction.Applied {
+				fmt.Fprintf(w, "✓ %s\n", extraction.Label())
+				for _, m := range extraction.Manifests {
+					if extraction.Extracted {
+						fmt.Fprintf(w, "  Extracted spec.podTemplate → %s\n", m.Target)
+					} else {
+						fmt.Fprintf(w, "  Wrote %s\n", m.Target)
+					}
+				}
+				for _, warning := range extraction.Warnings {
+					fmt.Fprintf(w, "  ⚠ %s\n", warning)
+				}
+			}
 			for _, name := range result.Applied {
 				fmt.Fprintf(w, "✓ %s\n", name)
 			}
@@ -84,8 +115,19 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 
 			if !noBackup {
 				bakPath := cfgPath + ".bak"
-				if err := os.WriteFile(bakPath, raw, 0o644); err != nil {
+				if err := os.WriteFile(bakPath, original, 0o644); err != nil {
 					return fmt.Errorf("write backup %q: %w", bakPath, err)
+				}
+			}
+
+			// The manifest goes first: a failure there still leaves the config
+			// as the user had it.
+			for _, m := range extraction.Manifests {
+				if err := os.MkdirAll(filepath.Dir(m.Target), 0o755); err != nil {
+					return fmt.Errorf("create manifest directory: %w", err)
+				}
+				if err := os.WriteFile(m.Target, m.Bytes, 0o644); err != nil {
+					return fmt.Errorf("write manifest %q: %w", m.Target, err)
 				}
 			}
 
@@ -102,6 +144,14 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 				fmt.Fprintf(w, " (backup: %s.bak)", cfgPath)
 			}
 			fmt.Fprintln(w)
+			if len(extraction.Manifests) > 0 {
+				fmt.Fprintln(w, "\nNote: the next `okdev up` will report workload drift and offer to")
+				fmt.Fprintln(w, "recreate. The resulting Pod is unchanged — only how the config")
+				fmt.Fprintln(w, "describes it moved.")
+			}
+			if !extraction.Extracted && len(extraction.Manifests) > 0 {
+				fmt.Fprintf(w, "\nReview %s before the next `okdev up`.\n", extraction.Manifests[0].Target)
+			}
 			return nil
 		},
 	}
@@ -452,7 +502,10 @@ func templateVarsForMigrate(cfg *config.DevEnvironment, cfgPath string) *config.
 		}
 	}
 
-	devContainer := findTemplateContainer(cfg.Spec.PodTemplate.Spec.Containers, "dev")
+	// The dev container's shape now lives in the workload manifest, so that is
+	// where a re-render reads it from to preserve the project's image and
+	// resources instead of resetting them to the template defaults.
+	devContainer := cfg.TargetContainerFromManifest(cfgPath)
 	if devContainer != nil {
 		if image := strings.TrimSpace(devContainer.Image); image != "" {
 			vars.DevImage = image
@@ -466,18 +519,6 @@ func templateVarsForMigrate(cfg *config.DevEnvironment, cfgPath string) *config.
 	}
 
 	return vars
-}
-
-func findTemplateContainer(containers []corev1.Container, name string) *corev1.Container {
-	for i := range containers {
-		if strings.TrimSpace(containers[i].Name) == name {
-			return &containers[i]
-		}
-	}
-	if len(containers) == 0 {
-		return nil
-	}
-	return &containers[0]
 }
 
 func setTemplateResourceStrings(cpuOut, memoryOut *string, resources corev1.ResourceList) {

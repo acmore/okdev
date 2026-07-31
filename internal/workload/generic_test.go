@@ -486,12 +486,13 @@ func TestPodTemplateSpecUnstructuredRoundTrip(t *testing.T) {
 	}
 }
 
-func TestGenericRuntimeAppliesManifestFromBytesWithoutTemplating(t *testing.T) {
+// A manifest may contain literal braces — a pod spec whose args mention Go
+// template syntax, say. They have to be escaped, the same as in any other
+// workload manifest, and must come out verbatim.
+func TestGenericRuntimeAppliesManifestWithEscapedBraces(t *testing.T) {
 	rt := &GenericRuntime{
 		WorkloadKind: TypePod,
-		// `{{ .Nope }}` must survive verbatim: bytes-sourced manifests are not
-		// Go templates, so a user pod spec containing braces still applies.
-		ManifestBytes: []byte(`
+		ManifestPath: writeManifest(t, `
 apiVersion: v1
 kind: Pod
 metadata:
@@ -500,7 +501,7 @@ spec:
   containers:
     - name: dev
       image: alpine
-      args: ["{{ .Nope }}"]
+      args: ["{{`+"`"+`{{ .Nope }}`+"`"+`}}"]
 `),
 		WorkspaceMountPath: "/workspace",
 		SidecarImage:       "ghcr.io/acmore/okdev:edge",

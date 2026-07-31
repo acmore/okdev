@@ -81,10 +81,12 @@ func TestSessionRuntimeEnablesSidecarsForInterPodSSH(t *testing.T) {
 }
 
 func TestSessionRuntimeDefaultsToPodKind(t *testing.T) {
+	cfgPath := writePodConfigForRuntime(t)
 	cfg := &config.DevEnvironment{}
+	cfg.Spec.Workload.ManifestPath = "pod.yaml"
 	cfg.Spec.Sidecar.Image = "ghcr.io/acmore/okdev:edge"
 
-	rt, err := sessionRuntime(cfg, "/tmp/.okdev.yaml", "sess1", "okdev-sess1-abcd1234", nil, nil, nil, false, "")
+	rt, err := sessionRuntime(cfg, cfgPath, "sess1", "okdev-sess1-abcd1234", nil, nil, nil, false, "")
 	if err != nil {
 		t.Fatalf("sessionRuntime: %v", err)
 	}
@@ -219,13 +221,12 @@ spec:
 }
 
 func TestSessionRuntimeBuildsGenericRuntimeForPod(t *testing.T) {
+	cfgPath := writePodConfigForRuntime(t)
 	cfg := &config.DevEnvironment{}
+	cfg.Spec.Workload.ManifestPath = "pod.yaml"
 	cfg.SetDefaults()
-	cfg.Spec.PodTemplate.Spec = corev1.PodSpec{
-		Containers: []corev1.Container{{Name: "dev", Image: "alpine"}},
-	}
 
-	rt, err := sessionRuntime(cfg, "/repo/.okdev/okdev.yaml", "sess1", "", nil, nil, nil, false, "")
+	rt, err := sessionRuntime(cfg, cfgPath, "sess1", "", nil, nil, nil, false, "")
 	if err != nil {
 		t.Fatalf("sessionRuntime: %v", err)
 	}
@@ -260,4 +261,24 @@ func TestDiscoveryLabelsCarryTheWorkloadProfile(t *testing.T) {
 	if labels["okdev.io/workload-type"] != "job" {
 		t.Fatalf("workload-type = %q, want job", labels["okdev.io/workload-type"])
 	}
+}
+
+// writePodConfigForRuntime lays out a project whose pod workload has the
+// manifest every workload now carries, and returns the config path.
+func writePodConfigForRuntime(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	manifest := `apiVersion: v1
+kind: Pod
+metadata:
+  name: '{{ .WorkloadName }}'
+spec:
+  containers:
+    - name: dev
+      image: alpine
+`
+	if err := os.WriteFile(filepath.Join(dir, "pod.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(dir, ".okdev.yaml")
 }

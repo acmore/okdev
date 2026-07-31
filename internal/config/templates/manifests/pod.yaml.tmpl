@@ -7,8 +7,15 @@ metadata:
 spec:
   containers:
     - name: dev
-      image: # TODO: replace with your image
+      image: {{ .DevImage }}
       command: ["sleep", "infinity"]
+      resources:
+        requests:
+          cpu: "{{ .DevCPURequest }}"
+          memory: {{ .DevMemoryRequest }}
+        limits:
+          cpu: "{{ .DevCPULimit }}"
+          memory: {{ .DevMemoryLimit }}
       volumeMounts:
         - name: workspace
           mountPath: {{ .SyncRemote }}

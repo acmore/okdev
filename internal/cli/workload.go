@@ -38,6 +38,14 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName, workloadNa
 		return nil, fmt.Errorf("unsupported workload type %q", cfg.Spec.Workload.Type)
 	}
 
+	// A session with no local state and no live pod to discover has no recorded
+	// workload name, and `{{ .WorkloadName }}` would render empty — a manifest
+	// with no metadata.name. The synthesized-pod path used to cover this for
+	// pod; the same fallback now serves every type.
+	if strings.TrimSpace(workloadName) == "" {
+		workloadName = podName(sessionName)
+	}
+
 	rt := &workload.GenericRuntime{
 		SessionName:          sessionName,
 		WorkloadNameOverride: workloadName,
@@ -57,20 +65,6 @@ func sessionRuntime(cfg *config.DevEnvironment, cfgPath, sessionName, workloadNa
 		Inject:               cfg.EffectiveWorkloadInject(),
 		LastAppliedSpecJSON:  snapJSON,
 		LastAppliedSpecHash:  snapHash,
-	}
-	// A pod workload has no manifest file of its own: spec.podTemplate is
-	// rendered into one so it can travel the same apply path as every other
-	// workload type.
-	if workloadType == workload.TypePod && manifestResolvedPath == "" {
-		name := strings.TrimSpace(workloadName)
-		if name == "" {
-			name = podName(sessionName)
-		}
-		manifest, err := config.SynthesizePodManifest(cfg, name)
-		if err != nil {
-			return nil, err
-		}
-		rt.ManifestBytes = manifest
 	}
 	return rt, nil
 }

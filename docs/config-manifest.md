@@ -45,7 +45,6 @@ spec: {}
 | `workloads` | `array` | — | Named workload profiles this session can switch between |
 | `defaultWorkload` | `string` | first entry | Which profile a **new** session starts on |
 | `sidecar` | `object` | — | Sidecar container image |
-| `podTemplate` | `object` | — | Full Kubernetes PodSpec overlay |
 
 ---
 
@@ -141,13 +140,13 @@ Note: earlier versions accepted `ttlHours` / `idleTimeoutMinutes` here and shipp
 
 ## `spec.volumes`
 
-Uses native Kubernetes `corev1.Volume` schema. Define volume sources here and mount them via `spec.podTemplate.spec.containers[*].volumeMounts`.
+Uses native Kubernetes `corev1.Volume` schema. Volume *sources* stay in the config, because okdev manages them identically for every workload type. The `volumeMounts` that reference them live in the workload manifest, beside the container they belong to.
 
 ### Workspace Behavior
 
 - If no volume named `workspace` is provided, okdev injects `emptyDir: {}` automatically.
 - okdev ensures `workspace` is mounted on both the `dev` container and sidecar.
-- Mount path defaults to `/workspace`, or follows the `volumeMounts` entry for `workspace` in `podTemplate`.
+- Mount path defaults to `/workspace`, or follows the `volumeMounts` entry for `workspace` in the workload manifest.
 
 ### PVC
 
@@ -160,16 +159,26 @@ spec:
     - name: datasets
       persistentVolumeClaim:
         claimName: shared-datasets
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          volumeMounts:
-            - name: workspace
-              mountPath: /workspace
-            - name: datasets
-              mountPath: /data
-              readOnly: true
+  workload:
+    type: pod
+    manifestPath: pod.yaml
+```
+
+```yaml
+# .okdev/pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: '{{ .WorkloadName }}'
+spec:
+  containers:
+    - name: dev
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        - name: datasets
+          mountPath: /data
+          readOnly: true
 ```
 
 ### emptyDir (Scratch Space)
@@ -179,13 +188,23 @@ spec:
   volumes:
     - name: cache
       emptyDir: {}
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          volumeMounts:
-            - name: cache
-              mountPath: /tmp/build-cache
+  workload:
+    type: pod
+    manifestPath: pod.yaml
+```
+
+```yaml
+# .okdev/pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: '{{ .WorkloadName }}'
+spec:
+  containers:
+    - name: dev
+      volumeMounts:
+        - name: cache
+          mountPath: /tmp/build-cache
 ```
 
 ### configMap and secret
@@ -199,17 +218,27 @@ spec:
     - name: cloud-creds
       secret:
         secretName: cloud-credentials
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          volumeMounts:
-            - name: app-config
-              mountPath: /etc/my-app
-              readOnly: true
-            - name: cloud-creds
-              mountPath: /var/run/secrets/cloud
-              readOnly: true
+  workload:
+    type: pod
+    manifestPath: pod.yaml
+```
+
+```yaml
+# .okdev/pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: '{{ .WorkloadName }}'
+spec:
+  containers:
+    - name: dev
+      volumeMounts:
+        - name: app-config
+          mountPath: /etc/my-app
+          readOnly: true
+        - name: cloud-creds
+          mountPath: /var/run/secrets/cloud
+          readOnly: true
 ```
 
 ### Ephemeral (Per-Session PVC)
@@ -227,13 +256,23 @@ spec:
             resources:
               requests:
                 storage: 50Gi
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          volumeMounts:
-            - name: models
-              mountPath: /models
+  workload:
+    type: pod
+    manifestPath: pod.yaml
+```
+
+```yaml
+# .okdev/pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: '{{ .WorkloadName }}'
+spec:
+  containers:
+    - name: dev
+      volumeMounts:
+        - name: models
+          mountPath: /models
 ```
 
 ---
@@ -460,7 +499,8 @@ Declare several workloads in one config and switch the session between them with
 spec:
   workloads:
     - name: dev
-      type: pod                    # spec.podTemplate supplies the pod
+      type: pod
+      manifestPath: pod.yaml
     - name: train
       type: pytorchjob
       manifestPath: pytorchjob.yaml
@@ -470,9 +510,8 @@ spec:
 ```
 
 A profile owns exactly `name`, `type`, `manifestPath`, `inject`, and `attach`.
-Everything else — `ports`, `sync`, `sidecar`, `volumes`, `namespace`,
-`podTemplate` — is shared and identical across profiles. To vary those, use a
-separate session.
+Everything else — `ports`, `sync`, `sidecar`, `volumes`, `namespace` — is shared
+and identical across profiles. To vary those, use a separate session.
 
 ### The singular `spec.workload`
 
@@ -488,11 +527,8 @@ After selection, `spec.workload` holds **the effective workload** — whichever
 profile is active for this command. Reading it always gives you the workload
 actually in play.
 
-Only one profile may be a `pod` with no `manifestPath`, because such a profile
-is synthesized from the shared `spec.podTemplate`; two of them would be
-identical. Give the others their own `manifestPath` — `okdev init --workload pod
---workload-name <name>` does this for you, seeding the new manifest from the
-project's current `spec.podTemplate` so you only edit what differs.
+Every profile needs its own `manifestPath`, `pod` included — `okdev init
+--workload pod --workload-name <name>` scaffolds one for you.
 
 Workload manifests always live in `.okdev/`, whichever shape the config has.
 
@@ -514,38 +550,56 @@ full contrast against `okdev use <session>`.
 
 ---
 
-## `spec.podTemplate`
+## The pod manifest (`spec.podTemplate` is removed)
 
-Full Kubernetes PodSpec overlay. Use this for the dev container image, resources, env vars, scheduling, labels, and extra sidecars.
+Pod workloads used to be defined inline under `spec.podTemplate`. They are
+manifests now, like every other workload type, which makes them lintable by
+normal Kubernetes tooling and removes pod's special cases. The sidecar is
+injected at the object root, because a Pod minus `apiVersion`/`kind` *is* a pod
+template.
 
-- `metadata.labels` (`map[string]string`, optional)
-- `spec` (Kubernetes `PodSpec`)
+Run `okdev migrate` to convert an existing config: it writes `.okdev/pod.yaml`
+and points the workload at it, keeping `spec.volumes` where it is. The first
+`okdev up` afterwards reports drift and offers to recreate — the Pod it builds
+is unchanged, only the config's description of it moved.
 
-Pod workloads are applied through the same manifest pipeline as `job`,
-`pytorchjob`, and `generic`: `spec.podTemplate` is rendered into a standalone
-Pod manifest, and the sidecar is injected at the object root. This is internal —
-`spec.podTemplate` is configured exactly as before.
+A config that never declared a `podTemplate` ran on a container okdev injected
+by default; `okdev migrate` writes that out as a real manifest too, so there is
+always something to edit rather than a hidden default.
+
+Use the manifest for the dev container image, resources, env vars, scheduling,
+labels, and extra sidecars.
 
 ```yaml
 spec:
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: nvidia/cuda:12.4.1-devel-ubuntu22.04
-          command: ["sleep", "infinity"]
-          env:
-            - name: HF_HOME
-              value: /workspace/.cache/huggingface
-          resources:
-            requests:
-              cpu: "8"
-              memory: 32Gi
-              nvidia.com/gpu: "1"
-            limits:
-              cpu: "16"
-              memory: 64Gi
-              nvidia.com/gpu: "1"
+  workload:
+    type: pod
+    manifestPath: pod.yaml
+```
+
+```yaml
+# .okdev/pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: '{{ .WorkloadName }}'
+spec:
+  containers:
+    - name: dev
+      image: nvidia/cuda:12.4.1-devel-ubuntu22.04
+      command: ["sleep", "infinity"]
+      env:
+        - name: HF_HOME
+          value: /workspace/.cache/huggingface
+      resources:
+        requests:
+          cpu: "8"
+          memory: 32Gi
+          nvidia.com/gpu: "1"
+        limits:
+          cpu: "16"
+          memory: 64Gi
+          nvidia.com/gpu: "1"
 ```
 
 ### Interactive Container Selection
@@ -565,17 +619,27 @@ Default pod example:
 
 ```yaml
 spec:
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: ubuntu:22.04
-          command: ["sleep", "infinity"]
-          env:
-            - name: LANG
-              value: en_US.UTF-8
-            - name: LC_ALL
-              value: en_US.UTF-8
+  workload:
+    type: pod
+    manifestPath: pod.yaml
+```
+
+```yaml
+# .okdev/pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: '{{ .WorkloadName }}'
+spec:
+  containers:
+    - name: dev
+      image: ubuntu:22.04
+      command: ["sleep", "infinity"]
+      env:
+        - name: LANG
+          value: en_US.UTF-8
+        - name: LC_ALL
+          value: en_US.UTF-8
 ```
 
 Non-default container example:
@@ -585,15 +649,25 @@ spec:
   workload:
     attach:
       container: trainer
-  podTemplate:
-    spec:
-      containers:
-        - name: trainer
-          image: python:3.12
-          command: ["sleep", "infinity"]
-          env:
-            - name: LANG
-              value: en_US.UTF-8
+  workload:
+    type: pod
+    manifestPath: pod.yaml
+```
+
+```yaml
+# .okdev/pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: '{{ .WorkloadName }}'
+spec:
+  containers:
+    - name: trainer
+      image: python:3.12
+      command: ["sleep", "infinity"]
+      env:
+        - name: LANG
+          value: en_US.UTF-8
 ```
 
 ---
@@ -620,12 +694,22 @@ spec:
       remote: 3000
   sidecar:
     image: ghcr.io/acmore/okdev:edge
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: node:22-bookworm
-          command: ["sleep", "infinity"]
+  workload:
+    type: pod
+    manifestPath: pod.yaml
+```
+
+```yaml
+# .okdev/pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: '{{ .WorkloadName }}'
+spec:
+  containers:
+    - name: dev
+      image: node:22-bookworm
+      command: ["sleep", "infinity"]
 ```
 
 ### Persistent Workspace (PVC)
@@ -659,16 +743,26 @@ spec:
       remote: 9229
   sidecar:
     image: ghcr.io/acmore/okdev:v0.2.16
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: node:22-bookworm
-          command: ["sleep", "infinity"]
-          resources:
-            requests:
-              cpu: "2"
-              memory: 4Gi
+  workload:
+    type: pod
+    manifestPath: pod.yaml
+```
+
+```yaml
+# .okdev/pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: '{{ .WorkloadName }}'
+spec:
+  containers:
+    - name: dev
+      image: node:22-bookworm
+      command: ["sleep", "infinity"]
+      resources:
+        requests:
+          cpu: "2"
+          memory: 4Gi
 ```
 
 ### Python ML with GPU
@@ -709,27 +803,37 @@ spec:
       cd /workspace && pip install -e ".[dev]" 2>/dev/null || true
   sidecar:
     image: ghcr.io/acmore/okdev:v0.2.16
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: nvidia/cuda:12.4.1-devel-ubuntu22.04
-          command: ["sleep", "infinity"]
-          volumeMounts:
-            - name: workspace
-              mountPath: /workspace
-            - name: datasets
-              mountPath: /data
-              readOnly: true
-          resources:
-            requests:
-              cpu: "8"
-              memory: 32Gi
-              nvidia.com/gpu: "1"
-            limits:
-              cpu: "16"
-              memory: 64Gi
-              nvidia.com/gpu: "1"
+  workload:
+    type: pod
+    manifestPath: pod.yaml
+```
+
+```yaml
+# .okdev/pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: '{{ .WorkloadName }}'
+spec:
+  containers:
+    - name: dev
+      image: nvidia/cuda:12.4.1-devel-ubuntu22.04
+      command: ["sleep", "infinity"]
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        - name: datasets
+          mountPath: /data
+          readOnly: true
+      resources:
+        requests:
+          cpu: "8"
+          memory: 32Gi
+          nvidia.com/gpu: "1"
+        limits:
+          cpu: "16"
+          memory: 64Gi
+          nvidia.com/gpu: "1"
 ```
 
 ### Multi-GPU LLM Fine-Tuning
@@ -777,38 +881,47 @@ spec:
       pkill -f vllm || true
   sidecar:
     image: ghcr.io/acmore/okdev:v0.2.16
-  podTemplate:
-    metadata:
-      labels:
-        team: ml-infra
-    spec:
-      containers:
-        - name: dev
-          image: nvidia/cuda:12.4.1-devel-ubuntu22.04
-          command: ["sleep", "infinity"]
-          env:
-            - name: HF_HOME
-              value: /models
-            - name: WANDB_DIR
-              value: /workspace/wandb
-          volumeMounts:
-            - name: workspace
-              mountPath: /workspace
-            - name: models
-              mountPath: /models
-          resources:
-            requests:
-              cpu: "16"
-              memory: 128Gi
-              nvidia.com/gpu: "4"
-            limits:
-              cpu: "32"
-              memory: 256Gi
-              nvidia.com/gpu: "4"
-      tolerations:
-        - key: nvidia.com/gpu
-          operator: Exists
-          effect: NoSchedule
+  workload:
+    type: pod
+    manifestPath: pod.yaml
+```
+
+```yaml
+# .okdev/pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: '{{ .WorkloadName }}'
+  labels:
+    team: ml-infra
+spec:
+  containers:
+    - name: dev
+      image: nvidia/cuda:12.4.1-devel-ubuntu22.04
+      command: ["sleep", "infinity"]
+      env:
+        - name: HF_HOME
+          value: /models
+        - name: WANDB_DIR
+          value: /workspace/wandb
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        - name: models
+          mountPath: /models
+      resources:
+        requests:
+          cpu: "16"
+          memory: 128Gi
+          nvidia.com/gpu: "4"
+        limits:
+          cpu: "32"
+          memory: 256Gi
+          nvidia.com/gpu: "4"
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
 ```
 
 ### Go Microservice (No Tmux)
@@ -838,16 +951,26 @@ spec:
     persistentSession: false
   sidecar:
     image: ghcr.io/acmore/okdev:edge
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: golang:1.24-bookworm
-          command: ["sleep", "infinity"]
-          resources:
-            requests:
-              cpu: "4"
-              memory: 8Gi
+  workload:
+    type: pod
+    manifestPath: pod.yaml
+```
+
+```yaml
+# .okdev/pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: '{{ .WorkloadName }}'
+spec:
+  containers:
+    - name: dev
+      image: golang:1.24-bookworm
+      command: ["sleep", "infinity"]
+      resources:
+        requests:
+          cpu: "4"
+          memory: 8Gi
 ```
 
 ### Custom Kube Context and Namespace
@@ -872,12 +995,22 @@ spec:
       remote: 8080
   sidecar:
     image: ghcr.io/acmore/okdev:v0.2.16
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: python:3.12-slim
-          command: ["sleep", "infinity"]
-      nodeSelector:
-        cloud.google.com/gke-nodepool: dev-pool
+  workload:
+    type: pod
+    manifestPath: pod.yaml
+```
+
+```yaml
+# .okdev/pod.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: '{{ .WorkloadName }}'
+spec:
+  containers:
+    - name: dev
+      image: python:3.12-slim
+      command: ["sleep", "infinity"]
+  nodeSelector:
+    cloud.google.com/gke-nodepool: dev-pool
 ```

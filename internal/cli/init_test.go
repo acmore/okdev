@@ -44,7 +44,7 @@ spec:
     image: ghcr.io/acmore/okdev:edge
 `)
 
-	stignorePath, wrote, err := writeInitSTIgnore(configPath, rendered, "basic", "", false)
+	stignorePath, wrote, err := writeInitSTIgnore(configPath, rendered, "basic", "")
 	if err != nil {
 		t.Fatalf("writeInitSTIgnore: %v", err)
 	}
@@ -63,7 +63,7 @@ spec:
 	}
 }
 
-func TestWriteInitSTIgnoreDoesNotOverwriteWithoutForce(t *testing.T) {
+func TestWriteInitSTIgnoreNeverOverwrites(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, ".okdev.yaml")
 	stignorePath := filepath.Join(tmp, ".stignore")
@@ -87,12 +87,12 @@ spec:
     image: ghcr.io/acmore/okdev:edge
 `)
 
-	gotPath, wrote, err := writeInitSTIgnore(configPath, rendered, "basic", "", false)
+	gotPath, wrote, err := writeInitSTIgnore(configPath, rendered, "basic", "")
 	if err != nil {
 		t.Fatalf("writeInitSTIgnore: %v", err)
 	}
 	if wrote {
-		t.Fatal("expected existing .stignore to be preserved without force")
+		t.Fatal("expected existing .stignore to be preserved")
 	}
 	if gotPath != stignorePath {
 		t.Fatalf("unexpected returned path %q", gotPath)
@@ -126,7 +126,7 @@ spec:
     image: ghcr.io/acmore/okdev:edge
 `)
 
-	stignorePath, wrote, err := writeInitSTIgnore(configPath, rendered, "./custom.yaml", "", false)
+	stignorePath, wrote, err := writeInitSTIgnore(configPath, rendered, "./custom.yaml", "")
 	if err != nil {
 		t.Fatalf("writeInitSTIgnore: %v", err)
 	}
@@ -155,7 +155,7 @@ spec:
     image: ghcr.io/acmore/okdev:edge
 `)
 
-	stignorePath, wrote, err := writeInitSTIgnore(configPath, rendered, "basic", "go", false)
+	stignorePath, wrote, err := writeInitSTIgnore(configPath, rendered, "basic", "go")
 	if err != nil {
 		t.Fatalf("writeInitSTIgnore: %v", err)
 	}
@@ -191,7 +191,7 @@ spec:
     image: ghcr.io/acmore/okdev:edge
 `)
 
-	_, _, err := writeInitSTIgnore(configPath, rendered, "basic", "unknown", false)
+	_, _, err := writeInitSTIgnore(configPath, rendered, "basic", "unknown")
 	if err == nil {
 		t.Fatal("expected unknown preset error")
 	}
@@ -330,21 +330,33 @@ func TestInitUsesFolderConfigForPod(t *testing.T) {
 		t.Fatalf("read config: %v", err)
 	}
 	cfg := string(cfgRaw)
+	if !strings.Contains(cfg, "manifestPath: pod.yaml") {
+		t.Fatalf("expected the config to point at the pod manifest, got:\n%s", cfg)
+	}
+
+	// The dev container moved into the manifest; the sidecar's resources stay
+	// in the config. Both still use equal requests and limits for Guaranteed QoS.
+	if strings.Count(cfg, "cpu: \"250m\"") != 2 || strings.Count(cfg, "memory: 512Mi") != 2 {
+		t.Fatalf("expected the sidecar to keep equal requests and limits, got:\n%s", cfg)
+	}
+	manifestRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev", "pod.yaml"))
+	if err != nil {
+		t.Fatalf("read pod manifest: %v", err)
+	}
+	manifest := string(manifestRaw)
 	for _, want := range []string{
-		"podTemplate:",
 		"name: dev",
 		"image: ubuntu:22.04",
 		"resources:",
 		"cpu: \"500m\"",
 		"memory: 512Mi",
-		"cpu: \"250m\"",
 	} {
-		if !strings.Contains(cfg, want) {
-			t.Fatalf("expected generated pod config to contain %q, got:\n%s", want, cfg)
+		if !strings.Contains(manifest, want) {
+			t.Fatalf("expected generated pod manifest to contain %q, got:\n%s", want, manifest)
 		}
 	}
-	if strings.Count(cfg, "cpu: \"500m\"") != 2 || strings.Count(cfg, "cpu: \"250m\"") != 2 || strings.Count(cfg, "memory: 512Mi") != 4 {
-		t.Fatalf("expected generated pod config to use equal requests and limits for Guaranteed QoS, got:\n%s", cfg)
+	if strings.Count(manifest, "cpu: \"500m\"") != 2 || strings.Count(manifest, "memory: 512Mi") != 2 {
+		t.Fatalf("expected generated pod manifest to use equal requests and limits for Guaranteed QoS, got:\n%s", manifest)
 	}
 }
 
@@ -655,6 +667,9 @@ variables:
   - name: baseImage
     type: string
     default: ubuntu:22.04
+files:
+  - path: .okdev/pod.yaml
+    template: manifests/pod.yaml.tmpl
 ---
 apiVersion: okdev.io/v1alpha1
 kind: DevEnvironment
@@ -671,11 +686,23 @@ spec:
     user: root
   sidecar:
     image: ghcr.io/acmore/okdev:edge
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: {{ .Vars.baseImage }}
+  workload:
+    type: pod
+    manifestPath: pod.yaml
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmplDir, "manifests"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmplDir, "manifests", "pod.yaml.tmpl"), []byte(`apiVersion: v1
+kind: Pod
+metadata:
+  name: '{{ "{{ .WorkloadName }}" }}'
+spec:
+  containers:
+    - name: dev
+      image: {{ .Vars.baseImage }}
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -702,11 +729,19 @@ spec:
 		"template:",
 		"name: team",
 		"baseImage: debian:12",
-		"image: debian:12",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected generated config to contain %q, got:\n%s", want, out)
 		}
+	}
+	// The variable has to reach the manifest, which is where the dev container
+	// lives now.
+	manifest, err := os.ReadFile(filepath.Join(tmp, ".okdev", "pod.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(manifest), "image: debian:12") {
+		t.Fatalf("expected the template variable in the manifest, got:\n%s", manifest)
 	}
 }
 
@@ -1044,11 +1079,9 @@ spec:
     user: root
   sidecar:
     image: ghcr.io/acmore/okdev:edge
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: ubuntu:22.04
+  workload:
+    type: pod
+    manifestPath: pod.yaml
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1170,5 +1203,81 @@ func TestInitStillRequiresGenericManifestAndInjectWithoutAPreset(t *testing.T) {
 	err = validateInitWorkloadVars(vars)
 	if err == nil || !strings.Contains(err.Error(), "--inject-path is required") {
 		t.Fatalf("expected the inject-path requirement, got %v", err)
+	}
+}
+
+func TestInitScaffoldsAPodManifestInsteadOfAnInlineTemplate(t *testing.T) {
+	tmp := t.TempDir()
+	oldwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newInitCmd(&Options{})
+	cmd.SetArgs([]string{"--yes", "--dev-image", "alpine:3.20"})
+	cmd.SetIn(strings.NewReader(""))
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init execute: %v", err)
+	}
+
+	manifest := filepath.Join(tmp, ".okdev", "pod.yaml")
+	raw, err := os.ReadFile(manifest)
+	if err != nil {
+		t.Fatalf("init must scaffold %s: %v", manifest, err)
+	}
+	if !strings.Contains(string(raw), "alpine:3.20") {
+		t.Fatalf("--dev-image must reach the manifest:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "{{ .WorkloadName }}") {
+		t.Fatalf("manifest must keep the WorkloadName placeholder:\n%s", raw)
+	}
+
+	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev", "okdev.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(cfgRaw), "podTemplate") {
+		t.Fatalf("init must not emit an inline podTemplate:\n%s", cfgRaw)
+	}
+	if !strings.Contains(string(cfgRaw), "pod.yaml") {
+		t.Fatalf("the config must point at the manifest:\n%s", cfgRaw)
+	}
+}
+
+// .stignore accumulates hand-written rules, so --force — which is about
+// replacing the generated config — must not take it with it.
+func TestInitForceDoesNotOverwriteSTIgnore(t *testing.T) {
+	tmp := t.TempDir()
+	oldwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+
+	mine := "# mine\n/my-huge-dataset\n"
+	if err := os.WriteFile(filepath.Join(tmp, ".stignore"), []byte(mine), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newInitCmd(&Options{})
+	cmd.SetArgs([]string{"--yes", "--force"})
+	cmd.SetIn(strings.NewReader(""))
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init execute: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(tmp, ".stignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != mine {
+		t.Fatalf("--force must leave .stignore alone, got:\n%s", got)
+	}
+	if !strings.Contains(out.String(), "Kept existing") {
+		t.Fatalf("keeping the existing .stignore must be reported:\n%s", out.String())
 	}
 }

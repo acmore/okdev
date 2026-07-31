@@ -35,7 +35,7 @@ okdev init --template basic --stignore-preset go
 okdev template list
 ```
 
-This generates `.okdev/okdev.yaml` in the current directory, with any generated workload files beside it under `.okdev/`. In that folder-config layout, `spec.workload.manifestPath` can be the bare filename like `job.yaml` or `pytorchjob.yaml`. okdev resolves that relative to `.okdev/` first, then falls back to the project root for compatibility with older layouts. See [Config Manifest](config-manifest.md) for the full field reference and examples.
+This generates `.okdev/okdev.yaml` in the current directory **plus the workload's manifest** beside it under `.okdev/` — `.okdev/pod.yaml` for the default pod workload. Every workload type is a manifest file; there is no inline form. In that folder-config layout, `spec.workload.manifestPath` can be the bare filename like `job.yaml` or `pytorchjob.yaml`. okdev resolves that relative to `.okdev/` first, then falls back to the project root for compatibility with older layouts. See [Config Manifest](config-manifest.md) for the full field reference and examples.
 
 For built-in templates, `okdev init` also writes a starter local `.stignore` file for the initialized sync root. Use `--stignore-preset` to override that starter with a project-oriented preset like `python`, `node`, `go`, or `rust`.
 When `--stignore-preset` is omitted, `okdev init` will try to detect a preset from common repo markers like `go.mod`, `package.json`, `Cargo.toml`, or `pyproject.toml`.

@@ -79,7 +79,11 @@ type DevEnvSpec struct {
 	Exec            ExecSpec          `yaml:"exec,omitempty"`
 	Lifecycle       LifecycleSpec     `yaml:"lifecycle"`
 	Sidecar         SidecarSpec       `yaml:"sidecar"`
-	PodTemplate     PodTemplateRef    `yaml:"podTemplate"`
+
+	// PodTemplate is removed. It survives as a pointer purely so a config
+	// still carrying it produces a migration error instead of being silently
+	// ignored; nothing reads it but Validate and okdev migrate.
+	PodTemplate *PodTemplateRef `yaml:"podTemplate,omitempty"`
 }
 
 // Exec fanout modes; see ExecSpec.FanoutMode.
@@ -422,7 +426,10 @@ func (d *DevEnvironment) Validate() error {
 		return errors.New("metadata.name is required")
 	}
 	if d.Spec.Workspace != nil {
-		return &MigrationEligibleError{Err: errors.New("spec.workspace is removed; use spec.volumes (k8s Volume) and podTemplate.spec.containers[*].volumeMounts, or run \"okdev migrate\" to automatically update your config")}
+		return &MigrationEligibleError{Err: errors.New("spec.workspace is removed; use spec.volumes (k8s Volume) and the workload manifest's containers[*].volumeMounts, or run \"okdev migrate\" to automatically update your config")}
+	}
+	if d.Spec.PodTemplate != nil {
+		return &MigrationEligibleError{Err: errors.New("spec.podTemplate is removed; every workload now has its own manifest — run \"okdev migrate\" to extract it automatically")}
 	}
 	if err := d.validateWorkloadProfiles(); err != nil {
 		return err
@@ -559,58 +566,51 @@ func boolPtr(v bool) *bool {
 	return &v
 }
 
-func (d *DevEnvironment) WorkspaceMountPath() string {
-	for _, c := range d.Spec.PodTemplate.Spec.Containers {
-		if c.Name != "dev" {
-			continue
-		}
-		for _, vm := range c.VolumeMounts {
-			if vm.Name == DefaultWorkspaceName && strings.TrimSpace(vm.MountPath) != "" {
-				return vm.MountPath
-			}
-		}
-	}
-	return DefaultWorkspacePath
-}
-
+// EffectiveWorkspaceMountPath reads the mount path from the workload's
+// manifest. Every workload has one, so there is no inline branch.
 func (d *DevEnvironment) EffectiveWorkspaceMountPath(configPath string) string {
 	if d == nil {
 		return DefaultWorkspacePath
 	}
-	switch strings.TrimSpace(d.Spec.Workload.Type) {
-	case "", "pod":
-		return d.WorkspaceMountPath()
-	default:
-		if path := d.workspaceMountPathFromManifest(configPath); strings.TrimSpace(path) != "" {
-			return path
-		}
-		return d.WorkspaceMountPath()
+	if path := d.workspaceMountPathFromManifest(configPath); strings.TrimSpace(path) != "" {
+		return path
 	}
+	return DefaultWorkspacePath
 }
 
-func (d *DevEnvironment) workspaceMountPathFromManifest(configPath string) string {
+// TargetContainerFromManifest decodes the workload's manifest and returns the
+// container okdev attaches to, or nil when the manifest is missing or does not
+// declare one. Since spec.podTemplate was removed, this is the only place any
+// caller learns what the dev container looks like.
+func (d *DevEnvironment) TargetContainerFromManifest(configPath string) *corev1.Container {
+	if d == nil {
+		return nil
+	}
 	resolvedManifestPath := ResolveWorkloadManifestPath(configPath, strings.TrimSpace(d.Spec.Workload.ManifestPath))
 	if resolvedManifestPath == "" || configPath == "" {
-		return ""
+		return nil
 	}
 	raw, err := os.ReadFile(resolvedManifestPath)
 	if err != nil {
-		return ""
+		return nil
 	}
 	// Workload manifests are Go templates that get rendered at apply time
 	// (e.g. {{ .WorkloadName }}). Strip placeholders with a safe stub so the
-	// YAML parser can still extract the workspace mount path, which is
-	// independent of the template variables.
+	// YAML parser can still read the container, whose shape does not depend on
+	// the template variables.
 	sanitized := stripGoTemplatePlaceholders(raw)
 	var obj map[string]any
 	if err := yaml.Unmarshal(sanitized, &obj); err != nil {
-		return ""
+		return nil
 	}
 	targetContainer := strings.TrimSpace(d.Spec.Workload.Attach.Container)
 	if targetContainer == "" {
 		targetContainer = "dev"
 	}
-	for _, inject := range d.Spec.Workload.Inject {
+	// EffectiveWorkloadInject, not the raw field: a pod declares no inject path
+	// because its template is the manifest root, and reading the raw field
+	// would find no container at all.
+	for _, inject := range d.EffectiveWorkloadInject() {
 		templateMap, ok := resolveObjectPath(obj, inject.Path)
 		if !ok {
 			continue
@@ -619,11 +619,38 @@ func (d *DevEnvironment) workspaceMountPathFromManifest(configPath string) strin
 		if err != nil {
 			continue
 		}
-		if path := workspaceMountPathForContainer(template.Spec.Containers, targetContainer); path != "" {
-			return path
+		if c := findContainer(template.Spec.Containers, targetContainer); c != nil {
+			return c
+		}
+	}
+	return nil
+}
+
+func (d *DevEnvironment) workspaceMountPathFromManifest(configPath string) string {
+	container := d.TargetContainerFromManifest(configPath)
+	if container == nil {
+		return ""
+	}
+	for _, vm := range container.VolumeMounts {
+		if vm.Name == DefaultWorkspaceName && strings.TrimSpace(vm.MountPath) != "" {
+			return vm.MountPath
 		}
 	}
 	return ""
+}
+
+// findContainer prefers the named container and falls back to the first one,
+// so a manifest whose single container is not called "dev" still resolves.
+func findContainer(containers []corev1.Container, name string) *corev1.Container {
+	for i := range containers {
+		if containers[i].Name == name {
+			return &containers[i]
+		}
+	}
+	if len(containers) > 0 {
+		return &containers[0]
+	}
+	return nil
 }
 
 // goTemplatePlaceholderPattern matches Go template actions like
@@ -667,28 +694,6 @@ func decodeTemplateSpec(src map[string]any) (corev1.PodTemplateSpec, error) {
 		return corev1.PodTemplateSpec{}, err
 	}
 	return template, nil
-}
-
-func workspaceMountPathForContainer(containers []corev1.Container, name string) string {
-	index := -1
-	for i := range containers {
-		if containers[i].Name == name {
-			index = i
-			break
-		}
-	}
-	if index == -1 && len(containers) > 0 {
-		index = 0
-	}
-	if index == -1 {
-		return ""
-	}
-	for _, vm := range containers[index].VolumeMounts {
-		if vm.Name == DefaultWorkspaceName && strings.TrimSpace(vm.MountPath) != "" {
-			return vm.MountPath
-		}
-	}
-	return ""
 }
 
 func validateSyncPaths(paths []SyncPathSpec) error {

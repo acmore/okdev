@@ -122,11 +122,11 @@ func validateWorkloadProfile(p WorkloadProfile, index int, interPod bool) error 
 	default:
 		return fmt.Errorf("%s.type must be one of pod, job, pytorchjob, generic, got %q", field, p.Type)
 	}
-	switch strings.TrimSpace(p.Type) {
-	case "job", "pytorchjob", "generic":
-		if strings.TrimSpace(p.ManifestPath) == "" {
-			return fmt.Errorf("%s.manifestPath is required when type=%q", field, p.Type)
-		}
+	// Every type, pod included. A pod used to be the one workload defined
+	// inline; without a manifest it now resolves to no file at all, and the
+	// failure surfaces as a bare `stat "": no such file` at up time.
+	if strings.TrimSpace(p.ManifestPath) == "" {
+		return fmt.Errorf("%s.manifestPath is required", field)
 	}
 	isPod := isPodWorkloadType(p.Type)
 	inject := p.Inject
@@ -180,19 +180,6 @@ func (d *DevEnvironment) validateWorkloadProfiles() error {
 			return fmt.Errorf("spec.defaultWorkload %q names no declared workload; available: %s",
 				def, strings.Join(d.WorkloadProfileNames(), ", "))
 		}
-	}
-	// A pod profile without a manifestPath is synthesized from the shared
-	// spec.podTemplate, so two of them would be byte-identical — the very
-	// ambiguity profiles exist to remove. At most one may rely on it.
-	shared := make([]string, 0, 2)
-	for _, p := range d.Spec.Workloads {
-		if isPodWorkloadType(p.Type) && strings.TrimSpace(p.ManifestPath) == "" {
-			shared = append(shared, strings.TrimSpace(p.Name))
-		}
-	}
-	if len(shared) > 1 {
-		return fmt.Errorf("workloads %s are all pod profiles without a manifestPath, so they would share spec.podTemplate and be indistinguishable; give all but one its own manifestPath",
-			strings.Join(shared, ", "))
 	}
 	return nil
 }

@@ -119,6 +119,13 @@ func TestSelectWorkloadRejectsUnknownNameAndListsOptions(t *testing.T) {
 func validProfileConfig(profiles ...WorkloadProfile) *DevEnvironment {
 	cfg := &DevEnvironment{APIVersion: "okdev.io/v1alpha1", Kind: "DevEnvironment"}
 	cfg.Metadata.Name = "x"
+	// Every workload needs a manifest; fill one in so each test only has to
+	// state the field it is actually about.
+	for i := range profiles {
+		if strings.TrimSpace(profiles[i].ManifestPath) == "" {
+			profiles[i].ManifestPath = profiles[i].Name + ".yaml"
+		}
+	}
 	cfg.Spec.Workloads = profiles
 	cfg.SetDefaults()
 	return cfg
@@ -161,29 +168,6 @@ func TestValidateAppliesPerTypeRulesToEveryProfile(t *testing.T) {
 	)
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected the bad job profile to be rejected")
-	}
-}
-
-func TestValidateRejectsTwoProfilesSharingThePodTemplate(t *testing.T) {
-	// A pod profile with no manifestPath is synthesized from the shared
-	// spec.podTemplate. Two such profiles would be byte-identical, which is the
-	// exact ambiguity profiles exist to remove.
-	cfg := validProfileConfig(
-		WorkloadProfile{Name: "dev", Type: "pod"},
-		WorkloadProfile{Name: "big", Type: "pod"},
-	)
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "manifestPath") {
-		t.Fatalf("expected a shared-podTemplate error mentioning manifestPath, got %v", err)
-	}
-
-	// Giving one of them its own manifest disambiguates them.
-	ok := validProfileConfig(
-		WorkloadProfile{Name: "dev", Type: "pod"},
-		WorkloadProfile{Name: "big", Type: "pod", ManifestPath: "big-pod.yaml"},
-	)
-	if err := ok.Validate(); err != nil {
-		t.Fatalf("one shared + one explicit pod profile must validate: %v", err)
 	}
 }
 

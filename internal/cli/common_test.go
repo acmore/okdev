@@ -242,7 +242,10 @@ func TestLoadConfigAndNamespaceAppliesOverrides(t *testing.T) {
 		"  name: demo\n"+
 		"spec:\n"+
 		"  namespace: team-a\n"+
-		"  kubeContext: cluster-a\n"), 0o644); err != nil {
+		"  kubeContext: cluster-a\n"+
+		"  workload:\n"+
+		"    type: pod\n"+
+		"    manifestPath: pod.yaml\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -271,7 +274,10 @@ func TestResolveCommandContextUsesResolver(t *testing.T) {
 		"metadata:\n"+
 		"  name: demo\n"+
 		"spec:\n"+
-		"  namespace: team-a\n"), 0o644); err != nil {
+		"  namespace: team-a\n"+
+		"  workload:\n"+
+		"    type: pod\n"+
+		"    manifestPath: pod.yaml\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -311,7 +317,10 @@ func TestResolveCommandContextPersistsDiscoveredConfigPathForResolver(t *testing
 		"metadata:\n"+
 		"  name: demo\n"+
 		"spec:\n"+
-		"  namespace: team-a\n"), 0o644); err != nil {
+		"  namespace: team-a\n"+
+		"  workload:\n"+
+		"    type: pod\n"+
+		"    manifestPath: pod.yaml\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -348,7 +357,7 @@ func TestOptionsWithSessionConfigUsesSavedSessionMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfgPath := filepath.Join(cfgDir, ".okdev.yaml")
-	if err := os.WriteFile(cfgPath, []byte("apiVersion: okdev.io/v1alpha1\nkind: DevEnvironment\nmetadata:\n  name: demo\nspec:\n  namespace: default\n"), 0o644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("apiVersion: okdev.io/v1alpha1\nkind: DevEnvironment\nmetadata:\n  name: demo\nspec:\n  namespace: default\n  workload:\n    type: pod\n    manifestPath: pod.yaml\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := session.SaveInfo(session.Info{

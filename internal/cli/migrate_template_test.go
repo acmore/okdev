@@ -48,6 +48,9 @@ spec:
       - ".:/workspace"
   sidecar:
     image: ghcr.io/acmore/okdev:edge
+  workload:
+    type: pod
+    manifestPath: pod.yaml
 `
 	cfgPath := filepath.Join(projectDir, ".okdev.yaml")
 	if err := os.WriteFile(cfgPath, []byte(existingConfig), 0o644); err != nil {
@@ -94,11 +97,9 @@ spec:
     user: root
   sidecar:
     image: ghcr.io/acmore/okdev:edge
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: {{ .Vars.baseImage }}
+  workload:
+    type: pod
+    manifestPath: pod.yaml
 `
 	if err := os.WriteFile(filepath.Join(tmplDir, "team.yaml.tmpl"), []byte(tmplContent), 0o644); err != nil {
 		t.Fatal(err)
@@ -154,11 +155,9 @@ spec:
     user: root
   sidecar:
     image: ghcr.io/acmore/okdev:edge
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: {{ .Vars.baseImage }}
+  workload:
+    type: pod
+    manifestPath: pod.yaml
 `
 	if err := os.WriteFile(filepath.Join(tmplDir, "team.yaml.tmpl"), []byte(tmplContent), 0o644); err != nil {
 		t.Fatal(err)
@@ -176,6 +175,9 @@ spec:
     user: root
   sidecar:
     image: ghcr.io/acmore/okdev:edge
+  workload:
+    type: pod
+    manifestPath: pod.yaml
 `
 	cfgPath := filepath.Join(projectDir, ".okdev.yaml")
 	if err := os.WriteFile(cfgPath, []byte(existingConfig), 0o644); err != nil {
@@ -190,7 +192,7 @@ spec:
 	if !strings.Contains(out.String(), "Base image (baseImage)") {
 		t.Fatalf("expected prompt for required variable, got %q", out.String())
 	}
-	if !strings.Contains(result.merged, "baseImage: debian:12") || !strings.Contains(result.merged, "image: debian:12") {
+	if !strings.Contains(result.merged, "baseImage: debian:12") {
 		t.Fatalf("expected prompted value in merged config, got:\n%s", result.merged)
 	}
 }

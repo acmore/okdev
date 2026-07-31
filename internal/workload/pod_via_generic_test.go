@@ -2,6 +2,8 @@ package workload
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -71,15 +73,15 @@ func (f *fakeTargetClient) ListPods(_ context.Context, _ string, _ bool, _ strin
 
 // podRuntimeForTest builds the runtime a pod workload gets today: a
 // GenericRuntime over a synthesized Pod manifest, injected at the object root.
-func podRuntimeForTest(sessionName, targetContainer string, volumes []corev1.Volume) *GenericRuntime {
+func podRuntimeForTest(t *testing.T, sessionName, targetContainer string, volumes []corev1.Volume) *GenericRuntime {
 	return &GenericRuntime{
 		SessionName:  sessionName,
 		WorkloadKind: TypePod,
-		ManifestBytes: []byte(`
+		ManifestPath: writeManifest(t, `
 apiVersion: v1
 kind: Pod
 metadata:
-  name: okdev-` + sessionName + `
+  name: okdev-`+sessionName+`
 spec:
   containers:
     - name: dev
@@ -106,7 +108,7 @@ func attachablePod(name string) kube.PodSummary {
 }
 
 func TestPodViaGenericLifecycle(t *testing.T) {
-	rt := podRuntimeForTest("test", "", []corev1.Volume{{
+	rt := podRuntimeForTest(t, "test", "", []corev1.Volume{{
 		Name:         "workspace",
 		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 	}})
@@ -162,7 +164,7 @@ func TestPodViaGenericLifecycle(t *testing.T) {
 }
 
 func TestPodViaGenericSelectTargetUsesConfiguredContainer(t *testing.T) {
-	rt := podRuntimeForTest("test", "trainer", nil)
+	rt := podRuntimeForTest(t, "test", "trainer", nil)
 	client := &fakeGenericClient{pods: []kube.PodSummary{attachablePod("okdev-test")}}
 	target, err := rt.SelectTarget(context.Background(), client, "default")
 	if err != nil {
@@ -182,7 +184,7 @@ func TestPodViaGenericSelectTargetUsesConfiguredContainer(t *testing.T) {
 func TestPodViaGenericCarriesDiscoveryLabels(t *testing.T) {
 	rt := &GenericRuntime{
 		WorkloadKind: TypePod,
-		ManifestBytes: []byte(`
+		ManifestPath: writeManifest(t, `
 apiVersion: v1
 kind: Pod
 metadata:
@@ -221,4 +223,15 @@ spec:
 	if role, ok := pod.Labels["okdev.io/workload-role"]; ok {
 		t.Errorf("unexpected workload-role label %q", role)
 	}
+}
+
+// writeManifest puts a manifest on disk, since every workload — pod included —
+// is now loaded from a file.
+func writeManifest(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "workload.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

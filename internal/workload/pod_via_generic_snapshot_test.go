@@ -18,7 +18,7 @@ func (c *captureApplyClient) Apply(_ context.Context, _ string, manifest []byte)
 }
 
 func TestPodViaGenericApplySetsLastAppliedAnnotations(t *testing.T) {
-	rt := podRuntimeForTest("sess", "dev", nil)
+	rt := podRuntimeForTest(t, "sess", "dev", nil)
 	rt.LastAppliedSpecJSON = `{"version":"v1"}`
 	rt.LastAppliedSpecHash = "abc123"
 
@@ -42,7 +42,7 @@ func TestPodViaGenericApplySetsLastAppliedAnnotations(t *testing.T) {
 }
 
 func TestPodViaGenericApplyOmitsAnnotationsWhenEmpty(t *testing.T) {
-	rt := podRuntimeForTest("sess", "dev", nil)
+	rt := podRuntimeForTest(t, "sess", "dev", nil)
 
 	client := &captureApplyClient{}
 	if err := rt.Apply(context.Background(), client, "default"); err != nil {

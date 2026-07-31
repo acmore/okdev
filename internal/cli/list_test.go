@@ -19,6 +19,9 @@ metadata:
   name: test
 spec:
   namespace: team-a
+  workload:
+    type: pod
+    manifestPath: pod.yaml
   sidecar:
     image: ghcr.io/acmore/okdev:edge
 `), 0o644); err != nil {
