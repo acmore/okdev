@@ -12,7 +12,6 @@ import (
 
 	"github.com/acmore/okdev/internal/config"
 	syncengine "github.com/acmore/okdev/internal/sync"
-	"github.com/acmore/okdev/internal/workload"
 	"github.com/spf13/cobra"
 	yamlv3 "gopkg.in/yaml.v3"
 	"sigs.k8s.io/yaml"
@@ -154,16 +153,19 @@ func newInitCmd(opts *Options) *cobra.Command {
 				return err
 			}
 
-			// A template that says nothing about workloads predates "every
-			// workload is a manifest" — pod was the default and okdev filled in
-			// the rest. Keep those working by supplying the pod shape, the same
-			// resolution `okdev migrate` applies to a workload-less config.
-			defaultedPodWorkload := !declaresWorkload(rendered)
-			if defaultedPodWorkload {
-				rendered, err = applyDefaultPodWorkload(rendered)
-				if err != nil {
-					return err
-				}
+			// A template written before "every workload is a manifest" either
+			// defines the pod inline under spec.podTemplate, declares a pod
+			// workload with no manifest, or says nothing about workloads at all
+			// — pod was the default and okdev filled the rest in. All three are
+			// what `okdev migrate` resolves for an existing config, so run the
+			// same resolution here rather than inventing a second one. Telling
+			// the user to run migrate would not work: no config exists yet.
+			extraction, err := planPodTemplateExtraction(abs, []byte(rendered))
+			if err != nil {
+				return err
+			}
+			if extraction.Applied {
+				rendered = string(extraction.ConfigBytes)
 			}
 
 			if err := validateRenderedInitConfig(rendered, templateRef, vars, projectDir); err != nil {
@@ -193,14 +195,18 @@ func newInitCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// The template declared no manifest either, so write the starter one
-			// its defaulted workload now points at.
-			if defaultedPodWorkload {
-				podManifest, err := scaffoldDefaultPodManifest(abs, vars, force)
-				if err != nil {
-					return err
+			// ...and the manifest that resolution now points at.
+			for _, m := range extraction.Manifests {
+				if _, err := os.Stat(m.Target); err == nil && !force {
+					continue
 				}
-				scaffolded = append(scaffolded, podManifest...)
+				if err := os.MkdirAll(filepath.Dir(m.Target), 0o755); err != nil {
+					return fmt.Errorf("create manifest directory: %w", err)
+				}
+				if err := os.WriteFile(m.Target, m.Bytes, 0o644); err != nil {
+					return fmt.Errorf("write scaffolded manifest %q: %w", m.Target, err)
+				}
+				scaffolded = append(scaffolded, m.Target)
 			}
 
 			zshFiles, err := scaffoldZshFiles(abs, vars, force, cmd.OutOrStdout())
@@ -451,6 +457,12 @@ func validateRenderedInitConfig(rendered, templateRef string, vars *config.Templ
 		return fmt.Errorf("parse generated config: %w", err)
 	}
 	cfg.SetDefaults()
+	// SetDefaults desugars spec.workload into spec.workloads but does not
+	// collapse the other way, so a config that declares profiles leaves the
+	// singular empty. Select the effective one, as every command does.
+	if err := cfg.SelectWorkload(""); err != nil {
+		return fmt.Errorf("generated config is invalid: %w", err)
+	}
 	// Before Validate, so a template that declared a workload without saying
 	// where its manifest is gets told exactly that, rather than the generic
 	// "manifestPath is required" it would otherwise trip on. A template that
@@ -737,87 +749,4 @@ func shadowedBuiltinLocation(name, projectDir string) string {
 		return "~/.okdev/templates/" + name + ".yaml.tmpl"
 	}
 	return ""
-}
-
-// declaresWorkload reports whether the rendered config mentions a workload at
-// all. "absent" and "present but empty" are the same zero value after
-// unmarshalling, and they mean different things, so this reads the YAML.
-func declaresWorkload(rendered string) bool {
-	var doc yamlv3.Node
-	if err := yamlv3.Unmarshal([]byte(rendered), &doc); err != nil {
-		return false
-	}
-	root := yamlDocumentRoot(&doc)
-	if root == nil || root.Kind != yamlv3.MappingNode {
-		return false
-	}
-	spec := findYAMLNode(root, "spec")
-	if spec == nil {
-		return false
-	}
-	return findYAMLNode(spec, "workload") != nil || findYAMLNode(spec, "workloads") != nil
-}
-
-// applyDefaultPodWorkload gives a template that declared no workload the pod
-// shape, and reports the manifest it now needs.
-//
-// A pod template written before "every workload is a manifest" says nothing
-// about workloads: pod was the default, and okdev filled in the rest. Rejecting
-// those would break every such template for a field their author never had to
-// write. `okdev migrate` already resolves the same ambiguity the same way for
-// an existing config — a workload-less config means pod, with the starter
-// manifest — so this is that rule applied at init time, not a new one.
-func applyDefaultPodWorkload(rendered string) (string, error) {
-	var doc yamlv3.Node
-	if err := yamlv3.Unmarshal([]byte(rendered), &doc); err != nil {
-		return "", fmt.Errorf("parse generated config: %w", err)
-	}
-	root := yamlDocumentRoot(&doc)
-	if root == nil || root.Kind != yamlv3.MappingNode {
-		return "", fmt.Errorf("generated config is not a mapping")
-	}
-	spec := ensureYAMLMapping(root, "spec")
-	wl := &yamlv3.Node{Kind: yamlv3.MappingNode}
-	setYAMLNode(wl, "type", yamlScalar(workload.TypePod))
-	setYAMLNode(wl, "manifestPath", yamlScalar(defaultPodManifestName))
-	attach := &yamlv3.Node{Kind: yamlv3.MappingNode}
-	setYAMLNode(attach, "container", yamlScalar(workload.DefaultTargetContainer))
-	setYAMLNode(wl, "attach", attach)
-	setYAMLNode(spec, "workload", wl)
-
-	var buf bytes.Buffer
-	enc := yamlv3.NewEncoder(&buf)
-	enc.SetIndent(2)
-	if err := enc.Encode(&doc); err != nil {
-		return "", fmt.Errorf("render generated config: %w", err)
-	}
-	if err := enc.Close(); err != nil {
-		return "", fmt.Errorf("render generated config: %w", err)
-	}
-	return buf.String(), nil
-}
-
-const defaultPodManifestName = "pod.yaml"
-
-// scaffoldDefaultPodManifest writes the starter Pod manifest for a template that
-// declared no workload of its own. It never overwrites: a file already there is
-// the user's, and the defaulted workload points at it either way.
-func scaffoldDefaultPodManifest(configPath string, vars *config.TemplateVars, force bool) ([]string, error) {
-	// Written into .okdev/ like every other manifest. The config records the
-	// bare name, which resolves there for both config layouts.
-	target := resolveInitScaffoldFilePath(configPath, filepath.Join(config.FolderDir, defaultPodManifestName))
-	if _, err := os.Stat(target); err == nil && !force {
-		return nil, nil
-	}
-	body, err := config.RenderEmbeddedTemplate("templates/manifests/pod.yaml.tmpl", vars)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return nil, fmt.Errorf("create manifest directory: %w", err)
-	}
-	if err := os.WriteFile(target, []byte(body), 0o644); err != nil {
-		return nil, fmt.Errorf("write scaffolded manifest %q: %w", target, err)
-	}
-	return []string{target}, nil
 }
