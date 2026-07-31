@@ -10,7 +10,7 @@ import (
 
 func TestSynthesizePodManifest(t *testing.T) {
 	cfg := &DevEnvironment{}
-	cfg.Spec.PodTemplate = PodTemplateRef{
+	cfg.Spec.PodTemplate = &PodTemplateRef{
 		Metadata: MetadataMap{Labels: map[string]string{"team": "ml"}},
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{{
@@ -46,11 +46,13 @@ func TestSynthesizePodManifest(t *testing.T) {
 
 func TestSynthesizePodManifestKeepsBracesVerbatim(t *testing.T) {
 	cfg := &DevEnvironment{}
-	cfg.Spec.PodTemplate.Spec = corev1.PodSpec{
-		Containers: []corev1.Container{{
-			Name: "dev",
-			Env:  []corev1.EnvVar{{Name: "TPL", Value: "{{ .Whatever }}"}},
-		}},
+	cfg.Spec.PodTemplate = &PodTemplateRef{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{
+				Name: "dev",
+				Env:  []corev1.EnvVar{{Name: "TPL", Value: "{{ .Whatever }}"}},
+			}},
+		},
 	}
 	raw, err := SynthesizePodManifest(cfg, "okdev-sess1")
 	if err != nil {

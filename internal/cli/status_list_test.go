@@ -539,15 +539,32 @@ func TestNewAgentListCmdReportsNoConfiguredAgents(t *testing.T) {
 
 func writeCLIConfig(t *testing.T, namespace string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), ".okdev.yaml")
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".okdev.yaml")
 	content := fmt.Sprintf(`apiVersion: okdev.io/v1alpha1
 kind: DevEnvironment
 metadata:
   name: demo
 spec:
   namespace: %s
+  workload:
+    type: pod
+    manifestPath: pod.yaml
 `, namespace)
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Every workload is a manifest now, so a usable test config needs one.
+	manifest := `apiVersion: v1
+kind: Pod
+metadata:
+  name: okdev-{{ .SessionName }}
+spec:
+  containers:
+    - name: dev
+      image: ubuntu:22.04
+`
+	if err := os.WriteFile(filepath.Join(dir, "pod.yaml"), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return path

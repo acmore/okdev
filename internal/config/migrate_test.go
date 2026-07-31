@@ -87,16 +87,12 @@ spec:
 		t.Fatal("expected podTemplate key in output")
 	}
 
-	// Round-trip: load through sigs.k8s.io/yaml to verify compatibility
-	cfg, err := loadFromBytes(out)
-	if err != nil {
-		t.Fatalf("migrated config failed to load: %v", err)
-	}
-	if len(cfg.Spec.Volumes) == 0 {
-		t.Fatal("expected volumes after migration")
-	}
-	if cfg.WorkspaceMountPath() != "/code" {
-		t.Fatalf("expected mount path /code, got %q", cfg.WorkspaceMountPath())
+	// This migration's output is an intermediate: it moves spec.workspace onto
+	// a podTemplate, which `okdev migrate` then extracts into a manifest as a
+	// second step. So assert on the YAML rather than loading it — a config
+	// still carrying podTemplate no longer validates, by design.
+	if !strings.Contains(string(out), "mountPath: /code") {
+		t.Fatalf("expected mount path /code in the migrated config:\n%s", out)
 	}
 }
 

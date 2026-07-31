@@ -43,22 +43,8 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("read config %q: %w", cfgPath, err)
 			}
-			// The backup must capture what the user had before anything ran,
-			// including the podTemplate extraction below.
+			// The backup must capture what the user had before anything ran.
 			original := raw
-
-			extraction, err := planPodTemplateExtraction(cfgPath, raw)
-			if err != nil {
-				return err
-			}
-			if extraction.Applied {
-				if extraction.ManifestTarget != "" {
-					if _, err := os.Stat(extraction.ManifestTarget); err == nil {
-						return fmt.Errorf("a manifest already exists at %q; move it aside before migrating", extraction.ManifestTarget)
-					}
-				}
-				raw = extraction.ConfigBytes
-			}
 
 			var doc yaml.Node
 			if err := yaml.Unmarshal(raw, &doc); err != nil {
@@ -70,6 +56,27 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 				return fmt.Errorf("migration failed: %w", err)
 			}
 
+			out, err := yaml.Marshal(&doc)
+			if err != nil {
+				return fmt.Errorf("marshal migrated config: %w", err)
+			}
+
+			// The extraction runs last because workspace-to-volumes *creates* a
+			// spec.podTemplate to hang the workspace volumeMount on. Extracting
+			// first would leave that one behind, still rejected by Validate.
+			extraction, err := planPodTemplateExtraction(cfgPath, out)
+			if err != nil {
+				return err
+			}
+			if extraction.Applied {
+				if extraction.ManifestTarget != "" {
+					if _, err := os.Stat(extraction.ManifestTarget); err == nil {
+						return fmt.Errorf("a manifest already exists at %q; move it aside before migrating", extraction.ManifestTarget)
+					}
+				}
+				out = extraction.ConfigBytes
+			}
+
 			if len(result.Applied) == 0 && !extraction.Applied {
 				if err := scaffoldMigrateZshFiles(cfgPath, cmd.OutOrStdout()); err != nil {
 					fmt.Fprintf(cmd.OutOrStdout(), "warning: failed to scaffold zsh files: %v\n", err)
@@ -78,17 +85,16 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 				return nil
 			}
 
-			out, err := yaml.Marshal(&doc)
-			if err != nil {
-				return fmt.Errorf("marshal migrated config: %w", err)
-			}
-
 			w := cmd.OutOrStdout()
 
 			if extraction.Applied {
-				fmt.Fprintln(w, "✓ podTemplate-to-manifest")
-				if extraction.ManifestTarget != "" {
+				fmt.Fprintf(w, "✓ %s\n", extraction.Label())
+				switch {
+				case extraction.ManifestTarget == "":
+				case extraction.Extracted:
 					fmt.Fprintf(w, "  Extracted spec.podTemplate → %s\n", extraction.ManifestTarget)
+				default:
+					fmt.Fprintf(w, "  Wrote %s\n", extraction.ManifestTarget)
 				}
 				for _, warning := range extraction.Warnings {
 					fmt.Fprintf(w, "  ⚠ %s\n", warning)
@@ -142,6 +148,9 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 				fmt.Fprintln(w, "\nNote: the next `okdev up` will report workload drift and offer to")
 				fmt.Fprintln(w, "recreate. The resulting Pod is unchanged — only how the config")
 				fmt.Fprintln(w, "describes it moved.")
+			}
+			if extraction.Applied && !extraction.Extracted && extraction.ManifestTarget != "" {
+				fmt.Fprintf(w, "\nReview %s before the next `okdev up`.\n", extraction.ManifestTarget)
 			}
 			return nil
 		},
@@ -493,7 +502,10 @@ func templateVarsForMigrate(cfg *config.DevEnvironment, cfgPath string) *config.
 		}
 	}
 
-	devContainer := findTemplateContainer(cfg.Spec.PodTemplate.Spec.Containers, "dev")
+	// The dev container's shape now lives in the workload manifest, so that is
+	// where a re-render reads it from to preserve the project's image and
+	// resources instead of resetting them to the template defaults.
+	devContainer := cfg.TargetContainerFromManifest(cfgPath)
 	if devContainer != nil {
 		if image := strings.TrimSpace(devContainer.Image); image != "" {
 			vars.DevImage = image
@@ -507,18 +519,6 @@ func templateVarsForMigrate(cfg *config.DevEnvironment, cfgPath string) *config.
 	}
 
 	return vars
-}
-
-func findTemplateContainer(containers []corev1.Container, name string) *corev1.Container {
-	for i := range containers {
-		if strings.TrimSpace(containers[i].Name) == name {
-			return &containers[i]
-		}
-	}
-	if len(containers) == 0 {
-		return nil
-	}
-	return &containers[0]
 }
 
 func setTemplateResourceStrings(cpuOut, memoryOut *string, resources corev1.ResourceList) {

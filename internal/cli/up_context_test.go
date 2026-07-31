@@ -88,6 +88,9 @@ func TestUpValidateUsesResolvedOptionsContext(t *testing.T) {
 		"  name: demo\n"+
 		"spec:\n"+
 		"  namespace: demo\n"+
+		"  workload:\n"+
+		"    type: pod\n"+
+		"    manifestPath: pod.yaml\n"+
 		"  kubeContext: team-staging\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

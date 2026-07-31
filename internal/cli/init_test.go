@@ -667,6 +667,9 @@ variables:
   - name: baseImage
     type: string
     default: ubuntu:22.04
+files:
+  - path: .okdev/pod.yaml
+    template: manifests/pod.yaml.tmpl
 ---
 apiVersion: okdev.io/v1alpha1
 kind: DevEnvironment
@@ -683,11 +686,23 @@ spec:
     user: root
   sidecar:
     image: ghcr.io/acmore/okdev:edge
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: {{ .Vars.baseImage }}
+  workload:
+    type: pod
+    manifestPath: pod.yaml
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmplDir, "manifests"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmplDir, "manifests", "pod.yaml.tmpl"), []byte(`apiVersion: v1
+kind: Pod
+metadata:
+  name: '{{ "{{ .WorkloadName }}" }}'
+spec:
+  containers:
+    - name: dev
+      image: {{ .Vars.baseImage }}
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -714,11 +729,19 @@ spec:
 		"template:",
 		"name: team",
 		"baseImage: debian:12",
-		"image: debian:12",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected generated config to contain %q, got:\n%s", want, out)
 		}
+	}
+	// The variable has to reach the manifest, which is where the dev container
+	// lives now.
+	manifest, err := os.ReadFile(filepath.Join(tmp, ".okdev", "pod.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(manifest), "image: debian:12") {
+		t.Fatalf("expected the template variable in the manifest, got:\n%s", manifest)
 	}
 }
 
@@ -1056,11 +1079,9 @@ spec:
     user: root
   sidecar:
     image: ghcr.io/acmore/okdev:edge
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: ubuntu:22.04
+  workload:
+    type: pod
+    manifestPath: pod.yaml
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}

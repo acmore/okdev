@@ -13,12 +13,7 @@ func TestBuildWorkloadSnapshotPod(t *testing.T) {
 	cfg := &DevEnvironment{
 		Spec: DevEnvSpec{
 			Workload: WorkloadSpec{Type: "pod"},
-			PodTemplate: PodTemplateRef{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{{Name: "dev", Image: "ubuntu:22.04"}},
-				},
-			},
-			Volumes: []corev1.Volume{{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}},
+			Volumes:  []corev1.Volume{{Name: "workspace", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}},
 			Sidecar: SidecarSpec{
 				Image: "ghcr.io/acmore/okdev-sidecar:edge",
 				Resources: corev1.ResourceRequirements{

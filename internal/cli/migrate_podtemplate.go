@@ -10,8 +10,8 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
-// podTemplateExtraction is the complete, not-yet-written result of moving an
-// inline spec.podTemplate into its own manifest.
+// podTemplateExtraction is the complete, not-yet-written result of giving a
+// pod workload a manifest of its own.
 type podTemplateExtraction struct {
 	ConfigBytes    []byte
 	ManifestPath   string // as recorded in the config
@@ -19,6 +19,18 @@ type podTemplateExtraction struct {
 	ManifestBytes  []byte // empty when no workload needed one
 	Warnings       []string
 	Applied        bool
+	// Extracted distinguishes the two cases for reporting: an inline
+	// spec.podTemplate moved into a file, or a pod that never had one getting
+	// the starter manifest.
+	Extracted bool
+}
+
+// Label names the migration in `okdev migrate` output.
+func (e *podTemplateExtraction) Label() string {
+	if e.Extracted {
+		return "podTemplate-to-manifest"
+	}
+	return "pod-workload-manifest"
 }
 
 // planPodTemplateExtraction computes the migration without touching the
@@ -33,7 +45,14 @@ func planPodTemplateExtraction(cfgPath string, raw []byte) (*podTemplateExtracti
 		return nil, fmt.Errorf("config is not a mapping")
 	}
 	spec := findYAMLNode(root, "spec")
-	if spec == nil || findYAMLNode(spec, "podTemplate") == nil {
+	if spec == nil {
+		return &podTemplateExtraction{}, nil
+	}
+	// Two shapes need a manifest: an inline spec.podTemplate to extract, and a
+	// pod workload that never had one. The second used to run on a hardcoded
+	// default container, which was just another inline form.
+	hasPodTemplate := findYAMLNode(spec, "podTemplate") != nil
+	if !hasPodTemplate && !hasManifestlessPodWorkload(spec) {
 		return &podTemplateExtraction{}, nil
 	}
 
@@ -46,17 +65,23 @@ func planPodTemplateExtraction(cfgPath string, raw []byte) (*podTemplateExtracti
 
 	out := &podTemplateExtraction{Applied: true}
 	target := podTemplateTargetProfile(spec)
-	if target == nil {
+	switch {
+	case target == nil:
 		out.Warnings = append(out.Warnings,
 			"spec.podTemplate was not used by any workload and has been dropped")
-	} else {
+	default:
 		out.ManifestPath = extractedManifestPath(cfgPath)
 		out.ManifestTarget = workload.ResolveManifestPath(cfgPath, out.ManifestPath)
-		manifest, err := config.SynthesizePodManifest(cfg, "{{ .WorkloadName }}")
+		manifest, err := podManifestForMigration(cfg)
 		if err != nil {
 			return nil, err
 		}
 		out.ManifestBytes = manifest
+		out.Extracted = hasPodTemplate && len(cfg.Spec.PodTemplate.Spec.Containers) > 0
+		if !out.Extracted {
+			out.Warnings = append(out.Warnings,
+				"this pod workload declared no container of its own; wrote the starter manifest okdev used to apply by default")
+		}
 		setYAMLNode(target, "manifestPath", yamlScalar(out.ManifestPath))
 		if findYAMLNode(target, "type") == nil {
 			setYAMLNode(target, "type", yamlScalar(workload.TypePod))
@@ -71,6 +96,85 @@ func planPodTemplateExtraction(cfgPath string, raw []byte) (*podTemplateExtracti
 	}
 	out.ConfigBytes = rendered
 	return out, nil
+}
+
+// hasManifestlessPodWorkload reports whether the config runs a pod workload
+// with no manifest of its own — including the config that declares no workload
+// at all, which defaults to pod.
+func hasManifestlessPodWorkload(spec *yamlv3.Node) bool {
+	if workloads := findYAMLNode(spec, "workloads"); workloads != nil {
+		for _, entry := range workloads.Content {
+			t := findYAMLNode(entry, "type")
+			if t != nil && !isPodTypeValue(t.Value) {
+				continue
+			}
+			if findYAMLNode(entry, "manifestPath") == nil {
+				return true
+			}
+		}
+		return false
+	}
+	legacy := findYAMLNode(spec, "workload")
+	if legacy == nil {
+		return true // no workload declared at all: pod by default
+	}
+	if t := findYAMLNode(legacy, "type"); t != nil && !isPodTypeValue(t.Value) {
+		return false
+	}
+	return findYAMLNode(legacy, "manifestPath") == nil
+}
+
+// podManifestForMigration renders the manifest a pod workload should carry:
+// the extracted spec.podTemplate when there is one, otherwise the starter
+// manifest — which reproduces the container okdev used to inject when a pod
+// spec declared none.
+func podManifestForMigration(cfg *config.DevEnvironment) ([]byte, error) {
+	if cfg.Spec.PodTemplate != nil && len(cfg.Spec.PodTemplate.Spec.Containers) > 0 {
+		return synthesizePodManifestTemplate(cfg)
+	}
+	vars := config.NewTemplateVars()
+	if remote := primarySyncRemote(cfg); remote != "" {
+		vars.SyncRemote = remote
+	}
+	rendered, err := config.RenderEmbeddedTemplate("templates/manifests/pod.yaml.tmpl", vars)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(rendered), nil
+}
+
+// primarySyncRemote is the remote root of the first sync mapping, so the
+// scaffolded manifest mounts the workspace where the config already syncs it.
+func primarySyncRemote(cfg *config.DevEnvironment) string {
+	for _, p := range cfg.Spec.Sync.Paths {
+		if remote := strings.TrimSpace(p.Remote); remote != "" {
+			return remote
+		}
+	}
+	return ""
+}
+
+// workloadNameSentinel is a name no pod spec would contain, swapped for the
+// runtime placeholder only after the user's own braces have been escaped.
+const workloadNameSentinel = "okdev-workload-name-sentinel"
+
+// synthesizePodManifestTemplate renders spec.podTemplate as a Pod manifest that
+// is safe to feed the workload template renderer.
+//
+// A synthesized pod manifest used to be applied verbatim, so a pod spec could
+// legitimately contain "{{" — an arg for some other templating tool, say. File
+// manifests are rendered as Go templates, so those braces have to be escaped or
+// a config that worked before migration fails to render after it. Only the name
+// okdev substitutes is left as a live placeholder.
+func synthesizePodManifestTemplate(cfg *config.DevEnvironment) ([]byte, error) {
+	raw, err := config.SynthesizePodManifest(cfg, workloadNameSentinel)
+	if err != nil {
+		return nil, err
+	}
+	escaped := strings.ReplaceAll(string(raw), "{{", "{{`{{`}}")
+	// Quoted, because an unquoted `{{ ... }}` is a YAML flow mapping. The
+	// sentinel was marshaled as a plain scalar, so the quotes go on here.
+	return []byte(strings.ReplaceAll(escaped, workloadNameSentinel, "'{{ .WorkloadName }}'")), nil
 }
 
 // extractedManifestPath keeps the manifest inside .okdev/ for either config

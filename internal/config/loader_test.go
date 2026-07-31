@@ -137,7 +137,7 @@ func TestLoadWithExplicitPath(t *testing.T) {
 func TestLoadParsesKubeContext(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, DefaultFile)
-	writeFile(t, cfgPath, "apiVersion: okdev.io/v1alpha1\nkind: DevEnvironment\nmetadata:\n  name: x\nspec:\n  namespace: default\n  kubeContext: team-staging\n")
+	writeFile(t, cfgPath, "apiVersion: okdev.io/v1alpha1\nkind: DevEnvironment\nmetadata:\n  name: x\nspec:\n  namespace: default\n  kubeContext: team-staging\n  workload:\n    type: pod\n    manifestPath: pod.yaml\n")
 
 	cfg, _, err := Load(cfgPath)
 	if err != nil {
@@ -168,25 +168,22 @@ func TestLoadParsesQuotedResourceQuantities(t *testing.T) {
 		"  name: gpu-dev\n"+
 		"spec:\n"+
 		"  namespace: default\n"+
-		"  podTemplate:\n"+
-		"    spec:\n"+
-		"      containers:\n"+
-		"        - name: dev\n"+
-		"          image: nvidia/cuda:12.4.1-devel-ubuntu22.04\n"+
-		"          resources:\n"+
-		"            requests:\n"+
-		"              cpu: \"32\"\n"+
-		"              memory: \"512Gi\"\n"+
-		"              nvidia.com/gpu: \"4\"\n")
+		"  workload:\n"+
+		"    type: pod\n"+
+		"    manifestPath: pod.yaml\n"+
+		"  sidecar:\n"+
+		"    image: ghcr.io/acmore/okdev:edge\n"+
+		"    resources:\n"+
+		"      requests:\n"+
+		"        cpu: \"32\"\n"+
+		"        memory: \"512Gi\"\n"+
+		"        nvidia.com/gpu: \"4\"\n")
 
 	cfg, _, err := Load(cfgPath)
 	if err != nil {
 		t.Fatalf("expected quoted quantities to parse, got error: %v", err)
 	}
-	if len(cfg.Spec.PodTemplate.Spec.Containers) != 1 {
-		t.Fatalf("expected 1 container, got %d", len(cfg.Spec.PodTemplate.Spec.Containers))
-	}
-	req := cfg.Spec.PodTemplate.Spec.Containers[0].Resources.Requests
+	req := cfg.Spec.Sidecar.Resources.Requests
 	cpuQty := req["cpu"]
 	if got := cpuQty.String(); got != "32" {
 		t.Fatalf("unexpected cpu quantity %q", got)
@@ -211,6 +208,9 @@ func TestLoadParsesSidecarResources(t *testing.T) {
 		"  name: demo\n"+
 		"spec:\n"+
 		"  namespace: default\n"+
+		"  workload:\n"+
+		"    type: pod\n"+
+		"    manifestPath: pod.yaml\n"+
 		"  sidecar:\n"+
 		"    image: ghcr.io/acmore/okdev:v0.6.5\n"+
 		"    resources:\n"+
@@ -352,7 +352,8 @@ func validConfigYAML(name string) string {
 		"kind: DevEnvironment\n" +
 		"metadata:\n  name: " + name + "\n" +
 		"spec:\n" +
-		"  namespace: default\n"
+		"  namespace: default\n" +
+		"  workload:\n    type: pod\n    manifestPath: pod.yaml\n"
 }
 
 func TestResolvePathUsesEnvVarWhenNoFlag(t *testing.T) {

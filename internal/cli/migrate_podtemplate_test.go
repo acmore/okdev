@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"strings"
 	"testing"
+	"text/template"
 
 	"github.com/acmore/okdev/internal/config"
 	corev1 "k8s.io/api/core/v1"
@@ -192,5 +194,93 @@ func TestPlanPodTemplateExtractionCarriesLegacyWorkloadSettings(t *testing.T) {
 	}
 	if cfg.Spec.Workloads[0].Attach.Container != "trainer" {
 		t.Fatalf("attach.container must survive: %+v\n%s", cfg.Spec.Workloads[0], got.ConfigBytes)
+	}
+}
+
+// A podTemplate may legitimately contain Go-template braces — an arg for some
+// other templating tool, say. Synthesized manifests used to be applied
+// verbatim; manifest files are rendered as templates, so the migration has to
+// escape what it extracts or `okdev up` fails on a config that worked before.
+func TestPlanPodTemplateExtractionEscapesLiteralBraces(t *testing.T) {
+	raw := `apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: proj
+spec:
+  namespace: default
+  podTemplate:
+    spec:
+      containers:
+        - name: dev
+          image: alpine
+          args: ["--fmt={{ .Nope }}"]
+`
+	got, err := planPodTemplateExtraction("/repo/.okdev/okdev.yaml", []byte(raw))
+	if err != nil {
+		t.Fatalf("planPodTemplateExtraction: %v", err)
+	}
+	manifest := string(got.ManifestBytes)
+	// Rendering the way the runtime does must give back exactly what the user
+	// wrote, with only the name substituted.
+	tmpl, err := template.New("m").Option("missingkey=error").Parse(manifest)
+	if err != nil {
+		t.Fatalf("migrated manifest is not a valid template: %v\n%s", err, manifest)
+	}
+	var out bytes.Buffer
+	if err := tmpl.Execute(&out, struct{ WorkloadName string }{"okdev-sess"}); err != nil {
+		t.Fatalf("render migrated manifest: %v\n%s", err, manifest)
+	}
+	if !strings.Contains(out.String(), "--fmt={{ .Nope }}") {
+		t.Fatalf("the user's braces must survive rendering:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "name: 'okdev-sess'") {
+		t.Fatalf("the WorkloadName placeholder must still render:\n%s", out.String())
+	}
+}
+
+// A config that never had a podTemplate ran on a container okdev injected when
+// the pod spec declared none. That default was just another inline form, so the
+// migration has to write it out as a real manifest — otherwise those configs
+// have no way forward.
+func TestPlanPodTemplateExtractionScaffoldsAManifestlessPodWorkload(t *testing.T) {
+	raw := `apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: proj
+spec:
+  namespace: default
+  sync:
+    engine: syncthing
+    paths:
+      - ".:/data"
+`
+	got, err := planPodTemplateExtraction("/repo/.okdev/okdev.yaml", []byte(raw))
+	if err != nil {
+		t.Fatalf("planPodTemplateExtraction: %v", err)
+	}
+	if !got.Applied {
+		t.Fatal("a pod workload with no manifest must be given one")
+	}
+	if got.Extracted {
+		t.Fatal("there was no podTemplate to extract")
+	}
+	manifest := string(got.ManifestBytes)
+	if !strings.Contains(manifest, "image: ubuntu:22.04") {
+		t.Fatalf("must reproduce the container okdev used to inject:\n%s", manifest)
+	}
+	// The mount has to follow the config's own sync remote, or the session comes
+	// back up syncing into a directory nothing is mounted at.
+	if !strings.Contains(manifest, "mountPath: /data") {
+		t.Fatalf("the workspace mount must follow spec.sync:\n%s", manifest)
+	}
+	if len(got.Warnings) == 0 {
+		t.Fatal("writing a manifest the user did not author must be reported")
+	}
+	cfg, _, err := config.LoadFromBytes(got.ConfigBytes, "/repo/.okdev/okdev.yaml")
+	if err != nil {
+		t.Fatalf("migrated config must load: %v\n%s", err, got.ConfigBytes)
+	}
+	if cfg.Spec.Workloads[0].ManifestPath != "pod.yaml" {
+		t.Fatalf("workload must point at the manifest: %+v", cfg.Spec.Workloads[0])
 	}
 }

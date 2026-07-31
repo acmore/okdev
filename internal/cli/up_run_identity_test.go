@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -12,6 +14,20 @@ func rotateTestState(t *testing.T, sessionName string) *upState {
 	t.Helper()
 	cfg := &config.DevEnvironment{}
 	cfg.Spec.Workload.Type = workload.TypePod
+	cfg.Spec.Workload.ManifestPath = "pod.yaml"
+	dir := t.TempDir()
+	manifest := `apiVersion: v1
+kind: Pod
+metadata:
+  name: '{{ .WorkloadName }}'
+spec:
+  containers:
+    - name: dev
+      image: alpine
+`
+	if err := os.WriteFile(filepath.Join(dir, "pod.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	return &upState{
 		runtime: &fakeRefRuntime{kind: workload.TypePod, apiVersion: "v1", name: "okdev-" + sessionName + "-oldrun1"},
 		labels: map[string]string{
@@ -25,6 +41,7 @@ func rotateTestState(t *testing.T, sessionName string) *upState {
 			namespace:   "default",
 			sessionName: sessionName,
 			cfg:         cfg,
+			cfgPath:     filepath.Join(dir, ".okdev.yaml"),
 		},
 	}
 }

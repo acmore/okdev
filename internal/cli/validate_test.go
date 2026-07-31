@@ -18,6 +18,9 @@ metadata:
   name: demo
 spec:
   namespace: default
+  workload:
+    type: pod
+    manifestPath: pod.yaml
   sidecar:
     image: ghcr.io/acmore/okdev:edge
 `), 0o644); err != nil {

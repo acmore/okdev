@@ -114,11 +114,9 @@ metadata:
   name: proj
 spec:
   namespace: default
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: alpine
+  workload:
+    type: pod
+    manifestPath: pod.yaml
 `
 
 func TestPlanWorkloadAdditionScaffoldsEveryType(t *testing.T) {
@@ -152,14 +150,14 @@ func TestPlanWorkloadAdditionScaffoldsEveryType(t *testing.T) {
 	}
 }
 
-func TestPlanWorkloadAdditionCopiesPodTemplateForPod(t *testing.T) {
+func TestPlanWorkloadAdditionScaffoldsAStarterPodManifest(t *testing.T) {
 	add, err := planFixture(t, podOnlyConfig, "pod", "big", nil)
 	if err != nil {
 		t.Fatalf("planWorkloadAddition: %v", err)
 	}
 	manifest := string(add.ManifestBytes)
-	if !strings.Contains(manifest, "alpine") {
-		t.Fatalf("a pod workload must start as a copy of spec.podTemplate:\n%s", manifest)
+	if !strings.Contains(manifest, "image: ubuntu:22.04") {
+		t.Fatalf("an added pod must get a usable starter manifest:\n%s", manifest)
 	}
 	// The name must stay a runtime placeholder so each run gets a fresh object
 	// name, exactly like the job/pytorchjob scaffolds.
@@ -179,6 +177,7 @@ func TestPlanWorkloadAdditionRejectsDuplicateName(t *testing.T) {
 	raw := podOnlyConfig + `  workloads:
     - name: default
       type: pod
+      manifestPath: pod.yaml
     - name: taken
       type: job
       manifestPath: taken.yaml
@@ -196,11 +195,9 @@ metadata:
 spec:
   # keep me
   namespace: default
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: alpine
+  workload:
+    type: pod
+    manifestPath: pod.yaml
 `
 	add, err := planFixture(t, raw, "job", "batch", nil)
 	if err != nil {
@@ -305,11 +302,9 @@ metadata:
   name: proj
 spec:
   namespace: default
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: alpine
+  workload:
+    type: pod
+    manifestPath: pod.yaml
 `)
 	raw, err := appendWorkloadProfileToConfigBytes(original, config.WorkloadProfile{
 		Name: "train", Type: "job", ManifestPath: "job.yaml",
@@ -328,10 +323,9 @@ spec:
 	if err := cfg.SelectWorkload(config.DefaultWorkloadProfileName); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Spec.Workload.Type != "pod" || cfg.Spec.Workload.ManifestPath != "" {
+	if cfg.Spec.Workload.Type != "pod" || cfg.Spec.Workload.ManifestPath != "pod.yaml" {
 		t.Fatalf("the implicit pod workload was not preserved: %+v\n%s", cfg.Spec.Workload, raw)
 	}
-	// It must still be a valid config: the pod profile keeps spec.podTemplate.
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("rewritten config must validate: %v\n%s", err, raw)
 	}
@@ -558,11 +552,22 @@ metadata:
   name: legacy
 spec:
   namespace: default
-  podTemplate:
-    spec:
-      containers:
-        - name: dev
-          image: alpine
+  workload:
+    type: pod
+    manifestPath: pod.yaml
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The flat config's pod manifest sits beside it, as it would in a real
+	// pre-folder project.
+	if err := os.WriteFile(filepath.Join(dir, "pod.yaml"), []byte(`apiVersion: v1
+kind: Pod
+metadata:
+  name: '{{ .WorkloadName }}'
+spec:
+  containers:
+    - name: dev
+      image: alpine
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -620,60 +625,5 @@ func TestInitTreatsNoDiscoverableConfigAsFresh(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := runInit(t, dir, "--yes", "--name", "p", "--namespace", "default"); err != nil {
 		t.Fatalf("a fresh init in an empty dir must succeed: %v", err)
-	}
-}
-
-// A config with no spec.podTemplate — a pytorchjob-only project, say — has
-// nothing to copy. Synthesizing from it produced `containers: null`, which
-// `okdev validate` happily accepted and the apiserver rejected at `okdev up`.
-// Fall back to the starter template so the user gets a fillable skeleton, the
-// same as job and pytorchjob.
-func TestPlanWorkloadAdditionFallsBackWhenPodTemplateIsEmpty(t *testing.T) {
-	const pytorchOnly = `apiVersion: okdev.io/v1alpha1
-kind: DevEnvironment
-metadata:
-  name: proj
-spec:
-  namespace: default
-  sync:
-    paths:
-      - ".:/workspace"
-  workload:
-    type: pytorchjob
-    manifestPath: pytorchjob.yaml
-    inject:
-      - path: spec.pytorchReplicaSpecs.Worker.template
-`
-	add, err := planFixture(t, pytorchOnly, "pod", "dev", nil)
-	if err != nil {
-		t.Fatalf("planWorkloadAddition: %v", err)
-	}
-	manifest := string(add.ManifestBytes)
-	if strings.Contains(manifest, "containers: null") {
-		t.Fatalf("a containerless pod manifest is unusable:\n%s", manifest)
-	}
-	if !strings.Contains(manifest, "name: dev") {
-		t.Fatalf("expected a starter container:\n%s", manifest)
-	}
-	// The starter now carries the default dev image rather than a TODO comment:
-	// a `# TODO` in the image field parses as `image: null`, which is the very
-	// unusable-manifest failure this test exists to prevent.
-	if !strings.Contains(manifest, "image: ubuntu:22.04") {
-		t.Fatalf("the starter must carry a usable image:\n%s", manifest)
-	}
-	if !strings.Contains(manifest, "{{ .WorkloadName }}") {
-		t.Fatalf("the WorkloadName placeholder must survive:\n%s", manifest)
-	}
-}
-
-// When there *is* a podTemplate, copying it stays the behavior — that is the
-// motivating case (same container, different resources).
-func TestPlanWorkloadAdditionStillCopiesANonEmptyPodTemplate(t *testing.T) {
-	add, err := planFixture(t, podOnlyConfig, "pod", "big", nil)
-	if err != nil {
-		t.Fatalf("planWorkloadAddition: %v", err)
-	}
-	if !strings.Contains(string(add.ManifestBytes), "alpine") {
-		t.Fatalf("expected the podTemplate's image to be copied:\n%s", add.ManifestBytes)
 	}
 }

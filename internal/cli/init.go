@@ -503,11 +503,15 @@ func validateRenderedInitConfig(rendered, templateRef string, vars *config.Templ
 		return fmt.Errorf("parse generated config: %w", err)
 	}
 	cfg.SetDefaults()
+	// Before Validate, so a custom template that forgot spec.workload is told
+	// exactly that instead of the generic "manifestPath is required" it would
+	// otherwise trip on. Pod is no longer exempt: it has a manifest like every
+	// other type now.
+	if !isActualBuiltinBasic(templateRef, projectDir) && strings.TrimSpace(cfg.Spec.Workload.ManifestPath) == "" {
+		return fmt.Errorf("custom template must render spec.workload for workload type %q", vars.WorkloadType)
+	}
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("generated config is invalid: %w", err)
-	}
-	if vars.WorkloadType != "pod" && !isActualBuiltinBasic(templateRef, projectDir) && strings.TrimSpace(cfg.Spec.Workload.ManifestPath) == "" {
-		return fmt.Errorf("custom template must render spec.workload for workload type %q", vars.WorkloadType)
 	}
 	return nil
 }
@@ -739,7 +743,10 @@ func writeInitSTIgnore(configPath string, rendered []byte, templateRef string, s
 	if !ok {
 		return "", false, nil
 	}
-	pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.WorkspaceMountPath())
+	// Only pairs[0].Local is used below, so the default remote is immaterial —
+	// and the workload manifest this would otherwise be read from has not been
+	// scaffolded yet at this point in init.
+	pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, config.DefaultWorkspacePath)
 	if err != nil {
 		return "", false, fmt.Errorf("resolve generated sync paths for .stignore: %w", err)
 	}
