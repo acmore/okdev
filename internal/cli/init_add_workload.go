@@ -280,12 +280,24 @@ func changedProjectFlags(cmd *cobra.Command) []string {
 // there is none. It honours --config and OKDEV_CONFIG first and otherwise uses
 // the same parent-directory discovery every other command uses, so an older
 // flat .okdev.yaml is found rather than shadowed by a new folder config.
-func existingConfigPath(opts *Options) string {
+//
+// Discovery finding nothing is a fresh init, and so is a --config naming a file
+// that does not exist yet — that flag says *where to put* the new config.
+//
+// OKDEV_CONFIG is different: it claims the project's config already lives at a
+// path. When that path is not there, every other okdev command fails with
+// "config not found", and init must say the same. Swallowing it made init
+// report "this is a new config" and blame whichever flag was checked next,
+// while `okdev validate` in the same shell correctly named the missing file.
+func existingConfigPath(opts *Options) (string, error) {
 	p, err := config.ResolvePath(opts.ConfigPath)
-	if err != nil {
-		return ""
+	if err == nil {
+		return p, nil
 	}
-	return p
+	if strings.TrimSpace(opts.ConfigPath) == "" && strings.TrimSpace(os.Getenv(config.EnvConfigPath)) != "" {
+		return "", err
+	}
+	return "", nil
 }
 
 // runInitAddWorkload appends a workload to an existing config. It writes the

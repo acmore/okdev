@@ -594,3 +594,31 @@ func TestAddingTwoWorkloadsOfTheSameTypeDoesNotCollide(t *testing.T) {
 	}
 	assertConfigUsable(t, filepath.Join(dir, ".okdev", "okdev.yaml"))
 }
+
+// A config path the user *named* — via --config or OKDEV_CONFIG — that does not
+// resolve is their mistake to see. Swallowing it and reporting "this is a new
+// config" sends them to fix the wrong thing: `okdev validate` says
+// `config not found at ...` while `okdev init` blamed --workload-name.
+func TestInitSurfacesANamedConfigThatDoesNotResolve(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := runInit(t, dir, "--yes", "--name", "p", "--namespace", "default"); err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+
+	t.Setenv("OKDEV_CONFIG", filepath.Join(dir, "nope", ".okdev.yaml"))
+	_, err := runInit(t, dir, "--yes", "--workload", "job", "--workload-name", "batch")
+	if err == nil {
+		t.Fatal("expected the unresolvable OKDEV_CONFIG to be reported")
+	}
+	if !strings.Contains(err.Error(), "config not found") {
+		t.Fatalf("error should name the missing config, got %v", err)
+	}
+}
+
+// Discovery finding nothing is a genuine fresh init, not an error.
+func TestInitTreatsNoDiscoverableConfigAsFresh(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := runInit(t, dir, "--yes", "--name", "p", "--namespace", "default"); err != nil {
+		t.Fatalf("a fresh init in an empty dir must succeed: %v", err)
+	}
+}
