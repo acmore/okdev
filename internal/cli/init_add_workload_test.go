@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -337,3 +339,93 @@ spec:
 // labelsForSession is the map stamped onto pods okdev creates;
 // discoveryLabelsForSession is only used to find existing ones. The profile
 // label has to be on the former or switch detection never fires.
+
+func runInit(t *testing.T, dir string, args ...string) (string, error) {
+	t.Helper()
+	cmd, _ := newRootCmdWithOptions()
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs(append([]string{"init"}, args...))
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(wd) }()
+	return out.String(), cmd.Execute()
+}
+
+func TestInitAddsAWorkloadToAnExistingConfig(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := runInit(t, dir, "--yes", "--name", "proj", "--namespace", "default"); err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+	cfgPath := filepath.Join(dir, ".okdev", "okdev.yaml")
+	if _, err := os.Stat(cfgPath); err != nil {
+		t.Fatalf("init must write the folder config: %v", err)
+	}
+
+	if _, err := runInit(t, dir, "--yes", "--workload", "job", "--workload-name", "batch"); err != nil {
+		t.Fatalf("additive init: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".okdev", "batch.yaml")); err != nil {
+		t.Fatalf("the manifest must be scaffolded into .okdev/: %v", err)
+	}
+	cfg, _, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	names := cfg.WorkloadProfileNames()
+	if len(names) != 2 || names[1] != "batch" {
+		t.Fatalf("profiles = %v, want [default batch]", names)
+	}
+}
+
+func TestInitAdditiveFailureLeavesDiskUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := runInit(t, dir, "--yes", "--name", "proj", "--namespace", "default"); err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+	cfgPath := filepath.Join(dir, ".okdev", "okdev.yaml")
+	before, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// generic without --inject-path cannot produce a valid config.
+	if _, err := runInit(t, dir, "--yes", "--workload", "generic", "--workload-name", "gen",
+		"--manifest-path", "mine.yaml"); err == nil {
+		t.Fatal("expected the invalid addition to be refused")
+	}
+
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("a refused addition must not touch the config:\n--- before ---\n%s\n--- after ---\n%s", before, after)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, ".okdev"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() == "gen.yaml" || e.Name() == "mine.yaml" {
+			t.Fatalf("a refused addition must not write a manifest, found %s", e.Name())
+		}
+	}
+}
+
+func TestInitRejectsProjectFlagsOnAnExistingConfig(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := runInit(t, dir, "--yes", "--name", "proj", "--namespace", "default"); err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+	_, err := runInit(t, dir, "--yes", "--workload", "job", "--workload-name", "batch", "--namespace", "other")
+	if err == nil || !strings.Contains(err.Error(), "namespace") {
+		t.Fatalf("expected a rejection naming --namespace, got %v", err)
+	}
+}

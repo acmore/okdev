@@ -2,11 +2,13 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/workload"
+	"github.com/spf13/cobra"
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
@@ -253,4 +255,79 @@ func appendWorkloadProfileToConfigBytes(raw []byte, p config.WorkloadProfile) ([
 		return nil, fmt.Errorf("render config: %w", err)
 	}
 	return out, nil
+}
+
+// projectLevelInitFlags configure a project at creation time. They are
+// meaningless when appending a workload, and are rejected rather than ignored
+// so one flag never means two things.
+var projectLevelInitFlags = []string{
+	"name", "namespace", "context", "template", "set",
+	"dev-image", "sidecar-image", "sync-local", "sync-remote",
+	"ssh-user", "shell", "stignore-preset",
+}
+
+func changedProjectFlags(cmd *cobra.Command) []string {
+	var changed []string
+	for _, name := range projectLevelInitFlags {
+		if f := cmd.Flags().Lookup(name); f != nil && f.Changed {
+			changed = append(changed, name)
+		}
+	}
+	return changed
+}
+
+// existingConfigPath returns the config this project already has, or "" when
+// there is none. It honours --config and OKDEV_CONFIG first and otherwise uses
+// the same parent-directory discovery every other command uses, so an older
+// flat .okdev.yaml is found rather than shadowed by a new folder config.
+func existingConfigPath(opts *Options) string {
+	p, err := config.ResolvePath(opts.ConfigPath)
+	if err != nil {
+		return ""
+	}
+	return p
+}
+
+// runInitAddWorkload appends a workload to an existing config. It writes the
+// manifest and the config together or not at all.
+func runInitAddWorkload(cmd *cobra.Command, cfgPath string, vars *config.TemplateVars, workloadName string) error {
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return fmt.Errorf("read config %q: %w", cfgPath, err)
+	}
+	cfg, _, err := config.Load(cfgPath)
+	if err != nil {
+		return err
+	}
+
+	add, err := planWorkloadAddition(cfgPath, raw, cfg, vars, workloadName)
+	if err != nil {
+		return err
+	}
+
+	if add.ManifestTarget != "" {
+		if _, err := os.Stat(add.ManifestTarget); err == nil {
+			// --force means "rewrite the config"; overloading it to also
+			// clobber a manifest is how a flag becomes dangerous.
+			return fmt.Errorf("a manifest already exists at %q; remove it or choose another --workload-name", add.ManifestTarget)
+		}
+		if err := os.MkdirAll(filepath.Dir(add.ManifestTarget), 0o755); err != nil {
+			return fmt.Errorf("create manifest directory: %w", err)
+		}
+		if err := os.WriteFile(add.ManifestTarget, add.ManifestBytes, 0o644); err != nil {
+			return fmt.Errorf("write manifest %q: %w", add.ManifestTarget, err)
+		}
+	}
+	if err := os.WriteFile(cfgPath, add.ConfigBytes, 0o644); err != nil {
+		return fmt.Errorf("write config %q: %w", cfgPath, err)
+	}
+
+	name := strings.TrimSpace(workloadName)
+	out := cmd.OutOrStdout()
+	if add.ManifestTarget != "" {
+		fmt.Fprintf(out, "Wrote %s\n", add.ManifestTarget)
+	}
+	fmt.Fprintf(out, "Declared workload %q in %s\n", name, cfgPath)
+	fmt.Fprintf(out, "next: okdev workload use %s && okdev up\n", name)
+	return nil
 }

@@ -75,6 +75,25 @@ func newInitCmd(opts *Options) *cobra.Command {
 				Shell:         shellOverride,
 			}
 			applyOverrides(vars, overrides)
+
+			// Adding a workload to a project that already has a config is a
+			// different operation from creating one: it never prompts, never
+			// renders the config template, and never touches project-level
+			// settings. Decide before any of that machinery runs.
+			existing := existingConfigPath(opts)
+			inv := initInvocation{
+				ConfigExists:    existing != "",
+				WorkloadName:    workloadName,
+				Force:           force,
+				ProjectFlagsSet: changedProjectFlags(cmd),
+			}
+			if err := validateInitInvocation(inv); err != nil {
+				return err
+			}
+			if initAdditiveMode(inv) {
+				return runInitAddWorkload(cmd, existing, vars, workloadName)
+			}
+
 			applyWorkloadDefaults(vars)
 
 			if err := promptInteractive(vars, overrides, cmd.InOrStdin(), cmd.OutOrStdout(), yes, isTerminalReader(cmd.InOrStdin())); err != nil {
