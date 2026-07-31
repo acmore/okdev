@@ -79,7 +79,10 @@ func planPodTemplateExtraction(cfgPath string, raw []byte) (*podTemplateExtracti
 		if err != nil {
 			return nil, err
 		}
-		out.Extracted = hasPodTemplate && len(cfg.Spec.PodTemplate.Spec.Containers) > 0
+		// hasPodTemplate only says the YAML key is present. `podTemplate:` with
+		// nothing under it decodes to a nil pointer, so ask the decoded config
+		// rather than the key — dereferencing on the key alone panicked.
+		out.Extracted = podTemplateHasContainers(cfg)
 		if !out.Extracted {
 			out.Warnings = append(out.Warnings,
 				"this pod workload declared no container of its own; wrote the starter manifest okdev used to apply by default")
@@ -147,7 +150,7 @@ func hasManifestlessPodWorkload(spec *yamlv3.Node) bool {
 // manifest — which reproduces the container okdev used to inject when a pod
 // spec declared none.
 func podManifestForMigration(cfg *config.DevEnvironment) ([]byte, error) {
-	if cfg.Spec.PodTemplate != nil && len(cfg.Spec.PodTemplate.Spec.Containers) > 0 {
+	if podTemplateHasContainers(cfg) {
 		return synthesizePodManifestTemplate(cfg)
 	}
 	vars := config.NewTemplateVars()
@@ -277,4 +280,11 @@ func removeYAMLKey(mapping *yamlv3.Node, key string) {
 			return
 		}
 	}
+}
+
+// podTemplateHasContainers reports whether there is an inline pod spec worth
+// extracting. A `podTemplate:` key with no body, or one with no containers,
+// has nothing to carry over and gets the starter manifest instead.
+func podTemplateHasContainers(cfg *config.DevEnvironment) bool {
+	return cfg != nil && cfg.Spec.PodTemplate != nil && len(cfg.Spec.PodTemplate.Spec.Containers) > 0
 }
