@@ -43,6 +43,22 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("read config %q: %w", cfgPath, err)
 			}
+			// The backup must capture what the user had before anything ran,
+			// including the podTemplate extraction below.
+			original := raw
+
+			extraction, err := planPodTemplateExtraction(cfgPath, raw)
+			if err != nil {
+				return err
+			}
+			if extraction.Applied {
+				if extraction.ManifestTarget != "" {
+					if _, err := os.Stat(extraction.ManifestTarget); err == nil {
+						return fmt.Errorf("a manifest already exists at %q; move it aside before migrating", extraction.ManifestTarget)
+					}
+				}
+				raw = extraction.ConfigBytes
+			}
 
 			var doc yaml.Node
 			if err := yaml.Unmarshal(raw, &doc); err != nil {
@@ -54,7 +70,7 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 				return fmt.Errorf("migration failed: %w", err)
 			}
 
-			if len(result.Applied) == 0 {
+			if len(result.Applied) == 0 && !extraction.Applied {
 				if err := scaffoldMigrateZshFiles(cfgPath, cmd.OutOrStdout()); err != nil {
 					fmt.Fprintf(cmd.OutOrStdout(), "warning: failed to scaffold zsh files: %v\n", err)
 				}
@@ -69,6 +85,15 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 
 			w := cmd.OutOrStdout()
 
+			if extraction.Applied {
+				fmt.Fprintln(w, "✓ podTemplate-to-manifest")
+				if extraction.ManifestTarget != "" {
+					fmt.Fprintf(w, "  Extracted spec.podTemplate → %s\n", extraction.ManifestTarget)
+				}
+				for _, warning := range extraction.Warnings {
+					fmt.Fprintf(w, "  ⚠ %s\n", warning)
+				}
+			}
 			for _, name := range result.Applied {
 				fmt.Fprintf(w, "✓ %s\n", name)
 			}
@@ -84,8 +109,19 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 
 			if !noBackup {
 				bakPath := cfgPath + ".bak"
-				if err := os.WriteFile(bakPath, raw, 0o644); err != nil {
+				if err := os.WriteFile(bakPath, original, 0o644); err != nil {
 					return fmt.Errorf("write backup %q: %w", bakPath, err)
+				}
+			}
+
+			// The manifest goes first: a failure there still leaves the config
+			// as the user had it.
+			if extraction.Applied && extraction.ManifestTarget != "" {
+				if err := os.MkdirAll(filepath.Dir(extraction.ManifestTarget), 0o755); err != nil {
+					return fmt.Errorf("create manifest directory: %w", err)
+				}
+				if err := os.WriteFile(extraction.ManifestTarget, extraction.ManifestBytes, 0o644); err != nil {
+					return fmt.Errorf("write manifest %q: %w", extraction.ManifestTarget, err)
 				}
 			}
 
@@ -102,6 +138,11 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 				fmt.Fprintf(w, " (backup: %s.bak)", cfgPath)
 			}
 			fmt.Fprintln(w)
+			if extraction.Applied && extraction.ManifestTarget != "" {
+				fmt.Fprintln(w, "\nNote: the next `okdev up` will report workload drift and offer to")
+				fmt.Fprintln(w, "recreate. The resulting Pod is unchanged — only how the config")
+				fmt.Fprintln(w, "describes it moved.")
+			}
 			return nil
 		},
 	}

@@ -29,6 +29,17 @@ func Load(configPath string) (*DevEnvironment, string, error) {
 	return LoadFromBytes(raw, path)
 }
 
+// LoadPodTemplateOnly decodes a config for migration, skipping defaults and
+// validation. A config still carrying spec.podTemplate is exactly the shape
+// Validate rejects, so the migration cannot go through the normal loader.
+func LoadPodTemplateOnly(raw []byte) (*DevEnvironment, error) {
+	var cfg DevEnvironment
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		return nil, fmt.Errorf("parse config for migration: %w", err)
+	}
+	return &cfg, nil
+}
+
 // LoadFromBytes decodes, defaults and validates a config already in memory.
 // It is what lets a change set be proven valid before anything is written.
 // configPath appears in messages and anchors relative paths; it is not read.
