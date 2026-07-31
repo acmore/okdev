@@ -50,7 +50,7 @@ init_pod_config() {
   init_output=$(
     cd "$dir"
     "$OKDEV_BIN" init \
-      --workload pod \
+      --template pod \
       --yes \
       --name "$name" \
       --namespace "$NAMESPACE" \

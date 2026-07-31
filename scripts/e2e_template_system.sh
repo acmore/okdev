@@ -126,7 +126,7 @@ spec:
   sidecar:
     image: ghcr.io/acmore/okdev:edge
   workload:
-    type: {{ .WorkloadType }}
+    type: pytorchjob
     manifestPath: {{ .ManifestPath }}
     inject:
       - path: "spec.pytorchReplicaSpecs.Master.template"
@@ -245,7 +245,6 @@ cp -R "$PROJECT_DIR/.okdev/templates" "$PYTORCH_DIR/.okdev/templates"
     --yes \
     --template pytorch \
     --name torchdemo \
-    --workload pytorchjob \
     --manifest-path pytorchjob.yaml \
     --sync-remote /train \
     --set trainImage=example.com/train:latest \

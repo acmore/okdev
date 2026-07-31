@@ -454,9 +454,6 @@ func templateVarsForMigrate(cfg *config.DevEnvironment, cfgPath string) *config.
 	if kubeContext := strings.TrimSpace(cfg.Spec.KubeContext); kubeContext != "" {
 		vars.KubeContext = kubeContext
 	}
-	if workloadType := strings.TrimSpace(cfg.Spec.Workload.Type); workloadType != "" {
-		vars.WorkloadType = workloadType
-	}
 	if manifestPath := strings.TrimSpace(cfg.Spec.Workload.ManifestPath); manifestPath != "" {
 		vars.ManifestPath = manifestPath
 	}

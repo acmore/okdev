@@ -759,7 +759,7 @@ spec:
   sidecar:
     image: ghcr.io/acmore/okdev:edge
   workload:
-    type: {{ .WorkloadType }}
+    type: pytorchjob
     manifestPath: {{ .ManifestPath }}
     inject:
       - path: "spec.pytorchReplicaSpecs.Master.template"
@@ -869,7 +869,7 @@ spec:
   sidecar:
     image: ghcr.io/acmore/okdev:edge
   workload:
-    type: {{ .WorkloadType }}
+    type: pytorchjob
     manifestPath: {{ .ManifestPath }}
     inject:
       - path: "spec.pytorchReplicaSpecs.Master.template"
@@ -1156,12 +1156,8 @@ func TestInitWithZshShellScaffoldsZshFiles(t *testing.T) {
 func TestInitAlwaysTargetsTheFolderConfig(t *testing.T) {
 	// A pod project used to get a flat .okdev.yaml, which put ManifestDir at
 	// the project root — so any manifest added later landed in the repo root.
-	for _, workloadType := range []string{"pod", "job", "pytorchjob", "generic", ""} {
-		vars := config.NewTemplateVars()
-		vars.WorkloadType = workloadType
-		if got := defaultInitTargetPath(vars, nil, ""); got != config.FolderFile {
-			t.Errorf("workload %q: target = %q, want %q", workloadType, got, config.FolderFile)
-		}
+	if got := defaultInitTargetPath(config.NewTemplateVars(), nil, ""); got != config.FolderFile {
+		t.Errorf("target = %q, want %q", got, config.FolderFile)
 	}
 }
 

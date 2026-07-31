@@ -51,7 +51,7 @@ trap cleanup EXIT
 echo "Scaffolding pod config via okdev init"
 cd "$WORKDIR"
 "$OKDEV_BIN" init \
-  --workload pod \
+  --template pod \
   --yes \
   --name e2e-smoke \
   --namespace "$NAMESPACE" \

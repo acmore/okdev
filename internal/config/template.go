@@ -96,7 +96,6 @@ type TemplateVars struct {
 	SSHUser          string
 	Shell            string
 	Ports            []PortVar
-	WorkloadType     string
 	ManifestPath     string
 	InjectPaths      []string
 	AttachContainer  string
@@ -127,7 +126,6 @@ func NewTemplateVars() *TemplateVars {
 		SyncLocal:        ".",
 		SyncRemote:       "/workspace",
 		SSHUser:          "root",
-		WorkloadType:     "pod",
 	}
 }
 
