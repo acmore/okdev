@@ -94,12 +94,14 @@ func TestTemplateShowBuiltin(t *testing.T) {
 	cmd := newTemplateCmd(&Options{})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
+	// "basic" is kept as an alias for the pod template so older configs and the
+	// default ref keep resolving; it shows that template's own name.
 	cmd.SetArgs([]string{"show", "basic"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "Name:") || !strings.Contains(out.String(), "basic") {
-		t.Fatalf("expected basic show output, got:\n%s", out.String())
+	if !strings.Contains(out.String(), "Name:") || !strings.Contains(out.String(), "pod") {
+		t.Fatalf("expected the pod template behind the basic alias, got:\n%s", out.String())
 	}
 }
 

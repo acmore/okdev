@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 	"github.com/acmore/okdev/internal/workload"
 	"github.com/spf13/cobra"
 	yamlv3 "gopkg.in/yaml.v3"
+	"sigs.k8s.io/yaml"
 )
 
 // initInvocation is what the user asked for, reduced to the facts that decide
@@ -83,7 +86,7 @@ type workloadAddition struct {
 
 // planWorkloadAddition computes everything the additive path will write and
 // proves the result is valid, without touching the filesystem.
-func planWorkloadAddition(cfgPath string, raw []byte, cfg *config.DevEnvironment, vars *config.TemplateVars, workloadName string) (*workloadAddition, error) {
+func planWorkloadAddition(cfgPath string, raw []byte, cfg *config.DevEnvironment, vars *config.TemplateVars, workloadName, templateRef, projectDir string) (*workloadAddition, error) {
 	name := strings.TrimSpace(workloadName)
 	if name == "" {
 		return nil, fmt.Errorf("--workload-name is required")
@@ -95,37 +98,60 @@ func planWorkloadAddition(cfgPath string, raw []byte, cfg *config.DevEnvironment
 		}
 	}
 
-	// The location is this path's business; the inject paths and attach
-	// container remain init's. Setting the path first keeps applyWorkloadDefaults
-	// from substituting its own `.okdev/<type>.yaml`, which two workloads of the
-	// same type would collide on.
-	manifestPath := strings.TrimSpace(vars.ManifestPath)
-	if manifestPath == "" && strings.TrimSpace(vars.WorkloadType) != workload.TypeGeneric {
-		manifestPath = additiveManifestPath(cfgPath, name)
-	}
-	vars.ManifestPath = manifestPath
 	applyWorkloadDefaults(vars)
-	if err := validateInitWorkloadVars(vars); err != nil {
-		return nil, err
-	}
 
-	manifestBytes, err := planWorkloadManifest(cfg, vars)
+	// The template says what shape to add. Only its workload block is taken:
+	// namespace, sync, ssh and the rest belong to the config being extended,
+	// and additive mode changes nothing project-wide.
+	rawTemplate, err := config.ResolveTemplateFromDir(context.Background(), templateRef, projectDir)
 	if err != nil {
 		return nil, err
+	}
+	meta, body, err := config.ParseFrontmatter(rawTemplate)
+	if err != nil {
+		return nil, err
+	}
+	rendered, err := config.RenderTemplateContent("okdev", body, vars, nil)
+	if err != nil {
+		return nil, err
+	}
+	var shape config.DevEnvironment
+	if err := yaml.Unmarshal([]byte(rendered), &shape); err != nil {
+		return nil, fmt.Errorf("parse template %q: %w", templateName(templateRef), err)
+	}
+	declared := shape.Spec.Workload
+	if len(shape.Spec.Workloads) > 0 {
+		p := shape.Spec.Workloads[0]
+		declared = config.WorkloadSpec{Type: p.Type, ManifestPath: p.ManifestPath, Inject: p.Inject, Attach: p.Attach}
+	}
+	if strings.TrimSpace(declared.ManifestPath) == "" {
+		return nil, fmt.Errorf("template %q rendered no spec.workload.manifestPath; "+
+			"pass --manifest-path or use a template that ships one", templateName(templateRef))
 	}
 
 	profile := config.WorkloadProfile{
 		Name:         name,
-		Type:         vars.WorkloadType,
-		ManifestPath: vars.ManifestPath,
+		Type:         declared.Type,
+		ManifestPath: declared.ManifestPath,
+		Inject:       declared.Inject,
+		Attach:       declared.Attach,
 	}
-	for _, p := range vars.InjectPaths {
-		if p = strings.TrimSpace(p); p != "" {
-			profile.Inject = append(profile.Inject, config.WorkloadInjectSpec{Path: p})
+
+	// The template's own manifest is the files: entry matching what it declared
+	// as manifestPath. It is written as <workload-name>.yaml so two workloads of
+	// the same shape never collide on one file.
+	var manifestBytes []byte
+	if asset := templateWorkloadAsset(meta, declared.ManifestPath); asset != "" {
+		raw, err := config.ResolveTemplateAssetFromDir(context.Background(), templateRef, asset, projectDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve template file %q: %w", asset, err)
 		}
-	}
-	if c := strings.TrimSpace(vars.AttachContainer); c != "" {
-		profile.Attach = config.WorkloadAttachSpec{Container: c}
+		out, err := config.RenderTemplateContent(filepath.Base(asset), raw, vars, nil)
+		if err != nil {
+			return nil, fmt.Errorf("render template file %q: %w", asset, err)
+		}
+		manifestBytes = []byte(out)
+		profile.ManifestPath = additiveManifestPath(cfgPath, name)
 	}
 
 	configBytes, err := appendWorkloadProfileToConfigBytes(raw, profile)
@@ -142,35 +168,24 @@ func planWorkloadAddition(cfgPath string, raw []byte, cfg *config.DevEnvironment
 
 	add := &workloadAddition{ConfigBytes: configBytes, ManifestBytes: manifestBytes}
 	if len(manifestBytes) > 0 {
-		add.ManifestTarget = workload.ResolveManifestPath(cfgPath, vars.ManifestPath)
+		add.ManifestTarget = workload.ResolveManifestPath(cfgPath, profile.ManifestPath)
 	}
 	return add, nil
 }
 
-// planWorkloadManifest renders the manifest for a newly declared workload, or
-// returns nil when the user is supplying their own file.
-func planWorkloadManifest(cfg *config.DevEnvironment, vars *config.TemplateVars) ([]byte, error) {
-	var asset string
-	switch strings.TrimSpace(vars.WorkloadType) {
-	case workload.TypePod:
-		asset = "templates/manifests/pod.yaml.tmpl"
-	case workload.TypeJob:
-		asset = "templates/manifests/job.yaml.tmpl"
-	case workload.TypePyTorchJob:
-		asset = "templates/manifests/pytorchjob.yaml.tmpl"
-	case workload.TypeGeneric:
-		if strings.TrimSpace(vars.GenericPreset) != "deployment" {
-			return nil, nil // the user supplies the manifest
+// templateWorkloadAsset finds the declared file that is the workload's manifest:
+// the one whose path matches what the template rendered as manifestPath.
+func templateWorkloadAsset(meta *config.TemplateMeta, manifestPath string) string {
+	if meta == nil {
+		return ""
+	}
+	want := filepath.Base(strings.TrimSpace(manifestPath))
+	for _, f := range meta.Files {
+		if filepath.Base(strings.TrimSpace(f.Path)) == want {
+			return strings.TrimSpace(f.Template)
 		}
-		asset = "templates/manifests/deployment.yaml.tmpl"
-	default:
-		return nil, fmt.Errorf("unsupported workload type %q", vars.WorkloadType)
 	}
-	rendered, err := config.RenderEmbeddedTemplate(asset, vars)
-	if err != nil {
-		return nil, err
-	}
-	return []byte(rendered), nil
+	return ""
 }
 
 // appendWorkloadProfileToConfigBytes adds a profile to spec.workloads in place.
@@ -237,20 +252,33 @@ func appendWorkloadProfileToConfigBytes(raw []byte, p config.WorkloadProfile) ([
 		}
 		setYAMLNode(entry, "inject", injects)
 	}
+	if c := strings.TrimSpace(p.Attach.Container); c != "" {
+		attach := &yamlv3.Node{Kind: yamlv3.MappingNode}
+		setYAMLNode(attach, "container", yamlScalar(c))
+		setYAMLNode(entry, "attach", attach)
+	}
 	workloads.Content = append(workloads.Content, entry)
 
-	out, err := yamlv3.Marshal(&doc)
-	if err != nil {
+	// yaml.v3 defaults to 4-space indent and this rewrites the whole document,
+	// so without matching the 2 spaces okdev init writes, adding a workload
+	// reindents every untouched line of the user's config.
+	var buf bytes.Buffer
+	enc := yamlv3.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
 		return nil, fmt.Errorf("render config: %w", err)
 	}
-	return out, nil
+	if err := enc.Close(); err != nil {
+		return nil, fmt.Errorf("render config: %w", err)
+	}
+	return buf.Bytes(), nil
 }
 
 // projectLevelInitFlags configure a project at creation time. They are
 // meaningless when appending a workload, and are rejected rather than ignored
 // so one flag never means two things.
 var projectLevelInitFlags = []string{
-	"name", "namespace", "context", "template", "set",
+	"name", "namespace", "context", "set",
 	"dev-image", "sidecar-image", "sync-local", "sync-remote",
 	"ssh-user", "shell", "stignore-preset",
 }
@@ -291,7 +319,7 @@ func existingConfigPath(opts *Options) (string, error) {
 
 // runInitAddWorkload appends a workload to an existing config. It writes the
 // manifest and the config together or not at all.
-func runInitAddWorkload(cmd *cobra.Command, cfgPath string, vars *config.TemplateVars, workloadName string) error {
+func runInitAddWorkload(cmd *cobra.Command, cfgPath string, vars *config.TemplateVars, workloadName, templateRef string) error {
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
 		return fmt.Errorf("read config %q: %w", cfgPath, err)
@@ -301,7 +329,7 @@ func runInitAddWorkload(cmd *cobra.Command, cfgPath string, vars *config.Templat
 		return err
 	}
 
-	add, err := planWorkloadAddition(cfgPath, raw, cfg, vars, workloadName)
+	add, err := planWorkloadAddition(cfgPath, raw, cfg, vars, workloadName, templateRef, config.RootDir(cfgPath))
 	if err != nil {
 		return err
 	}

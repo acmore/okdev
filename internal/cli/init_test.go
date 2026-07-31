@@ -272,7 +272,7 @@ func TestInitUsesFolderConfigWhenScaffoldingWorkload(t *testing.T) {
 	}
 
 	cmd := newInitCmd(&Options{})
-	cmd.SetArgs([]string{"--yes", "--workload", "job"})
+	cmd.SetArgs([]string{"--yes", "--template", "job"})
 	cmd.SetIn(strings.NewReader(""))
 
 	if err := cmd.Execute(); err != nil {
@@ -388,7 +388,7 @@ func TestInitScaffoldsJobManifest(t *testing.T) {
 	tmp := t.TempDir()
 	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev.yaml")}
 	cmd := newInitCmd(opts)
-	cmd.SetArgs([]string{"--yes", "--workload", "job", "--sync-remote", "/train"})
+	cmd.SetArgs([]string{"--yes", "--template", "job", "--sync-remote", "/train"})
 	cmd.SetIn(strings.NewReader(""))
 
 	var out bytes.Buffer
@@ -420,7 +420,7 @@ func TestInitScaffoldsJobManifest(t *testing.T) {
 	if !strings.Contains(string(cfgRaw), "type: job") {
 		t.Fatalf("expected job workload block, got %q", string(cfgRaw))
 	}
-	if !strings.Contains(string(cfgRaw), "manifestPath: .okdev/job.yaml") {
+	if !strings.Contains(string(cfgRaw), "manifestPath: job.yaml") {
 		t.Fatalf("expected job manifest path, got %q", string(cfgRaw))
 	}
 }
@@ -429,7 +429,7 @@ func TestInitScaffoldsGenericDeploymentPreset(t *testing.T) {
 	tmp := t.TempDir()
 	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev.yaml")}
 	cmd := newInitCmd(opts)
-	cmd.SetArgs([]string{"--yes", "--workload", "generic", "--generic-preset", "deployment", "--sync-remote", "/train"})
+	cmd.SetArgs([]string{"--yes", "--template", "deployment", "--sync-remote", "/train"})
 	cmd.SetIn(strings.NewReader(""))
 
 	if err := cmd.Execute(); err != nil {
@@ -457,7 +457,7 @@ func TestInitScaffoldsGenericDeploymentPreset(t *testing.T) {
 	if !strings.Contains(string(cfgRaw), "type: generic") {
 		t.Fatalf("expected generic workload block, got %q", string(cfgRaw))
 	}
-	if !strings.Contains(string(cfgRaw), "manifestPath: .okdev/deployment.yaml") {
+	if !strings.Contains(string(cfgRaw), "manifestPath: deployment.yaml") {
 		t.Fatalf("expected deployment manifest path, got %q", string(cfgRaw))
 	}
 }
@@ -466,14 +466,14 @@ func TestInitRejectsGenericWithoutManifestPath(t *testing.T) {
 	tmp := t.TempDir()
 	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev.yaml")}
 	cmd := newInitCmd(opts)
-	cmd.SetArgs([]string{"--yes", "--workload", "generic", "--inject-path", "spec.template"})
+	cmd.SetArgs([]string{"--yes", "--template", "generic", "--inject-path", "spec.template"})
 	cmd.SetIn(strings.NewReader(""))
 
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatal("expected generic manifest path error")
 	}
-	if !strings.Contains(err.Error(), "--manifest-path is required") {
+	if !strings.Contains(err.Error(), "--manifest-path") {
 		t.Fatalf("unexpected error %v", err)
 	}
 }
@@ -482,7 +482,7 @@ func TestInitScaffoldsPyTorchJobManifest(t *testing.T) {
 	tmp := t.TempDir()
 	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev.yaml")}
 	cmd := newInitCmd(opts)
-	cmd.SetArgs([]string{"--yes", "--workload", "pytorchjob", "--sync-remote", "/train"})
+	cmd.SetArgs([]string{"--yes", "--template", "pytorchjob", "--sync-remote", "/train"})
 	cmd.SetIn(strings.NewReader(""))
 
 	var out bytes.Buffer
@@ -523,7 +523,7 @@ func TestInitScaffoldsPyTorchJobManifestWithFolderConfigAndDotOkdevPath(t *testi
 	tmp := t.TempDir()
 	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev", "okdev.yaml")}
 	cmd := newInitCmd(opts)
-	cmd.SetArgs([]string{"--yes", "--workload", "pytorchjob", "--manifest-path", ".okdev/pytorchjob.yaml"})
+	cmd.SetArgs([]string{"--yes", "--template", "pytorchjob", "--manifest-path", ".okdev/pytorchjob.yaml"})
 	cmd.SetIn(strings.NewReader(""))
 
 	if err := cmd.Execute(); err != nil {
@@ -550,7 +550,7 @@ func TestInitManifestPreservedWithoutForce(t *testing.T) {
 
 	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev.yaml")}
 	cmd := newInitCmd(opts)
-	cmd.SetArgs([]string{"--yes", "--workload", "job"})
+	cmd.SetArgs([]string{"--yes", "--template", "job"})
 	cmd.SetIn(strings.NewReader(""))
 	var out bytes.Buffer
 	cmd.SetOut(&out)
@@ -581,7 +581,7 @@ func TestInitManifestOverwrittenWithForce(t *testing.T) {
 
 	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev.yaml")}
 	cmd := newInitCmd(opts)
-	cmd.SetArgs([]string{"--yes", "--workload", "job", "--force"})
+	cmd.SetArgs([]string{"--yes", "--template", "job", "--force"})
 	cmd.SetIn(strings.NewReader(""))
 	var out bytes.Buffer
 	cmd.SetOut(&out)
@@ -600,22 +600,6 @@ func TestInitManifestOverwrittenWithForce(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "kind: Job") {
 		t.Fatalf("expected scaffolded job manifest, got %q", string(data))
-	}
-}
-
-func TestInitRejectsUnknownGenericPreset(t *testing.T) {
-	tmp := t.TempDir()
-	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev.yaml")}
-	cmd := newInitCmd(opts)
-	cmd.SetArgs([]string{"--yes", "--workload", "generic", "--generic-preset", "foo", "--manifest-path", "m.yaml", "--inject-path", "spec.template"})
-	cmd.SetIn(strings.NewReader(""))
-
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected unknown generic preset error")
-	}
-	if !strings.Contains(err.Error(), "unknown --generic-preset") {
-		t.Fatalf("unexpected error %v", err)
 	}
 }
 
@@ -642,14 +626,14 @@ spec:
 
 	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev.yaml")}
 	cmd := newInitCmd(opts)
-	cmd.SetArgs([]string{"--yes", "--template", tmplPath, "--workload", "job"})
+	cmd.SetArgs([]string{"--yes", "--template", tmplPath})
 	cmd.SetIn(strings.NewReader(""))
 
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatal("expected custom workload validation error")
 	}
-	if !strings.Contains(err.Error(), "custom template must render spec.workload") {
+	if !strings.Contains(err.Error(), "rendered no spec.workload.manifestPath") {
 		t.Fatalf("unexpected error %v", err)
 	}
 }
@@ -825,7 +809,6 @@ spec:
 	cmd.SetArgs([]string{
 		"--yes",
 		"--template", "pytorch",
-		"--workload", "pytorchjob",
 		"--manifest-path", "pytorchjob.yaml",
 		"--sync-remote", "/train",
 		"--set", "image=pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime",
@@ -918,7 +901,7 @@ spec:
 
 	opts := &Options{ConfigPath: filepath.Join(tmp, ".okdev", "okdev.yaml")}
 	cmd := newInitCmd(opts)
-	cmd.SetArgs([]string{"--yes", "--template", "pytorch", "--workload", "pytorchjob", "--manifest-path", ".okdev/pytorchjob.yaml"})
+	cmd.SetArgs([]string{"--yes", "--template", "pytorch", "--template", "pytorchjob", "--manifest-path", ".okdev/pytorchjob.yaml"})
 	cmd.SetIn(strings.NewReader(""))
 
 	if err := cmd.Execute(); err != nil {
@@ -1016,29 +999,39 @@ spec:
 	}
 }
 
-func TestInitProjectTemplateShadowingBasicIsNotTreatedAsBuiltin(t *testing.T) {
+// A project template shadowing a built-in name is used verbatim. It used to
+// need special handling — okdev looked behavior up by template name, so a
+// shadow could inherit built-in-only scaffolding — and this test asserted the
+// guard fired. There is no guard now because there is no name lookup: the
+// template declares its own files and .stignore, so shadowing is just shadowing.
+func TestInitProjectTemplateShadowingABuiltinIsUsedVerbatim(t *testing.T) {
 	tmp := t.TempDir()
 	tmplDir := filepath.Join(tmp, ".okdev", "templates")
 	if err := os.MkdirAll(tmplDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(tmplDir, "basic.yaml.tmpl"), []byte(`apiVersion: okdev.io/v1alpha1
+	if err := os.WriteFile(filepath.Join(tmplDir, "job.yaml.tmpl"), []byte(`apiVersion: okdev.io/v1alpha1
 kind: DevEnvironment
 metadata:
   name: {{ .Name }}
 spec:
   namespace: {{ .Namespace }}
   sync:
+    engine: syncthing
     paths:
       - ".:/workspace"
   ssh:
     user: root
   sidecar:
     image: ghcr.io/acmore/okdev:edge
+  workload:
+    type: job
+    manifestPath: mine.yaml
+    inject:
+      - path: "spec.template"
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
 	oldwd, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(oldwd) })
 	if err := os.Chdir(tmp); err != nil {
@@ -1046,17 +1039,25 @@ spec:
 	}
 
 	cmd := newInitCmd(&Options{})
-	cmd.SetArgs([]string{"--yes", "--template", "basic", "--workload", "job"})
+	cmd.SetArgs([]string{"--yes", "--template", "job"})
 	cmd.SetIn(strings.NewReader(""))
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected shadowed basic template to be validated as a custom template")
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("a shadowing template must simply be used: %v", err)
 	}
-	if !strings.Contains(err.Error(), "custom template must render spec.workload") {
-		t.Fatalf("unexpected error: %v", err)
+	cfgRaw, err := os.ReadFile(filepath.Join(tmp, ".okdev", "okdev.yaml"))
+	if err != nil {
+		t.Fatal(err)
 	}
+	if !strings.Contains(string(cfgRaw), "manifestPath: mine.yaml") {
+		t.Fatalf("expected the shadowing template's workload, got:\n%s", cfgRaw)
+	}
+	// The built-in job scaffold must not appear: this template declared no files.
 	if _, err := os.Stat(filepath.Join(tmp, ".okdev", "job.yaml")); !os.IsNotExist(err) {
-		t.Fatalf("expected no built-in job scaffold for shadowed basic, err=%v", err)
+		t.Fatalf("built-in job manifest leaked into a shadowed template, err=%v", err)
+	}
+	// And no built-in .stignore, because it declared no preset.
+	if _, err := os.Stat(filepath.Join(tmp, ".stignore")); !os.IsNotExist(err) {
+		t.Fatalf("built-in .stignore leaked into a shadowed template, err=%v", err)
 	}
 }
 
@@ -1161,48 +1162,6 @@ func TestInitAlwaysTargetsTheFolderConfig(t *testing.T) {
 		if got := defaultInitTargetPath(vars, nil, ""); got != config.FolderFile {
 			t.Errorf("workload %q: target = %q, want %q", workloadType, got, config.FolderFile)
 		}
-	}
-}
-
-// A valid --generic-preset supplies the manifest path and inject paths, so a
-// missing manifest path is a *symptom* of the preset being unknown, not an
-// independent problem. Reporting the symptom sends the user to fix the wrong
-// thing.
-func TestInitReportsUnknownPresetBeforeItsDownstreamSymptoms(t *testing.T) {
-	vars := config.NewTemplateVars()
-	vars.WorkloadType = "generic"
-	vars.GenericPreset = "statefulset"
-	// Deliberately no ManifestPath/InjectPaths: with a valid preset,
-	// applyWorkloadDefaults would have filled both.
-	applyWorkloadDefaults(vars)
-
-	err := validateInitWorkloadVars(vars)
-	if err == nil {
-		t.Fatal("expected an error for an unknown preset")
-	}
-	if !strings.Contains(err.Error(), "unknown --generic-preset") {
-		t.Fatalf("error should name the unknown preset, got %v", err)
-	}
-	if !strings.Contains(err.Error(), "statefulset") {
-		t.Fatalf("error should quote what the user typed, got %v", err)
-	}
-}
-
-// The manifest-path and inject-path requirements still fire on their own when
-// no preset is involved at all.
-func TestInitStillRequiresGenericManifestAndInjectWithoutAPreset(t *testing.T) {
-	vars := config.NewTemplateVars()
-	vars.WorkloadType = "generic"
-	applyWorkloadDefaults(vars)
-	err := validateInitWorkloadVars(vars)
-	if err == nil || !strings.Contains(err.Error(), "--manifest-path is required") {
-		t.Fatalf("expected the manifest-path requirement, got %v", err)
-	}
-
-	vars.ManifestPath = "mine.yaml"
-	err = validateInitWorkloadVars(vars)
-	if err == nil || !strings.Contains(err.Error(), "--inject-path is required") {
-		t.Fatalf("expected the inject-path requirement, got %v", err)
 	}
 }
 

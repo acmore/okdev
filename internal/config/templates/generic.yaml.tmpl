@@ -1,6 +1,6 @@
 ---
-name: basic
-description: Pod workload with a starter manifest
+name: generic
+description: "Bring your own manifest: set --manifest-path and --inject-path"
 stignorePreset: default
 ---
 apiVersion: okdev.io/v1alpha1
@@ -26,13 +26,11 @@ spec:
       local: 8080
       remote: 8080
   workload:
-    type: {{ .WorkloadType }}
+    type: generic
     manifestPath: {{ .ManifestPath }}
-{{- if .InjectPaths }}
     inject:
 {{- range .InjectPaths }}
       - path: "{{ . }}"
-{{- end }}
 {{- end }}
 {{- if .AttachContainer }}
     attach:
