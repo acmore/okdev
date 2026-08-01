@@ -47,6 +47,18 @@ jobs:
       - name: Run multi-session test
         run: bash scripts/e2e_kind_multi_session.sh
 
+      - name: Run init add-workload test
+        run: bash scripts/e2e_kind_init_add_workload.sh
+
+      - name: Run workload switch test
+        run: bash scripts/e2e_kind_workload_switch.sh
+
+      - name: Run migrate podTemplate test
+        run: bash scripts/e2e_kind_migrate_podtemplate.sh
+
+      - name: Run volumes test
+        run: bash scripts/e2e_kind_volumes.sh
+
       - name: Run sync health test
         run: bash scripts/e2e_kind_sync_health.sh
 

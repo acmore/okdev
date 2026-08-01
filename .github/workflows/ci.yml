@@ -17,6 +17,8 @@ jobs:
         run: python3 -m pip install --user pre-commit
       - name: Fmt
         run: ~/.local/bin/pre-commit run --all-files --hook-stage manual okdev-gofmt
+      - name: E2E scenarios wired into CI
+        run: bash scripts/check_e2e_in_ci.sh
       - name: Vet
         run: go vet ./...
       - name: Test
