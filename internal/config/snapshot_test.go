@@ -43,8 +43,8 @@ func TestBuildWorkloadSnapshotPod(t *testing.T) {
 	if snap.PreStop != "echo bye" {
 		t.Fatalf("unexpected preStop: %s", snap.PreStop)
 	}
-	if snap.ManifestSHA256 != "" {
-		t.Fatal("pod workload should have empty manifest hash")
+	if snap.Manifest != "" {
+		t.Fatal("a pod workload with no manifest records none")
 	}
 }
 
@@ -132,24 +132,26 @@ func TestBuildWorkloadSnapshotShellChangeAffectsHash(t *testing.T) {
 	}
 }
 
-func TestComputeManifestSHA256(t *testing.T) {
+func TestSnapshotRecordsTheManifestContent(t *testing.T) {
 	f := t.TempDir() + "/job.yaml"
 	os.WriteFile(f, []byte("apiVersion: batch/v1\nkind: Job\n"), 0o644)
-	h1, err := ComputeManifestSHA256(f)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if h1 == "" {
-		t.Fatal("expected non-empty hash")
+	cfg := &DevEnvironment{Spec: DevEnvSpec{
+		Workload: WorkloadSpec{Type: "job", ManifestPath: "job.yaml"},
+		Sidecar:  SidecarSpec{Image: "img:1"},
+	}}
+	snap1 := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "", "job.yaml", f)
+	if !strings.Contains(snap1.Manifest, "kind: Job") {
+		t.Fatalf("the manifest itself must be recorded, got %q", snap1.Manifest)
 	}
 
+	// Editing it must still register as drift — the content replaces the digest
+	// that used to serve that purpose, and also makes the change showable.
 	os.WriteFile(f, []byte("apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: changed\n"), 0o644)
-	h2, err := ComputeManifestSHA256(f)
-	if err != nil {
-		t.Fatal(err)
-	}
+	snap2 := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "", "job.yaml", f)
+	h1, _ := snap1.SHA256()
+	h2, _ := snap2.SHA256()
 	if h1 == h2 {
-		t.Fatal("expected different hash after content change")
+		t.Fatal("a changed manifest must change the snapshot hash")
 	}
 }
 
@@ -163,8 +165,8 @@ func TestBuildWorkloadSnapshotGenericIncludesManifestHash(t *testing.T) {
 		},
 	}
 	snap := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "", "job.yaml", f)
-	if snap.ManifestSHA256 == "" {
-		t.Fatal("expected manifest hash for job workload")
+	if snap.Manifest == "" {
+		t.Fatal("expected the manifest content for job workload")
 	}
 	if snap.ManifestPath != "job.yaml" {
 		t.Fatalf("unexpected manifest path: %s", snap.ManifestPath)
@@ -209,8 +211,8 @@ func TestWorkloadSnapshotHashIgnoresManifestPath(t *testing.T) {
 	}
 	snap1 := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "", "job.yaml", "/tmp/a/job.yaml")
 	snap2 := BuildWorkloadSnapshot(cfg, "/workspace", "dev", false, "", "", "/Users/me/src/job.yaml", "/tmp/b/job.yaml")
-	snap1.ManifestSHA256 = "same"
-	snap2.ManifestSHA256 = "same"
+	snap1.Manifest = "same"
+	snap2.Manifest = "same"
 
 	h1, err := snap1.SHA256()
 	if err != nil {

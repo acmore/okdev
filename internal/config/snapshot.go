@@ -27,7 +27,10 @@ type LastAppliedWorkloadSpec struct {
 	Shell              string                      `json:"shell,omitempty"`
 	PreStop            string                      `json:"preStop"`
 	ManifestPath       string                      `json:"manifestPath,omitempty"`
-	ManifestSHA256     string                      `json:"manifestSHA256,omitempty"`
+	// Manifest is the workload manifest as written, not a digest of it. A hash
+	// answers "did it change"; drift detection also has to show *what* changed,
+	// and the manifest is where a workload's content lives now.
+	Manifest string `json:"manifest,omitempty"`
 	// WorkloadProfile distinguishes two profiles that share a type (a one-GPU
 	// "dev" pod and an eight-GPU "big" pod produce otherwise identical
 	// snapshots). It is stamped only for configs that declare spec.workloads:
@@ -76,9 +79,8 @@ func BuildWorkloadSnapshot(cfg *DevEnvironment, workspaceMountPath, targetContai
 		snap.WorkloadProfile = cfg.SelectedWorkload()
 	}
 	if manifestResolvedPath != "" {
-		hash, err := ComputeManifestSHA256(manifestResolvedPath)
-		if err == nil {
-			snap.ManifestSHA256 = hash
+		if body, err := os.ReadFile(manifestResolvedPath); err == nil {
+			snap.Manifest = string(body)
 		}
 	}
 	return snap
@@ -108,12 +110,4 @@ func ParseLastAppliedWorkloadSpec(raw string) (LastAppliedWorkloadSpec, error) {
 		return LastAppliedWorkloadSpec{}, fmt.Errorf("parse last-applied spec: %w", err)
 	}
 	return snap, nil
-}
-
-func ComputeManifestSHA256(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read manifest %q: %w", path, err)
-	}
-	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
 }
