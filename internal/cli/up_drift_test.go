@@ -156,7 +156,7 @@ func TestHandleChangedWorkloadDriftStopsActiveStatusBeforePrompt(t *testing.T) {
 		runtime: &fakeRefRuntime{kind: workload.TypeGeneric, apiVersion: "apps/v1", name: "trainer"},
 	}
 
-	action, err := handleChangedWorkloadDrift(state, "diff-body", false, true)
+	action, err := handleChangedWorkloadDrift(state, driftResult{Kind: driftChanged, Diff: "diff-body"}, false, true)
 	if err != nil {
 		t.Fatalf("handleChangedWorkloadDrift: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestHandleChangedWorkloadDriftPromptsRecreateForImmutableController(t *test
 		command: &commandContext{sessionName: "sess"},
 	}
 
-	action, err := handleChangedWorkloadDrift(state, "diff-body", false, true)
+	action, err := handleChangedWorkloadDrift(state, driftResult{Kind: driftChanged, Diff: "diff-body"}, false, true)
 	if err != nil {
 		t.Fatalf("handleChangedWorkloadDrift: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestHandleChangedWorkloadDriftShowsWaitStatusDuringRecreate(t *testing.T) {
 		},
 	}
 
-	action, err := handleChangedWorkloadDrift(state, "diff-body", false, true)
+	action, err := handleChangedWorkloadDrift(state, driftResult{Kind: driftChanged, Diff: "diff-body"}, false, true)
 	if err != nil {
 		t.Fatalf("handleChangedWorkloadDrift: %v", err)
 	}

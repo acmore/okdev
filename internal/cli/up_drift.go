@@ -22,6 +22,11 @@ const (
 type driftResult struct {
 	Kind driftKind
 	Diff string
+	// ManifestDiff is reported separately because the manifest is a document,
+	// not a field: embedded in the spec diff it would render as one changed
+	// quoted blob, which is the uninformative thing a bare hash already was.
+	ManifestDiff string
+	ManifestPath string
 }
 
 func detectDrift(current *config.LastAppliedWorkloadSpec, oldJSON, oldHash string) driftResult {
@@ -42,11 +47,30 @@ func detectDrift(current *config.LastAppliedWorkloadSpec, oldJSON, oldHash strin
 		return driftResult{Kind: driftChanged}
 	}
 
-	diff := renderSpecDiff(&old, current)
-	return driftResult{Kind: driftChanged, Diff: diff}
+	return driftResult{
+		Kind:         driftChanged,
+		Diff:         renderSpecDiff(&old, current),
+		ManifestDiff: renderManifestDiff(&old, current),
+		ManifestPath: strings.TrimSpace(current.ManifestPath),
+	}
+}
+
+// renderManifestDiff shows how the workload manifest changed since it was
+// applied. Everything a workload is lives in that file, so "the manifest
+// changed" without saying how is barely more useful than silence.
+func renderManifestDiff(old, new *config.LastAppliedWorkloadSpec) string {
+	if old.Manifest == new.Manifest {
+		return ""
+	}
+	return unifiedDiff(old.Manifest, new.Manifest)
 }
 
 func renderSpecDiff(old, new *config.LastAppliedWorkloadSpec) string {
+	// The manifest is diffed on its own; leaving it here would bury the spec
+	// diff under one enormous changed line.
+	oldCopy, newCopy := *old, *new
+	oldCopy.Manifest, newCopy.Manifest = "", ""
+	old, new = &oldCopy, &newCopy
 	oldYAML, err := yaml.Marshal(old)
 	if err != nil {
 		return ""
@@ -190,24 +214,33 @@ func handleWorkloadDrift(state *upState) (driftAction, error) {
 		return driftActionReuse, nil
 	case driftChanged:
 		isPod := state.runtime.Kind() == workload.TypePod
-		return handleChangedWorkloadDrift(state, result.Diff, isPod, isTerminalReader(state.cmd.InOrStdin()))
+		return handleChangedWorkloadDrift(state, result, isPod, isTerminalReader(state.cmd.InOrStdin()))
 	}
 	return driftActionReuse, nil
 }
 
-func handleChangedWorkloadDrift(state *upState, diff string, isPod bool, interactive bool) (driftAction, error) {
+func handleChangedWorkloadDrift(state *upState, result driftResult, isPod bool, interactive bool) (driftAction, error) {
 	errOut := state.cmd.ErrOrStderr()
 	state.ui.stopActive()
 	requiresRecreate := isPod || reconcileStrategyForWorkload(state) == workloadApplyRecreated
 
-	if diff != "" {
+	switch {
+	case result.Diff != "":
 		fmt.Fprintln(errOut, "Workload spec has changed:")
 		fmt.Fprintln(errOut)
-		fmt.Fprintln(errOut, diff)
-		fmt.Fprintln(errOut)
-	} else {
+		fmt.Fprintln(errOut, result.Diff)
+	case result.ManifestDiff == "":
 		fmt.Fprintln(errOut, "Workload spec has changed.")
 	}
+	if result.ManifestDiff != "" {
+		name := result.ManifestPath
+		if name == "" {
+			name = "the workload manifest"
+		}
+		fmt.Fprintf(errOut, "%s has changed:\n\n", name)
+		fmt.Fprintln(errOut, result.ManifestDiff)
+	}
+	fmt.Fprintln(errOut)
 
 	if requiresRecreate {
 		fmt.Fprintln(errOut, "This workload must be recreated to apply these changes.")

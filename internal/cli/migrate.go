@@ -131,8 +131,12 @@ func newMigrateCmd(opts *Options) *cobra.Command {
 			}
 
 			if dryRun {
-				fmt.Fprintln(w, "\n--- dry-run output ---")
+				fmt.Fprintf(w, "\n--- %s ---\n", cfgPath)
 				_, _ = io.Copy(w, bytes.NewReader(out))
+				// The manifests are most of what this migration produces, and a
+				// user wanting to know how their hand-written one will be edited
+				// cannot see it from the config alone.
+				printPendingManifests(w, pending)
 				return nil
 			}
 
@@ -619,4 +623,24 @@ func scaffoldMigrateZshFiles(cfgPath string, w io.Writer) error {
 	fmt.Fprintln(w, "      Review .okdev/zsh-setup.example.sh for oh-my-zsh/plugin setup recipes.")
 
 	return nil
+}
+
+// printPendingManifests shows what the migration would do to each manifest: the
+// whole file when okdev is creating it, and a diff when it is editing one the
+// user wrote — which is the case they actually need to inspect.
+func printPendingManifests(w io.Writer, pending []plannedManifest) {
+	for _, m := range pending {
+		existing, err := os.ReadFile(m.Target)
+		if err != nil {
+			fmt.Fprintf(w, "\n--- %s (new) ---\n", m.Target)
+			_, _ = w.Write(m.Bytes)
+			continue
+		}
+		if bytes.Equal(existing, m.Bytes) {
+			fmt.Fprintf(w, "\n--- %s (unchanged) ---\n", m.Target)
+			continue
+		}
+		fmt.Fprintf(w, "\n--- %s (edited) ---\n", m.Target)
+		fmt.Fprint(w, unifiedDiff(string(existing), string(m.Bytes)))
+	}
 }
