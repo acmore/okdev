@@ -1,5 +1,9 @@
 name: Sidecar Image
 
+# Release tags do not appear here as a push trigger on purpose: `paths` applies
+# to tag pushes too, so a release whose commits happened to miss these paths
+# would silently ship no image. The release workflow calls this one instead,
+# after it has proven E2E Kind passed for the tagged commit.
 on:
   workflow_dispatch:
     inputs:
@@ -7,10 +11,13 @@ on:
         description: Syncthing version (e.g. v1.29.7)
         required: false
         default: v1.29.7
-  workflow_run:
-    workflows: ["E2E Kind"]
-    types:
-      - completed
+  workflow_call:
+    inputs:
+      syncthing_version:
+        description: Syncthing version (e.g. v1.29.7)
+        required: false
+        default: v1.29.7
+        type: string
   push:
     branches: [main]
     paths:
@@ -26,35 +33,22 @@ on:
 
 jobs:
   build-and-push:
-    if: >-
-      ${{
-        github.event_name == 'workflow_dispatch' ||
-        github.event_name == 'push' ||
-        (
-          github.event_name == 'workflow_run' &&
-          github.event.workflow_run.conclusion == 'success' &&
-          github.event.workflow_run.event == 'push' &&
-          startsWith(github.event.workflow_run.head_branch, 'v')
-        )
-      }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set variables
         id: vars
         shell: bash
+        env:
+          # workflow_call passes inputs.syncthing_version; workflow_dispatch
+          # puts it on event.inputs. Neither is set for a push.
+          REQUESTED_VERSION: ${{ inputs.syncthing_version }}
         run: |
-          if [[ -n "${{ github.event.inputs.syncthing_version }}" ]]; then
-            syncthing_version="${{ github.event.inputs.syncthing_version }}"
-          else
-            syncthing_version="v1.29.7"
-          fi
+          syncthing_version="${REQUESTED_VERSION:-v1.29.7}"
           echo "syncthing_version=${syncthing_version}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v3
@@ -67,6 +61,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # On a workflow_call from the release, github.ref is the caller's ref —
+      # the tag — so ref_name is the version being released.
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -75,8 +71,8 @@ jobs:
           tags: |
             type=raw,value=edge,enable={{is_default_branch}}
             type=sha,prefix=edge-
-            type=raw,value=${{ github.event.workflow_run.head_branch }},enable=${{ github.event_name == 'workflow_run' && startsWith(github.event.workflow_run.head_branch, 'v') }}
-            type=raw,value=latest,enable=${{ github.event_name == 'workflow_run' && startsWith(github.event.workflow_run.head_branch, 'v') && !contains(github.event.workflow_run.head_branch, '-') }}
+            type=raw,value=${{ github.ref_name }},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
