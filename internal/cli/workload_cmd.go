@@ -27,12 +27,12 @@ and SSH alias all stay, and the old workload is deleted. To run two shapes at
 the same time, use two sessions instead (okdev up --session other).
 
 This group inspects and switches; to declare a new workload, use
-okdev init --workload <type> --workload-name <name>.`,
+okdev init --template <name> --workload-name <name>.`,
 		Example: `  # See what this config declares, and what is pinned and live
   okdev workload list
 
   # Declare a new workload and scaffold its manifest
-  okdev init --workload pytorchjob --workload-name train
+  okdev init --template pytorchjob --workload-name train
 
   # Switch this session to it (applies on the next okdev up)
   okdev workload use train

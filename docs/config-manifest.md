@@ -589,7 +589,7 @@ profile is active for this command. Reading it always gives you the workload
 actually in play.
 
 Every profile needs its own `manifestPath`, `pod` included — `okdev init
---workload pod --workload-name <name>` scaffolds one for you.
+--template pod --workload-name <name>` scaffolds one for you.
 
 Workload manifests always live in `.okdev/`, whichever shape the config has.
 

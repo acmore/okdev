@@ -43,10 +43,13 @@ func newInitCmd(opts *Options) *cobra.Command {
   okdev init
 
   # Scaffold a Job workload with starter manifest
-  okdev init --workload job
+  okdev init --template job
 
-  # Generic deployment with preset
-  okdev init --workload generic --generic-preset deployment
+  # Deployment shape
+  okdev init --template deployment
+
+  # Add a second workload to a config that already exists
+  okdev init --template pytorchjob --workload-name train
 
   # Go project with Go-oriented sync ignores
   okdev init --template basic --stignore-preset go

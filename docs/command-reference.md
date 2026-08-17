@@ -82,7 +82,7 @@ agents can react without launching a diagnostic chain on every blip:
 - Canonical sequence for adding a shape and switching to it:
 
     ```console
-    $ okdev init --workload pytorchjob --workload-name train   # scaffold + declare
+    $ okdev init --template pytorchjob --workload-name train   # scaffold + declare
     $ $EDITOR .okdev/train.yaml                                # fill in image, resources
     $ okdev workload use train                                 # pin it
     $ okdev up                                                 # apply (confirms the delete)
