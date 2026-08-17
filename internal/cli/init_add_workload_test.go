@@ -106,7 +106,7 @@ func planFixture(t *testing.T, raw string, templateRef, name string, inject []st
 	}
 	vars := config.NewTemplateVars()
 	vars.InjectPaths = inject
-	return planWorkloadAddition("/repo/.okdev/okdev.yaml", []byte(raw), cfg, vars, nil, name, templateRef, "")
+	return planWorkloadAddition("/repo/.okdev/okdev.yaml", []byte(raw), cfg, vars, nil, nonInteractiveVarResolver(nil), name, templateRef, "")
 }
 
 const podOnlyConfig = `apiVersion: okdev.io/v1alpha1
