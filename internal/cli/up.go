@@ -995,16 +995,25 @@ func upSetup(state *upState) error {
 		if err != nil {
 			return fmt.Errorf("refresh target before postCreate: %w", err)
 		}
-		ran, err := runPostCreateIfNeeded(state.command.kube, state.command.namespace, target.PodName, target.Container, postCreateCmd, state.cmd.OutOrStdout(), state.ui.warnWriter())
+		state.ui.stepRun("postCreate", fmt.Sprintf("running on all pods: %s", postCreateCmd))
+		summary, err := runPostCreateOnAllPods(state.ctx, state.command.kube, state.command.namespace, state.labels, target.Container, postCreateCmd, state.ui.warnWriter())
 		if err != nil {
 			return err
 		}
-		if ran {
+		if summary.Ran > 0 {
 			hooksRanThisUp = true
-			state.ui.stepDone("postCreate", "completed")
-		} else {
-			state.ui.stepDone("postCreate", "already done")
 		}
+		detail := fmt.Sprintf("ran on %d pod(s)", summary.Ran)
+		if summary.Skipped > 0 {
+			detail = fmt.Sprintf("%s, skipped %d already done", detail, summary.Skipped)
+		}
+		if summary.Ran == 0 && summary.Skipped > 0 {
+			detail = fmt.Sprintf("already done on %d pod(s)", summary.Skipped)
+		}
+		if summary.NotRunning > 0 {
+			state.ui.warnf("postCreate skipped %d pod(s) that were not Running", summary.NotRunning)
+		}
+		state.ui.stepDone("postCreate", detail)
 	}
 	// Package-inventory baseline for `okdev env-diff` (#175): forced right
 	// after hooks ran (their installs belong in the baseline), otherwise
@@ -1459,12 +1468,12 @@ type postCreateClient interface {
 	AnnotatePodMap(context.Context, string, string, map[string]string) error
 }
 
-func runPostCreateIfNeeded(k postCreateClient, namespace, pod, container, command string, out io.Writer, errOut io.Writer) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), annotationTimeout)
+func runPostCreateIfNeeded(parent context.Context, k postCreateClient, namespace, pod, container, command string, errOut io.Writer) (bool, error) {
+	ctx, cancel := context.WithTimeout(parent, annotationTimeout)
 	summary, err := k.GetPodSummary(ctx, namespace, pod)
 	cancel()
 	if err != nil {
-		fmt.Fprintf(errOut, "warning: failed to read postCreate state: %v\n", err)
+		fmt.Fprintf(errOut, "warning: failed to read postCreate state on %s: %v\n", pod, err)
 	}
 	if summary != nil {
 		state, _ := computeHookState(*summary, postCreateHook, container)
@@ -1475,17 +1484,99 @@ func runPostCreateIfNeeded(k postCreateClient, namespace, pod, container, comman
 			fmt.Fprintf(errOut, "note: postCreate marker on %s predates the current container (in-place restart); re-running\n", pod)
 		}
 	}
-	fmt.Fprintf(out, "Running postCreate: %s\n", command)
-	annotateHook(context.Background(), k, namespace, pod, hookRunningAnnotations(postCreateHook, time.Now()), errOut)
-	runCtx, runCancel := context.WithTimeout(context.Background(), postCreateTimeout)
+	annotateHook(parent, k, namespace, pod, hookRunningAnnotations(postCreateHook, time.Now()), errOut)
+	runCtx, runCancel := context.WithTimeout(parent, postCreateTimeout)
 	_, runErr := k.ExecShInContainer(runCtx, namespace, pod, container, command)
 	runCancel()
 	if runErr != nil {
-		annotateHook(context.Background(), k, namespace, pod, hookFailedAnnotations(postCreateHook, time.Now()), errOut)
-		return true, fmt.Errorf("postCreate failed: %w", runErr)
+		annotateHook(parent, k, namespace, pod, hookFailedAnnotations(postCreateHook, time.Now()), errOut)
+		return true, fmt.Errorf("postCreate failed on pod %s: %w", pod, runErr)
 	}
-	annotateHook(context.Background(), k, namespace, pod, hookDoneAnnotations(postCreateHook, time.Now()), errOut)
+	annotateHook(parent, k, namespace, pod, hookDoneAnnotations(postCreateHook, time.Now()), errOut)
 	return true, nil
+}
+
+type postCreateFanoutClient interface {
+	postCreateClient
+	ListPods(context.Context, string, bool, string) ([]kube.PodSummary, error)
+}
+
+type postCreateSummary struct {
+	Ran        int
+	Skipped    int
+	NotRunning int
+}
+
+// runPostCreateOnAllPods runs the postCreate command on every session pod that
+// needs it, in parallel, exactly as postSync does.
+//
+// This used to run on the session's target pod only. In a multi-pod session
+// that left every other pod without its setup, and an in-place container
+// restart on one of them was never healed: postSync noticed the marker
+// predated the new container and replayed, postCreate did not. Which pod was
+// the target is not something the hook's meaning depends on, so the fanout is
+// the correct shape.
+func runPostCreateOnAllPods(ctx context.Context, k postCreateFanoutClient, namespace string, labels map[string]string, container, command string, errOut io.Writer) (postCreateSummary, error) {
+	selector := workload.DiscoveryLabelSelector(labels)
+	pods, err := k.ListPods(ctx, namespace, false, selector)
+	if err != nil {
+		return postCreateSummary{}, fmt.Errorf("discover pods for postCreate: %w", err)
+	}
+	if len(pods) == 0 {
+		fmt.Fprintln(errOut, "warning: no pods found for postCreate")
+		return postCreateSummary{}, nil
+	}
+
+	type result struct {
+		pod     string
+		ran     bool
+		skipped bool
+		err     error
+	}
+	results := make(chan result, len(pods))
+	var wg sync.WaitGroup
+	summary := postCreateSummary{}
+	for _, pod := range pods {
+		if pod.Deleting {
+			summary.NotRunning++
+			continue
+		}
+		wg.Add(1)
+		go func(podName string) {
+			defer wg.Done()
+			if waitErr := waitForPodRunning(ctx, k, namespace, podName, postCreateTimeout); waitErr != nil {
+				results <- result{pod: podName, err: fmt.Errorf("pod did not reach Running phase: %w", waitErr)}
+				return
+			}
+			ran, runErr := runPostCreateIfNeeded(ctx, k, namespace, podName, container, command, errOut)
+			if runErr != nil {
+				results <- result{pod: podName, err: runErr}
+				return
+			}
+			results <- result{pod: podName, ran: ran, skipped: !ran}
+		}(pod.Name)
+	}
+	wg.Wait()
+	close(results)
+
+	var errs []string
+	for r := range results {
+		if r.err != nil {
+			errs = append(errs, fmt.Sprintf("pod %s: %v", r.pod, r.err))
+			continue
+		}
+		if r.ran {
+			summary.Ran++
+			continue
+		}
+		if r.skipped {
+			summary.Skipped++
+		}
+	}
+	if len(errs) > 0 {
+		return summary, fmt.Errorf("postCreate failed on pods: %s", strings.Join(errs, "; "))
+	}
+	return summary, nil
 }
 
 type hookAnnotator interface {

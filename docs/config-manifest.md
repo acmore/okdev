@@ -493,9 +493,19 @@ spec:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `postCreate` | `string` | Command run once on the target pod after environment creation |
+| `postCreate` | `string` | Command run once per session pod after environment creation |
 | `postSync` | `string` | Command run once on **all** pods after initial shared-workspace sync completes |
 | `preStop` | `string` | Command run before pod termination |
+
+Both hooks run once per pod, tracked by a per-pod annotation, so neither re-runs
+on an `okdev up` that changed nothing. What separates them is **whether sync is
+required**: `postSync` runs only on sessions that have sync paths, and only once
+the initial sync has converged, so the synced tree is guaranteed present.
+`postCreate` runs on every session, sync or not. Put setup that does not depend
+on your source in `postCreate` (installing tools, system packages), and setup
+that reads the synced tree in `postSync` (`pip install -e .`, builds) — a
+`postCreate` that needs the code will do nothing useful on a session without
+sync configured.
 
 `postSync` is useful for multi-pod workloads where every pod needs code-dependent
 setup (e.g. editable Python installs). It assumes the synced workspace is
@@ -579,7 +589,7 @@ profile is active for this command. Reading it always gives you the workload
 actually in play.
 
 Every profile needs its own `manifestPath`, `pod` included — `okdev init
---workload pod --workload-name <name>` scaffolds one for you.
+--template pod --workload-name <name>` scaffolds one for you.
 
 Workload manifests always live in `.okdev/`, whichever shape the config has.
 

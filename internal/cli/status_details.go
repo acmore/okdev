@@ -289,8 +289,7 @@ func buildDetailedImages(images []kube.ContainerImage) []detailedStatusImage {
 }
 
 // attachPodHookStates derives each pod's lifecycle-hook progress from its
-// annotations. postSync runs on every pod; postCreate only on the target pod,
-// so it is reported only there.
+// annotations. Both hooks run on every pod, so both are reported on every pod.
 func attachPodHookStates(detail *detailedStatus, view sessionView, cfg *config.DevEnvironment, cfgPath string, target detailedStatusTarget) {
 	if detail == nil || cfg == nil {
 		return
@@ -313,7 +312,7 @@ func attachPodHookStates(detail *detailedStatus, view sessionView, cfg *config.D
 		if hasPostSync {
 			hooks = append(hooks, detailedStatusHookFrom("postSync", summary, postSyncHook, target.SelectedContainer))
 		}
-		if hasPostCreate && detail.Pods[i].Selected {
+		if hasPostCreate {
 			hooks = append(hooks, detailedStatusHookFrom("postCreate", summary, postCreateHook, target.SelectedContainer))
 		}
 		detail.Pods[i].Hooks = hooks

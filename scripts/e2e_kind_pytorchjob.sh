@@ -167,7 +167,7 @@ insert_after_line_once "$CFG_PATH" '  ssh:' '    persistentSession: false'
 insert_after_line_once "$CFG_PATH" '  ssh:' '    interPod: true'
 
 # Add lifecycle hooks for verification.
-# postCreate runs only on target pod; postSync runs on all pods after sync;
+# postCreate and postSync both run on all pods, postSync after initial sync;
 # preStop is injected as a Kubernetes lifecycle handler.
 cat >>"$CFG_PATH" <<'LIFECYCLE'
   lifecycle:
@@ -1006,7 +1006,7 @@ if [[ "$WORKER_COUNT" -ne 2 ]]; then
 fi
 echo "Worker pod count verified: $WORKER_COUNT"
 
-# -- postCreate: runs only on the target (master) pod --
+# -- postCreate: runs on every pod, like postSync --
 echo "Verifying postCreate ran on master pod"
 kubectl -n "$NAMESPACE" exec "$MASTER_POD" -c pytorch -- test -f /tmp/post-create-marker
 echo "postCreate marker verified on master"
@@ -1020,13 +1020,22 @@ if [[ "$POST_CREATE_ANN" != "true" ]]; then
 fi
 echo "postCreate annotation verified on master"
 
-echo "Verifying postCreate did NOT run on worker pods"
+# postCreate fans out to every pod. It used to run on the target pod only,
+# which left every other pod in a multi-pod session without its setup and
+# never healed an in-place restart there.
+echo "Verifying postCreate also ran on worker pods"
 for WPOD in $WORKER_PODS; do
-  if kubectl -n "$NAMESPACE" exec "$WPOD" -c pytorch -- test -f /tmp/post-create-marker 2>/dev/null; then
-    echo "ERROR: postCreate marker unexpectedly found on worker pod $WPOD" >&2
+  if ! kubectl -n "$NAMESPACE" exec "$WPOD" -c pytorch -- test -f /tmp/post-create-marker; then
+    echo "ERROR: postCreate marker missing on worker pod $WPOD" >&2
     exit 1
   fi
-  echo "postCreate correctly absent on $WPOD"
+  POST_CREATE_WANN=$(kubectl -n "$NAMESPACE" get pod "$WPOD" \
+    -o jsonpath='{.metadata.annotations.okdev\.io/post-create-done}')
+  if [[ "$POST_CREATE_WANN" != "true" ]]; then
+    echo "ERROR: okdev.io/post-create-done annotation missing on worker $WPOD (got: '$POST_CREATE_WANN')" >&2
+    exit 1
+  fi
+  echo "postCreate verified on $WPOD"
 done
 
 # -- postSync: runs on ALL pods after initial sync --
