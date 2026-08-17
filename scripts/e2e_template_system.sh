@@ -288,6 +288,85 @@ for needle in \
   fi
 done
 
+echo "Adding a workload from a template that declares variables"
+# Additive init renders the same template the fresh path does, so it has to
+# resolve the template's variables too. It rendered against an empty .Vars
+# instead, which failed with a raw Go template error for any template whose
+# body compared a variable — every declared variable was unreachable.
+(
+  cd "$PYTORCH_DIR"
+  "$OKDEV_BIN" init --yes --template pytorch --workload-name extra \
+    --manifest-path pytorchjob.yaml --set workerReplicas=5
+)
+EXTRA_MANIFEST_PATH="$PYTORCH_DIR/.okdev/extra.yaml"
+if [[ ! -f "$EXTRA_MANIFEST_PATH" ]]; then
+  echo "ERROR: expected additive init to scaffold $EXTRA_MANIFEST_PATH" >&2
+  exit 1
+fi
+if ! grep -Fq "replicas: 5" "$EXTRA_MANIFEST_PATH"; then
+  echo "ERROR: expected --set to reach the added workload's manifest" >&2
+  cat "$EXTRA_MANIFEST_PATH" >&2
+  exit 1
+fi
+if ! grep -Fq "name: extra" "$PYTORCH_CFG_PATH"; then
+  echo "ERROR: expected the added workload to be declared in $PYTORCH_CFG_PATH" >&2
+  exit 1
+fi
+# Adding a workload does not regenerate the project config, so the recorded
+# spec.template.vars must still describe how that config was created.
+if ! grep -Fq "workerReplicas: 3" "$PYTORCH_CFG_PATH"; then
+  echo "ERROR: additive init must not rewrite spec.template.vars" >&2
+  cat "$PYTORCH_CFG_PATH" >&2
+  exit 1
+fi
+
+echo "Adding a workload without --set falls back to the declared defaults"
+(
+  cd "$PYTORCH_DIR"
+  "$OKDEV_BIN" init --yes --template pytorch --workload-name defaulted \
+    --manifest-path pytorchjob.yaml
+)
+DEFAULTED_MANIFEST_PATH="$PYTORCH_DIR/.okdev/defaulted.yaml"
+if ! grep -Fq "replicas: 2" "$DEFAULTED_MANIFEST_PATH"; then
+  echo "ERROR: expected the frontmatter default (2) in $DEFAULTED_MANIFEST_PATH" >&2
+  cat "$DEFAULTED_MANIFEST_PATH" >&2
+  exit 1
+fi
+
+echo "Rejecting a template that references an undeclared variable"
+cat >"$PROJECT_DIR/.okdev/templates/undeclared.yaml.tmpl" <<'EOF'
+---
+name: undeclared
+description: References a variable it never declares
+---
+apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: undeclareddemo
+spec:
+  namespace: template-ns
+  workload:
+    type: pod
+    manifestPath: pod.yaml
+    image: {{ .Vars.neverDeclared }}
+EOF
+UNDECLARED_DIR="$WORKDIR/undeclared"
+mkdir -p "$UNDECLARED_DIR/.okdev"
+cp -R "$PROJECT_DIR/.okdev/templates" "$UNDECLARED_DIR/.okdev/templates"
+if UNDECLARED_OUTPUT=$(cd "$UNDECLARED_DIR" && "$OKDEV_BIN" init --yes --template undeclared --name undeclareddemo 2>&1); then
+  echo "ERROR: expected init to reject a template referencing an undeclared variable" >&2
+  echo "$UNDECLARED_OUTPUT" >&2
+  exit 1
+fi
+if [[ "$UNDECLARED_OUTPUT" != *"neverDeclared"* ]]; then
+  echo "ERROR: expected the error to name the undeclared variable, got: $UNDECLARED_OUTPUT" >&2
+  exit 1
+fi
+if [[ "$UNDECLARED_OUTPUT" == *"<no value>"* || "$UNDECLARED_OUTPUT" == *"invalid type for comparison"* ]]; then
+  echo "ERROR: the raw Go template failure must not reach the user, got: $UNDECLARED_OUTPUT" >&2
+  exit 1
+fi
+
 echo "Checking shadowed basic template behavior"
 SHADOW_DIR="$WORKDIR/shadow"
 mkdir -p "$SHADOW_DIR/.okdev/templates"

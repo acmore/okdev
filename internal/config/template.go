@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"text/template"
@@ -248,16 +249,37 @@ func RenderTemplateContent(name, raw string, vars *TemplateVars, customVars map[
 	if data.Vars == nil {
 		data.Vars = map[string]any{}
 	}
-	tmpl, err := template.New(name).Funcs(sprig.HermeticTxtFuncMap()).Parse(raw)
+	// .Vars carries exactly the variables the frontmatter declared, so a name
+	// that is missing from it is a name the template never declared. Left to
+	// Go's default that renders as the literal "<no value>" — a string variable
+	// silently wrote a broken config, and a numeric one surfaced much later as
+	// "invalid type for comparison", naming neither the variable nor the fix.
+	tmpl, err := template.New(name).Funcs(sprig.HermeticTxtFuncMap()).Option("missingkey=error").Parse(raw)
 	if err != nil {
 		return "", fmt.Errorf("parse template: %w", err)
 	}
 
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, data); err != nil {
+		if name, ok := undeclaredVariable(err); ok {
+			return "", fmt.Errorf("template references undeclared variable %q: declare it under variables: in the template frontmatter, or remove the reference", name)
+		}
 		return "", fmt.Errorf("render template: %w", err)
 	}
 	return buf.String(), nil
+}
+
+// missingKeyPattern matches how text/template reports a missing map key under
+// missingkey=error. .Vars is the only map in the template data, so a match is
+// always an undeclared template variable.
+var missingKeyPattern = regexp.MustCompile(`map has no entry for key "([^"]*)"`)
+
+func undeclaredVariable(err error) (string, bool) {
+	m := missingKeyPattern.FindStringSubmatch(err.Error())
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
 }
 
 // ResolveTemplateAssetFromDir resolves a companion template asset declared by
