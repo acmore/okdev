@@ -91,7 +91,12 @@ type workloadAddition struct {
 
 // planWorkloadAddition computes everything the additive path will write and
 // proves the result is valid, without touching the filesystem.
-func planWorkloadAddition(cfgPath string, raw []byte, cfg *config.DevEnvironment, vars *config.TemplateVars, sets map[string]string, workloadName, templateRef, projectDir string) (*workloadAddition, error) {
+// templateVarResolver turns a template's declared variables into values. The
+// additive path takes it as a parameter so the planner stays free of terminal
+// concerns while still prompting exactly as a fresh init does.
+type templateVarResolver func(*config.TemplateMeta) (map[string]any, error)
+
+func planWorkloadAddition(cfgPath string, raw []byte, cfg *config.DevEnvironment, vars *config.TemplateVars, sets map[string]string, resolveVars templateVarResolver, workloadName, templateRef, projectDir string) (*workloadAddition, error) {
 	name := strings.TrimSpace(workloadName)
 	if name == "" {
 		return nil, fmt.Errorf("--workload-name is required")
@@ -120,7 +125,7 @@ func planWorkloadAddition(cfgPath string, raw []byte, cfg *config.DevEnvironment
 	// the workload block itself: the body branches on them and the companion
 	// manifest is rendered from them. Resolving them here is what makes a
 	// template with variables usable additively at all.
-	customVars, err := config.ResolveVariables(meta, sets, nil)
+	customVars, err := resolveVars(meta)
 	if err != nil {
 		return nil, err
 	}
@@ -369,7 +374,7 @@ func existingConfigPath(opts *Options) (string, error) {
 
 // runInitAddWorkload appends a workload to an existing config. It writes the
 // manifest and the config together or not at all.
-func runInitAddWorkload(cmd *cobra.Command, cfgPath string, vars *config.TemplateVars, sets map[string]string, workloadName, templateRef string) error {
+func runInitAddWorkload(cmd *cobra.Command, cfgPath string, vars *config.TemplateVars, sets map[string]string, nonInteractive bool, workloadName, templateRef string) error {
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
 		return fmt.Errorf("read config %q: %w", cfgPath, err)
@@ -379,7 +384,15 @@ func runInitAddWorkload(cmd *cobra.Command, cfgPath string, vars *config.Templat
 		return err
 	}
 
-	add, err := planWorkloadAddition(cfgPath, raw, cfg, vars, sets, workloadName, templateRef, config.RootDir(cfgPath))
+	// Project-level settings still never prompt here — those belong to the
+	// config being extended. The template's own variables do prompt, because
+	// adding a workload instantiates that template just as a fresh init does.
+	resolveVars := func(meta *config.TemplateMeta) (map[string]any, error) {
+		return resolveInitTemplateVars(meta, sets, nil, nonInteractive,
+			isTerminalReader(cmd.InOrStdin()), cmd.InOrStdin(), cmd.OutOrStdout())
+	}
+
+	add, err := planWorkloadAddition(cfgPath, raw, cfg, vars, sets, resolveVars, workloadName, templateRef, config.RootDir(cfgPath))
 	if err != nil {
 		return err
 	}

@@ -97,7 +97,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			if initAdditiveMode(inv) {
-				return runInitAddWorkload(cmd, existing, vars, parseSetFlags(setFlags), workloadName, templateRef)
+				return runInitAddWorkload(cmd, existing, vars, parseSetFlags(setFlags), yes, workloadName, templateRef)
 			}
 
 			applyWorkloadDefaults(vars)

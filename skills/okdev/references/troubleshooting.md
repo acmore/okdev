@@ -154,7 +154,7 @@ Run `okdev template show <name>` first — it lists the variables okdev actually
 
 Older okdev versions did not diagnose this. A string variable rendered as the literal `<no value>` and wrote a broken config; a numeric one used in a comparison failed with the raw Go error `invalid type for comparison`, which named neither the variable nor the fix. If a user reports either symptom, it is this.
 
-`variable "X" is required (no default) and no value provided` is the different case: `X` **is** declared but has no `default:`, and nothing supplied it. Pass `--set X=<value>`. Non-interactive runs (`--yes`) and `okdev init --workload-name` never prompt, so a defaultless variable must always come from `--set` there.
+`variable "X" is required (no default) and no value provided` is the different case: `X` **is** declared but has no `default:`, and nothing supplied it. Pass `--set X=<value>`. On a terminal both a fresh init and `okdev init --workload-name` prompt for declared variables, so this error means the run was non-interactive: `--yes` was passed, or there is no TTY. In those runs a defaultless variable must come from `--set`.
 
 ## Local State
 

@@ -333,6 +333,25 @@ if ! grep -Fq "replicas: 2" "$DEFAULTED_MANIFEST_PATH"; then
   exit 1
 fi
 
+# Adding a workload instantiates a template, so its variables are prompted for
+# on a terminal. CI has none, so without --yes there is nobody to answer and it
+# must refuse rather than silently take the defaults.
+echo "Refusing to add a workload non-interactively without --yes"
+if NOTTY_OUTPUT=$(cd "$PYTORCH_DIR" && "$OKDEV_BIN" init --template pytorch --workload-name notty \
+  --manifest-path pytorchjob.yaml </dev/null 2>&1); then
+  echo "ERROR: expected a refusal without a TTY and without --yes" >&2
+  echo "$NOTTY_OUTPUT" >&2
+  exit 1
+fi
+if [[ "$NOTTY_OUTPUT" != *"--yes"* || "$NOTTY_OUTPUT" != *"--set"* ]]; then
+  echo "ERROR: the refusal must name the way out, got: $NOTTY_OUTPUT" >&2
+  exit 1
+fi
+if [[ -f "$PYTORCH_DIR/.okdev/notty.yaml" ]]; then
+  echo "ERROR: a refused addition must not scaffold a manifest" >&2
+  exit 1
+fi
+
 echo "Rejecting a template that references an undeclared variable"
 cat >"$PROJECT_DIR/.okdev/templates/undeclared.yaml.tmpl" <<'EOF'
 ---

@@ -277,9 +277,17 @@ agents can react without launching a diagnostic chain on every blip:
 
     The manifest is named after the workload, not its type, so two workloads of the same type never collide. A `pod` workload added this way gets the same starter manifest `okdev init` scaffolds, so it is a file to edit rather than a blank.
 
-    Additive mode never prompts and never changes project-level settings. Passing a project-level flag (`--name`, `--namespace`, `--context`, `--dev-image`, `--sidecar-image`, `--sync-local`, `--sync-remote`, `--ssh-user`, `--shell`, `--stignore-preset`) is **refused** rather than ignored, so one flag never means two things; edit the config to change those. `--force` still means "rewrite the whole config", and giving it together with `--workload-name` is refused because they state opposite intents.
+    Additive mode never prompts for **project-level settings** and never changes them. Passing a project-level flag (`--name`, `--namespace`, `--context`, `--dev-image`, `--sidecar-image`, `--sync-local`, `--sync-remote`, `--ssh-user`, `--shell`, `--stignore-preset`) is **refused** rather than ignored, so one flag never means two things; edit the config to change those. `--force` still means "rewrite the whole config", and giving it together with `--workload-name` is refused because they state opposite intents.
 
-    `--set` is **not** one of those: it configures the template, and additive mode renders the template. A template that declares variables resolves them here the same way a fresh `okdev init` does — `--set` first, then the frontmatter defaults for anything left. Because additive mode never prompts, a variable with no default and no `--set` is an error naming the variable rather than a prompt.
+    The template's **variables** are a different matter, because adding a workload instantiates a template just as creating a config does. `--set` works here for the same reason, and on a terminal you are prompted for each declared variable with its default offered as a hint — identical to a fresh `okdev init`. `--set` wins over a prompt, so scripted and interactive use compose.
+
+    ```console
+    $ okdev init --template pytorchjob --workload-name train
+      ? Number of worker replicas (workerReplicas): (1) 4
+      Wrote .okdev/train.yaml
+    ```
+
+    With `--yes` it never prompts: `--set` first, then the frontmatter defaults, and a variable with no default and no `--set` is an error naming the variable. Without a terminal and without `--yes` there is nobody to answer, so it refuses rather than silently taking defaults — the same refusal a fresh init gives.
 
     ```console
     $ okdev init --template pytorchjob --workload-name train --set workerReplicas=4

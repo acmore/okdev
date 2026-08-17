@@ -166,7 +166,7 @@ func TestPlanWorkloadAdditionNamesARequiredVariable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load fixture config: %v", err)
 	}
-	_, err = planWorkloadAddition(cfgPath, []byte(podOnlyConfig), cfg, config.NewTemplateVars(), nil, "train", "trainer", dir)
+	_, err = planWorkloadAddition(cfgPath, []byte(podOnlyConfig), cfg, config.NewTemplateVars(), nil, nonInteractiveVarResolver(nil), "train", "trainer", dir)
 	if err == nil || !strings.Contains(err.Error(), "workerReplicas") {
 		t.Fatalf("expected an error naming the required variable, got %v", err)
 	}
