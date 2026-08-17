@@ -1,11 +1,14 @@
 name: E2E Kind
 
+# Tags deliberately do not trigger this. A release tag normally points at a
+# commit main already validated, so running it again told us nothing and cost
+# ~20 minutes per release. The release workflow requires a successful run for
+# the tagged commit instead, and fails loudly when there is none — for a tag on
+# a commit that never reached main, dispatch this workflow on that ref first.
 on:
   push:
     branches:
       - main
-    tags:
-      - "v*"
   workflow_dispatch:
 
 jobs:
