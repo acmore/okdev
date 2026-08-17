@@ -588,13 +588,22 @@ func TestAttachPodHookStatesReportsPerPodProgress(t *testing.T) {
 	if len(master) != 2 || master[0].State != hookStateDone || master[1].State != hookStateDone {
 		t.Fatalf("master hooks = %+v, want postSync+postCreate done", master)
 	}
+	// postCreate now runs on every pod, so it is reported on every pod. These
+	// two have never run it, which is exactly what pending means — reporting
+	// nothing there hid a pod that still needed setup.
 	worker0 := byName["worker-0"]
-	if len(worker0) != 1 || worker0[0].Name != "postSync" || worker0[0].State != hookStateStale {
-		t.Fatalf("worker-0 hooks = %+v, want stale postSync only", worker0)
+	if len(worker0) != 2 {
+		t.Fatalf("worker-0 hooks = %+v, want postSync and postCreate", worker0)
+	}
+	if worker0[0].Name != "postSync" || worker0[0].State != hookStateStale {
+		t.Fatalf("worker-0 postSync = %+v, want stale", worker0[0])
+	}
+	if worker0[1].Name != "postCreate" || worker0[1].State != hookStatePending {
+		t.Fatalf("worker-0 postCreate = %+v, want pending", worker0[1])
 	}
 	worker1 := byName["worker-1"]
-	if len(worker1) != 1 || worker1[0].State != hookStatePending {
-		t.Fatalf("worker-1 hooks = %+v, want pending postSync", worker1)
+	if len(worker1) != 2 || worker1[0].State != hookStatePending || worker1[1].State != hookStatePending {
+		t.Fatalf("worker-1 hooks = %+v, want pending postSync and postCreate", worker1)
 	}
 }
 
