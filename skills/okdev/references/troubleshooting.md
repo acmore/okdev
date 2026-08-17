@@ -142,6 +142,20 @@ okdev ports
 
 Use this when forwards need to be rewritten or re-established after workload or SSH changes.
 
+## Template Variable Problems
+
+`template references undeclared variable "X"` means the template body uses `.Vars.X` but the frontmatter never declared `X`. `.Vars` holds exactly the declared variables, so this is a template bug, not a bad value.
+
+Run `okdev template show <name>` first — it lists the variables okdev actually parsed. Three causes, in order of likelihood:
+
+- `X` is genuinely not in `variables:`, or is spelled differently there (names are case-sensitive).
+- The declaration key is wrong: it is `variables:`, not `vars:`. `vars:` parses as unknown frontmatter and is silently ignored.
+- The frontmatter was not parsed at all. It is only recognized when the file **starts** with `---`, so a leading blank line, a BOM, or a comment above it turns the whole block into body text. `template show` then reports no variables and no description.
+
+Older okdev versions did not diagnose this. A string variable rendered as the literal `<no value>` and wrote a broken config; a numeric one used in a comparison failed with the raw Go error `invalid type for comparison`, which named neither the variable nor the fix. If a user reports either symptom, it is this.
+
+`variable "X" is required (no default) and no value provided` is the different case: `X` **is** declared but has no `default:`, and nothing supplied it. Pass `--set X=<value>`. Non-interactive runs (`--yes`) and `okdev init --workload-name` never prompt, so a defaultless variable must always come from `--set` there.
+
 ## Local State
 
 Remember that local runtime state lives under:

@@ -277,7 +277,17 @@ agents can react without launching a diagnostic chain on every blip:
 
     The manifest is named after the workload, not its type, so two workloads of the same type never collide. A `pod` workload added this way gets the same starter manifest `okdev init` scaffolds, so it is a file to edit rather than a blank.
 
-    Additive mode never prompts and never changes project-level settings. Passing a project-level flag (`--name`, `--namespace`, `--context`, `--set`, `--dev-image`, `--sidecar-image`, `--sync-local`, `--sync-remote`, `--ssh-user`, `--shell`, `--stignore-preset`) is **refused** rather than ignored, so one flag never means two things; edit the config to change those. `--force` still means "rewrite the whole config", and giving it together with `--workload-name` is refused because they state opposite intents.
+    Additive mode never prompts and never changes project-level settings. Passing a project-level flag (`--name`, `--namespace`, `--context`, `--dev-image`, `--sidecar-image`, `--sync-local`, `--sync-remote`, `--ssh-user`, `--shell`, `--stignore-preset`) is **refused** rather than ignored, so one flag never means two things; edit the config to change those. `--force` still means "rewrite the whole config", and giving it together with `--workload-name` is refused because they state opposite intents.
+
+    `--set` is **not** one of those: it configures the template, and additive mode renders the template. A template that declares variables resolves them here the same way a fresh `okdev init` does — `--set` first, then the frontmatter defaults for anything left. Because additive mode never prompts, a variable with no default and no `--set` is an error naming the variable rather than a prompt.
+
+    ```console
+    $ okdev init --template pytorchjob --workload-name train --set workerReplicas=4
+      Wrote .okdev/train.yaml
+      Declared workload "train" in .okdev/okdev.yaml
+    ```
+
+    A `--set` key the template does not declare is reported as a warning and dropped, matching fresh init. The resolved values render the added workload's manifest but are **not** persisted to `spec.template.vars`: that records how the *project's* config was generated, and adding a workload does not regenerate it.
 
     Nothing is written unless the resulting config validates: a rejected addition leaves the config and `.okdev/` byte-identical. An existing file at the target manifest path is an error naming the file — `--force` does not clobber manifests.
 - Configs written before okdev always used the folder — a flat `.okdev.yaml`, or a bare `okdev.yaml` — keep working and are never migrated. Workloads added to them still land in `.okdev/`.
@@ -294,6 +304,7 @@ agents can react without launching a diagnostic chain on every blip:
 - `--template`: accepts a project template from `.okdev/templates/<name>.yaml.tmpl`, a user template from `~/.okdev/templates/<name>.yaml.tmpl`, built-in `basic`, a file path, or a URL. Run `okdev template list` to see available names.
 - `--set`: sets a frontmatter-declared template variable. Repeat it for multiple variables, for example `--set numWorkers=4 --set baseImage=pytorch:latest`.
 - Templates can declare `string`, `int`, and `bool` variables in YAML frontmatter. Resolved values are available as `.Vars.<name>` during rendering and are persisted under `spec.template.vars`.
+- `.Vars` holds exactly the declared variables, so **referencing a `.Vars.<name>` the frontmatter never declared is an error naming that variable**. Go's default would render it as the literal `<no value>`, which wrote a broken config for a string variable and failed much later with `invalid type for comparison` for one used in a numeric comparison. The usual cause is a typo, or frontmatter that was not parsed at all — it is only recognized when the file *starts* with `---`, so a leading blank line silently turns the whole block into body text. `okdev template show <name>` lists the variables okdev actually parsed.
 - Templates can also declare companion `files` in frontmatter. Each file has a rendered `path` and a `template` path resolved relative to the selected template, which lets a PyTorch template render both `okdev.yaml` and a matching `pytorchjob.yaml`.
 - For built-in templates, it also writes a starter local `.stignore` file for the initialized sync root. **An existing `.stignore` is never replaced, not even with `--force`** — it accumulates hand-written rules, and `--force` regenerates the config, not your ignore list. `okdev init` reports `Kept existing <path>` so it is clear the starter patterns were not applied.
 - The built-in templates are `pod` (aliased as `basic`, the default), `job`, `pytorchjob`, `deployment` and `generic`. Each declares its own starter manifest and `.stignore` preset in frontmatter — exactly as your own templates do — so a template of yours that shadows one of those names simply replaces it and inherits none of its behavior. `generic` declares no manifest: it is the bring-your-own shape, and needs `--manifest-path` plus `--inject-path`.

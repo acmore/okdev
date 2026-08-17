@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/acmore/okdev/internal/config"
@@ -82,11 +83,15 @@ type workloadAddition struct {
 	ConfigBytes    []byte
 	ManifestTarget string
 	ManifestBytes  []byte
+	// UnknownSets names --set keys the template does not declare. They are
+	// dropped rather than fatal, exactly as on the fresh-init path, but a typo
+	// that silently leaves a variable at its default is worth saying out loud.
+	UnknownSets []string
 }
 
 // planWorkloadAddition computes everything the additive path will write and
 // proves the result is valid, without touching the filesystem.
-func planWorkloadAddition(cfgPath string, raw []byte, cfg *config.DevEnvironment, vars *config.TemplateVars, workloadName, templateRef, projectDir string) (*workloadAddition, error) {
+func planWorkloadAddition(cfgPath string, raw []byte, cfg *config.DevEnvironment, vars *config.TemplateVars, sets map[string]string, workloadName, templateRef, projectDir string) (*workloadAddition, error) {
 	name := strings.TrimSpace(workloadName)
 	if name == "" {
 		return nil, fmt.Errorf("--workload-name is required")
@@ -111,7 +116,16 @@ func planWorkloadAddition(cfgPath string, raw []byte, cfg *config.DevEnvironment
 	if err != nil {
 		return nil, err
 	}
-	rendered, err := config.RenderTemplateContent("okdev", body, vars, nil)
+	// The template's variables are as much a part of the shape it describes as
+	// the workload block itself: the body branches on them and the companion
+	// manifest is rendered from them. Resolving them here is what makes a
+	// template with variables usable additively at all.
+	customVars, err := config.ResolveVariables(meta, sets, nil)
+	if err != nil {
+		return nil, err
+	}
+	unknownSets := undeclaredSetNames(meta, sets)
+	rendered, err := config.RenderTemplateContent("okdev", body, vars, customVars)
 	if err != nil {
 		return nil, err
 	}
@@ -140,13 +154,17 @@ func planWorkloadAddition(cfgPath string, raw []byte, cfg *config.DevEnvironment
 	// The template's own manifest is the files: entry matching what it declared
 	// as manifestPath. It is written as <workload-name>.yaml so two workloads of
 	// the same shape never collide on one file.
+	asset, err := templateWorkloadAsset(meta, declared.ManifestPath, vars, customVars)
+	if err != nil {
+		return nil, err
+	}
 	var manifestBytes []byte
-	if asset := templateWorkloadAsset(meta, declared.ManifestPath); asset != "" {
+	if asset != "" {
 		raw, err := config.ResolveTemplateAssetFromDir(context.Background(), templateRef, asset, projectDir)
 		if err != nil {
 			return nil, fmt.Errorf("resolve template file %q: %w", asset, err)
 		}
-		out, err := config.RenderTemplateContent(filepath.Base(asset), raw, vars, nil)
+		out, err := config.RenderTemplateContent(filepath.Base(asset), raw, vars, customVars)
 		if err != nil {
 			return nil, fmt.Errorf("render template file %q: %w", asset, err)
 		}
@@ -166,26 +184,54 @@ func planWorkloadAddition(cfgPath string, raw []byte, cfg *config.DevEnvironment
 		return nil, fmt.Errorf("adding workload %q would make the config invalid: %w", name, err)
 	}
 
-	add := &workloadAddition{ConfigBytes: configBytes, ManifestBytes: manifestBytes}
+	add := &workloadAddition{ConfigBytes: configBytes, ManifestBytes: manifestBytes, UnknownSets: unknownSets}
 	if len(manifestBytes) > 0 {
 		add.ManifestTarget = workload.ResolveManifestPath(cfgPath, profile.ManifestPath)
 	}
 	return add, nil
 }
 
+// undeclaredSetNames returns the --set keys the template does not declare, in
+// sorted order so the warnings are stable.
+func undeclaredSetNames(meta *config.TemplateMeta, sets map[string]string) []string {
+	if len(sets) == 0 || meta == nil {
+		return nil
+	}
+	known := make(map[string]bool, len(meta.Variables))
+	for _, v := range meta.Variables {
+		known[v.Name] = true
+	}
+	var unknown []string
+	for name := range sets {
+		if !known[name] {
+			unknown = append(unknown, name)
+		}
+	}
+	sort.Strings(unknown)
+	return unknown
+}
+
 // templateWorkloadAsset finds the declared file that is the workload's manifest:
 // the one whose path matches what the template rendered as manifestPath.
-func templateWorkloadAsset(meta *config.TemplateMeta, manifestPath string) string {
+//
+// A files: path is itself a template — a variable-driven template names its
+// manifest {{ .Vars.manifestPath }} — so it has to be rendered before it can be
+// compared, the same way the fresh-init path renders it before writing it.
+func templateWorkloadAsset(meta *config.TemplateMeta, manifestPath string, vars *config.TemplateVars, customVars map[string]any) (string, error) {
 	if meta == nil {
-		return ""
+		return "", nil
 	}
 	want := filepath.Base(strings.TrimSpace(manifestPath))
 	for _, f := range meta.Files {
-		if filepath.Base(strings.TrimSpace(f.Path)) == want {
-			return strings.TrimSpace(f.Template)
+		path, err := config.RenderTemplateContent("template-file-path", f.Path, vars, customVars)
+		if err != nil {
+			return "", fmt.Errorf("render template file path %q: %w", f.Path, err)
+		}
+		if filepath.Base(strings.TrimSpace(path)) == want {
+			return strings.TrimSpace(f.Template), nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
 // appendWorkloadProfileToConfigBytes adds a profile to spec.workloads in place.
@@ -277,8 +323,12 @@ func appendWorkloadProfileToConfigBytes(raw []byte, p config.WorkloadProfile) ([
 // projectLevelInitFlags configure a project at creation time. They are
 // meaningless when appending a workload, and are rejected rather than ignored
 // so one flag never means two things.
+//
+// --set is deliberately not one of them: it configures the template, and the
+// additive path renders that template. Rejecting it left every variable pinned
+// to its default with no way to choose a value.
 var projectLevelInitFlags = []string{
-	"name", "namespace", "context", "set",
+	"name", "namespace", "context",
 	"dev-image", "sidecar-image", "sync-local", "sync-remote",
 	"ssh-user", "shell", "stignore-preset",
 }
@@ -319,7 +369,7 @@ func existingConfigPath(opts *Options) (string, error) {
 
 // runInitAddWorkload appends a workload to an existing config. It writes the
 // manifest and the config together or not at all.
-func runInitAddWorkload(cmd *cobra.Command, cfgPath string, vars *config.TemplateVars, workloadName, templateRef string) error {
+func runInitAddWorkload(cmd *cobra.Command, cfgPath string, vars *config.TemplateVars, sets map[string]string, workloadName, templateRef string) error {
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
 		return fmt.Errorf("read config %q: %w", cfgPath, err)
@@ -329,9 +379,12 @@ func runInitAddWorkload(cmd *cobra.Command, cfgPath string, vars *config.Templat
 		return err
 	}
 
-	add, err := planWorkloadAddition(cfgPath, raw, cfg, vars, workloadName, templateRef, config.RootDir(cfgPath))
+	add, err := planWorkloadAddition(cfgPath, raw, cfg, vars, sets, workloadName, templateRef, config.RootDir(cfgPath))
 	if err != nil {
 		return err
+	}
+	for _, name := range add.UnknownSets {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: template variable %q is not declared by this template\n", name)
 	}
 
 	if add.ManifestTarget != "" {
