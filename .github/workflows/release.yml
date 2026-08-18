@@ -12,6 +12,12 @@ on:
 jobs:
   verify-e2e:
     uses: ./.github/workflows/verify-e2e.yml
+    # A called workflow cannot ask for more than its caller was given, and a
+    # caller that grants nothing gives it nothing — the whole run is rejected
+    # before any job starts. verify-e2e reads other runs, so grant that here.
+    permissions:
+      actions: read
+      contents: read
     with:
       sha: ${{ github.sha }}
 
