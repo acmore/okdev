@@ -135,16 +135,11 @@ text = text.replace(old_volume, new_volume)
 path.write_text(text)
 PY
 replace_all_in_file "$CFG_PATH" 'container: dev' 'container: pytorch'
-python3 - <<'PY' "$CFG_PATH"
-import pathlib, sys
-path = pathlib.Path(sys.argv[1])
-text = path.read_text()
-old = '      - path: "spec.pytorchReplicaSpecs.Worker.template"\n'
-new = '      - path: "spec.pytorchReplicaSpecs.Worker.template"\n        sidecar: false\n'
-if old not in text:
-    raise SystemExit("worker inject path not found")
-path.write_text(text.replace(old, new, 1))
-PY
+# The config is left as the template ships it. Both replica specs now mount the
+# same claim, and that shared volume is the whole statement of intent: the code
+# is already on every pod, so no mesh is needed. This used to be spelled
+# `sidecar: false` on the worker, which said something else entirely — it
+# stripped the sidecar — and only happened to suppress mesh as a side effect.
 
 # Set 2 worker replicas for multi-pod testing (1 master + 2 workers = 3 pods).
 # Also set a short terminationGracePeriodSeconds so pod cleanup after
@@ -1751,19 +1746,11 @@ replace_all_in_file "$MESH_MANIFEST" 'image: # TODO: replace with your image' 'i
 replace_all_in_file "$MESH_MANIFEST" 'command: ["sleep", "infinity"]' 'command: ["sh", "-lc", "trap : TERM INT; while true; do sleep 3600; done"]'
 replace_all_in_file "$MESH_CFG" 'container: dev' 'container: pytorch'
 
-# Key difference: workers keep sidecar: true (the default) instead of false.
-# This enables syncthing mesh — no PVC needed. Workers use emptyDir volumes.
-# We only need to disable the worker attachable flag (not the default target).
-python3 - <<'PY' "$MESH_CFG"
-import pathlib, sys
-path = pathlib.Path(sys.argv[1])
-text = path.read_text()
-old = '      - path: "spec.pytorchReplicaSpecs.Worker.template"\n'
-new = '      - path: "spec.pytorchReplicaSpecs.Worker.template"\n        attachable: false\n'
-if old not in text:
-    raise SystemExit("worker inject path not found")
-path.write_text(text.replace(old, new, 1))
-PY
+# No patching here on purpose. This is the config the template ships: workers
+# keep the default sidecar and declare no volume, so each gets its own emptyDir
+# workspace and can only be filled over the mesh. Editing it to make mesh
+# engage is what hid the defect where every pod came out a hub, no pod was a
+# receiver, and the workers sat on an empty workspace in silence.
 
 # Set 2 worker replicas + short terminationGracePeriodSeconds.
 python3 - <<'PY' "$MESH_MANIFEST"
@@ -1798,6 +1785,18 @@ if [[ "$MESH_STATUS" != *"health: active"* ]]; then
 fi
 if [[ "$MESH_STATUS" != *"topology: hub-and-spoke"* ]]; then
   echo "ERROR: expected mesh topology in status output" >&2
+  exit 1
+fi
+# Names the cause directly, so a regression reads as "every pod came out
+# ineligible" rather than the downstream "mesh is broken". Each pod here has its
+# own emptyDir workspace, so all three can only be filled over the network.
+MESH_ELIGIBLE=$(kubectl -n "$NAMESPACE" get pods \
+  -l "$(session_managed_pod_selector "$MESH_SESSION"),okdev.io/mesh-eligible=true" \
+  --no-headers 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$MESH_ELIGIBLE" != "3" ]]; then
+  echo "ERROR: expected 3 mesh-eligible pods (1 master + 2 workers), got $MESH_ELIGIBLE" >&2
+  kubectl -n "$NAMESPACE" get pods -l "$(session_managed_pod_selector "$MESH_SESSION")" \
+    -L okdev.io/mesh-eligible,okdev.io/attachable >&2 || true
   exit 1
 fi
 if [[ -e "$MESH_SYNC/a" ]]; then

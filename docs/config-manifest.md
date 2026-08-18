@@ -570,6 +570,43 @@ spec:
   defaultWorkload: dev
 ```
 
+### `inject[]`
+
+Each entry names a pod template inside the manifest that joins the session.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `path` | `string` | — | Dotted path to the pod template. Required except for `pod`, whose template is the object itself. |
+| `sidecar` | `bool` | `true` | Whether these pods run okdev's sidecar. Without it a pod gets no syncthing and no SSH, so it neither receives the workspace nor accepts `okdev exec`. `spec.ssh.interPod: true` force-enables it everywhere, overriding `false`. |
+| `attachable` | `bool` | `true` | Whether these pods may be the **interactive target** — where a bare `okdev ssh` or a selector-less `okdev exec` lands. `false` does not stop `--pod`/`--role` from reaching them. |
+
+**`attachable` decides interactive targeting and nothing else.** It used to also
+decide the mesh role, which made the shipped defaults unusable: every pod is
+attachable by default, every pod therefore came out a mesh *hub*, no pod was a
+receiver, and the workspace silently never reached the workers. How the
+workspace travels is now derived — see below — so you can have a worker you can
+attach to *and* that receives your code, which was previously impossible.
+
+**Order matters.** The first `inject` entry is the shape you work in; later ones
+are replicas of it. okdev prefers rank 0 when picking the session target, so a
+PyTorchJob lands on `Master` rather than on whichever pod the controller created
+last. A pod you explicitly attached to still wins over rank.
+
+### How the workspace reaches each pod
+
+You do not configure this. okdev derives it per pod from two facts:
+
+| Pod | Workspace arrives via |
+|-----|----------------------|
+| runs a sidecar, workspace volume is its own (an `emptyDir`, declared or supplied by okdev) | **mesh** — synced from the hub over the pod network |
+| runs a sidecar, workspace volume is a shared claim | **the volume** — the code is already there, no mesh |
+| no sidecar | **nothing** — it is not part of the session's workspace |
+
+The hub is the session target, the pod your local machine syncs into; every other
+mesh pod receives from it. `okdev status --details` always states which of the
+three applies and why, so "no mesh needed" is never confused with "mesh did not
+run".
+
 A profile owns exactly `name`, `type`, `manifestPath`, `inject`, and `attach`.
 Everything else — `ports`, `sync`, `sidecar`, `volumes`, `namespace` — is shared
 and identical across profiles. To vary those, use a separate session.

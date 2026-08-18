@@ -97,6 +97,14 @@ func ComparePodPriority(a, b kube.PodSummary) bool {
 	if as != bs {
 		return as > bs
 	}
+	// Declared order beats creation time. Without this the target of a
+	// multi-replica workload came down to which pod the controller created
+	// last, so a PyTorchJob could land on a worker — and since the target is
+	// also the sync hub, the workspace would re-bootstrap from a different pod
+	// on the next run. An explicit attach still wins: it is scored above.
+	if ar, br := podRank(a), podRank(b); ar != br {
+		return ar < br
+	}
 	if !a.CreatedAt.Equal(b.CreatedAt) {
 		return a.CreatedAt.After(b.CreatedAt)
 	}

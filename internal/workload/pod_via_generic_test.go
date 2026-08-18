@@ -206,8 +206,12 @@ spec:
 		t.Fatalf("unmarshal applied pod: %v", err)
 	}
 	for key, want := range map[string]string{
-		"okdev.io/attachable":    "true",
-		"okdev.io/mesh-role":     "hub",
+		"okdev.io/attachable": "true",
+		// A single pod's workspace is its own emptyDir, so it is mesh-eligible
+		// like any other; being the only pod, it simply ends up the hub with
+		// nobody to send to. Eligibility is a property of the pod, and the
+		// topology is resolved at runtime against the live pod set.
+		MeshEligibleLabel:        "true",
 		"okdev.io/workload-name": "okdev-sess1",
 		"okdev.io/session":       "sess1",
 	} {

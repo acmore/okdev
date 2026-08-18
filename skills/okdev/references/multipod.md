@@ -30,6 +30,12 @@ Useful guidance:
 - not every pod is necessarily attachable
 - attachable selection matters for `okdev ssh` and interactive targeting
 - `okdev exec` is often the better tool when the user wants commands across multiple pods or specific roles
+- **`attachable` decides interactive targeting only.** It does not affect whether a pod receives the workspace — that is derived from whether the pod runs a sidecar and whether its workspace volume is its own or a shared claim. Never suggest `attachable: false` (or `sidecar: false`) as a way to influence sync or mesh; `sidecar: false` removes SSH and sync from the pod entirely, which is almost never what is wanted.
+- When a session's pods declare several `inject` paths, the **first** is the shape the user works in and the one okdev targets — a PyTorchJob resolves to `Master`, not to whichever pod was created last. The target is also the sync hub.
+
+## Where the workspace is, and why
+
+If asked why a pod does not have the code, check `okdev status --details`: it always states how the workspace is distributed and why. The three answers are mesh (the pod has its own workspace volume and receives from the hub), a shared volume (the code is already there, so no mesh runs), and no sidecar (the pod is not part of the session's workspace at all). A pod with no sidecar cannot receive anything, whatever else is configured.
 
 Pod addressing: prefer the **short names in the ALIAS column of `okdev status`** (`master-0`, `worker-1`) over full hash names — `--pod` on exec/cp/jobs and `target set --pod` accept them (plus any unique `-<name>` suffix), and they stay stable across pod recreations while full names do not. `--role` selects the whole role group; short names select individual pods.
 

@@ -359,7 +359,7 @@ func repairMeshIfNeeded(cmd *cobra.Command, cc *commandContext, hubPod string) e
 	ctx, cancel := context.WithTimeout(cmd.Context(), meshSetupTimeout+30*time.Second)
 	defer cancel()
 
-	count, err := meshReceiverCount(ctx, cc.kube, cc.namespace, labels)
+	count, err := meshReceiverCount(ctx, cc.kube, cc.namespace, labels, hubPod)
 	if err != nil || count == 0 {
 		return nil
 	}
@@ -393,7 +393,7 @@ func forceRepairMesh(cmd *cobra.Command, cc *commandContext, hubPod string) erro
 	ctx, cancel := context.WithTimeout(cmd.Context(), meshSetupTimeout+30*time.Second)
 	defer cancel()
 
-	count, err := meshReceiverCount(ctx, cc.kube, cc.namespace, labels)
+	count, err := meshReceiverCount(ctx, cc.kube, cc.namespace, labels, hubPod)
 	if err != nil || count == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), "No mesh receivers found")
 		return nil

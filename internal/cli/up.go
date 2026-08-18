@@ -899,7 +899,7 @@ func upSetup(state *upState) error {
 	// Mesh sync: if receiver pods exist, configure syncthing mesh from hub
 	// to receivers so all pods get the workspace without a shared PVC.
 	if len(state.syncPairs) > 0 {
-		meshCount, meshCountErr := meshReceiverCount(state.ctx, state.command.kube, state.command.namespace, state.labels)
+		meshCount, meshCountErr := meshReceiverCount(state.ctx, state.command.kube, state.command.namespace, state.labels, target.PodName)
 		if meshCountErr != nil {
 			slog.Debug("mesh: could not count receivers", "error", meshCountErr)
 		}
