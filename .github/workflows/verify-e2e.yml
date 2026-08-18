@@ -19,7 +19,7 @@ on:
         description: Commit that must have a successful E2E Kind run
         required: true
         type: string
-      timeout-minutes:
+      timeout_minutes:
         description: How long to wait for an in-flight run on that commit
         required: false
         default: 45
@@ -35,7 +35,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ inputs.sha }}
-          DEADLINE_MINUTES: ${{ inputs.timeout-minutes }}
+          DEADLINE_MINUTES: ${{ inputs.timeout_minutes }}
         run: |
           set -euo pipefail
           runs_url="repos/${GITHUB_REPOSITORY}/actions/workflows/e2e-kind.yml/runs"
