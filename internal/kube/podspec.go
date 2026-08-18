@@ -24,6 +24,12 @@ func PreparePodSpecForTargetWithShell(podSpec corev1.PodSpec, workspaceMountPath
 	return PreparePodSpecForTargetWithShellAndSyncRoots(podSpec, workspaceMountPath, sidecarImage, sidecarResources, tmux, preStop, targetContainer, shell, nil)
 }
 
+// WorkspaceVolumeName is the volume okdev syncs into. The manifest owns it:
+// declare it (a claim, say) and okdev keeps exactly that, declare nothing and
+// okdev supplies an emptyDir. Which of the two it is decides whether the pod
+// can be handed the workspace by its volume or has to receive it over the mesh.
+const WorkspaceVolumeName = "workspace"
+
 // PreparePodSpecForTargetWithShellAndSyncRoots additionally auto-provisions
 // volumes for sync mapping remote roots: any root not already covered by a
 // target-container volume mount gets an emptyDir mounted at that exact path
@@ -62,7 +68,7 @@ func PreparePodSpecForTargetWithShellAndSyncRoots(podSpec corev1.PodSpec, worksp
 	// as a PVC, say — keeps exactly what it declared. The other two belong to
 	// the sidecar, not to the manifest.
 	spec.Volumes = ensureVolume(spec.Volumes, corev1.Volume{
-		Name:         "workspace",
+		Name:         WorkspaceVolumeName,
 		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 	})
 	spec.Volumes = ensureVolume(spec.Volumes, corev1.Volume{

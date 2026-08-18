@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"text/template"
@@ -99,7 +100,7 @@ func (r *GenericRuntime) Apply(ctx context.Context, k ApplyClient, namespace str
 		annos[AnnotationLastAppliedHash] = r.LastAppliedSpecHash
 		obj.SetAnnotations(annos)
 	}
-	for _, inject := range r.Inject {
+	for injectIndex, inject := range r.Inject {
 		templateMap, err := resolveMapPath(obj.Object, inject.Path)
 		if err != nil {
 			return err
@@ -111,17 +112,24 @@ func (r *GenericRuntime) Apply(ctx context.Context, k ApplyClient, namespace str
 		templateLabels := mergeStringMaps(template.Labels, workloadLabels)
 		templateAnnotations := mergeStringMaps(template.Annotations, workloadAnnotations)
 		templateLabels["okdev.io/attachable"] = boolLabel(injectAttachable(inject))
+		// The order inject paths are declared in is the order they matter in:
+		// the first is the shape you work in, later ones are replicas of it.
+		// Carried onto the pod so target selection is decided by that intent
+		// rather than by which pod the controller happened to create last.
+		templateLabels[WorkloadRankLabel] = strconv.Itoa(injectIndex)
 		if role := roleFromInjectPath(inject.Path); role != "" {
 			templateLabels["okdev.io/workload-role"] = role
 		}
 		template.Labels = templateLabels
 		template.Annotations = templateAnnotations
-		if inject.Sidecar == nil || *inject.Sidecar {
-			if injectAttachable(inject) {
-				templateLabels["okdev.io/mesh-role"] = "hub"
-			} else {
-				templateLabels["okdev.io/mesh-role"] = "receiver"
-			}
+		hasSidecar := inject.Sidecar == nil || *inject.Sidecar
+		// Whether a pod needs the workspace sent to it is a property of the
+		// pod, not of how you reach it interactively. It follows from the two
+		// facts that actually decide it: a sidecar to run syncthing, and a
+		// workspace volume nothing else writes to. Computed before the spec is
+		// prepared, because preparing it fills in the emptyDir okdev supplies.
+		templateLabels[MeshEligibleLabel] = boolLabel(hasSidecar && workspaceIsPrivate(template.Spec))
+		if hasSidecar {
 			template.Spec, err = kube.PreparePodSpecForTargetWithShellAndSyncRoots(template.Spec, r.WorkspaceMountPath, r.SidecarImage, r.SidecarResources, r.Tmux, r.PreStop, r.interactiveContainer(), r.Shell, r.SyncRemoteRoots)
 			if err != nil {
 				return err
@@ -416,6 +424,50 @@ func encodePodTemplateSpec(template corev1.PodTemplateSpec) (map[string]any, err
 		return nil, err
 	}
 	return out, nil
+}
+
+// WorkloadRankLabel records which inject path produced a pod, counting from
+// zero. Rank 0 is the shape the config declares first — Master before Worker in
+// every template that ships — and is the pod okdev prefers as the session
+// target. That target is also the sync hub, so leaving the choice to creation
+// time let the hub move between runs and re-bootstrap the whole workspace.
+//
+// A pod created before ranking carries no label, which reads as rank 0 so
+// existing sessions keep resolving to the pod they already used.
+const WorkloadRankLabel = "okdev.io/workload-rank"
+
+// podRank reports a pod's declared rank, treating anything unlabelled or
+// unparseable as principal.
+func podRank(pod kube.PodSummary) int {
+	raw := strings.TrimSpace(pod.Labels[WorkloadRankLabel])
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// MeshEligibleLabel marks a pod whose workspace can only be filled over the
+// network. It replaced a mesh role read off `attachable`, which defaults to
+// true: every pod came out a hub, none a receiver, and mesh silently never ran.
+const MeshEligibleLabel = "okdev.io/mesh-eligible"
+
+// workspaceIsPrivate reports whether this pod is the only writer of its
+// workspace. A manifest that declares the workspace as a claim shares it with
+// every pod mounting the same claim, so the code is already there and there is
+// nothing to send. Declaring nothing means okdev supplies an emptyDir, which is
+// as private as it gets.
+func workspaceIsPrivate(spec corev1.PodSpec) bool {
+	for _, v := range spec.Volumes {
+		if v.Name != kube.WorkspaceVolumeName {
+			continue
+		}
+		return v.EmptyDir != nil
+	}
+	return true
 }
 
 func injectAttachable(inject config.WorkloadInjectSpec) bool {

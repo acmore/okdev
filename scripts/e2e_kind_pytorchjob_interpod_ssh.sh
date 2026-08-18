@@ -67,6 +67,10 @@ replace_all_in_file "$MANIFEST_PATH" 'image: # TODO: replace with your image' 'i
 replace_all_in_file "$MANIFEST_PATH" 'command: ["sleep", "infinity"]' 'command: ["sh", "-lc", "apt-get update -qq && apt-get install -y -qq openssh-client >/dev/null 2>&1; trap : TERM INT; while true; do sleep 3600; done"]'
 replace_all_in_file "$CFG_PATH" 'container: dev' 'container: pytorch'
 
+# Deliberately ask for a worker with no sidecar. interPod: true below overrides
+# it, because inter-pod SSH needs a sidecar on every participating pod, and the
+# assertion after the session starts proves the override actually happened.
+# This patch is the setup for that assertion, not a workaround.
 python3 - <<'PY' "$CFG_PATH"
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])

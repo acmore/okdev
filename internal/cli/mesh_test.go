@@ -89,7 +89,18 @@ func TestMeshReceiverCount(t *testing.T) {
 
 	client := &kube.Client{}
 
-	count, err := meshReceiverCount(context.Background(), client, "demo", map[string]string{"okdev.io/session": "foo"})
+	// The hub is where the workspace already is, so it is never one of the
+	// pods that need it sent to them.
+	count, err := meshReceiverCount(context.Background(), client, "demo", map[string]string{"okdev.io/session": "foo"}, "pod-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected the hub to be excluded, got %d receivers", count)
+	}
+
+	// With a hub outside this set, every eligible pod is a receiver.
+	count, err = meshReceiverCount(context.Background(), client, "demo", map[string]string{"okdev.io/session": "foo"}, "elsewhere")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

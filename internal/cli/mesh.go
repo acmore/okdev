@@ -16,10 +16,37 @@ import (
 )
 
 const (
-	meshReceiverLabelSelector = "okdev.io/mesh-role=receiver"
+	// A pod is mesh-eligible when it runs a sidecar and owns its workspace
+	// volume, so the only way the code reaches it is over the network. The
+	// receivers are those pods minus the hub, which is where the code already
+	// is. Topology is resolved here, against live pods, rather than baked into
+	// a label at render time when the hub is not yet known.
+	meshEligibleLabelSelector = workload.MeshEligibleLabel + "=true"
 	meshSetupTimeout          = 2 * time.Minute
 	meshSyncPollInterval      = 2 * time.Second
 )
+
+// listMeshReceivers returns the session's mesh-eligible pods other than the
+// hub, dropping pods on their way out. Callers apply their own phase filter.
+func listMeshReceivers(ctx context.Context, k *kube.Client, namespace string, labels map[string]string, hubPod string) ([]kube.PodSummary, error) {
+	selector := workload.DiscoveryLabelSelector(labels)
+	if selector != "" {
+		selector += ","
+	}
+	selector += meshEligibleLabelSelector
+	pods, err := k.ListPods(ctx, namespace, false, selector)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]kube.PodSummary, 0, len(pods))
+	for _, p := range pods {
+		if p.Deleting || p.Name == hubPod {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
 
 type meshReceiverStatus struct {
 	Pod       string
@@ -49,32 +76,21 @@ func meshFolderPath(syncPairs []syncengine.Pair, workspaceMountPath string) stri
 // waits for all receivers to complete initial sync.
 func setupMesh(ctx context.Context, opts *Options, k *kube.Client, namespace, sessionName string, labels map[string]string, hubPod, folderID, folderPath string, timeout time.Duration, onStatus func(string)) (*meshSummary, error) {
 	// 1. Discover receiver pods.
-	selector := workload.DiscoveryLabelSelector(labels)
-	if selector != "" {
-		selector += ","
-	}
-	selector += meshReceiverLabelSelector
-
 	// Wait for receiver pods to reach Running phase before configuring.
 	var receivers []kube.PodSummary
 	deadline := time.Now().Add(timeout)
 	for {
-		pods, err := k.ListPods(ctx, namespace, false, selector)
+		pods, err := listMeshReceivers(ctx, k, namespace, labels, hubPod)
 		if err != nil {
 			return nil, fmt.Errorf("discover mesh receiver pods: %w", err)
 		}
 		receivers = make([]kube.PodSummary, 0, len(pods))
 		for _, p := range pods {
-			if !p.Deleting && p.Phase == "Running" {
+			if p.Phase == "Running" {
 				receivers = append(receivers, p)
 			}
 		}
-		allPods := 0
-		for _, p := range pods {
-			if !p.Deleting {
-				allPods++
-			}
-		}
+		allPods := len(pods)
 		if len(receivers) == allPods && allPods > 0 {
 			break
 		}
@@ -516,18 +532,13 @@ type meshHealthSummary struct {
 // connection and sync status. It returns per-receiver health without
 // modifying any configuration.
 func checkMeshHealth(ctx context.Context, opts *Options, k *kube.Client, namespace, sessionName string, labels map[string]string, hubPod, folderID string) (*meshHealthSummary, error) {
-	selector := workload.DiscoveryLabelSelector(labels)
-	if selector != "" {
-		selector += ","
-	}
-	selector += meshReceiverLabelSelector
-	pods, err := k.ListPods(ctx, namespace, false, selector)
+	pods, err := listMeshReceivers(ctx, k, namespace, labels, hubPod)
 	if err != nil {
 		return nil, fmt.Errorf("list mesh receiver pods: %w", err)
 	}
 	var receivers []kube.PodSummary
 	for _, p := range pods {
-		if !p.Deleting && p.Phase == "Running" {
+		if p.Phase == "Running" {
 			receivers = append(receivers, p)
 		}
 	}
@@ -685,24 +696,14 @@ func repairMeshReceivers(ctx context.Context, opts *Options, k *kube.Client, nam
 	return setupMesh(ctx, opts, k, namespace, sessionName, labels, hubPod, folderID, folderPath, meshSetupTimeout, onStatus)
 }
 
-// meshReceiverCount returns the number of receiver pods discovered in a session.
-func meshReceiverCount(ctx context.Context, k *kube.Client, namespace string, labels map[string]string) (int, error) {
-	selector := workload.DiscoveryLabelSelector(labels)
-	if selector != "" {
-		selector += ","
-	}
-	selector += meshReceiverLabelSelector
-	pods, err := k.ListPods(ctx, namespace, false, selector)
+// meshReceiverCount returns how many pods in the session need the workspace
+// sent to them, which is every mesh-eligible pod except the hub.
+func meshReceiverCount(ctx context.Context, k *kube.Client, namespace string, labels map[string]string, hubPod string) (int, error) {
+	pods, err := listMeshReceivers(ctx, k, namespace, labels, hubPod)
 	if err != nil {
 		return 0, err
 	}
-	count := 0
-	for _, p := range pods {
-		if !p.Deleting {
-			count++
-		}
-	}
-	return count, nil
+	return len(pods), nil
 }
 
 // formatMeshSummary returns a human-readable summary for the mesh setup step.

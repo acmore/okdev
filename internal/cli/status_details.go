@@ -15,6 +15,7 @@ import (
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
 	syncengine "github.com/acmore/okdev/internal/sync"
+	"github.com/acmore/okdev/internal/workload"
 	corev1 "k8s.io/api/core/v1"
 )
 
@@ -193,7 +194,7 @@ func gatherDetailedStatus(ctx context.Context, opts *Options, cfg *config.DevEnv
 	detail.Pods = pods
 	detail.SSH = buildDetailedSSH(view.Session, cfg.Spec.Ports)
 	detail.Sync = buildDetailedSync(view.Session, cfg, cfgPath)
-	detail.Sync.MeshLines = buildMeshLinesFromPods(view.Pods)
+	detail.Sync.MeshLines = buildMeshLinesFromPods(view.Pods, view.TargetPod)
 	if kubeClient, ok := client.(*kube.Client); ok && opts != nil {
 		if liveMesh := probeLiveMeshHealth(ctx, opts, kubeClient, namespace, view); liveMesh != nil {
 			detail.Sync.MeshHealth = liveMesh
@@ -581,20 +582,38 @@ func buildDetailedSync(sessionName string, cfg *config.DevEnvironment, cfgPath s
 	return detail
 }
 
-func buildMeshLinesFromPods(pods []kube.PodSummary) []string {
-	var hub string
+// buildMeshLinesFromPods always says how the workspace reaches the session's
+// pods, including when it does not travel at all. Printing nothing when there
+// was no mesh made "no mesh needed" and "mesh silently never ran" look
+// identical, which is how a workload whose workers sat on an empty workspace
+// went unnoticed.
+func buildMeshLinesFromPods(pods []kube.PodSummary, hub string) []string {
 	var receivers []string
+	noSidecar, sharedVolume := 0, 0
 	for _, p := range pods {
-		role := strings.TrimSpace(p.Labels["okdev.io/mesh-role"])
-		switch role {
-		case "hub":
-			hub = p.Name
-		case "receiver":
+		if p.Name == hub || p.Deleting {
+			continue
+		}
+		switch {
+		case strings.EqualFold(strings.TrimSpace(p.Labels[workload.MeshEligibleLabel]), "true"):
 			receivers = append(receivers, p.Name)
+		case !podHasSidecar(p):
+			noSidecar++
+		default:
+			sharedVolume++
 		}
 	}
-	if hub == "" || len(receivers) == 0 {
-		return nil
+	if len(receivers) == 0 {
+		switch {
+		case len(pods) < 2:
+			return []string{"workspace: single pod, nothing to distribute"}
+		case sharedVolume > 0 && noSidecar == 0:
+			return []string{fmt.Sprintf("workspace: shared volume on %d pod(s), no mesh needed", sharedVolume)}
+		case noSidecar > 0 && sharedVolume == 0:
+			return []string{fmt.Sprintf("workspace: %d pod(s) run no sidecar and receive nothing", noSidecar)}
+		default:
+			return []string{fmt.Sprintf("workspace: not distributed (%d shared volume, %d without sidecar)", sharedVolume, noSidecar)}
+		}
 	}
 	lines := []string{
 		"topology: hub-and-spoke",
@@ -604,17 +623,33 @@ func buildMeshLinesFromPods(pods []kube.PodSummary) []string {
 	for _, r := range receivers {
 		lines = append(lines, fmt.Sprintf("  %s", r))
 	}
+	if sharedVolume > 0 {
+		lines = append(lines, fmt.Sprintf("shared volume: %d pod(s), no mesh needed", sharedVolume))
+	}
+	if noSidecar > 0 {
+		lines = append(lines, fmt.Sprintf("without sidecar: %d pod(s), receive nothing", noSidecar))
+	}
 	return lines
 }
 
-func probeLiveMeshHealth(ctx context.Context, opts *Options, k *kube.Client, namespace string, view sessionView) *meshHealthSummary {
-	var hubPod string
-	for _, p := range view.Pods {
-		if strings.TrimSpace(p.Labels["okdev.io/mesh-role"]) == "hub" {
-			hubPod = p.Name
-			break
+func podHasSidecar(pod kube.PodSummary) bool {
+	for _, c := range pod.ContainerImages {
+		if c.Name == "okdev-sidecar" {
+			return true
 		}
 	}
+	for _, c := range pod.ContainerStarts {
+		if c.Name == "okdev-sidecar" {
+			return true
+		}
+	}
+	return false
+}
+
+func probeLiveMeshHealth(ctx context.Context, opts *Options, k *kube.Client, namespace string, view sessionView) *meshHealthSummary {
+	// The hub is wherever local sync bootstrapped into — the session's target
+	// pod — not something a render-time label can know.
+	hubPod := strings.TrimSpace(view.TargetPod)
 	if hubPod == "" {
 		return nil
 	}
