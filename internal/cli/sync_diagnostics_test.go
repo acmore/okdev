@@ -74,7 +74,7 @@ func TestSyncRepeatedWarningsRemainVisibleAndReset(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	full := syncPreflightWarning("test", syncHealthStopped, "dead", "exec")
 	compact := syncPreflightWarning("test", syncHealthStopped, "dead", "exec")
-	if !strings.Contains(full, "warning:") || !strings.Contains(compact, "sync still unhealthy") || len(compact) >= len(full) {
+	if !strings.Contains(full, "warning:") || !strings.Contains(compact, "sync still unhealthy") || !strings.Contains(compact, "may run stale code") || len(compact) >= len(full) {
 		t.Fatalf("full=%q compact=%q", full, compact)
 	}
 	changed := syncPreflightWarning("test", syncHealthStale, "API lost", "exec")

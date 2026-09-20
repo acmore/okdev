@@ -127,7 +127,7 @@ func syncPreflightWarning(sessionName string, status syncHealthStatus, reason, s
 		at, _ := strconv.ParseInt(stamp, 10, 64)
 		elapsed := time.Since(time.Unix(at, 0))
 		if ok && previous == key && elapsed >= 0 && elapsed < time.Minute {
-			return fmt.Sprintf("warning: sync still unhealthy (%s); stale code possible; see `okdev status --details`", status)
+			return fmt.Sprintf("warning: sync still unhealthy (%s); command may run stale code; see `okdev status --details`", status)
 		}
 	}
 	_ = writeSyncDiagnostic(path, []byte(strconv.FormatInt(time.Now().Unix(), 10)+"\n"+key))

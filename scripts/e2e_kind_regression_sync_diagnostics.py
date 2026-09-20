@@ -68,6 +68,7 @@ class SyncDiagnostics(KindRegression):
         self.assertEqual(second.stdout, b"clean")
         self.assertIn(b"warning:", first.stderr)
         self.assertIn(b"sync still unhealthy", second.stderr)
+        self.assertIn(b"may run stale code", second.stderr)
         blocked = self.run_cmd(base + ["exec", "--require-sync", "--", "touch", "/tmp/forbidden"], check=False)
         self.assertNotEqual(blocked.returncode, 0)
         self.remote(pod, "test", "!", "-e", "/tmp/forbidden")
