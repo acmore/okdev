@@ -15,6 +15,16 @@ bash scripts/e2e_kind_regressions.sh
 bash scripts/e2e_kind_regressions.sh config_jobs
 ```
 
+Available groups:
+
+| Group | Real Kind coverage |
+| --- | --- |
+| `config_jobs` | Named config discovery, config isolation, collision rejection, single/multi-pod job log bytes |
+| `readiness` | Live API connection loss, readiness retry, timeout continuation on the same Pod, one-time setup |
+| `stdin` | Binary streams, output before EOF, remote exit codes, cancellation, timeout, invalid modes |
+| `sync_revision` | Same-size content changes, empty entries, deletion, ignores, nested independent sync paths |
+| `mesh` | All receivers and hooks, disconnected worker, sync/exec convergence gates, recovery |
+
 `CLUSTER_NAME` defaults to `okdev-e2e`; `OKDEV_BIN` defaults to `bin/okdev`;
 `SIDECAR_IMAGE` defaults to `okdev-sidecar:v0.0.0-e2e`. The sidecar and
 `ubuntu:22.04` must be available to the cluster. The fixture reuses a locally

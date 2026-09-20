@@ -1510,15 +1510,16 @@ func syncthingFolderNeedBytes(ctx context.Context, base, key, folderID string) (
 }
 
 type syncthingFolderStatusInfo struct {
-	Sequence        *int64
-	NeedDirectories int64
-	NeedSymlinks    int64
-	NeedDeletes     int64
-	PullErrors      int64
-	State           string
-	GlobalFiles     int64
-	LocalFiles      int64
-	NeedBytes       int64
+	ReceiveOnlyTotalItems int64
+	Sequence              *int64
+	NeedDirectories       int64
+	NeedSymlinks          int64
+	NeedDeletes           int64
+	PullErrors            int64
+	State                 string
+	GlobalFiles           int64
+	LocalFiles            int64
+	NeedBytes             int64
 	// NeedFiles is the pending file count. /rest/db/status has always
 	// returned it; it was simply not decoded, which left "how much is left"
 	// answerable only in bytes (#215).
@@ -1532,31 +1533,33 @@ func syncthingFolderStatusInfoForFolder(ctx context.Context, base, key, folderID
 		return syncthingFolderStatusInfo{}, err
 	}
 	var payload struct {
-		Sequence        *int64 `json:"sequence"`
-		NeedDirectories int64  `json:"needDirectories"`
-		NeedSymlinks    int64  `json:"needSymlinks"`
-		NeedDeletes     int64  `json:"needDeletes"`
-		PullErrors      int64  `json:"pullErrors"`
-		State           string `json:"state"`
-		GlobalFiles     int64  `json:"globalFiles"`
-		LocalFiles      int64  `json:"localFiles"`
-		NeedBytes       int64  `json:"needBytes"`
-		NeedFiles       int64  `json:"needFiles"`
+		ReceiveOnlyTotalItems int64  `json:"receiveOnlyTotalItems"`
+		Sequence              *int64 `json:"sequence"`
+		NeedDirectories       int64  `json:"needDirectories"`
+		NeedSymlinks          int64  `json:"needSymlinks"`
+		NeedDeletes           int64  `json:"needDeletes"`
+		PullErrors            int64  `json:"pullErrors"`
+		State                 string `json:"state"`
+		GlobalFiles           int64  `json:"globalFiles"`
+		LocalFiles            int64  `json:"localFiles"`
+		NeedBytes             int64  `json:"needBytes"`
+		NeedFiles             int64  `json:"needFiles"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return syncthingFolderStatusInfo{}, err
 	}
 	return syncthingFolderStatusInfo{
-		Sequence:        payload.Sequence,
-		NeedDirectories: payload.NeedDirectories,
-		NeedSymlinks:    payload.NeedSymlinks,
-		NeedDeletes:     payload.NeedDeletes,
-		PullErrors:      payload.PullErrors,
-		State:           payload.State,
-		GlobalFiles:     payload.GlobalFiles,
-		LocalFiles:      payload.LocalFiles,
-		NeedBytes:       payload.NeedBytes,
-		NeedFiles:       payload.NeedFiles,
+		ReceiveOnlyTotalItems: payload.ReceiveOnlyTotalItems,
+		Sequence:              payload.Sequence,
+		NeedDirectories:       payload.NeedDirectories,
+		NeedSymlinks:          payload.NeedSymlinks,
+		NeedDeletes:           payload.NeedDeletes,
+		PullErrors:            payload.PullErrors,
+		State:                 payload.State,
+		GlobalFiles:           payload.GlobalFiles,
+		LocalFiles:            payload.LocalFiles,
+		NeedBytes:             payload.NeedBytes,
+		NeedFiles:             payload.NeedFiles,
 	}, nil
 }
 

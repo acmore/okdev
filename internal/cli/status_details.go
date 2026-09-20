@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -123,11 +122,12 @@ type detailedStatusMount struct {
 }
 
 type detailedStatusPathSemantics struct {
-	LocalPath     string `json:"localPath"`
-	RemotePath    string `json:"remotePath"`
-	WorkspacePath string `json:"workspacePath"`
-	SyncScope     string `json:"syncScope"`
-	Survival      string `json:"survival"`
+	SyncScopeBasis string `json:"syncScopeBasis"`
+	LocalPath      string `json:"localPath"`
+	RemotePath     string `json:"remotePath"`
+	WorkspacePath  string `json:"workspacePath"`
+	SyncScope      string `json:"syncScope"`
+	Survival       string `json:"survival"`
 }
 
 type detailedStatusPathPair struct {
@@ -397,11 +397,12 @@ func buildPathSemantics(pairs []detailedStatusPathPair, mounts []detailedStatusM
 			}
 		}
 		out = append(out, detailedStatusPathSemantics{
-			LocalPath:     pair.LocalPath,
-			RemotePath:    pair.RemotePath,
-			WorkspacePath: workspacePath,
-			SyncScope:     scope,
-			Survival:      survival,
+			LocalPath:      pair.LocalPath,
+			RemotePath:     pair.RemotePath,
+			WorkspacePath:  workspacePath,
+			SyncScope:      scope,
+			SyncScopeBasis: "configured topology; see live mesh health",
+			Survival:       survival,
 		})
 	}
 	return out
@@ -653,17 +654,13 @@ func probeLiveMeshHealth(ctx context.Context, opts *Options, k *kube.Client, nam
 	if hubPod == "" {
 		return nil
 	}
-	labels := map[string]string{
-		"okdev.io/managed": "true",
-		"okdev.io/session": view.Session,
-	}
+	labels := meshConvergenceLabels(view.Session)
 	folderID := "okdev-" + view.Session
 	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	summary, err := checkMeshHealth(probeCtx, opts, k, namespace, view.Session, labels, hubPod, folderID)
 	if err != nil {
-		slog.Debug("status: mesh health probe failed", "error", err)
-		return nil
+		return &meshHealthSummary{HubPod: hubPod, FolderID: folderID, Error: err.Error()}
 	}
 	return summary
 }
@@ -810,7 +807,7 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 	if len(detail.PathSemantics) > 0 {
 		fmt.Fprintln(w, "\nPath Semantics:")
 		for _, item := range detail.PathSemantics {
-			fmt.Fprintf(w, "- %s -> %s sync=%s survival=%s\n", emptyDash(item.LocalPath), emptyDash(item.RemotePath), item.SyncScope, item.Survival)
+			fmt.Fprintf(w, "- %s -> %s sync=%s survival=%s (configured topology; see live mesh health)\n", emptyDash(item.LocalPath), emptyDash(item.RemotePath), item.SyncScope, item.Survival)
 		}
 	}
 
@@ -1039,6 +1036,10 @@ func printMeshHealth(w io.Writer, health *meshHealthSummary) {
 	if health == nil {
 		return
 	}
+	if health.Error != "" {
+		fmt.Fprintf(w, "- live health: unverified: %s\n", health.Error)
+		return
+	}
 	healthy := 0
 	for _, r := range health.Receivers {
 		if r.Err == "" && r.Connected && r.InSync {
@@ -1047,10 +1048,19 @@ func printMeshHealth(w io.Writer, health *meshHealthSummary) {
 	}
 	total := len(health.Receivers)
 	fmt.Fprintf(w, "- live health: %d/%d receiver(s) healthy\n", healthy, total)
+	connected := 0
+	for _, r := range health.Receivers {
+		if r.Connected {
+			connected++
+		}
+	}
+	fmt.Fprintf(w, "- live receivers: expected=%d connected=%d converged=%d\n", max(total, health.Expected), connected, healthy)
 	for _, r := range health.Receivers {
 		state := "synced"
 		if r.Err != "" {
 			state = "error: " + r.Err
+		} else if r.Reason != "" {
+			state = r.Reason
 		} else if !r.Connected {
 			state = "disconnected"
 		} else if !r.InSync {
