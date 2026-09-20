@@ -11,10 +11,21 @@ Use this skill for end-user questions about the `okdev` CLI. Prefer `okdev`-nati
 
 Primary docs:
 
+- `docs/automation.md` — start here for scripting: checked JSON envelopes,
+  job-ID waits with `--grep`, explicit all-pod content verification, bind
+  addresses, remote shell quoting, detached monitors, and initial exclusions.
 - `docs/quickstart.md`
 - `docs/command-reference.md`
 - `docs/config-manifest.md`
 - `docs/troubleshooting.md`
+
+For an automation request, use `exec --all --json --require-all` only when the
+caller explicitly intends fanout; inspect every envelope's `status`, `exit`,
+and `error`, plus the expected receiver count. Preflight 74/78 has no JSON.
+Keep the ID from each new detach and wait on that ID with `jobs wait` or
+`jobs wait --grep`, never on a reused output file. Use single-quoted remote
+scripts or `--script` to avoid local expansion. `port-forward --address
+127.0.0.1` chooses an explicit bind; the default remains `localhost`.
 
 ## When to Use
 

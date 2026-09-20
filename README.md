@@ -115,6 +115,24 @@ Configure `claude-code`, `codex`, `gemini`, or `opencode` under `spec.agents`; o
 
 ## Docs
 
+### Automation quick recipes
+
+Start with the [tested automation recipes](docs/automation.md):
+
+| Task | Command and success check |
+| --- | --- |
+| Collect results | `okdev exec --json --require-all -- command...`; inspect every envelope's `status`, `exit`, and `error`. Preflight 74/78 uses stderr, without JSON. |
+| Verify multi-pod setup | `okdev exec --all --json --require-all --require-sync -- sha256sum /workspace/train.py`; check the expected receiver count and each hash against your local file. |
+| Wait for a new job | Save the ID from `exec --detach`; use `jobs wait <id>` or `jobs wait <id> --grep '^READY$'`, rather than polling a reused filename. |
+| Bind a forward | `okdev port-forward 18080:8080 --address 127.0.0.1`; the default is `localhost`. |
+| Preserve remote variables | `okdev exec -- sh -c 'printf "%s\n" "$HOSTNAME"'`; use `--script ./probe.sh` for complex commands. |
+| Monitor over time | Launch with `exec --detach`, read `jobs logs <id> --tail 20`, then `jobs stop <id>`. |
+| Trim initial sync | Review `.stignore` before `up`; exclude `.git` only when remote tools do not need repository metadata. |
+
+`--require-all` checks responses, not remote exit success; a log marker can match
+one pod and does not establish all-pod service readiness. The recipes include
+fail-fast shell examples and content verification.
+
 | | |
 |---|---|
 | [Quickstart](https://acmore.github.io/okdev/quickstart/) | From zero to a running session |
