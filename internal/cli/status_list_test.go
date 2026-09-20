@@ -117,11 +117,13 @@ func TestNewStatusCmdUsesActiveControllerBackedSessionWhenNoPodsExistYet(t *test
 	defer server.Close()
 
 	t.Setenv("HOME", t.TempDir())
+	cfgPath := writeCLIConfig(t, "demo")
 	if err := session.SaveActiveSession("sess-a"); err != nil {
 		t.Fatalf("SaveActiveSession: %v", err)
 	}
 	if err := session.SaveInfo(session.Info{
 		Name:               "sess-a",
+		ConfigPath:         cfgPath,
 		Namespace:          "demo",
 		Owner:              "alice",
 		WorkloadType:       "job",
@@ -133,7 +135,6 @@ func TestNewStatusCmdUsesActiveControllerBackedSessionWhenNoPodsExistYet(t *test
 	}
 
 	t.Setenv("KUBECONFIG", writeCLITLSTestKubeconfig(t, server))
-	cfgPath := writeCLIConfig(t, "demo")
 	opts := &Options{ConfigPath: cfgPath, Context: "dev", Output: "json", Owner: "alice"}
 	cmd := newStatusCmd(opts)
 	var out bytes.Buffer

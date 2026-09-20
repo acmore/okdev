@@ -68,6 +68,7 @@ func resolveCommandContext(opts *Options, resolver sessionResolver) (*commandCon
 	if err != nil {
 		return nil, err
 	}
+	effectiveOpts.explicitConfig = opts != nil && strings.TrimSpace(opts.ConfigPath) != ""
 	cfg, namespace, err := loadConfigAndNamespace(effectiveOpts)
 	if err != nil {
 		return nil, err
@@ -165,10 +166,14 @@ func optionsWithSessionConfig(opts *Options) (*Options, error) {
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(info.ConfigPath) == "" {
-		return nil, fmt.Errorf("session %q has no saved config path; run from the repo or pass --config", cloned.Session)
-	}
 	cloned.ConfigPath = info.ConfigPath
+	if strings.TrimSpace(cloned.ConfigPath) == "" {
+		path, err := config.ResolvePath("")
+		if err != nil {
+			return nil, fmt.Errorf("session %q has no saved config path; config discovery failed: %w", cloned.Session, err)
+		}
+		cloned.ConfigPath = path
+	}
 	if strings.TrimSpace(cloned.Context) == "" && strings.TrimSpace(info.KubeContext) != "" {
 		cloned.Context = info.KubeContext
 	}
@@ -407,7 +412,7 @@ func resolveSessionNameWithReader(opts *Options, cfg *config.DevEnvironment, nam
 		if err != nil {
 			return "", err
 		}
-		if !sessionMatchesConfigPath(resolvedActive, opts.ConfigPath) {
+		if !sessionMatchesConfigPath(resolvedActive, opts.ConfigPath, opts.explicitConfig) {
 			resolvedActive = ""
 		}
 		if resolvedActive == "" {
@@ -444,7 +449,63 @@ inferExistingSession:
 			return inferred, nil
 		}
 	}
-	return session.ResolveDefaultWithRepo(cfg.Spec.Session.DefaultNameTemplate, configRepoName(opts.ConfigPath))
+	name, err := session.ResolveDefaultWithRepo(cfg.Spec.Session.DefaultNameTemplate, configRepoName(opts.ConfigPath))
+	if err != nil {
+		return "", err
+	}
+	if opts.explicitConfig && !sessionMatchesConfigPath(name, opts.ConfigPath, true) {
+		if err := ensureDefaultSessionConfig(reader, namespace, name, opts.ConfigPath); err != nil {
+			return "", err
+		}
+	}
+	return name, nil
+}
+
+func sessionConfigAssociationError(name, configPath string) error {
+	info, _ := session.LoadInfo(name)
+	association := strings.TrimSpace(info.ConfigPath)
+	if association == "" {
+		association = "unknown"
+	}
+	return fmt.Errorf("session %q has config association %q, but selected config is %q; pass --session <distinct-name> to create a separate session, or explicitly select the existing session to reuse it", name, association, configPath)
+}
+
+func ensureDefaultSessionConfig(reader sessionAccessReader, namespace, name, configPath string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), sessionExistsTimeout)
+	defer cancel()
+	// A name collision can belong to a different config name or repository,
+	// so it must be checked independently of the inference labels.
+	selector := "okdev.io/managed=true,okdev.io/session=" + name
+	pods, err := reader.ListPods(ctx, namespace, false, selector)
+	if err != nil {
+		return err
+	}
+	for _, pod := range pods {
+		if sessionNameFromPodSummary(pod) == name {
+			return sessionConfigAssociationError(name, configPath)
+		}
+	}
+	items, err := listLiveControllerResources(ctx, reader, namespace, false, selector)
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if strings.TrimSpace(item.Labels["okdev.io/session"]) == name {
+			return sessionConfigAssociationError(name, configPath)
+		}
+	}
+	info, err := session.LoadInfo(name)
+	if err != nil {
+		return err
+	}
+	exists, err := sessionInfoWorkloadExists(ctx, reader, namespace, info)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return sessionConfigAssociationError(name, configPath)
+	}
+	return nil
 }
 
 // configRepoName returns the {{ .Repo }} component for session naming anchored on
@@ -460,7 +521,7 @@ func configRepoName(configPath string) string {
 	return filepath.Base(root)
 }
 
-func sessionMatchesConfigPath(sessionName, currentConfigPath string) bool {
+func sessionMatchesConfigPath(sessionName, currentConfigPath string, requireKnown bool) bool {
 	currentConfigPath = normalizeConfigPath(currentConfigPath)
 	if currentConfigPath == "" || strings.TrimSpace(sessionName) == "" {
 		return true
@@ -468,11 +529,11 @@ func sessionMatchesConfigPath(sessionName, currentConfigPath string) bool {
 	info, err := session.LoadInfo(sessionName)
 	if err != nil {
 		slog.Debug("failed to load session info for config match", "session", sessionName, "error", err)
-		return true
+		return !requireKnown
 	}
 	savedConfigPath := normalizeConfigPath(info.ConfigPath)
 	if savedConfigPath == "" {
-		return true
+		return !requireKnown
 	}
 	return savedConfigPath == currentConfigPath
 }
@@ -657,6 +718,33 @@ func inferExistingSessionForRepo(opts *Options, cfg *config.DevEnvironment, name
 		return "", err
 	}
 	currentConfigPath := normalizeConfigPath(opts.ConfigPath)
+	var defaultName string
+	if opts.explicitConfig {
+		defaultName, err = session.ResolveDefaultWithRepo(cfg.Spec.Session.DefaultNameTemplate, configRepoName(opts.ConfigPath))
+		if err != nil {
+			return "", err
+		}
+	}
+	matchesConfig := func(name string) (bool, error) {
+		if sessionMatchesConfigPath(name, currentConfigPath, opts.explicitConfig) {
+			return true, nil
+		}
+		if opts.explicitConfig && name == defaultName {
+			return false, sessionConfigAssociationError(name, currentConfigPath)
+		}
+		return false, nil
+	}
+	matchingPods := make([]kube.PodSummary, 0, len(pods))
+	for _, pod := range pods {
+		matches, err := matchesConfig(sessionNameFromPodSummary(pod))
+		if err != nil {
+			return "", err
+		}
+		if matches {
+			matchingPods = append(matchingPods, pod)
+		}
+	}
+	pods = matchingPods
 	if len(pods) == 0 {
 		items, err := listLiveControllerResources(ctx, reader, namespace, false, strings.Join(label, ","))
 		if err != nil {
@@ -664,15 +752,15 @@ func inferExistingSessionForRepo(opts *Options, cfg *config.DevEnvironment, name
 		}
 		if len(items) > 0 {
 			sort.Slice(items, func(i, j int) bool {
-				iMatch := sessionMatchesConfigPath(strings.TrimSpace(items[i].Labels["okdev.io/session"]), currentConfigPath)
-				jMatch := sessionMatchesConfigPath(strings.TrimSpace(items[j].Labels["okdev.io/session"]), currentConfigPath)
-				if iMatch != jMatch {
-					return iMatch
-				}
 				return items[i].CreatedAt.After(items[j].CreatedAt)
 			})
 			for _, item := range items {
-				if sn := strings.TrimSpace(item.Labels["okdev.io/session"]); sn != "" {
+				sn := strings.TrimSpace(item.Labels["okdev.io/session"])
+				matches, err := matchesConfig(sn)
+				if err != nil {
+					return "", err
+				}
+				if sn != "" && matches {
 					return sn, nil
 				}
 			}
@@ -692,14 +780,16 @@ func inferExistingSessionForRepo(opts *Options, cfg *config.DevEnvironment, name
 			if strings.TrimSpace(info.Namespace) != "" && strings.TrimSpace(info.Namespace) != namespace {
 				continue
 			}
+			matches, err := matchesConfig(info.Name)
+			if err != nil {
+				return "", err
+			}
+			if !matches {
+				continue
+			}
 			candidates = append(candidates, info)
 		}
 		sort.Slice(candidates, func(i, j int) bool {
-			iMatch := sessionMatchesConfigPath(candidates[i].Name, currentConfigPath)
-			jMatch := sessionMatchesConfigPath(candidates[j].Name, currentConfigPath)
-			if iMatch != jMatch {
-				return iMatch
-			}
 			iTime := candidates[i].LastUsedAt
 			if iTime.IsZero() {
 				iTime = candidates[i].CreatedAt
@@ -722,11 +812,6 @@ func inferExistingSessionForRepo(opts *Options, cfg *config.DevEnvironment, name
 		return "", nil
 	}
 	sort.Slice(pods, func(i, j int) bool {
-		iMatch := sessionMatchesConfigPath(sessionNameFromPodSummary(pods[i]), currentConfigPath)
-		jMatch := sessionMatchesConfigPath(sessionNameFromPodSummary(pods[j]), currentConfigPath)
-		if iMatch != jMatch {
-			return iMatch
-		}
 		return pods[i].CreatedAt.After(pods[j].CreatedAt)
 	})
 	for _, p := range pods {

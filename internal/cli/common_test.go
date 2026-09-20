@@ -384,9 +384,11 @@ func TestOptionsWithSessionConfigUsesSavedSessionMetadata(t *testing.T) {
 	}
 }
 
-func TestOptionsWithSessionConfigErrorsWithoutSavedConfigPath(t *testing.T) {
+func TestOptionsWithSessionConfigErrorsWithoutSavedOrDiscoverableConfig(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
+	t.Setenv("OKDEV_CONFIG", "")
+	t.Chdir(t.TempDir())
 
 	if err := session.SaveInfo(session.Info{Name: "sess-a"}); err != nil {
 		t.Fatalf("SaveInfo: %v", err)
