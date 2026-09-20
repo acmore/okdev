@@ -850,56 +850,49 @@ func (c *Client) WaitReadyWithProgress(ctx context.Context, namespace, pod strin
 	if isPodReady(current) {
 		return nil
 	}
-	resourceVersion := current.ResourceVersion
-
+	watcher, err := cs.CoreV1().Pods(namespace).Watch(ctxWait, metav1.ListOptions{
+		FieldSelector:   fields.OneTermEqualSelector("metadata.name", pod).String(),
+		ResourceVersion: current.ResourceVersion,
+	})
+	if err != nil {
+		return err
+	}
+	defer watcher.Stop()
 	for {
-		watcher, err := cs.CoreV1().Pods(namespace).Watch(ctxWait, metav1.ListOptions{
-			FieldSelector:   fields.OneTermEqualSelector("metadata.name", pod).String(),
-			ResourceVersion: resourceVersion,
-		})
-		if err != nil {
-			return err
-		}
-		restartWatch := false
-		for !restartWatch {
-			select {
-			case <-ctxWait.Done():
-				watcher.Stop()
-				return fmt.Errorf("wait for pod/%s ready: %w", pod, ctxWait.Err())
-			case evt, ok := <-watcher.ResultChan():
+		select {
+		case <-ctxWait.Done():
+			return fmt.Errorf("wait for pod/%s ready: %w", pod, ctxWait.Err())
+		case evt, ok := <-watcher.ResultChan():
+			if !ok {
+				if err := ctxWait.Err(); err != nil {
+					return err
+				}
+				// The workload waiter will back off, rediscover candidates,
+				// and GET the current resource version before watching again.
+				return fmt.Errorf("readiness watch for pod/%s closed: %w", pod, io.ErrUnexpectedEOF)
+			}
+			switch evt.Type {
+			case watch.Added, watch.Modified:
+				p, ok := evt.Object.(*corev1.Pod)
 				if !ok {
-					restartWatch = true
 					continue
 				}
-				switch evt.Type {
-				case watch.Added, watch.Modified:
-					p, ok := evt.Object.(*corev1.Pod)
-					if !ok {
-						continue
-					}
-					resourceVersion = p.ResourceVersion
-					emitProgress(p)
-					if p.DeletionTimestamp != nil {
-						watcher.Stop()
-						return fmt.Errorf("pod/%s is terminating", pod)
-					}
-					if p.Status.Phase == corev1.PodFailed {
-						watcher.Stop()
-						return fmt.Errorf("pod/%s: %w", pod, ErrPodFailedReadiness)
-					}
-					if isPodReady(p) {
-						watcher.Stop()
-						return nil
-					}
-				case watch.Deleted:
-					watcher.Stop()
-					return fmt.Errorf("pod/%s was deleted while waiting for readiness", pod)
-				case watch.Error:
-					restartWatch = true
+				emitProgress(p)
+				if p.DeletionTimestamp != nil {
+					return fmt.Errorf("pod/%s is terminating", pod)
 				}
+				if p.Status.Phase == corev1.PodFailed {
+					return fmt.Errorf("pod/%s: %w", pod, ErrPodFailedReadiness)
+				}
+				if isPodReady(p) {
+					return nil
+				}
+			case watch.Deleted:
+				return fmt.Errorf("pod/%s was deleted while waiting for readiness", pod)
+			case watch.Error:
+				return fmt.Errorf("readiness watch for pod/%s: %w", pod, apierrors.FromObject(evt.Object))
 			}
 		}
-		watcher.Stop()
 	}
 }
 

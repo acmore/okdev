@@ -191,7 +191,7 @@ func (r *GenericRuntime) selectCandidate(ctx context.Context, k podLister, names
 		return TargetRef{}, nil, err
 	}
 	if len(pods) == 0 {
-		return TargetRef{}, nil, fmt.Errorf("no workload pods found for label selector %q", selector)
+		return TargetRef{}, nil, candidateUnavailableError(fmt.Sprintf("no workload pods found for label selector %q", selector))
 	}
 	eligible := make([]kube.PodSummary, 0, len(pods))
 	for _, pod := range pods {
@@ -200,7 +200,7 @@ func (r *GenericRuntime) selectCandidate(ctx context.Context, k podLister, names
 		}
 	}
 	if len(eligible) == 0 {
-		return TargetRef{}, pods, fmt.Errorf("no attachable pods found for label selector %q", selector)
+		return TargetRef{}, pods, candidateUnavailableError(fmt.Sprintf("no attachable pods found for label selector %q", selector))
 	}
 	sort.Slice(eligible, func(i, j int) bool {
 		return ComparePodPriority(eligible[i], eligible[j])
