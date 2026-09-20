@@ -19,6 +19,7 @@ Available groups:
 
 | Group | Real Kind coverage |
 | --- | --- |
+| `sync_diagnostics` | Sync child death before Ready, exit evidence, repeated warnings, strict execution gate, repair and survival after parent exit |
 | `podgroup` | Controlled PodGroup conditions/events through the real API, text/JSON, UID filtering, RBAC denial and absent CRD; no Volcano scheduler required |
 | `hook_evidence` | Successful no-op hooks, per-pod stdout/stderr, prerequisite failure, recorded exit states and retry after repair |
 | `forward_recovery` | Initial API/DNS failure, visible retries, live forwarding stream loss, replacement Pod selection, cancellation and listener cleanup |

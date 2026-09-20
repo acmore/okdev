@@ -112,3 +112,26 @@ A raw `pkill -f <pattern>` inside `okdev exec -- bash -lc '...'` can match the s
 
 - okdev stores local runtime state in `~/.okdev/` (locks, logs, SSH metadata, sync state).
 - If behavior looks stale after upgrades, inspect and clean targeted files under `~/.okdev/` instead of deleting project files.
+
+### Sync exits before or after Ready
+
+With sync paths configured, `okdev up` rechecks the local Syncthing API,
+configured session folders and peer connection after setup hooks, immediately
+before printing Ready. A transient unavailable channel gets up to 10 seconds to
+recover. If it remains unhealthy, `up` returns an error and retains the workload;
+run `okdev sync` to repair the channel, then retry `okdev up`. Ready is a live
+channel check; use `okdev sync wait` or `exec --require-sync` when delivery of
+subsequent edits must be verified.
+
+`okdev status --details` includes the last recorded background sync exit (PID,
+time, reason and log path); JSON includes `sync.lastExit` when a record exists.
+This is historical evidence, so its PID may differ from the current process.
+A missing process without a matching exit record has an unknown exit cause:
+SIGKILL, for example, cannot write a final record. API unavailability is reported
+as stale even when the wrapper PID is alive. Logs remain available at the path
+shown in detailed status.
+
+Ungated execution continues with a warning when sync is unhealthy. Repeated
+identical warnings within one minute use a shorter message and still explicitly
+warn about stale code. A changed fault or healthy check resets this behavior.
+`exec --require-sync` continues to refuse execution until its sync gate passes.

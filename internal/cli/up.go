@@ -1097,6 +1097,15 @@ func upSetup(state *upState) error {
 			}
 		}
 	}
+	if len(state.syncPairs) > 0 {
+		state.ui.stepRun("sync readiness", "checking the live channel before Ready")
+		if err := waitForReadySync(state.ctx, state.command.sessionName, 10*time.Second); err != nil {
+			state.ui.stopActive()
+			state.ui.printWarnings()
+			return err
+		}
+		state.ui.stepDone("sync readiness", "local API reachable and peer connected")
+	}
 	state.ui.printWarnings()
 	state.ui.printReadyCard(state.command.sessionName, state.command.namespace, target.PodName, sshSummary, syncSummary, state.command.cfg.Spec.Ports, state.syncPairs, syncModeSymbol,
 		buildUpNextSteps(
