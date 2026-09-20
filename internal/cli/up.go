@@ -155,6 +155,10 @@ func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, e
 	if err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(cc.opts.Context) == "" {
+		cc.opts.Context, _ = detectKubeDefaults()
+		cc.kube = newKubeClient(cc.opts)
+	}
 	ui.stepDone("config", cc.cfgPath)
 	ui.stepDone("session", cc.sessionName)
 	ui.stepDone("namespace", cc.namespace)
@@ -710,6 +714,10 @@ func upWait(state *upState) error {
 	eventCancel() // Stop event watcher immediately so no stale events print after this point.
 	state.ui.stopActive()
 	if waitErr != nil {
+		if errors.Is(waitErr, context.DeadlineExceeded) || errors.Is(waitErr, context.Canceled) {
+			fmt.Fprintln(state.cmd.ErrOrStderr(), upWaitContinuationHints(state))
+			return fmt.Errorf("wait for %s/%s readiness failed: %w", state.runtime.Kind(), state.workloadName, normalizeUpWaitError(waitErr))
+		}
 		waitErr = normalizeUpWaitError(waitErr)
 		hints := fmt.Sprintf("next steps:\n- run `okdev status --session %s`\n- run `kubectl -n %s describe pod %s`", state.command.sessionName, state.command.namespace, state.workloadName)
 		diag, derr := state.command.kube.DescribePod(state.ctx, state.command.namespace, state.workloadName)
@@ -746,6 +754,36 @@ func upWait(state *upState) error {
 	state.target = target
 	state.ui.stepDone("target", target.PodName+"/"+target.Container)
 	return nil
+}
+
+func upWaitContinuationHints(state *upState) string {
+	base := "okdev --config " + shellQuote(state.command.cfgPath) +
+		" --session " + shellQuote(state.command.sessionName) +
+		" --namespace " + shellQuote(state.command.namespace)
+	if state.opts.Context != "" {
+		base += " --context " + shellQuote(state.opts.Context)
+	}
+	base += " --owner " + shellQuote(currentOwner(state.opts))
+	resume := base + " up --wait-timeout " + shellQuote(state.flags.waitTimeout.String())
+	profile := state.command.cfg.SelectedWorkload()
+	if state.opts.Workload != "" {
+		profile = state.opts.Workload
+	}
+	if profile != "" {
+		resume += " --workload " + shellQuote(profile)
+	}
+	if state.flags.waitHooks {
+		resume += " --wait-hooks"
+	}
+	if state.flags.noTmux {
+		resume += " --no-tmux"
+	} else if state.flags.tmux {
+		resume += " --tmux"
+	}
+	return "Readiness waiting stopped; the workload remains submitted. This invocation has not run setup, and no background watcher was started.\n" +
+		"resume waiting and setup for the same session (increase --wait-timeout if needed):\n  " + resume +
+		"\ninspect current state:\n  " + base + " status" +
+		"\ncancel the submitted workload explicitly:\n  " + base + " down --yes"
 }
 
 func normalizeUpWaitError(err error) error {

@@ -4,13 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 )
 
 type podLister interface {
@@ -178,56 +183,63 @@ func waitForCandidatePodReady(
 	onProgress func(kube.PodReadinessProgress),
 	failFastOnPodFailure bool,
 	timeoutMessage string,
-) error {
-	deadline := time.Now().Add(timeout)
+) (result error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	defer func() {
+		if errors.Is(result, context.DeadlineExceeded) {
+			result = fmt.Errorf("%s: %w", timeoutMessage, result)
+		}
+	}()
+	deadline, _ := ctx.Deadline()
 	var lastProgress kube.PodReadinessProgress
 	haveProgress := false
+	var backoff time.Duration
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		target, pods, err := selectCandidate(ctx, k, namespace)
-		if err == nil && strings.TrimSpace(target.PodName) != "" {
-			progress := summarizePodsAsProgress(pods)
-			if onProgress != nil && (!haveProgress || progress != lastProgress) {
-				onProgress(progress)
-				lastProgress = progress
-				haveProgress = true
-			}
-			if err := failedPodError(pods, failFastOnPodFailure); err != nil {
+		if err != nil {
+			if err := waitAfterSelectionError(ctx, err, &backoff, onProgress); err != nil {
 				return err
 			}
-			waitTimeout := time.Until(deadline)
-			if waitTimeout <= 0 {
-				break
+			continue
+		}
+		if strings.TrimSpace(target.PodName) == "" {
+			if err := pauseReadiness(ctx, 500*time.Millisecond); err != nil {
+				return err
 			}
-			waitErr := k.WaitReadyWithProgress(ctx, namespace, target.PodName, waitTimeout, onProgress)
-			if waitErr == nil {
-				return waitForRemainingPods(ctx, k, namespace, selectCandidate, deadline, onProgress, failFastOnPodFailure)
+			continue
+		}
+		progress := summarizePodsAsProgress(pods)
+		if onProgress != nil && (!haveProgress || progress != lastProgress) {
+			onProgress(progress)
+			lastProgress, haveProgress = progress, true
+		}
+		if err := failedPodError(pods, failFastOnPodFailure); err != nil {
+			return err
+		}
+		waitErr := k.WaitReadyWithProgress(ctx, namespace, target.PodName, time.Until(deadline), onProgress)
+		if waitErr == nil {
+			if err := ctx.Err(); err != nil {
+				return err
 			}
-			if failFastOnPodFailure && failedReadinessWaitError(waitErr) {
-				return &FailedReadinessError{Pod: target.PodName}
-			}
-			if shouldRetryCandidateWait(waitErr) {
-				continue
-			}
+			return waitForRemainingPods(ctx, k, namespace, selectCandidate, deadline, onProgress, failFastOnPodFailure)
+		}
+		if failFastOnPodFailure && failedReadinessWaitError(waitErr) {
+			return &FailedReadinessError{Pod: target.PodName}
+		}
+		if !shouldRetryCandidateWait(waitErr) {
 			return waitErr
 		}
-		if time.Now().After(deadline) {
-			if err != nil {
-				return err
-			}
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(500 * time.Millisecond):
+		if err := retryReadiness(ctx, &backoff, onProgress); err != nil {
+			return err
 		}
 	}
-	return fmt.Errorf("%s", timeoutMessage)
 }
 
-// waitForRemainingPods waits for all non-ready pods discovered by
-// selectCandidate to become ready before the deadline. It polls the pod
-// list and calls WaitReadyWithProgress for each pod that is not yet ready.
+// Recheck the full candidate set after each completed or interrupted watch.
 func waitForRemainingPods(
 	ctx context.Context,
 	k WaitClient,
@@ -237,20 +249,29 @@ func waitForRemainingPods(
 	onProgress func(kube.PodReadinessProgress),
 	failFastOnPodFailure bool,
 ) error {
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	var backoff time.Duration
 	for {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return fmt.Errorf("timed out waiting for all pods to become ready")
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-
 		_, pods, err := selectCandidate(ctx, k, namespace)
 		if err != nil {
-			return err
+			if err := waitAfterSelectionError(ctx, err, &backoff, onProgress); err != nil {
+				return err
+			}
+			continue
+		}
+		if len(pods) == 0 {
+			if err := pauseReadiness(ctx, 500*time.Millisecond); err != nil {
+				return err
+			}
+			continue
 		}
 		if err := failedPodError(pods, failFastOnPodFailure); err != nil {
 			return err
 		}
-
 		var pending []kube.PodSummary
 		for _, p := range pods {
 			if !failFastOnPodFailure && strings.EqualFold(strings.TrimSpace(p.Phase), string(corev1.PodFailed)) {
@@ -261,44 +282,95 @@ func waitForRemainingPods(
 			}
 		}
 		if len(pending) == 0 {
-			return nil
+			return ctx.Err()
 		}
-
-		progress := summarizePodsAsProgress(pods)
 		if onProgress != nil {
+			progress := summarizePodsAsProgress(pods)
 			progress.Reason = fmt.Sprintf("waiting for %d/%d pods", len(pending), len(pods))
 			onProgress(progress)
 		}
-
-		// Wait for the first non-ready pod; once it's ready we re-check all.
-		waitTimeout := time.Until(deadline)
-		if waitTimeout <= 0 {
-			return fmt.Errorf("timed out waiting for all pods to become ready")
+		waitErr := k.WaitReadyWithProgress(ctx, namespace, pending[0].Name, time.Until(deadline), onProgress)
+		if waitErr == nil {
+			backoff = 0
+			continue
 		}
-		waitErr := k.WaitReadyWithProgress(ctx, namespace, pending[0].Name, waitTimeout, onProgress)
-		if waitErr != nil {
-			if failFastOnPodFailure && failedReadinessWaitError(waitErr) {
-				return &FailedReadinessError{Pod: pending[0].Name}
-			}
-			if shouldRetryCandidateWait(waitErr) {
-				continue
-			}
+		if failFastOnPodFailure && failedReadinessWaitError(waitErr) {
+			return &FailedReadinessError{Pod: pending[0].Name}
+		}
+		if !shouldRetryCandidateWait(waitErr) {
 			return waitErr
+		}
+		if err := retryReadiness(ctx, &backoff, onProgress); err != nil {
+			return err
 		}
 	}
 }
 
+type candidateUnavailableError string
+
+func (e candidateUnavailableError) Error() string { return string(e) }
+
+func waitAfterSelectionError(ctx context.Context, err error, backoff *time.Duration, onProgress func(kube.PodReadinessProgress)) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	var unavailable candidateUnavailableError
+	if errors.As(err, &unavailable) {
+		return pauseReadiness(ctx, 500*time.Millisecond)
+	}
+	if !shouldRetryCandidateWait(err) {
+		return err
+	}
+	return retryReadiness(ctx, backoff, onProgress)
+}
+
+func pauseReadiness(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return ctx.Err()
+	}
+}
+
+func retryReadiness(ctx context.Context, backoff *time.Duration, onProgress func(kube.PodReadinessProgress)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if *backoff == 0 {
+		*backoff = 100 * time.Millisecond
+	} else {
+		*backoff = min(*backoff*2, 2*time.Second)
+	}
+	if onProgress != nil {
+		onProgress(kube.PodReadinessProgress{Phase: corev1.PodUnknown, Reason: fmt.Sprintf("retrying readiness after interruption in %s", *backoff)})
+	}
+	return pauseReadiness(ctx, *backoff)
+}
+
 func shouldRetryCandidateWait(err error) bool {
-	if err == nil {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) || apierrors.IsBadRequest(err) || apierrors.IsInvalid(err) {
 		return false
+	}
+	if apierrors.IsNotFound(err) || apierrors.IsResourceExpired(err) || apierrors.IsGone(err) || apierrors.IsTimeout(err) || apierrors.IsServerTimeout(err) || apierrors.IsTooManyRequests(err) || apierrors.IsServiceUnavailable(err) {
+		return true
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE) || utilnet.IsProbableEOF(err) {
+		return true
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && (networkError.Timeout() || networkError.Temporary()) {
+		return true
 	}
 	msg := strings.ToLower(strings.TrimSpace(err.Error()))
-	return strings.Contains(msg, "was deleted while waiting for readiness") ||
-		strings.Contains(msg, "is terminating") ||
-		strings.Contains(msg, "not found")
+	return strings.Contains(msg, "http2: client connection lost") ||
+		strings.Contains(msg, "was deleted while waiting for readiness") ||
+		strings.Contains(msg, "is terminating")
 }
 
 func failedReadinessWaitError(err error) bool {
