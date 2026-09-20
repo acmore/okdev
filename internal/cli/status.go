@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/acmore/okdev/internal/output"
@@ -33,7 +34,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 		ValidArgsFunction: sessionCompletionFunc(opts),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			applySessionArg(opts, args)
-			cc, err := resolveCommandContext(opts, nil)
+			cc, err := resolveStatusContext(opts, all)
 			if err != nil {
 				return err
 			}
@@ -93,7 +94,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 			}
 			if len(views) == 0 {
 				if !all {
-					if report, ok := buildSessionDeathReport(ctx, cc.kube, cc.sessionName, cc.namespace); ok {
+					if report, ok := buildSessionDeathReport(ctx, cc.kube, cc.sessionName, cc.namespace, cc.opts.Context); ok {
 						if cc.opts.Output == "json" {
 							return outputJSON(cmd.OutOrStdout(), report)
 						}
@@ -107,7 +108,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 			}
 			// Cache a live snapshot per session so a later externally-reclaimed
 			// session can still explain what its pods looked like (#166).
-			captureSessionLastSeen(views)
+			captureSessionLastSeen(views, cc.opts.Context)
 			if details {
 				if all || len(views) != 1 {
 					return fmt.Errorf("--details requires a single session")
@@ -234,5 +235,31 @@ func fallbackStatusView(ctx context.Context, cc *commandContext) (sessionView, b
 	if err != nil {
 		return sessionView{}, false, err
 	}
+	if !statusScopeMatches(info.Namespace, info.KubeContext, cc.namespace, []string{cc.opts.Context}) {
+		return sessionView{}, false, nil
+	}
 	return buildSavedSessionView(ctx, cc.kube, cc.namespace, info)
+}
+
+func resolveStatusContext(opts *Options, all bool) (*commandContext, error) {
+	selected := *opts
+	if !all && selected.Session == "" && selected.ConfigPath == "" && strings.TrimSpace(os.Getenv("OKDEV_CONFIG")) == "" {
+		active, err := session.LoadActiveSession()
+		if err != nil {
+			return nil, err
+		}
+		selected.Session = active
+	}
+	cc, err := resolveCommandContext(&selected, nil)
+	if err != nil {
+		return nil, err
+	}
+	// A saved active config determines scope, but a stale active session may
+	// still fall back to inference. Explicit session/config selection is kept.
+	cc.opts.Session = opts.Session
+	if cc.opts.Context == "" {
+		cc.opts.Context, _ = detectKubeDefaults()
+		cc.kube = newKubeClient(cc.opts)
+	}
+	return cc, nil
 }

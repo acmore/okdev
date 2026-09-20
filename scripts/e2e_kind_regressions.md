@@ -23,6 +23,7 @@ Available groups:
 | `readiness` | Live API connection loss, readiness retry, timeout continuation on the same Pod, one-time setup |
 | `stdin` | Binary streams, output before EOF, remote exit codes, cancellation, timeout, invalid modes |
 | `sync_revision` | Same-size content changes, empty entries, deletion, ignores, nested independent sync paths |
+| `status_identity` | Two-session selection, config scope changes, historical scope isolation, API failure |
 | `mesh` | All receivers and hooks, disconnected worker, sync/exec convergence gates, recovery |
 
 `CLUSTER_NAME` defaults to `okdev-e2e`; `OKDEV_BIN` defaults to `bin/okdev`;

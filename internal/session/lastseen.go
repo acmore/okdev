@@ -24,6 +24,7 @@ type LastSeen struct {
 	// longer matches session.Info means the run it describes has ended and a
 	// different one took its place (#213).
 	RunID     string            `json:"runID,omitempty"`
+	Context   string            `json:"context,omitempty"`
 	Namespace string            `json:"namespace,omitempty"`
 	Workload  LastSeenWorkload  `json:"workload,omitempty"`
 	Pods      []LastSeenPod     `json:"pods,omitempty"`
