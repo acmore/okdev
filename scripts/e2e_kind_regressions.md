@@ -19,6 +19,7 @@ Available groups:
 
 | Group | Real Kind coverage |
 | --- | --- |
+| `podgroup` | Controlled PodGroup conditions/events through the real API, text/JSON, UID filtering, RBAC denial and absent CRD; no Volcano scheduler required |
 | `hook_evidence` | Successful no-op hooks, per-pod stdout/stderr, prerequisite failure, recorded exit states and retry after repair |
 | `forward_recovery` | Initial API/DNS failure, visible retries, live forwarding stream loss, replacement Pod selection, cancellation and listener cleanup |
 | `snapshot` | Sync-independent snapshot delivery, explicit targets, remote archive hashes, target-only defaults, partial failure |
@@ -38,3 +39,8 @@ Python 3 (standard library only), kubectl, git, and Kind are required.
 
 Redirect the whole run when saving logs and inspect its actual exit status;
 do not pipe the run into `tail`.
+
+The `podgroup` group temporarily installs a minimal Volcano PodGroup CRD when
+none exists, then removes only that test-created CRD. It reuses an existing CRD
+without modifying or deleting it. Conditions and events are injected fixtures;
+this checks diagnostic reads and RBAC, not Volcano scheduling or quota enforcement.
