@@ -33,16 +33,17 @@ type syncPendingFile struct {
 }
 
 type syncFolderStatus struct {
-	PendingReason string            `json:"pendingReason,omitempty"`
-	Folder        string            `json:"folder"`
-	Local         string            `json:"local"`
-	Remote        string            `json:"remote"`
-	Direction     string            `json:"direction"`
-	State         string            `json:"state"`
-	NeedBytes     int64             `json:"needBytes"`
-	NeedFiles     int64             `json:"needFiles"`
-	Pending       []syncPendingFile `json:"pending,omitempty"`
-	Excludes      []string          `json:"excludes,omitempty"`
+	Receivers     *syncReceiverCoverage `json:"receivers,omitempty"`
+	PendingReason string                `json:"pendingReason,omitempty"`
+	Folder        string                `json:"folder"`
+	Local         string                `json:"local"`
+	Remote        string                `json:"remote"`
+	Direction     string                `json:"direction"`
+	State         string                `json:"state"`
+	NeedBytes     int64                 `json:"needBytes"`
+	NeedFiles     int64                 `json:"needFiles"`
+	Pending       []syncPendingFile     `json:"pending,omitempty"`
+	Excludes      []string              `json:"excludes,omitempty"`
 	// ExcludeSource distinguishes patterns read from a .stignore file from
 	// okdev's built-in defaults, which apply when no file exists. Reporting
 	// defaults as if they came from a file would send the reader editing a
@@ -156,7 +157,7 @@ func gatherSyncStatus(ctx context.Context, cc *commandContext, pod string, pairs
 		return syncStatusReport{}, err
 	}
 	report := syncStatusReport{Session: cc.sessionName, Converged: true}
-	for _, folder := range folders {
+	for folderIndex, folder := range folders {
 		entry := syncFolderStatus{
 			Folder:    folder.id,
 			Local:     folder.absLocal,
@@ -196,6 +197,29 @@ func gatherSyncStatus(ctx context.Context, cc *commandContext, pod string, pairs
 		_, reason, revisionErr := syncthingRevisionConvergence(ctx, localBase, localKey, remoteBase, remoteKey, localID, remoteID, folder.id)
 		if revisionErr != nil {
 			problems = append(problems, revisionErr.Error())
+		}
+		targetConnected, connectionErr := syncthingPeerConnected(ctx, localBase, localKey, remoteID)
+		if connectionErr != nil {
+			problems = append(problems, connectionErr.Error())
+		}
+		targetHealth := meshReceiverHealth{Pod: pod, Connected: targetConnected, InSync: reason == "" && revisionErr == nil, Reason: reason}
+		if revisionErr != nil {
+			targetHealth.Err = revisionErr.Error()
+		}
+		var mesh *meshHealthSummary
+		if folderIndex == 0 {
+			var meshErr error
+			mesh, meshErr = checkMeshHealth(ctx, cc.opts, cc.kube, cc.namespace, cc.sessionName, meshConvergenceLabels(cc.sessionName), pod, folder.id)
+			if meshErr != nil {
+				problems = append(problems, fmt.Sprintf("receiver discovery: %v", meshErr))
+			}
+		}
+		entry.Receivers = buildSyncReceiverCoverage(targetHealth, mesh, folderIndex == 0)
+		if entry.Receivers.Converged < entry.Receivers.Expected {
+			if reason != "" {
+				reason += "; "
+			}
+			reason += "receivers pending: " + strings.Join(entry.Receivers.Pending, ", ")
 		}
 		entry.PendingReason = reason
 		entry.Error = strings.Join(problems, "; ")
@@ -346,7 +370,7 @@ func loadSTIgnoreDisplayPatterns(root string) ([]string, string) {
 
 func printSyncStatus(w io.Writer, report syncStatusReport) {
 	if report.Converged {
-		fmt.Fprintf(w, "Sync converged (%d folder(s)) for current indexed revisions on local/target devices; ignored paths excluded. Worker coverage is not verified.\n", len(report.Folders))
+		fmt.Fprintf(w, "Sync converged (%d folder(s)) for current indexed revisions on local/target devices; ignored paths excluded. Intended primary-mapping mesh receivers verified; additional mappings target the hub only.\n", len(report.Folders))
 	} else {
 		fmt.Fprintf(w, "Pending: %s across %d file(s).\n", humanSizeIEC(report.NeedBytes), report.NeedFiles)
 	}
@@ -365,6 +389,12 @@ func printSyncStatus(w io.Writer, report syncStatusReport) {
 			fmt.Fprintf(w, "- excludes in force (%d, from %s): %s\n", len(folder.Excludes), folder.ExcludeSource, strings.Join(folder.Excludes, ", "))
 		} else {
 			fmt.Fprintln(w, "- excludes in force: none")
+		}
+		if c := folder.Receivers; c != nil {
+			fmt.Fprintf(w, "- receivers: expected=%d connected=%d converged=%d scope=%s\n", c.Expected, c.Connected, c.Converged, c.Scope)
+			for _, r := range c.Pods {
+				fmt.Fprintf(w, "  %s: connected=%t converged=%t %s %s\n", r.Pod, r.Connected, r.InSync, r.Reason, r.Err)
+			}
 		}
 		if folder.PendingReason != "" {
 			fmt.Fprintf(w, "- waiting: %s\n", folder.PendingReason)

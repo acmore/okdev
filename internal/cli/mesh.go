@@ -75,6 +75,8 @@ func meshFolderPath(syncPairs []syncengine.Pair, workspaceMountPath string) stri
 // then configures each receiver's sidecar to peer with the hub. Finally it
 // waits for all receivers to complete initial sync.
 func setupMesh(ctx context.Context, opts *Options, k *kube.Client, namespace, sessionName string, labels map[string]string, hubPod, folderID, folderPath string, timeout time.Duration, onStatus func(string)) (*meshSummary, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	// 1. Discover receiver pods.
 	// Wait for receiver pods to reach Running phase before configuring.
 	var receivers []kube.PodSummary
@@ -98,8 +100,7 @@ func setupMesh(ctx context.Context, opts *Options, k *kube.Client, namespace, se
 			return nil, nil // no receivers at all
 		}
 		if time.Now().After(deadline) {
-			slog.Warn("mesh: timed out waiting for receiver pods to become Running", "running", len(receivers), "total", allPods)
-			break
+			return nil, fmt.Errorf("mesh receivers not ready: %d/%d Running", len(receivers), allPods)
 		}
 		if onStatus != nil {
 			onStatus(fmt.Sprintf("waiting for receiver pods (%d/%d running)", len(receivers), allPods))
@@ -453,59 +454,20 @@ func configureAndWaitMeshReceiver(ctx context.Context, opts *Options, k *kube.Cl
 	}
 
 	slog.Debug("mesh: receiver configured", "pod", pod.Name, "deviceID", recvDeviceID)
-	status.Connected = true
-
-	// Wait for receiver to sync (needBytes == 0).
-	deadline := time.Now().Add(timeout)
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	ticker := time.NewTicker(meshSyncPollInterval)
 	defer ticker.Stop()
 	for {
-		receiverConnected, recvConnErr := syncthingPeerConnected(ctx, recvBase, recvKey, hubDeviceID)
-		hubConnected, hubConnErr := syncthingPeerConnected(ctx, hubBase, hubKey, recvDeviceID)
-		if recvConnErr != nil {
-			slog.Debug("mesh: receiver connection poll error", "pod", pod.Name, "error", recvConnErr)
-		}
-		if hubConnErr != nil {
-			slog.Debug("mesh: hub connection poll error", "pod", pod.Name, "error", hubConnErr)
-		}
-		if receiverConnected && hubConnected {
-			status.Connected = true
-		}
-
-		_, needBytes, pollErr := syncthingCompletion(ctx, recvBase, recvKey, folderID, hubDeviceID)
-		filesReady := true
-		if pollErr == nil && status.Connected {
-			if hubStatus, err := syncthingFolderStatusInfoForFolder(ctx, hubBase, hubKey, folderID); err == nil && hubStatus.LocalFiles > 0 {
-				receiverReady, _, readyErr := syncthingFolderHasLocalFiles(ctx, recvBase, recvKey, folderID, hubStatus.LocalFiles)
-				if readyErr != nil {
-					slog.Debug("mesh: receiver file materialization poll error", "pod", pod.Name, "error", readyErr)
-					filesReady = false
-				} else {
-					filesReady = receiverReady
-				}
-			}
-		}
-		if pollErr == nil && needBytes == 0 && status.Connected && filesReady {
-			status.Synced = true
-			slog.Debug("mesh: receiver synced", "pod", pod.Name)
-			return status
-		}
-		if pollErr != nil {
-			slog.Debug("mesh: receiver sync poll error", "pod", pod.Name, "error", pollErr)
-		}
-		if time.Now().After(deadline) {
-			if !status.Connected {
-				status.Err = fmt.Errorf("mesh sync timed out waiting for hub/receiver connection")
-			} else if pollErr != nil {
-				status.Err = fmt.Errorf("mesh sync timed out: %w", pollErr)
-			} else {
-				status.Err = fmt.Errorf("mesh sync timed out, %d bytes remaining", needBytes)
-			}
+		health := observeMeshReceiver(waitCtx, pod.Name, hubBase, hubKey, recvBase, recvKey, hubDeviceID, recvDeviceID, folderID)
+		status.Connected = health.Connected
+		status.Synced = health.InSync && health.Err == ""
+		if status.Synced {
 			return status
 		}
 		select {
-		case <-ctx.Done():
-			status.Err = ctx.Err()
+		case <-waitCtx.Done():
+			status.Err = fmt.Errorf("mesh sync incomplete for %s (%s %s): %w", pod.Name, health.Reason, health.Err, waitCtx.Err())
 			return status
 		case <-ticker.C:
 		}
@@ -514,6 +476,7 @@ func configureAndWaitMeshReceiver(ctx context.Context, opts *Options, k *kube.Cl
 
 // meshReceiverHealth describes the live syncthing health of a single receiver.
 type meshReceiverHealth struct {
+	Reason    string `json:"reason,omitempty"`
 	Pod       string `json:"pod"`
 	Connected bool   `json:"connected"`
 	InSync    bool   `json:"inSync"`
@@ -523,6 +486,8 @@ type meshReceiverHealth struct {
 
 // meshHealthSummary is the result of probing all mesh receivers.
 type meshHealthSummary struct {
+	Expected  int                  `json:"expected"`
+	Error     string               `json:"error,omitempty"`
 	HubPod    string               `json:"hubPod"`
 	FolderID  string               `json:"folderID"`
 	Receivers []meshReceiverHealth `json:"receivers"`
@@ -536,34 +501,57 @@ func checkMeshHealth(ctx context.Context, opts *Options, k *kube.Client, namespa
 	if err != nil {
 		return nil, fmt.Errorf("list mesh receiver pods: %w", err)
 	}
-	var receivers []kube.PodSummary
-	for _, p := range pods {
-		if p.Phase == "Running" {
-			receivers = append(receivers, p)
-		}
-	}
+	receivers := pods
 	if len(receivers) == 0 {
 		return nil, nil
+	}
+	summary := &meshHealthSummary{HubPod: hubPod, FolderID: folderID, Expected: len(receivers)}
+	running := 0
+	for _, pod := range receivers {
+		if pod.Phase == "Running" {
+			running++
+		}
+	}
+	if running == 0 {
+		for _, pod := range receivers {
+			summary.Receivers = append(summary.Receivers, meshReceiverHealth{Pod: pod.Name, Reason: "pod is " + pod.Phase})
+		}
+		return summary, nil
+	}
+	hubFailure := func(err error) (*meshHealthSummary, error) {
+		for _, pod := range receivers {
+			summary.Receivers = append(summary.Receivers, meshReceiverHealth{Pod: pod.Name, Err: err.Error()})
+		}
+		return summary, nil
 	}
 
 	hubKey, err := readRemoteSyncthingAPIKey(ctx, k, namespace, hubPod)
 	if err != nil {
-		return nil, fmt.Errorf("read hub API key: %w", err)
+		return hubFailure(fmt.Errorf("read hub API key: %w", err))
 	}
 	cancelPF, hubBase, _, err := startSyncthingPortForward(ctx, opts, namespace, hubPod)
 	if err != nil {
-		return nil, fmt.Errorf("port-forward to hub: %w", err)
+		return hubFailure(fmt.Errorf("port-forward to hub: %w", err))
 	}
 	defer cancelPF()
 	if err := waitSyncthingAPI(ctx, hubBase, hubKey, syncthingAPIReadyTimeout); err != nil {
-		return nil, fmt.Errorf("hub syncthing API not ready: %w", err)
+		return hubFailure(fmt.Errorf("hub syncthing API not ready: %w", err))
 	}
 
 	results := collectMeshReceiverHealth(ctx, receivers, func(ctx context.Context, pod kube.PodSummary) meshReceiverHealth {
+		if pod.Phase != "Running" {
+			return meshReceiverHealth{Pod: pod.Name, Reason: "pod is " + pod.Phase}
+		}
 		return probeMeshReceiver(ctx, opts, k, namespace, pod, hubBase, hubKey, folderID)
 	})
 
-	return &meshHealthSummary{HubPod: hubPod, FolderID: folderID, Receivers: results}, nil
+	current, err := listMeshReceivers(ctx, k, namespace, labels, hubPod)
+	if err != nil {
+		return nil, err
+	}
+	summary.Expected = max(len(receivers), len(current))
+	summary.Receivers = reconcileMeshObservations(receivers, current, results)
+	return summary, nil
 }
 
 type meshReceiverProbeResult struct {
@@ -648,30 +636,7 @@ func probeMeshReceiver(ctx context.Context, opts *Options, k *kube.Client, names
 		return h
 	}
 
-	recvConn, _ := syncthingPeerConnected(ctx, recvBase, recvKey, hubDeviceID)
-	hubConn, _ := syncthingPeerConnected(ctx, hubBase, hubKey, recvDeviceID)
-	h.Connected = recvConn && hubConn
-
-	_, needBytes, pollErr := syncthingCompletion(ctx, recvBase, recvKey, folderID, hubDeviceID)
-	if pollErr == nil {
-		h.NeedBytes = needBytes
-		filesReady := true
-		if h.Connected {
-			if hubStatus, err := syncthingFolderStatusInfoForFolder(ctx, hubBase, hubKey, folderID); err == nil && hubStatus.LocalFiles > 0 {
-				receiverReady, _, readyErr := syncthingFolderHasLocalFiles(ctx, recvBase, recvKey, folderID, hubStatus.LocalFiles)
-				if readyErr != nil {
-					h.Err = fmt.Sprintf("file materialization poll: %v", readyErr)
-					filesReady = false
-				} else {
-					filesReady = receiverReady
-				}
-			}
-		}
-		h.InSync = needBytes == 0 && h.Connected && filesReady
-	} else {
-		h.Err = fmt.Sprintf("completion poll: %v", pollErr)
-	}
-	return h
+	return observeMeshReceiver(ctx, pod.Name, hubBase, hubKey, recvBase, recvKey, hubDeviceID, recvDeviceID, folderID)
 }
 
 // brokenMeshReceiverPods returns the pod names of receivers that are not
@@ -729,6 +694,9 @@ func formatMeshSummary(summary *meshSummary) string {
 	total := len(summary.Receivers)
 	if failed > 0 {
 		return fmt.Sprintf("%d/%d receiver(s) synced, %d failed", synced, total, failed)
+	}
+	if synced != total {
+		return fmt.Sprintf("%d/%d receiver(s) synced, %d connected", synced, total, connected)
 	}
 	return fmt.Sprintf("%d receiver(s) connected and synced", synced)
 }

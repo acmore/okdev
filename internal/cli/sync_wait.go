@@ -25,7 +25,7 @@ func newSyncWaitCmd(opts *Options) *cobra.Command {
 		Short: "Wait until sync has converged in both directions",
 		Long: `Rescan and wait until every mapping's current indexed revision is acknowledged
 by the local and target devices, with no pending items or deletions. Ignored paths
-and worker mesh delivery are outside this check. It does not start or repair sync
+are outside this check. Primary-mapping mesh receivers are verified too. It does not start or repair sync
 (use "okdev sync" for that). The edit-run loop guarantee:
 
   vim train.py && okdev sync wait && okdev exec -- python train.py`,
@@ -187,7 +187,7 @@ func syncWaitGateError(sessionName string, status syncHealthStatus, reason strin
 // runSyncWaitConvergence polls every managed folder on both syncthing
 // instances until local and remote pending bytes reach zero, or the timeout
 // expires.
-func runSyncWaitConvergence(ctx context.Context, cc *commandContext, pod string, pairs []syncengine.Pair, timeout time.Duration, out io.Writer) error {
+func runSyncWaitConvergence(ctx context.Context, cc *commandContext, pod string, pairs []syncengine.Pair, timeout time.Duration, out io.Writer, minimumReceivers ...int) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	folders, err := resolveSyncFolders(cc.sessionName, "", pairs)
@@ -195,6 +195,13 @@ func runSyncWaitConvergence(ctx context.Context, cc *commandContext, pod string,
 		return err
 	}
 
+	if len(folders) == 0 {
+		return fmt.Errorf("no sync mappings to verify")
+	}
+	meshCheck, err := newMeshConvergenceCheck(ctx, cc, pod, folders[0].id, minimumReceivers...)
+	if err != nil {
+		return fmt.Errorf("discover intended sync receivers: %w", err)
+	}
 	localHome, err := localSyncthingStatusHome(cc.sessionName)
 	if err != nil {
 		return fmt.Errorf("resolve local syncthing home: %w", err)
@@ -227,5 +234,5 @@ func runSyncWaitConvergence(ctx context.Context, cc *commandContext, pod string,
 		return fmt.Errorf("read remote syncthing device id: %w", err)
 	}
 
-	return waitSyncthingRevisions(ctx, localBase, localKey, remoteBase, remoteKey, localID, remoteID, folders, out)
+	return waitSyncthingRevisions(ctx, localBase, localKey, remoteBase, remoteKey, localID, remoteID, folders, out, meshCheck)
 }

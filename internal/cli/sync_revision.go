@@ -32,7 +32,7 @@ func syncthingCompletionInfo(ctx context.Context, base, key, folder, device stri
 }
 
 func syncFolderIdle(info syncthingFolderStatusInfo) bool {
-	return info.State == "idle" && info.Sequence != nil && info.NeedBytes == 0 && info.NeedFiles == 0 && info.NeedDirectories == 0 && info.NeedSymlinks == 0 && info.NeedDeletes == 0 && info.PullErrors == 0
+	return info.State == "idle" && info.Sequence != nil && info.NeedBytes == 0 && info.NeedFiles == 0 && info.NeedDirectories == 0 && info.NeedSymlinks == 0 && info.NeedDeletes == 0 && info.PullErrors == 0 && info.ReceiveOnlyTotalItems == 0
 }
 
 // Each device's sequence is compared with the peer's view of THAT device,
@@ -81,7 +81,7 @@ func syncthingRevisionConvergence(ctx context.Context, localBase, localKey, remo
 	return need, "", ctx.Err()
 }
 
-func waitSyncthingRevisions(ctx context.Context, localBase, localKey, remoteBase, remoteKey, localID, remoteID string, folders []syncFolder, out io.Writer) error {
+func waitSyncthingRevisions(ctx context.Context, localBase, localKey, remoteBase, remoteKey, localID, remoteID string, folders []syncFolder, out io.Writer, receiverChecks ...func(context.Context) error) error {
 	// A scan is synchronous. Use the caller's overall deadline instead of the
 	// short HTTP timeout; an ambiguous timed-out request cannot prove it ran.
 	client := *syncthingHTTPClient
@@ -113,10 +113,17 @@ func waitSyncthingRevisions(ctx context.Context, localBase, localKey, remoteBase
 			}
 		}
 		if len(reasons) == 0 {
+			for _, check := range receiverChecks {
+				if err := check(ctx); err != nil {
+					reasons = append(reasons, err.Error())
+				}
+			}
+		}
+		if len(reasons) == 0 {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			fmt.Fprintln(out, "Sync converged for current indexed revisions on the local and target devices; ignored paths are excluded. Worker coverage is not verified by this check.")
+			fmt.Fprintln(out, "Sync converged for current indexed revisions on the local and target devices; ignored paths are excluded. All discovered intended mesh receivers were verified.")
 			return nil
 		}
 		reason := strings.Join(reasons, "; ")

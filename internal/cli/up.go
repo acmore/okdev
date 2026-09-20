@@ -902,7 +902,7 @@ func upSetup(state *upState) error {
 	}
 
 	if len(state.syncPairs) > 0 {
-		state.ui.stepRun("initial sync", "waiting for syncthing convergence")
+		state.ui.stepRun("target sync", "waiting for syncthing convergence")
 		target, err = refreshTargetRef(state.ctx, state.opts, state.command.cfg, state.command.namespace, state.command.sessionName, state.command.kube, target)
 		if err != nil {
 			return fmt.Errorf("refresh target before initial sync wait: %w", err)
@@ -913,9 +913,9 @@ func upSetup(state *upState) error {
 		}
 		warnedLargeSync := false
 		if err := waitForInitialSyncFn(state.ctx, state.opts, state.command.kube, state.command.namespace, target.PodName, state.command.sessionName, localPath, syncStartMode, bootstrapResume, initialSyncTimeout, func(status string) {
-			state.ui.stepRun("initial sync", status)
+			state.ui.stepRun("target sync", status)
 		}, func(progress syncthingInitialSyncProgress) {
-			state.ui.stepRun("initial sync", formatInitialSyncProgressDetail(progress))
+			state.ui.stepRun("target sync", formatInitialSyncProgressDetail(progress))
 			if progress.NeedWarnLargeSync && !warnedLargeSync && localPath != "" {
 				state.ui.stopActive()
 				warnLargeSyncEntries(state.ui.out, localPath, progress.MaxNeedBytes)
@@ -926,22 +926,24 @@ func upSetup(state *upState) error {
 			return fmt.Errorf("wait for initial sync: %w", err)
 		}
 		if syncStartMode == "two-phase" {
-			state.ui.stepRun("initial sync", "waiting for syncthing handoff")
+			state.ui.stepRun("target sync", "waiting for syncthing handoff")
 			if err := waitForSyncthingBootstrapCompleteFn(state.ctx, state.command.sessionName); err != nil {
 				return fmt.Errorf("wait for syncthing handoff: %w", err)
 			}
 		}
-		state.ui.stepDone("initial sync", "complete")
+		state.ui.stepDone("target sync", "complete")
 	}
 
+	meshMinimum := 0
 	// Mesh sync: if receiver pods exist, configure syncthing mesh from hub
 	// to receivers so all pods get the workspace without a shared PVC.
 	if len(state.syncPairs) > 0 {
 		meshCount, meshCountErr := meshReceiverCount(state.ctx, state.command.kube, state.command.namespace, state.labels, target.PodName)
 		if meshCountErr != nil {
-			slog.Debug("mesh: could not count receivers", "error", meshCountErr)
+			return fmt.Errorf("discover mesh receivers: %w", meshCountErr)
 		}
-		if meshCountErr == nil && meshCount > 0 {
+		meshMinimum = meshCount
+		if meshCount > 0 {
 			state.ui.stepRun("mesh", fmt.Sprintf("configuring %d receiver sidecar(s)", meshCount))
 			folderID := "okdev-" + state.command.sessionName
 			folderPath := meshFolderPath(state.syncPairs, state.command.cfg.EffectiveWorkspaceMountPath(state.command.cfgPath))
@@ -950,18 +952,26 @@ func upSetup(state *upState) error {
 				target.PodName, folderID, folderPath, meshSetupTimeout,
 				func(status string) { state.ui.stepRun("mesh", status) })
 			if meshErr != nil {
-				state.ui.warnf("mesh setup failed: %v", meshErr)
+				return fmt.Errorf("mesh setup failed: %w", meshErr)
 			} else if meshResult != nil {
 				state.ui.stepDone("mesh", formatMeshSummary(meshResult))
 				for _, r := range meshResult.Receivers {
 					if r.Err != nil {
-						state.ui.warnf("mesh receiver %s: %v", r.Pod, r.Err)
+						return fmt.Errorf("mesh receiver %s: %w", r.Pod, r.Err)
 					}
 				}
 			} else {
-				state.ui.stepDone("mesh", "no receivers ready")
+				return fmt.Errorf("mesh receivers disappeared during setup: expected %d", meshCount)
 			}
 		}
+	}
+
+	if len(state.syncPairs) > 0 {
+		state.ui.stepRun("sync verification", "checking all intended receivers")
+		if err := runSyncWaitConvergence(state.ctx, state.command, target.PodName, state.syncPairs, initialSyncTimeout, state.ui.warnWriter(), meshMinimum); err != nil {
+			return fmt.Errorf("sync receiver verification: %w", err)
+		}
+		state.ui.stepDone("sync verification", "all intended receivers converged")
 	}
 
 	// Stable inter-pod addressing: every pod's /etc/hosts maps the short
