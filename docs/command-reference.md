@@ -3,13 +3,15 @@
 ## Global Flags
 
 - `-c, --config`: configuration file path
-- `--session`: explicit session identifier
+- `--session`: explicit session identifier. Saved configuration takes precedence over directory discovery; a new session without a saved configuration uses normal discovery (so `okdev up --session new-name` works from the repository). An explicit `--config` takes precedence over both.
 - `--owner`: owner label override (default: `OKDEV_OWNER` or local `USER`)
 - `-n, --namespace`: namespace override
 - `--context`: kubeconfig context override. When omitted, `spec.kubeContext` is used if set; otherwise kubeconfig current-context is used.
 - `--output text|json`: output format (`list`, `status`)
 - `--verbose`: debug logging
 - `NO_COLOR=1` or `TERM=dumb`: disable ANSI color/styling in interactive terminal output
+
+With an explicit `--config`, automatic session selection requires a matching saved config path. Sessions associated with another config, or without a known association, are excluded. If the default session name collides with such a session, okdev reports both identities before proceeding; use a distinct `--session` to create a separate environment, or explicitly name the existing session to reuse it.
 
 ## Exit Codes
 
@@ -45,7 +47,7 @@ agents can react without launching a diagnostic chain on every blip:
 - `okdev agent list`
 - `okdev exec [session] [--shell /bin/bash] [--no-tty] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--detach] [--timeout <duration>] [--log-dir <path>] [--no-prefix] [--json] [--require-all] [--gateway <pod>] [--fanout N] [--pkill <pattern> [--signal <sig>]] [--require-sync] [-- command...]`
 - `okdev jobs list [session] [--job-id <id>] [--container <name>] [--fanout N]`
-- `okdev jobs logs <job-id> [session] [-f|--follow] [--tail N] [--since <dur|time>] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--fanout N]`
+- `okdev jobs logs <job-id> [session] [-f|--follow] [--no-prefix] [--tail N] [--since <dur|time>] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--fanout N]`
 - `okdev jobs stop <job-id> [session] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--fanout N]`
 - `okdev jobs wait <job-id> [session] [--pod <name> | --role <role> | --label <k=v>] [--exclude <pod>] [--container <name>] [--fanout N]`
 - `okdev exec-jobs [session] [--job-id <id>] [--container <name>] [--fanout N]`
@@ -196,7 +198,7 @@ agents can react without launching a diagnostic chain on every blip:
 ### `okdev jobs logs <job-id> [session]`
 
 - Streams the detached job's combined stdout/stderr aggregated across all pods in the logical job.
-- Each line is prefixed by the pod short name so multi-pod output stays attributable.
+- A single pod's logs are emitted without adding a prefix or a trailing newline. Existing log filters and carriage-return normalization still apply. Multi-pod logs retain short pod prefixes by default, including when redirected, so output stays attributable. Pass `--no-prefix` to suppress them explicitly; concurrent streams then have no pod attribution.
 - `--pod`: stream logs from specific pods by name (repeatable or comma-separated).
 - `--role`: stream logs from pods with the matching workload role.
 - `--label`: stream logs from pods matching label selectors.
