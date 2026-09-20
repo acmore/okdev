@@ -15,7 +15,7 @@ import (
 // captureSessionLastSeen persists a live pod snapshot for every viewed
 // session that okdev tracks locally (has session.json). Best-effort: status
 // output must not fail because a cache write did.
-func captureSessionLastSeen(views []sessionView) {
+func captureSessionLastSeen(views []sessionView, contexts ...string) {
 	for _, view := range views {
 		if len(view.Pods) == 0 {
 			continue
@@ -24,7 +24,15 @@ func captureSessionLastSeen(views []sessionView) {
 		if err != nil || strings.TrimSpace(info.Name) == "" {
 			continue
 		}
-		if err := session.SaveLastSeen(view.Session, buildLastSeenSnapshot(info, view.Namespace, view.Pods)); err != nil {
+		if !statusScopeMatches(info.Namespace, info.KubeContext, view.Namespace, contexts) ||
+			(info.Owner != "" && view.Owner != "" && info.Owner != view.Owner) {
+			continue
+		}
+		snapshot := buildLastSeenSnapshot(info, view.Namespace, view.Pods)
+		if len(contexts) > 0 {
+			snapshot.Context = contexts[0]
+		}
+		if err := session.SaveLastSeen(view.Session, snapshot); err != nil {
 			slog.Debug("failed to save last-seen snapshot", "session", view.Session, "error", err)
 		}
 	}
@@ -37,6 +45,7 @@ func buildLastSeenSnapshot(info session.Info, namespace string, pods []kube.PodS
 	snapshot := session.LastSeen{
 		At:        time.Now().UTC(),
 		RunID:     strings.TrimSpace(info.RunID),
+		Context:   strings.TrimSpace(info.KubeContext),
 		Namespace: namespace,
 		Workload: session.LastSeenWorkload{
 			APIVersion: info.WorkloadAPIVersion,
@@ -71,6 +80,9 @@ func buildLastSeenSnapshot(info session.Info, namespace string, pods []kube.PodS
 // from "evicted for quota/node reasons, recreating won't help".
 type sessionDeathReport struct {
 	Session    string                   `json:"session"`
+	Context    string                   `json:"context,omitempty"`
+	Namespace  string                   `json:"namespace,omitempty"`
+	Historical bool                     `json:"historical"`
 	Found      bool                     `json:"found"`
 	LastSeenAt string                   `json:"lastSeenAt,omitempty"`
 	Workload   session.LastSeenWorkload `json:"workload,omitempty"`
@@ -95,13 +107,30 @@ const deathReportMaxEvents = 20
 // buildSessionDeathReport assembles the post-mortem for a vanished session.
 // Returns ok=false when there is nothing cached to report (no local session
 // or no snapshot) — the caller then keeps the plain not-found message.
-func buildSessionDeathReport(ctx context.Context, k objectEventLister, sessionName, namespace string) (sessionDeathReport, bool) {
+func buildSessionDeathReport(ctx context.Context, k objectEventLister, sessionName, namespace string, contexts ...string) (sessionDeathReport, bool) {
 	snapshot, err := session.LoadLastSeen(sessionName)
 	if err != nil || snapshot.At.IsZero() {
 		return sessionDeathReport{}, false
 	}
+	info, err := session.LoadInfo(sessionName)
+	if err != nil {
+		return sessionDeathReport{}, false
+	}
+	if snapshot.Namespace == "" {
+		snapshot.Namespace = info.Namespace
+	}
+	if snapshot.Context == "" {
+		snapshot.Context = info.KubeContext
+	}
+	if !statusScopeMatches(snapshot.Namespace, snapshot.Context, namespace, contexts) ||
+		(snapshot.RunID != "" && info.RunID != "" && snapshot.RunID != info.RunID) {
+		return sessionDeathReport{}, false
+	}
 	report := sessionDeathReport{
 		Session:    sessionName,
+		Context:    snapshot.Context,
+		Namespace:  snapshot.Namespace,
+		Historical: true,
 		Found:      false,
 		LastSeenAt: snapshot.At.UTC().Format(time.RFC3339),
 		Workload:   snapshot.Workload,
@@ -144,9 +173,10 @@ func buildSessionDeathReport(ctx context.Context, k objectEventLister, sessionNa
 }
 
 func printSessionDeathReport(w io.Writer, report sessionDeathReport) {
-	fmt.Fprintf(w, "\nLast known state before the session disappeared (captured %s):\n", report.LastSeenAt)
+	fmt.Fprintf(w, "\nLast known state (historical snapshot, captured %s):\n", report.LastSeenAt)
+	fmt.Fprintf(w, "- session: %s; context: %s; namespace: %s\n", report.Session, emptyDash(report.Context), emptyDash(report.Namespace))
 	if strings.TrimSpace(report.Workload.Name) != "" {
-		fmt.Fprintf(w, "- workload: %s/%s (deleted)\n", report.Workload.Kind, report.Workload.Name)
+		fmt.Fprintf(w, "- workload at capture: %s/%s\n", report.Workload.Kind, report.Workload.Name)
 	}
 	for _, pod := range report.Pods {
 		line := fmt.Sprintf("- pod %s: %s", pod.Name, pod.Phase)
@@ -171,4 +201,11 @@ func printSessionDeathReport(w io.Writer, report sessionDeathReport) {
 		fmt.Fprintln(w, "No cluster events survived for those objects (they expire ~1h after emission).")
 	}
 	fmt.Fprintln(w, "If the events show Evicted/Preempted or quota errors, recreating will likely fail again; otherwise `okdev up` recreates the session.")
+}
+
+func statusScopeMatches(savedNamespace, savedContext, namespace string, contexts []string) bool {
+	if savedNamespace != "" && namespace != "" && savedNamespace != namespace {
+		return false
+	}
+	return len(contexts) == 0 || savedContext == "" || savedContext == contexts[0]
 }
