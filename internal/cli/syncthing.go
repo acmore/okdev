@@ -1458,19 +1458,12 @@ func maxInt64(a, b int64) int64 {
 }
 
 func syncthingCompletion(ctx context.Context, base, key, folderID, deviceID string) (float64, int64, error) {
-	path := fmt.Sprintf("/rest/db/completion?folder=%s&device=%s", url.QueryEscape(folderID), url.QueryEscape(deviceID))
-	body, err := syncthingAPIRequestWithContext(ctx, http.MethodGet, base, key, path, nil, "")
-	if err != nil {
-		return 0, 0, err
+	info, err := syncthingCompletionInfo(ctx, base, key, folderID, deviceID)
+	pct := info.Completion
+	if info.NeedItems > 0 || info.NeedDeletes > 0 {
+		pct = 0
 	}
-	var payload struct {
-		Completion float64 `json:"completion"`
-		NeedBytes  int64   `json:"needBytes"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return 0, 0, err
-	}
-	return payload.Completion, payload.NeedBytes, nil
+	return pct, info.NeedBytes, err
 }
 
 type syncthingInitialSyncProgress struct {
@@ -1517,10 +1510,15 @@ func syncthingFolderNeedBytes(ctx context.Context, base, key, folderID string) (
 }
 
 type syncthingFolderStatusInfo struct {
-	State       string
-	GlobalFiles int64
-	LocalFiles  int64
-	NeedBytes   int64
+	Sequence        *int64
+	NeedDirectories int64
+	NeedSymlinks    int64
+	NeedDeletes     int64
+	PullErrors      int64
+	State           string
+	GlobalFiles     int64
+	LocalFiles      int64
+	NeedBytes       int64
 	// NeedFiles is the pending file count. /rest/db/status has always
 	// returned it; it was simply not decoded, which left "how much is left"
 	// answerable only in bytes (#215).
@@ -1534,21 +1532,31 @@ func syncthingFolderStatusInfoForFolder(ctx context.Context, base, key, folderID
 		return syncthingFolderStatusInfo{}, err
 	}
 	var payload struct {
-		State       string `json:"state"`
-		GlobalFiles int64  `json:"globalFiles"`
-		LocalFiles  int64  `json:"localFiles"`
-		NeedBytes   int64  `json:"needBytes"`
-		NeedFiles   int64  `json:"needFiles"`
+		Sequence        *int64 `json:"sequence"`
+		NeedDirectories int64  `json:"needDirectories"`
+		NeedSymlinks    int64  `json:"needSymlinks"`
+		NeedDeletes     int64  `json:"needDeletes"`
+		PullErrors      int64  `json:"pullErrors"`
+		State           string `json:"state"`
+		GlobalFiles     int64  `json:"globalFiles"`
+		LocalFiles      int64  `json:"localFiles"`
+		NeedBytes       int64  `json:"needBytes"`
+		NeedFiles       int64  `json:"needFiles"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return syncthingFolderStatusInfo{}, err
 	}
 	return syncthingFolderStatusInfo{
-		State:       payload.State,
-		GlobalFiles: payload.GlobalFiles,
-		LocalFiles:  payload.LocalFiles,
-		NeedBytes:   payload.NeedBytes,
-		NeedFiles:   payload.NeedFiles,
+		Sequence:        payload.Sequence,
+		NeedDirectories: payload.NeedDirectories,
+		NeedSymlinks:    payload.NeedSymlinks,
+		NeedDeletes:     payload.NeedDeletes,
+		PullErrors:      payload.PullErrors,
+		State:           payload.State,
+		GlobalFiles:     payload.GlobalFiles,
+		LocalFiles:      payload.LocalFiles,
+		NeedBytes:       payload.NeedBytes,
+		NeedFiles:       payload.NeedFiles,
 	}, nil
 }
 
@@ -2735,6 +2743,10 @@ func syncthingSetIgnores(ctx context.Context, base, key, folderID string, ignore
 }
 
 func syncthingAPIRequestWithContext(ctx context.Context, method, base, key, path string, body []byte, contentType string) ([]byte, error) {
+	return syncthingAPIRequestWithClient(ctx, syncthingHTTPClient, method, base, key, path, body, contentType)
+}
+
+func syncthingAPIRequestWithClient(ctx context.Context, client *http.Client, method, base, key, path string, body []byte, contentType string) ([]byte, error) {
 	var reqBody io.Reader
 	if len(body) > 0 {
 		reqBody = bytes.NewReader(body)
@@ -2747,7 +2759,7 @@ func syncthingAPIRequestWithContext(ctx context.Context, method, base, key, path
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	resp, err := syncthingHTTPClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

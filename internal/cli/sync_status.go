@@ -33,15 +33,16 @@ type syncPendingFile struct {
 }
 
 type syncFolderStatus struct {
-	Folder    string            `json:"folder"`
-	Local     string            `json:"local"`
-	Remote    string            `json:"remote"`
-	Direction string            `json:"direction"`
-	State     string            `json:"state"`
-	NeedBytes int64             `json:"needBytes"`
-	NeedFiles int64             `json:"needFiles"`
-	Pending   []syncPendingFile `json:"pending,omitempty"`
-	Excludes  []string          `json:"excludes,omitempty"`
+	PendingReason string            `json:"pendingReason,omitempty"`
+	Folder        string            `json:"folder"`
+	Local         string            `json:"local"`
+	Remote        string            `json:"remote"`
+	Direction     string            `json:"direction"`
+	State         string            `json:"state"`
+	NeedBytes     int64             `json:"needBytes"`
+	NeedFiles     int64             `json:"needFiles"`
+	Pending       []syncPendingFile `json:"pending,omitempty"`
+	Excludes      []string          `json:"excludes,omitempty"`
 	// ExcludeSource distinguishes patterns read from a .stignore file from
 	// okdev's built-in defaults, which apply when no file exists. Reporting
 	// defaults as if they came from a file would send the reader editing a
@@ -146,6 +147,14 @@ func gatherSyncStatus(ctx context.Context, cc *commandContext, pod string, pairs
 		return syncStatusReport{}, fmt.Errorf("local syncthing not ready: %w", err)
 	}
 
+	localID, err := syncthingDeviceID(ctx, localBase, localKey)
+	if err != nil {
+		return syncStatusReport{}, err
+	}
+	remoteID, err := syncthingDeviceID(ctx, remoteBase, remoteKey)
+	if err != nil {
+		return syncStatusReport{}, err
+	}
 	report := syncStatusReport{Session: cc.sessionName, Converged: true}
 	for _, folder := range folders {
 		entry := syncFolderStatus{
@@ -184,10 +193,15 @@ func gatherSyncStatus(ctx context.Context, cc *commandContext, pod string, pairs
 			}
 			entry.Pending = append(entry.Pending, pending...)
 		}
+		_, reason, revisionErr := syncthingRevisionConvergence(ctx, localBase, localKey, remoteBase, remoteKey, localID, remoteID, folder.id)
+		if revisionErr != nil {
+			problems = append(problems, revisionErr.Error())
+		}
+		entry.PendingReason = reason
 		entry.Error = strings.Join(problems, "; ")
 		entry.Excludes, entry.ExcludeSource = loadSTIgnoreDisplayPatterns(folder.absLocal)
 		entry.Pending = topPendingFiles(entry.Pending, entry.NeedBytes, topN)
-		if entry.NeedBytes > 0 || entry.NeedFiles > 0 || entry.Error != "" {
+		if entry.NeedBytes > 0 || entry.NeedFiles > 0 || entry.Error != "" || entry.PendingReason != "" {
 			report.Converged = false
 		}
 		report.NeedBytes += entry.NeedBytes
@@ -332,7 +346,7 @@ func loadSTIgnoreDisplayPatterns(root string) ([]string, string) {
 
 func printSyncStatus(w io.Writer, report syncStatusReport) {
 	if report.Converged {
-		fmt.Fprintf(w, "Sync converged (%d folder(s)); nothing pending.\n", len(report.Folders))
+		fmt.Fprintf(w, "Sync converged (%d folder(s)) for current indexed revisions on local/target devices; ignored paths excluded. Worker coverage is not verified.\n", len(report.Folders))
 	} else {
 		fmt.Fprintf(w, "Pending: %s across %d file(s).\n", humanSizeIEC(report.NeedBytes), report.NeedFiles)
 	}
@@ -351,6 +365,9 @@ func printSyncStatus(w io.Writer, report syncStatusReport) {
 			fmt.Fprintf(w, "- excludes in force (%d, from %s): %s\n", len(folder.Excludes), folder.ExcludeSource, strings.Join(folder.Excludes, ", "))
 		} else {
 			fmt.Fprintln(w, "- excludes in force: none")
+		}
+		if folder.PendingReason != "" {
+			fmt.Fprintf(w, "- waiting: %s\n", folder.PendingReason)
 		}
 		if folder.Error != "" {
 			fmt.Fprintf(w, "- warning: %s\n", folder.Error)
