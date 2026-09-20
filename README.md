@@ -128,6 +128,7 @@ Start with the [tested automation recipes](docs/automation.md):
 | Preserve remote variables | `okdev exec -- sh -c 'printf "%s\n" "$HOSTNAME"'`; use `--script ./probe.sh` for complex commands. |
 | Monitor over time | Launch with `exec --detach`, read `jobs logs <id> --tail 20`, then `jobs stop <id>`. |
 | Trim initial sync | Review `.stignore` before `up`; exclude `.git` only when remote tools do not need repository metadata. |
+| Work without sync | Use the [snapshot distribution recipe](docs/snapshot-distribution.md): explicit `cp --pod`/`--all`, per-receiver SHA-256 verification, and a fresh path outside sync roots. |
 
 `--require-all` checks responses, not remote exit success; a log marker can match
 one pod and does not establish all-pod service readiness. The recipes include

@@ -53,6 +53,7 @@ nav:
   - Home: index.md
   - Quickstart: quickstart.md
   - Automation Recipes: automation.md
+  - Snapshot Distribution: snapshot-distribution.md
   - Config Manifest: config-manifest.md
   - Command Reference: command-reference.md
   - Troubleshooting: troubleshooting.md
