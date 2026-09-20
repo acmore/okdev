@@ -15,6 +15,9 @@ Primary docs:
   job-ID waits with `--grep`, explicit all-pod content verification, bind
   addresses, remote shell quoting, detached monitors, and initial exclusions.
 - `docs/quickstart.md`
+- `docs/snapshot-distribution.md` — when sync is unavailable, use explicit
+  `cp --pod`/`--all`, verify each archive hash, and run from a fresh path outside
+  sync roots. Snapshot delivery does not propagate subsequent edits.
 - `docs/command-reference.md`
 - `docs/config-manifest.md`
 - `docs/troubleshooting.md`

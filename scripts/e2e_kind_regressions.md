@@ -19,6 +19,7 @@ Available groups:
 
 | Group | Real Kind coverage |
 | --- | --- |
+| `snapshot` | Sync-independent snapshot delivery, explicit targets, remote archive hashes, target-only defaults, partial failure |
 | `automation` | Executable documentation: JSON/hash checks, job-specific waits, remote quoting, explicit port-forward bind, preflight failure |
 | `config_jobs` | Named config discovery, config isolation, collision rejection, single/multi-pod job log bytes |
 | `readiness` | Live API connection loss, readiness retry, timeout continuation on the same Pod, one-time setup |
