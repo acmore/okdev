@@ -29,6 +29,7 @@ type statusDetailsClient interface {
 }
 
 type detailedStatus struct {
+	PodGroups        []detailedStatusPodGroup      `json:"podGroups,omitempty"`
 	Session          string                        `json:"session"`
 	Namespace        string                        `json:"namespace"`
 	Owner            string                        `json:"owner"`
@@ -205,6 +206,7 @@ func gatherDetailedStatus(ctx context.Context, opts *Options, cfg *config.DevEnv
 			detail.Agents = rows
 		}
 	}
+	detail.PodGroups = gatherPodGroupStatus(ctx, namespace, view.Pods, client)
 	detail.Logs = buildDetailedLogs()
 	attachPodHookStates(&detail, view, cfg, cfgPath, target)
 	enrichDetailedStatusPods(ctx, namespace, target.SelectedContainer, &detail, client)
@@ -729,6 +731,7 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 		}
 	}
 
+	printPodGroupStatus(w, detail.PodGroups)
 	fmt.Fprintln(w, "\nSSH:")
 	fmt.Fprintf(w, "- host alias: %s\n", detail.SSH.HostAlias)
 	fmt.Fprintf(w, "- config present: %t\n", detail.SSH.ConfigPresent)
