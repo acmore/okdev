@@ -5,7 +5,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/output"
 	"github.com/acmore/okdev/internal/session"
@@ -39,14 +38,10 @@ func newListCmd(opts *Options) *cobra.Command {
 			if activeErr != nil {
 				return activeErr
 			}
-			if ns == "" {
-				if cfg, err := loadOptionalConfigForList(opts); err == nil && cfg.Spec.Namespace != "" {
+			if cfg, err := loadOptionalConfig(opts); err == nil {
+				cc.cfg = cfg
+				if ns == "" {
 					ns = cfg.Spec.Namespace
-					applyConfigKubeContext(opts, cfg)
-					cc.cfg = cfg
-				} else if err == nil {
-					applyConfigKubeContext(opts, cfg)
-					cc.cfg = cfg
 				}
 			}
 			if ns == "" {
@@ -171,16 +166,4 @@ func sessionNameFromPodSummary(p kube.PodSummary) string {
 		return strings.TrimPrefix(name, "okdev-")
 	}
 	return name
-}
-
-func loadOptionalConfigForList(opts *Options) (*config.DevEnvironment, error) {
-	path, err := config.ResolvePath(opts.ConfigPath)
-	if err != nil {
-		return nil, err
-	}
-	cfg, _, err := config.Load(path)
-	if err != nil {
-		return nil, err
-	}
-	return cfg, nil
 }

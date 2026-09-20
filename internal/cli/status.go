@@ -37,12 +37,16 @@ func newStatusCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Everything below reads cc.opts, never opts: resolveCommandContext
+			// resolves against a copy, so the kube context pinned by
+			// spec.kubeContext lands on cc.opts alone. Reaching for opts here
+			// silently talks to the kubeconfig's current-context instead.
 			label := "okdev.io/managed=true"
 			if !allUsers {
-				label = label + "," + ownerLabelSelector(opts)
+				label = label + "," + ownerLabelSelector(cc.opts)
 			}
 			if !all {
-				cc.sessionName, err = resolveSessionName(opts, cc.cfg, cc.namespace)
+				cc.sessionName, err = resolveSessionName(cc.opts, cc.cfg, cc.namespace)
 				if err != nil {
 					return err
 				}
@@ -62,7 +66,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 					return controllerErr
 				}
 				views = mergeSessionViews(views, buildControllerSessionViews(controllerResources))
-				savedViews, savedErr := savedSessionViews(ctx, cc.kube, cc.namespace, false, allUsers, opts)
+				savedViews, savedErr := savedSessionViews(ctx, cc.kube, cc.namespace, false, allUsers, cc.opts)
 				if savedErr != nil {
 					return savedErr
 				}
@@ -90,7 +94,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 			if len(views) == 0 {
 				if !all {
 					if report, ok := buildSessionDeathReport(ctx, cc.kube, cc.sessionName, cc.namespace); ok {
-						if opts.Output == "json" {
+						if cc.opts.Output == "json" {
 							return outputJSON(cmd.OutOrStdout(), report)
 						}
 						fmt.Fprintln(cmd.OutOrStdout(), "No matching sessions found")
@@ -108,14 +112,14 @@ func newStatusCmd(opts *Options) *cobra.Command {
 				if all || len(views) != 1 {
 					return fmt.Errorf("--details requires a single session")
 				}
-				detail := gatherDetailedStatus(cmd.Context(), opts, cc.cfg, cc.cfgPath, cc.namespace, views[0], cc.kube)
-				if opts.Output == "json" {
+				detail := gatherDetailedStatus(cmd.Context(), cc.opts, cc.cfg, cc.cfgPath, cc.namespace, views[0], cc.kube)
+				if cc.opts.Output == "json" {
 					return outputJSON(cmd.OutOrStdout(), detail)
 				}
 				printDetailedStatus(cmd.OutOrStdout(), detail)
 				return nil
 			}
-			if opts.Output == "json" {
+			if cc.opts.Output == "json" {
 				type statusRow struct {
 					Session   string `json:"session"`
 					Owner     string `json:"owner"`

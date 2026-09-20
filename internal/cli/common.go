@@ -178,6 +178,30 @@ func optionsWithSessionConfig(opts *Options) (*Options, error) {
 	return &cloned, nil
 }
 
+// loadOptionalConfig loads the discoverable config for the commands that must
+// still work without one — `okdev list` and session-name completion — and
+// applies the kube context it pins.
+//
+// Those commands cannot go through resolveCommandContext: they have no session
+// and a missing config is not an error for them. They must honor
+// spec.kubeContext all the same, so the context is applied here, at the load.
+// Callers must not gate this call on anything: which cluster to talk to is
+// independent of which namespace to look in, and hanging the load off
+// "--namespace was omitted" is exactly how both commands used to fall back to
+// the kubeconfig's current-context.
+func loadOptionalConfig(opts *Options) (*config.DevEnvironment, error) {
+	path, err := config.ResolvePath(opts.ConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	cfg, _, err := config.Load(path)
+	if err != nil {
+		return nil, err
+	}
+	applyConfigKubeContext(opts, cfg)
+	return cfg, nil
+}
+
 func applyConfigKubeContext(opts *Options, cfg *config.DevEnvironment) {
 	if opts == nil || cfg == nil {
 		return
