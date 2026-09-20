@@ -19,6 +19,9 @@ type Options struct {
 	Output     string
 	Workload   string
 	Verbose    bool
+
+	// Distinguish a caller-selected config from a discovered or saved path.
+	explicitConfig bool
 }
 
 func NewRootCmd() *cobra.Command {

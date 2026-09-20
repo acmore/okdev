@@ -113,6 +113,7 @@ func newJobsLogsCmd(opts *Options) *cobra.Command {
 	var since string
 	var grep string
 	var dedup bool
+	var noPrefix bool
 	cmd := &cobra.Command{
 		Use:   "logs <job-id> [session]",
 		Short: "Show detached job logs",
@@ -126,7 +127,7 @@ func newJobsLogsCmd(opts *Options) *cobra.Command {
 			if tailLines < -1 {
 				return fmt.Errorf("--tail must be -1 (all), 0, or a positive line count")
 			}
-			logOpts := jobsLogsOptions{Follow: follow, TailLines: tailLines, Grep: grep, Dedup: dedup}
+			logOpts := jobsLogsOptions{Follow: follow, TailLines: tailLines, Grep: grep, Dedup: dedup, NoPrefix: noPrefix}
 			if follow && (strings.TrimSpace(grep) != "" || dedup) {
 				return fmt.Errorf("--grep and --dedup apply to snapshot reads and cannot be used with --follow")
 			}
@@ -170,6 +171,7 @@ func newJobsLogsCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&since, "since", "", "Skip pods whose log file has not changed within this duration (e.g. 90s, 5m) or since an RFC3339 time; file-level gate, output is still the (tail-limited) current log")
 	cmd.Flags().StringVar(&grep, "grep", "", "Keep only lines matching this extended regex (pod-side, after CR normalization, before --tail)")
 	cmd.Flags().BoolVar(&dedup, "dedup", false, "Fold consecutive identical lines into one copy plus a [repeated Nx] count")
+	cmd.Flags().BoolVar(&noPrefix, "no-prefix", false, "Suppress pod prefixes (single-pod logs are always unprefixed)")
 	return cmd
 }
 
@@ -178,6 +180,7 @@ func newJobsLogsCmd(opts *Options) *cobra.Command {
 // magnitude versus re-fetching the whole file each round; --grep and --dedup
 // (#188/#189) shrink what one read costs an automated caller.
 type jobsLogsOptions struct {
+	NoPrefix  bool
 	Follow    bool
 	TailLines int // -1 = whole file
 	// SinceEpoch, when >0, skips pods whose log file mtime is older. The
@@ -326,11 +329,14 @@ func runJobsLogs(ctx context.Context, client detachJobClient, namespace string, 
 		printExecJobsErrors(out, podErrors)
 		return err
 	}
+	out = &lockedWriter{w: out}
 	shortNames := shortPodNames(jobPodNames(job))
 	prefixes := formatPodPrefixes(shortNames, false)
 	prefixByPod := make(map[string]string, len(job.PodStates))
 	for i, row := range job.PodStates {
-		prefixByPod[row.Pod] = prefixes[i]
+		if len(job.PodStates) > 1 && !logOpts.NoPrefix {
+			prefixByPod[row.Pod] = prefixes[i]
+		}
 	}
 
 	streamCtx := ctx
@@ -754,11 +760,15 @@ func logicalJobFailed(job logicalExecJobView) bool {
 const detachLogReadAttempts = 3
 
 func streamDetachJobLog(ctx context.Context, client detachJobClient, namespace string, row execJobView, prefix string, logOpts jobsLogsOptions, out io.Writer, mu *sync.Mutex) error {
+	writer := out
+	if prefix != "" {
+		prefixed := newPrefixedWriter(prefix, out, mu)
+		defer prefixed.Flush()
+		writer = prefixed
+	}
 	if logOpts.Follow {
 		script := followDetachJobLogScript(row.LogPath, logOpts.TailLines)
 		var stderr bytes.Buffer
-		writer := newPrefixedWriter(prefix, out, mu)
-		defer writer.Flush()
 		err := streamDetachLogWithSidecarFallback(ctx, client, namespace, row, script, writer, &stderr)
 		if err != nil && strings.TrimSpace(stderr.String()) != "" {
 			return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
@@ -774,8 +784,6 @@ func streamDetachJobLog(ctx context.Context, client detachJobClient, namespace s
 	if err != nil {
 		return err
 	}
-	writer := newPrefixedWriter(prefix, out, mu)
-	defer writer.Flush()
 	if _, err := writer.Write([]byte(content)); err != nil {
 		return err
 	}
