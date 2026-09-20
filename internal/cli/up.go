@@ -992,17 +992,14 @@ func upSetup(state *upState) error {
 	postSyncCmd := resolvePostSyncCommand(state.command.cfg, state.command.cfgPath)
 	if postSyncCmd != "" && len(state.syncPairs) > 0 {
 		state.ui.stepRun("postSync", "running on all pods with shared workspace")
-		summary, err := runPostSyncOnAllPods(state.ctx, state.command.kube, state.command.namespace, state.labels, target.Container, postSyncCmd, state.ui.warnWriter())
+		summary, err := runPostSyncOnAllPods(state.ctx, state.command.kube, state.command.namespace, state.labels, target.Container, postSyncCmd, lifecycleOutputSink{ui: state.ui})
 		if err != nil {
 			return err
 		}
 		if summary.Ran > 0 {
 			postSyncRanThisUp = true
 		}
-		detail := fmt.Sprintf("workspace synced; ran on %d pod(s)", summary.Ran)
-		if summary.Skipped > 0 {
-			detail = fmt.Sprintf("%s, skipped %d already done", detail, summary.Skipped)
-		}
+		detail := lifecycleExitSummary(summary.Ran, summary.Skipped)
 		if summary.NotRunning > 0 {
 			state.ui.warnf("postSync skipped %d pod(s) that were not Running", summary.NotRunning)
 		}
@@ -1011,12 +1008,12 @@ func upSetup(state *upState) error {
 
 	if state.flags.waitHooks && postSyncCmd != "" && len(state.syncPairs) > 0 {
 		state.ui.stepRun("wait-hooks", "converging postSync across all session pods")
-		if err := waitForPostSyncConverged(state.ctx, state.command.kube, state.command.namespace, state.labels, target.Container, postSyncCmd, state.flags.waitTimeout, state.ui.warnWriter(), func(detail string) {
+		if err := waitForPostSyncConverged(state.ctx, state.command.kube, state.command.namespace, state.labels, target.Container, postSyncCmd, state.flags.waitTimeout, lifecycleOutputSink{ui: state.ui}, func(detail string) {
 			state.ui.stepRun("wait-hooks", detail)
 		}); err != nil {
 			return fmt.Errorf("wait for hooks: %w", err)
 		}
-		state.ui.stepDone("wait-hooks", "postSync done on every pod")
+		state.ui.stepDone("wait-hooks", "postSync exit 0 recorded on every pod; setup effects are not independently verified")
 	}
 
 	if len(state.command.cfg.Spec.Agents) > 0 {
@@ -1044,20 +1041,14 @@ func upSetup(state *upState) error {
 			return fmt.Errorf("refresh target before postCreate: %w", err)
 		}
 		state.ui.stepRun("postCreate", fmt.Sprintf("running on all pods: %s", postCreateCmd))
-		summary, err := runPostCreateOnAllPods(state.ctx, state.command.kube, state.command.namespace, state.labels, target.Container, postCreateCmd, state.ui.warnWriter())
+		summary, err := runPostCreateOnAllPods(state.ctx, state.command.kube, state.command.namespace, state.labels, target.Container, postCreateCmd, lifecycleOutputSink{ui: state.ui})
 		if err != nil {
 			return err
 		}
 		if summary.Ran > 0 {
 			hooksRanThisUp = true
 		}
-		detail := fmt.Sprintf("ran on %d pod(s)", summary.Ran)
-		if summary.Skipped > 0 {
-			detail = fmt.Sprintf("%s, skipped %d already done", detail, summary.Skipped)
-		}
-		if summary.Ran == 0 && summary.Skipped > 0 {
-			detail = fmt.Sprintf("already done on %d pod(s)", summary.Skipped)
-		}
+		detail := lifecycleExitSummary(summary.Ran, summary.Skipped)
 		if summary.NotRunning > 0 {
 			state.ui.warnf("postCreate skipped %d pod(s) that were not Running", summary.NotRunning)
 		}
@@ -1534,7 +1525,7 @@ func runPostCreateIfNeeded(parent context.Context, k postCreateClient, namespace
 	}
 	annotateHook(parent, k, namespace, pod, hookRunningAnnotations(postCreateHook, time.Now()), errOut)
 	runCtx, runCancel := context.WithTimeout(parent, postCreateTimeout)
-	_, runErr := k.ExecShInContainer(runCtx, namespace, pod, container, command)
+	runErr := executeLifecycleHook(runCtx, k, namespace, pod, container, "postCreate", command, errOut)
 	runCancel()
 	if runErr != nil {
 		annotateHook(parent, k, namespace, pod, hookFailedAnnotations(postCreateHook, time.Now()), errOut)
@@ -1565,6 +1556,7 @@ type postCreateSummary struct {
 // the target is not something the hook's meaning depends on, so the fanout is
 // the correct shape.
 func runPostCreateOnAllPods(ctx context.Context, k postCreateFanoutClient, namespace string, labels map[string]string, container, command string, errOut io.Writer) (postCreateSummary, error) {
+	errOut = &syncWriter{w: errOut}
 	selector := workload.DiscoveryLabelSelector(labels)
 	pods, err := k.ListPods(ctx, namespace, false, selector)
 	if err != nil {
@@ -1658,6 +1650,7 @@ type postSyncSummary struct {
 // fanout. Pods that have already completed postSync (tracked via annotation)
 // are skipped. Execution across pods is parallel.
 func runPostSyncOnAllPods(ctx context.Context, k postSyncClient, namespace string, labels map[string]string, container, command string, errOut io.Writer) (postSyncSummary, error) {
+	errOut = &syncWriter{w: errOut}
 	selector := workload.DiscoveryLabelSelector(labels)
 	pods, err := k.ListPods(ctx, namespace, false, selector)
 	if err != nil {
@@ -1818,7 +1811,7 @@ func runPostSyncIfNeeded(parent context.Context, k postSyncClient, namespace, po
 	}
 	annotateHook(parent, k, namespace, pod, hookRunningAnnotations(postSyncHook, time.Now()), errOut)
 	runCtx, runCancel := context.WithTimeout(parent, postSyncTimeout)
-	_, runErr := k.ExecShInContainer(runCtx, namespace, pod, container, command)
+	runErr := executeLifecycleHook(runCtx, k, namespace, pod, container, "postSync", command, errOut)
 	runCancel()
 	if runErr != nil {
 		annotateHook(parent, k, namespace, pod, hookFailedAnnotations(postSyncHook, time.Now()), errOut)

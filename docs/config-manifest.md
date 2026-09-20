@@ -525,6 +525,60 @@ spec:
     preStop: pkill -f my-dev-server || true
 ```
 
+
+A hook's `done` state (including `status --details --json`) records an exit code
+of zero. It does not prove that the command changed the environment, installed
+its dependencies, or verified its prerequisites. Empty output is valid;
+`missing-command || true` and loops over no matching files can also exit zero.
+The `up` hook summary reports these exit results separately from the sync
+convergence check. Sync convergence excludes ignored paths and does not check
+that your hook's required files exist.
+
+After each hook attempt, `up` writes its combined stdout/stderr tail to stderr,
+with `[postSync pod=NAME]` or `[postCreate pod=NAME]` on every line. This includes
+output from failed commands and stderr from successful commands. Output is
+limited to the last 32 KiB per hook and pod, with an explicit truncation notice.
+It is shown immediately after that attempt, including when `up` fails before
+the ready summary. Capture the invocation to inspect all pods later:
+
+```sh
+if okdev up --no-tmux >up.log 2>&1; then
+  cat up.log
+else
+  cat up.log >&2
+  exit 1
+fi
+```
+
+Put explicit prerequisites and postconditions in the hook itself. For example:
+
+```yaml
+spec:
+  lifecycle:
+    postSync: |
+      set -eu
+      script=/workspace/.okdev/setup.sh
+      test -f "$script" || { echo "missing setup script: $script" >&2; exit 1; }
+      sh "$script"
+      test -s /workspace/build/ready || { echo "setup did not produce build/ready" >&2; exit 1; }
+```
+
+For a required patch loop, check for at least one file before iterating:
+
+```sh
+set -eu
+set -- /opt/patches/*.patch
+[ -f "$1" ] || { echo "no required patches found" >&2; exit 1; }
+for patch_file do
+  patch -p1 < "$patch_file"
+done
+```
+
+Avoid `|| true` around required setup. A nonzero exit marks that pod's hook
+`failed` and makes `up` fail; after fixing the prerequisite, another `up` retries
+failed hooks and skips those with a current successful completion marker.
+Editing a hook command alone does not reset an existing completion marker.
+
 ---
 
 ## `spec.sidecar`

@@ -19,6 +19,7 @@ Available groups:
 
 | Group | Real Kind coverage |
 | --- | --- |
+| `hook_evidence` | Successful no-op hooks, per-pod stdout/stderr, prerequisite failure, recorded exit states and retry after repair |
 | `forward_recovery` | Initial API/DNS failure, visible retries, live forwarding stream loss, replacement Pod selection, cancellation and listener cleanup |
 | `snapshot` | Sync-independent snapshot delivery, explicit targets, remote archive hashes, target-only defaults, partial failure |
 | `automation` | Executable documentation: JSON/hash checks, job-specific waits, remote quoting, explicit port-forward bind, preflight failure |
