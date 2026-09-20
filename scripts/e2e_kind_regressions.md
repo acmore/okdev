@@ -1,0 +1,25 @@
+# Kind CLI regression tests
+
+These tests run the real CLI against an existing Kind cluster. They are included
+in `bash scripts/e2e_local_kind.sh`, after the CLI and sidecar image are built and
+loaded. Each test uses a unique namespace and isolated HOME, then calls `okdev
+down`, deletes the namespace, and stops its test processes. Cleanup failures fail
+the test and identify retained state. They never use the developer's session state.
+
+To reuse a prepared cluster and cached sidecar image:
+
+```sh
+go build -o bin/okdev ./cmd/okdev
+bash scripts/e2e_kind_regressions.sh
+# Run only one group:
+bash scripts/e2e_kind_regressions.sh config_jobs
+```
+
+`CLUSTER_NAME` defaults to `okdev-e2e`; `OKDEV_BIN` defaults to `bin/okdev`;
+`SIDECAR_IMAGE` defaults to `okdev-sidecar:v0.0.0-e2e`. The sidecar and
+`ubuntu:22.04` must be available to the cluster. The fixture reuses a locally
+cached Syncthing binary if available; otherwise normal CLI installation applies.
+Python 3 (standard library only), kubectl, git, and Kind are required.
+
+Redirect the whole run when saving logs and inspect its actual exit status;
+do not pipe the run into `tail`.
