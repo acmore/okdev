@@ -440,7 +440,9 @@ agents can react without launching a diagnostic chain on every blip:
 - `--role` selects one pod by workload role. Ambiguity is an error.
 - `--ready-only`: restricts selection to already-running pods.
 - Only `LOCAL:REMOTE` mappings are supported (kubectl-style `:REMOTE` or bare `PORT` are rejected).
-- The command stays attached until interrupted.
+- The command stays attached until interrupted. Initial API/DNS failures and lost forwarding connections retry with visible diagnostics on stderr and exponential delays from 1 to 30 seconds. Ctrl-C cancels both connection setup and retry waits.
+- The command checks the target pod every 5 seconds, including while a forwarding connection is idle. Each retry resolves the session target again, so the default target or `--role` can follow a replacement pod. An explicit `--pod` remains pinned and exits if that pod disappears. Authorization, certificate, invalid configuration, ambiguous selection, and local bind errors stop instead of retrying.
+- During reconnect, local listeners close and existing TCP connections are lost. Listeners reopen after recovery; clients must reconnect. This does not preserve in-flight requests.
 
 ### `okdev sync [--mode up|down|bi] [--foreground] [--reset] [--dry-run]`
 
