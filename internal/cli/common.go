@@ -99,17 +99,21 @@ func resolveCommandContext(opts *Options, resolver sessionResolver) (*commandCon
 		return nil, err
 	}
 	cc.sessionName = sessionName
-	profile, err := resolveWorkloadProfileName(effectiveOpts, sessionName)
-	if err != nil {
-		return nil, err
-	}
-	fromFlag := effectiveOpts != nil && strings.TrimSpace(effectiveOpts.Workload) != ""
-	if err := selectWorkloadForSession(cfg, profile, fromFlag, func(format string, args ...any) {
-		fmt.Fprintf(os.Stderr, "warning: "+format+"\n", args...)
-	}); err != nil {
+	if err := selectCommandWorkload(cc); err != nil {
 		return nil, err
 	}
 	return cc, nil
+}
+
+func selectCommandWorkload(cc *commandContext) error {
+	profile, err := resolveWorkloadProfileName(cc.opts, cc.sessionName)
+	if err != nil {
+		return err
+	}
+	fromFlag := cc.opts != nil && strings.TrimSpace(cc.opts.Workload) != ""
+	return selectWorkloadForSession(cc.cfg, profile, fromFlag, func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, "warning: "+format+"\n", args...)
+	})
 }
 
 // selectWorkloadForSession applies the profile choice, tolerating a pinned name
@@ -399,7 +403,7 @@ func resolveSessionNameWithState(opts *Options, cfg *config.DevEnvironment, name
 	return resolveSessionNameWithReader(opts, cfg, namespace, inferExisting, newKubeClient(opts))
 }
 
-func resolveSessionNameWithReader(opts *Options, cfg *config.DevEnvironment, namespace string, inferExisting bool, reader sessionAccessReader) (string, error) {
+func resolveSessionNameWithReader(opts *Options, cfg *config.DevEnvironment, namespace string, inferExisting bool, reader sessionAccessReader, parents ...context.Context) (string, error) {
 	if strings.TrimSpace(opts.Session) != "" {
 		return session.Resolve(opts.Session, cfg.Spec.Session.DefaultNameTemplate)
 	}
@@ -418,12 +422,12 @@ func resolveSessionNameWithReader(opts *Options, cfg *config.DevEnvironment, nam
 		if resolvedActive == "" {
 			goto inferExistingSession
 		}
-		exists, existsErr := sessionPodExists(reader, namespace, resolvedActive)
+		exists, existsErr := sessionPodExists(reader, namespace, resolvedActive, parents...)
 		if existsErr == nil {
 			if exists {
 				return resolvedActive, nil
 			}
-			workloadExists, workloadErr := sessionWorkloadExists(reader, namespace, resolvedActive)
+			workloadExists, workloadErr := sessionWorkloadExists(reader, namespace, resolvedActive, parents...)
 			if workloadErr == nil && workloadExists {
 				return resolvedActive, nil
 			}
@@ -441,7 +445,7 @@ func resolveSessionNameWithReader(opts *Options, cfg *config.DevEnvironment, nam
 	}
 inferExistingSession:
 	if inferExisting {
-		inferred, err := inferExistingSessionForRepo(opts, cfg, namespace, reader)
+		inferred, err := inferExistingSessionForRepo(opts, cfg, namespace, reader, parents...)
 		if err != nil {
 			return "", err
 		}
@@ -454,7 +458,7 @@ inferExistingSession:
 		return "", err
 	}
 	if opts.explicitConfig && !sessionMatchesConfigPath(name, opts.ConfigPath, true) {
-		if err := ensureDefaultSessionConfig(reader, namespace, name, opts.ConfigPath); err != nil {
+		if err := ensureDefaultSessionConfig(reader, namespace, name, opts.ConfigPath, parents...); err != nil {
 			return "", err
 		}
 	}
@@ -470,8 +474,8 @@ func sessionConfigAssociationError(name, configPath string) error {
 	return fmt.Errorf("session %q has config association %q, but selected config is %q; pass --session <distinct-name> to create a separate session, or explicitly select the existing session to reuse it", name, association, configPath)
 }
 
-func ensureDefaultSessionConfig(reader sessionAccessReader, namespace, name, configPath string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), sessionExistsTimeout)
+func ensureDefaultSessionConfig(reader sessionAccessReader, namespace, name, configPath string, parents ...context.Context) error {
+	ctx, cancel := context.WithTimeout(sessionAccessParent(parents), sessionExistsTimeout)
 	defer cancel()
 	// A name collision can belong to a different config name or repository,
 	// so it must be checked independently of the inference labels.
@@ -550,8 +554,8 @@ func normalizeConfigPath(path string) string {
 	return filepath.Clean(trimmed)
 }
 
-func sessionPodExists(k sessionAccessReader, namespace, sessionName string) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), sessionExistsTimeout)
+func sessionPodExists(k sessionAccessReader, namespace, sessionName string, parents ...context.Context) (bool, error) {
+	ctx, cancel := context.WithTimeout(sessionAccessParent(parents), sessionExistsTimeout)
 	defer cancel()
 	pods, err := k.ListPods(ctx, namespace, false, "okdev.io/managed=true,okdev.io/session="+sessionName)
 	if err == nil {
@@ -567,8 +571,8 @@ func sessionPodExists(k sessionAccessReader, namespace, sessionName string) (boo
 	return false, err
 }
 
-func sessionWorkloadExists(k sessionAccessReader, namespace, sessionName string) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), sessionExistsTimeout)
+func sessionWorkloadExists(k sessionAccessReader, namespace, sessionName string, parents ...context.Context) (bool, error) {
+	ctx, cancel := context.WithTimeout(sessionAccessParent(parents), sessionExistsTimeout)
 	defer cancel()
 	// Live controllers (by label) are the authoritative check; try them first
 	// so a missing/corrupt saved Info file doesn't block discovery.
@@ -694,7 +698,7 @@ func savedSessionViews(ctx context.Context, k sessionAccessReader, namespace str
 	return views, nil
 }
 
-func inferExistingSessionForRepo(opts *Options, cfg *config.DevEnvironment, namespace string, reader sessionAccessReader) (string, error) {
+func inferExistingSessionForRepo(opts *Options, cfg *config.DevEnvironment, namespace string, reader sessionAccessReader, parents ...context.Context) (string, error) {
 	root, err := session.RepoRoot()
 	if err != nil || strings.TrimSpace(root) == "" {
 		return "", nil
@@ -711,7 +715,7 @@ func inferExistingSessionForRepo(opts *Options, cfg *config.DevEnvironment, name
 	if strings.TrimSpace(cfg.Metadata.Name) != "" {
 		label = append(label, "okdev.io/name="+cfg.Metadata.Name)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), sessionExistsTimeout)
+	ctx, cancel := context.WithTimeout(sessionAccessParent(parents), sessionExistsTimeout)
 	defer cancel()
 	pods, err := reader.ListPods(ctx, namespace, false, strings.Join(label, ","))
 	if err != nil {
@@ -984,6 +988,13 @@ type sessionAccessReader interface {
 	ResourceExists(context.Context, string, string, string, string) (bool, error)
 }
 
+func sessionAccessParent(parents []context.Context) context.Context {
+	if len(parents) > 0 {
+		return parents[0]
+	}
+	return context.Background()
+}
+
 // listSessionPodsForAccess lists a session's pods, retrying once on a
 // transient cluster-contact failure (most API blips clear in under a second).
 // A transient failure that survives the retry is wrapped as
@@ -991,11 +1002,12 @@ type sessionAccessReader interface {
 // "could not reach the cluster" (exit 78, retry) from "session is gone"
 // (exit 74). Permanent failures (RBAC, bad request) are returned verbatim and
 // fall through to exit 1.
-func listSessionPodsForAccess(k sessionAccessReader, namespace, sessionName string) ([]kube.PodSummary, error) {
+func listSessionPodsForAccess(k sessionAccessReader, namespace, sessionName string, parents ...context.Context) ([]kube.PodSummary, error) {
+	parent := sessionAccessParent(parents)
 	selector := "okdev.io/managed=true,okdev.io/session=" + sessionName
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), sessionAccessTimeout)
+		ctx, cancel := context.WithTimeout(parent, sessionAccessTimeout)
 		pods, err := k.ListPods(ctx, namespace, false, selector)
 		cancel()
 		if err == nil {
@@ -1010,7 +1022,13 @@ func listSessionPodsForAccess(k sessionAccessReader, namespace, sessionName stri
 		}
 		lastErr = err
 		if attempt == 0 {
-			time.Sleep(sessionAccessRetryDelay)
+			timer := time.NewTimer(sessionAccessRetryDelay)
+			select {
+			case <-parent.Done():
+				timer.Stop()
+				return nil, parent.Err()
+			case <-timer.C:
+			}
 		}
 	}
 	return nil, transientClusterFailure(sessionName, lastErr, time.Now())
@@ -1056,8 +1074,8 @@ func ordinal(n int) string {
 	return fmt.Sprintf("%d%s", n, suffix)
 }
 
-func ensureSessionAccess(opts *Options, k sessionAccessReader, namespace, sessionName string, requireExisting bool) error {
-	pods, err := listSessionPodsForAccess(k, namespace, sessionName)
+func ensureSessionAccess(opts *Options, k sessionAccessReader, namespace, sessionName string, requireExisting bool, parents ...context.Context) error {
+	pods, err := listSessionPodsForAccess(k, namespace, sessionName, parents...)
 	if err != nil {
 		return err
 	}

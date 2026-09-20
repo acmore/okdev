@@ -16,6 +16,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -50,6 +51,7 @@ import (
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/transport/spdy"
+	streamhttp "k8s.io/streaming/pkg/httpstream"
 	"sigs.k8s.io/yaml"
 )
 
@@ -1171,22 +1173,36 @@ func isRetryablePortForwardError(err error) bool {
 }
 
 func (c *Client) portForwardOnceOnAddresses(ctx context.Context, namespace, pod string, addresses []string, forwards []string, stdout io.Writer, stderr io.Writer) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	cs, cfg, err := c.clientset()
 	if err != nil {
 		return err
+	}
+	// The streaming dialers create requests without the caller's context.
+	// Bind their HTTP upgrade requests so cancellation also stops setup.
+	cfg = rest.CopyConfig(cfg)
+	wrap := cfg.WrapTransport
+	cfg.WrapTransport = func(rt http.RoundTripper) http.RoundTripper {
+		if wrap != nil {
+			rt = wrap(rt)
+		}
+		return portForwardContextTransport{ctx: ctx, rt: rt}
 	}
 	reqURL, err := c.portForwardURL(cs, namespace, pod)
 	if err != nil {
 		return err
 	}
-	transport, upgrader, err := spdy.RoundTripperFor(cfg)
+	transport, upgrader, err := portForwardSPDYTransport(cfg)
 	if err != nil {
 		return err
 	}
 	var dialer httpstream.Dialer = spdy.NewDialer(upgrader, &http.Client{Transport: transport}, http.MethodPost, reqURL)
 	tunnelingDialer, tErr := portforward.NewSPDYOverWebsocketDialer(reqURL, cfg)
 	if tErr == nil {
-		dialer = portforward.NewFallbackDialer(tunnelingDialer, dialer, httpstream.IsUpgradeFailure)
+		dialer = portforward.NewFallbackDialer(tunnelingDialer, dialer, func(err error) bool {
+			return httpstream.IsUpgradeFailure(err) || streamhttp.IsUpgradeFailure(err)
+		})
 	}
 
 	stopCh := make(chan struct{})
@@ -1201,6 +1217,28 @@ func (c *Client) portForwardOnceOnAddresses(ctx context.Context, namespace, pod 
 	}
 	return pf.ForwardPorts()
 }
+
+// PortForwardOnceOnAddresses leaves retry and target refresh to its caller.
+func (c *Client) PortForwardOnceOnAddresses(ctx context.Context, namespace, pod string, addresses []string, forwards []string, stdout, stderr io.Writer) error {
+	return c.portForwardOnceOnAddresses(ctx, namespace, pod, addresses, forwards, stdout, stderr)
+}
+
+type portForwardContextTransport struct {
+	ctx context.Context
+	rt  http.RoundTripper
+}
+
+func (t portForwardContextTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// WebSocket upgrades bypass Config.Dial and read the handshake directly.
+	ctx := httptrace.WithClientTrace(t.ctx, &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) {
+			context.AfterFunc(t.ctx, func() { _ = info.Conn.Close() })
+		},
+	})
+	return t.rt.RoundTrip(req.WithContext(ctx))
+}
+
+func (t portForwardContextTransport) WrappedRoundTripper() http.RoundTripper { return t.rt }
 
 func (c *Client) CopyToPod(ctx context.Context, namespace, localPath, podName, remotePath string) error {
 	return c.CopyToPodInContainer(ctx, namespace, localPath, podName, "", remotePath)
