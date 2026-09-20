@@ -52,6 +52,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Quickstart: quickstart.md
+  - Automation Recipes: automation.md
   - Config Manifest: config-manifest.md
   - Command Reference: command-reference.md
   - Troubleshooting: troubleshooting.md

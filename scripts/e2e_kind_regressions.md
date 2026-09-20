@@ -19,6 +19,7 @@ Available groups:
 
 | Group | Real Kind coverage |
 | --- | --- |
+| `automation` | Executable documentation: JSON/hash checks, job-specific waits, remote quoting, explicit port-forward bind, preflight failure |
 | `config_jobs` | Named config discovery, config isolation, collision rejection, single/multi-pod job log bytes |
 | `readiness` | Live API connection loss, readiness retry, timeout continuation on the same Pod, one-time setup |
 | `stdin` | Binary streams, output before EOF, remote exit codes, cancellation, timeout, invalid modes |
