@@ -104,7 +104,7 @@ func execSyncPreflight(cmd *cobra.Command, cc *commandContext, requireSync bool,
 	}
 	status, reason := checkSyncHealth(cc.sessionName)
 	if !requireSync {
-		if warn := syncStalenessWarning(status, reason, subject); warn != "" {
+		if warn := syncPreflightWarning(cc.sessionName, status, reason, subject); warn != "" {
 			fmt.Fprintln(cmd.ErrOrStderr(), warn)
 		}
 		return nil

@@ -135,7 +135,11 @@ func sessionSyncFolderID(sessionName string, index int, pair syncengine.Pair) st
 	return fmt.Sprintf("okdev-%s-%s", sessionName, hex.EncodeToString(sum[:4]))
 }
 
-func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironment, namespace, sessionName, mode string, pairs []syncengine.Pair, k *kube.Client) error {
+func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironment, namespace, sessionName, mode string, pairs []syncengine.Pair, k *kube.Client) (runErr error) {
+	stopReason := ""
+	if os.Getenv("OKDEV_SYNCTHING_BACKGROUND_CHILD") == "1" {
+		defer func() { recordSyncExit(sessionName, stopReason, runErr) }()
+	}
 	if len(pairs) == 0 {
 		return fmt.Errorf("no sync path mappings configured")
 	}
@@ -346,6 +350,9 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		cancelPF:  cancelPF,
 	}
 	runSyncHealthLoopFn(sigCh, cmd.ErrOrStderr(), checker)
+	if checker.stopSignal != nil {
+		stopReason = "received " + checker.stopSignal.String()
+	}
 	return nil
 }
 
@@ -364,14 +371,15 @@ type syncHealthChecker interface {
 // liveSyncHealthChecker is the production implementation that checks the real
 // Syncthing API and restores port-forwards via Kubernetes.
 type liveSyncHealthChecker struct {
-	ctx       context.Context
-	opts      *Options
-	namespace string
-	pod       string
-	localBase string
-	localKey  string
-	remoteID  string
-	cancelPF  context.CancelFunc
+	stopSignal os.Signal
+	ctx        context.Context
+	opts       *Options
+	namespace  string
+	pod        string
+	localBase  string
+	localKey   string
+	remoteID   string
+	cancelPF   context.CancelFunc
 }
 
 func (c *liveSyncHealthChecker) peerConnected() (bool, error) {
@@ -445,7 +453,8 @@ func runSyncHealthLoopWithConfig(sigCh <-chan os.Signal, errOut io.Writer, check
 
 	for {
 		select {
-		case <-sigCh:
+		case sig := <-sigCh:
+			observeSyncStop(checker, sig)
 			return
 		case <-ticker.C:
 			connected, err := checker.peerConnected()
@@ -471,7 +480,7 @@ func runSyncHealthLoopWithConfig(sigCh <-chan os.Signal, errOut io.Writer, check
 				slog.Error("sync: failed to restore peer connection", "attempts", cfg.maxRetries)
 				fmt.Fprintf(errOut, "sync: giving up after %d restoration attempts — run \"okdev sync --reset\" to re-establish sync\n", cfg.maxRetries)
 				// Wait for signal to shut down.
-				<-sigCh
+				observeSyncStop(checker, <-sigCh)
 				return
 			}
 
@@ -480,7 +489,7 @@ func runSyncHealthLoopWithConfig(sigCh <-chan os.Signal, errOut io.Writer, check
 				if isFatalSyncRestoreError(err) {
 					slog.Error("sync: port-forward restoration hit fatal error, stopping", "error", err)
 					fmt.Fprintf(errOut, "sync: cannot restore — %v\n", err)
-					<-sigCh
+					observeSyncStop(checker, <-sigCh)
 					return
 				}
 				slog.Warn("sync: port-forward restoration failed", "attempt", retries, "error", err)
@@ -3133,54 +3142,60 @@ const (
 )
 
 // checkSyncHealth checks the health of the Syncthing sync for a session.
-// It checks whether the process is alive and optionally queries the local
-// Syncthing API for connection and folder status.
+// It requires a live process and a reachable local Syncthing API with
+// session folders and a connected peer.
 func checkSyncHealth(sessionName string) (syncHealthStatus, string) {
+	return checkSyncHealthContext(context.Background(), sessionName)
+}
+
+func checkSyncHealthContext(parent context.Context, sessionName string) (syncHealthStatus, string) {
 	pidPath, err := syncthingPIDStatusPath(sessionName)
 	if err != nil {
 		return syncHealthStopped, "sync is not running"
 	}
 	pid, ok := readSyncthingPID(pidPath)
 	if !ok || !processAlive(pid) || !processLooksLikeSyncthingSync(pid) {
-		return syncHealthStopped, "sync is not running"
+		return syncHealthStopped, stoppedSyncReason(sessionName, pid)
 	}
-
-	// Process is alive — try to query the local Syncthing API.
-	// Use the read-only home path to avoid creating directories.
 	home, err := localSyncthingStatusHome(sessionName)
 	if err != nil {
-		return syncHealthActive, ""
+		return syncHealthStale, "cannot resolve local Syncthing state"
 	}
 	apiBase, apiKey, err := readLocalSyncthingEndpoint(home)
 	if err != nil {
-		// Can't read config but process is alive, treat as active.
-		return syncHealthActive, ""
+		return syncHealthStale, "cannot read local Syncthing endpoint; see `okdev status --details` for logs"
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
+	return checkSyncthingAPIHealth(ctx, sessionName, apiBase, apiKey)
+}
 
-	// An intentional pause outranks connectivity: report it before the
-	// peer check so a paused session never reads as merely "stale".
-	if cfg, cfgErr := syncthingGetConfig(ctx, apiBase, apiKey); cfgErr == nil {
-		if paused, total := countPausedSessionFolders(cfg, sessionName); total > 0 && paused > 0 {
-			return syncHealthPaused, "paused by `okdev sync pause`; resume with `okdev sync resume`"
-		}
+func checkSyncthingAPIHealth(ctx context.Context, sessionName, apiBase, apiKey string) (syncHealthStatus, string) {
+	cfg, err := syncthingGetConfig(ctx, apiBase, apiKey)
+	if err != nil {
+		return syncHealthStale, "local Syncthing API unavailable; see `okdev status --details` for logs"
 	}
-
-	// Check connections to see if peer is connected.
+	paused, total := countPausedSessionFolders(cfg, sessionName)
+	if total == 0 {
+		return syncHealthStale, "no configured session folders in local Syncthing"
+	}
+	if paused > 0 {
+		return syncHealthPaused, "paused by `okdev sync pause`; resume with `okdev sync resume`"
+	}
 	connected, err := syncthingPeerConnected(ctx, apiBase, apiKey, "")
 	if err != nil {
-		// API unreachable likely means Syncthing is still starting up or
-		// restarting (e.g. during two-phase transition). Treat as active
-		// rather than stale since the process is running.
-		return syncHealthActive, ""
+		return syncHealthStale, "local Syncthing connection status unavailable"
 	}
 	if !connected {
 		return syncHealthStale, "peer disconnected"
 	}
-
 	return syncHealthActive, ""
+}
+
+func observeSyncStop(checker syncHealthChecker, sig os.Signal) {
+	if live, ok := checker.(*liveSyncHealthChecker); ok {
+		live.stopSignal = sig
+	}
 }
 
 // sessionFolderIDMatches reports whether a syncthing folder id belongs to

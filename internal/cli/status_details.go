@@ -145,8 +145,9 @@ type detailedStatusSSH struct {
 }
 
 type detailedStatusSync struct {
-	Engine    string `json:"engine"`
-	Direction string `json:"direction,omitempty"`
+	LastExit  *syncExitRecord `json:"lastExit,omitempty"`
+	Engine    string          `json:"engine"`
+	Direction string          `json:"direction,omitempty"`
 	// ManagedExcludes are nested child mappings excluded from the primary
 	// folder; RetainedExcludes are tombstones kept after a mapping was
 	// removed (the subtree stays out of the primary folder until the user
@@ -580,6 +581,7 @@ func buildDetailedSync(sessionName string, cfg *config.DevEnvironment, cfgPath s
 	}
 
 	health, reason := checkSyncHealth(sessionName)
+	detail.LastExit = readSyncExit(sessionName)
 	detail.Health = string(health)
 	detail.HealthDetail = reason
 	return detail
@@ -763,6 +765,9 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 			status += " (pid " + strconv.Itoa(detail.Sync.BackgroundPID) + ")"
 		}
 		fmt.Fprintf(w, "- background: %s\n", status)
+	}
+	if record := detail.Sync.LastExit; record != nil {
+		fmt.Fprintf(w, "- last recorded sync exit: pid=%d at=%s reason=%s; log: %s\n", record.PID, record.At.UTC().Format(time.RFC3339), record.Reason, record.LogPath)
 	}
 	if detail.Sync.Health != "" {
 		healthLine := detail.Sync.Health
