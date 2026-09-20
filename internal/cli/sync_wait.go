@@ -23,8 +23,9 @@ func newSyncWaitCmd(opts *Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "wait [session]",
 		Short: "Wait until sync has converged in both directions",
-		Long: `Block until every configured sync mapping has no pending bytes in either
-direction, then return. Purely a wait — it does not start or repair sync
+		Long: `Rescan and wait until every mapping's current indexed revision is acknowledged
+by the local and target devices, with no pending items or deletions. Ignored paths
+and worker mesh delivery are outside this check. It does not start or repair sync
 (use "okdev sync" for that). The edit-run loop guarantee:
 
   vim train.py && okdev sync wait && okdev exec -- python train.py`,
@@ -146,16 +147,15 @@ func isSyncthingScanStillRunning(err error) bool {
 	return strings.Contains(err.Error(), "Client.Timeout exceeded")
 }
 
-// syncthingFolderScanSettled reports whether both ends have left the scanning
-// state for a folder, which is the signal that a rescan triggered above has
-// finished indexing.
+// syncthingFolderScanSettled requires both ends to be idle; queued scans
+// and folder errors cannot establish that indexing completed.
 func syncthingFolderScanSettled(ctx context.Context, localBase, localKey, remoteBase, remoteKey, folderID string) (bool, error) {
 	for _, end := range []struct{ base, key string }{{localBase, localKey}, {remoteBase, remoteKey}} {
 		info, err := syncthingFolderStatusInfoForFolder(ctx, end.base, end.key, folderID)
 		if err != nil {
 			return false, err
 		}
-		if strings.EqualFold(strings.TrimSpace(info.State), "scanning") {
+		if !strings.EqualFold(strings.TrimSpace(info.State), "idle") {
 			return false, nil
 		}
 	}
@@ -188,6 +188,8 @@ func syncWaitGateError(sessionName string, status syncHealthStatus, reason strin
 // instances until local and remote pending bytes reach zero, or the timeout
 // expires.
 func runSyncWaitConvergence(ctx context.Context, cc *commandContext, pod string, pairs []syncengine.Pair, timeout time.Duration, out io.Writer) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	folders, err := resolveSyncFolders(cc.sessionName, "", pairs)
 	if err != nil {
 		return err
@@ -225,85 +227,5 @@ func runSyncWaitConvergence(ctx context.Context, cc *commandContext, pod string,
 		return fmt.Errorf("read remote syncthing device id: %w", err)
 	}
 
-	// Force an immediate rescan on both sides so files written moments before
-	// "sync wait" are indexed now rather than after the FS-watcher delay —
-	// otherwise the loop below could observe convergence before the new file
-	// is even known to syncthing, voiding the edit-run guarantee.
-	//
-	// /rest/db/scan is synchronous: it returns when the scan finishes, so on a
-	// folder with a lot to hash the call outlives the HTTP client timeout. A
-	// timeout there does NOT mean the scan did not happen — syncthing keeps
-	// scanning — so failing the whole wait would break `sync wait` on exactly
-	// the large transfers it exists for. Instead the folder is remembered as
-	// still-scanning, and convergence below additionally requires it to have
-	// left the scanning state, which preserves the edit-run guarantee.
-	scanning := map[string]bool{}
-	for _, folder := range folders {
-		localErr := syncthingScanFolder(ctx, localBase, localKey, folder.id)
-		if isSyncthingScanStillRunning(localErr) {
-			scanning[folder.id] = true
-		} else if localErr != nil {
-			return fmt.Errorf("trigger local rescan of %s: %w", folder.id, localErr)
-		}
-		remoteErr := syncthingScanFolder(ctx, remoteBase, remoteKey, folder.id)
-		if isSyncthingScanStillRunning(remoteErr) {
-			scanning[folder.id] = true
-		} else if remoteErr != nil {
-			return fmt.Errorf("trigger remote rescan of %s: %w", folder.id, remoteErr)
-		}
-	}
-	if len(scanning) > 0 {
-		fmt.Fprintf(out, "waiting: still indexing %d folder(s); convergence is held until the scan finishes\n", len(scanning))
-	}
-
-	deadline := time.Now().Add(timeout)
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	lastReported := int64(-1)
-	for {
-		converged := true
-		var totalNeed int64
-		for _, folder := range folders {
-			localPct, localNeed, localErr := syncthingCompletion(ctx, localBase, localKey, folder.id, remoteID)
-			remotePct, remoteNeed, remoteErr := syncthingCompletion(ctx, remoteBase, remoteKey, folder.id, localID)
-			if localErr != nil || remoteErr != nil {
-				converged = false
-				continue
-			}
-			totalNeed += localNeed + remoteNeed
-			if !syncthingInitialSyncComplete(localPct, localNeed, remotePct, remoteNeed) {
-				converged = false
-			}
-			// A folder whose forced rescan is still running can report zero
-			// pending bytes simply because the new file is not indexed yet.
-			if scanning[folder.id] {
-				done, scanErr := syncthingFolderScanSettled(ctx, localBase, localKey, remoteBase, remoteKey, folder.id)
-				if scanErr != nil || !done {
-					converged = false
-				} else {
-					delete(scanning, folder.id)
-				}
-			}
-		}
-		if converged {
-			if len(folders) == 1 {
-				fmt.Fprintln(out, "Sync converged.")
-			} else {
-				fmt.Fprintf(out, "Sync converged (%d folders).\n", len(folders))
-			}
-			return nil
-		}
-		if totalNeed != lastReported {
-			fmt.Fprintf(out, "waiting: %s pending\n", formatSyncthingMiB(totalNeed))
-			lastReported = totalNeed
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("sync did not converge within %s (%s still pending); check `okdev status --details`", timeout, formatSyncthingMiB(totalNeed))
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
-	}
+	return waitSyncthingRevisions(ctx, localBase, localKey, remoteBase, remoteKey, localID, remoteID, folders, out)
 }

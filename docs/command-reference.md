@@ -466,7 +466,10 @@ agents can react without launching a diagnostic chain on every blip:
 
 ### `okdev sync wait [session] [--timeout 10m]`
 
-- Scope: the **data** question — has everything propagated? — complementary to `okdev sync`, which manages the channel. Blocks until every configured sync mapping has zero pending bytes in **both** directions, then returns — the edit-run loop guarantee: `vim train.py && okdev sync wait && okdev exec -- python train.py`.
+- Waits for every configured mapping between the local device and selected target Pod. Forces synchronous rescans, then requires idle indexes, connected/sharing peers, acknowledgement of each device’s current index sequence, and zero pending bytes, items, and deletions. Rechecks the sequences before returning, so an empty queue against an old index is insufficient. `--require-sync` uses the same gate.
+- `--timeout` covers endpoint setup, scanning, and convergence. A long scan uses this overall deadline instead of the shorter normal HTTP request timeout; a timed-out scan is never treated as proof that indexing completed.
+- Success covers indexed, non-ignored paths in the configured mappings, not arbitrary local files. Use `sync status` to inspect mappings and ignore patterns. Nested local mappings are excluded from the primary folder and checked through their own folder; remote roots must remain disjoint. `sync status` observes indexed state without forcing a scan; use `sync wait` after edits.
+- This check currently verifies the local/target pair, not worker mesh delivery. On multi-pod sessions, verify required files on every worker before launch; receiver coverage is tracked in #274. Configure separate remote mounts for additional mappings if the application requires them outside the primary workspace.
 
 ### `okdev sync pause` / `okdev sync resume`
 
