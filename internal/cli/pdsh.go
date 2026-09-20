@@ -54,6 +54,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 	var shell string
 	var scriptPath string
 	var noTTY bool
+	var stdin bool
 	var allPods bool
 	var workers bool
 	var podNames []string
@@ -135,6 +136,19 @@ func newExecCmd(opts *Options) *cobra.Command {
 		ValidArgsFunction: sessionCompletionFunc(opts),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sessionArgs, commandArgs := splitExecArgs(cmd, args)
+			if stdin {
+				for _, name := range []string{"detach", "json", "script", "log-dir", "pkill", "reset-gpu", "shell"} {
+					if cmd.Flags().Changed(name) {
+						return fmt.Errorf("--stdin cannot be used with --%s", name)
+					}
+				}
+				if len(commandArgs) == 0 {
+					return fmt.Errorf("--stdin requires a command after --")
+				}
+				if allPods || workers || role != "" || len(labels) > 0 || len(exclude) > 0 || len(groups) > 0 || len(podNames) > 1 || sequential || parallel {
+					return fmt.Errorf("--stdin requires the target pod or one explicit --pod; fanout is unsupported")
+				}
+			}
 			var invocation execInvocation
 			var err error
 			if resetGPU {
@@ -267,6 +281,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&shell, "shell", "", "Shell to start (default auto-detects bash/sh)")
 	cmd.Flags().StringVar(&scriptPath, "script", "", "Upload and run a local script file")
+	cmd.Flags().BoolVarP(&stdin, "stdin", "i", false, "Forward stdin to one foreground command (no TTY or automatic replay)")
 	cmd.Flags().BoolVar(&noTTY, "no-tty", false, "Disable TTY allocation")
 	cmd.Flags().BoolVar(&allPods, "all", false, "Target all session pods explicitly")
 	cmd.Flags().BoolVar(&workers, "workers", false, "Target worker-role pods")
@@ -726,6 +741,10 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvo
 		targetContainer = resolveTargetContainer(cc.cfg)
 	}
 
+	if stdin, _ := cmd.Flags().GetBool("stdin"); stdin {
+		return runExecStdin(ctx, cc.kube, cc.namespace, groups, targetContainer, invocation.Argv, timeout, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+	}
+
 	if jsonOutput {
 		// validateExecJSONFlags guarantees no --group, so there is exactly one
 		// selection group here.
@@ -772,6 +791,25 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvo
 		Stdout:        cmd.OutOrStdout(),
 		Stderr:        cmd.ErrOrStderr(),
 	})
+}
+
+func runExecStdin(ctx context.Context, client connect.ExecClient, namespace string, groups []execPodGroup, container string, command []string, timeout time.Duration, stdin io.Reader, stdout, stderr io.Writer) error {
+	if len(groups) != 1 || len(groups[0].Pods) != 1 {
+		return fmt.Errorf("--stdin requires exactly one selected pod")
+	}
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	// Input may already be consumed when a transport fails. Never replay it.
+	err := connect.RunOnContainerWithRetry(ctx, client, namespace, groups[0].Pods[0].Name, container, command, false, stdin, stdout, stderr, connect.RetryPolicy{MaxAttempts: 1})
+	if err != nil {
+		if kind, _ := classifyPodExecFailure(err); kind != "remote-exit" {
+			return fmt.Errorf("stdin command stream failed (not replayed): %w: %w", ErrExecInfraFailure, err)
+		}
+	}
+	return err
 }
 
 func buildExecInvocation(commandArgs []string, scriptPath string) (execInvocation, error) {
