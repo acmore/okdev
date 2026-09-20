@@ -1,7 +1,7 @@
 # Kind CLI regression tests
 
 These tests run the real CLI against an existing Kind cluster. They are included
-in `bash scripts/e2e_local_kind.sh`, after the CLI and sidecar image are built and
+in `bash scripts/e2e_local_kind.sh` and `.github/workflows/e2e-kind.yml`, after the CLI and sidecar image are built and
 loaded. Each test uses a unique namespace and isolated HOME, then calls `okdev
 down`, deletes the namespace, and stops its test processes. Cleanup failures fail
 the test and identify retained state. They never use the developer's session state.
