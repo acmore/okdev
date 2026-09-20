@@ -5,7 +5,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/acmore/okdev/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -19,16 +18,12 @@ func sessionCompletionFunc(opts *Options) func(*cobra.Command, []string, string)
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
 
+		// Loaded even when --namespace already answered the namespace
+		// question: the config is also what pins the kube context.
+		cfg, cfgErr := loadOptionalConfig(opts)
 		namespace := strings.TrimSpace(opts.Namespace)
-		if namespace == "" {
-			if path, err := config.ResolvePath(opts.ConfigPath); err == nil {
-				if cfg, _, err := config.Load(path); err == nil {
-					applyConfigKubeContext(opts, cfg)
-					if ns := strings.TrimSpace(cfg.Spec.Namespace); ns != "" {
-						namespace = ns
-					}
-				}
-			}
+		if cfgErr == nil && namespace == "" {
+			namespace = strings.TrimSpace(cfg.Spec.Namespace)
 		}
 		if namespace == "" {
 			namespace = "default"

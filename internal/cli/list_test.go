@@ -9,7 +9,7 @@ import (
 	"github.com/acmore/okdev/internal/kube"
 )
 
-func TestLoadOptionalConfigForList(t *testing.T) {
+func TestLoadOptionalConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, config.DefaultFile)
 	if err := os.WriteFile(cfgPath, []byte(`
@@ -19,6 +19,7 @@ metadata:
   name: test
 spec:
   namespace: team-a
+  kubeContext: team-a-cluster
   workload:
     type: pod
     manifestPath: pod.yaml
@@ -28,15 +29,19 @@ spec:
 		t.Fatalf("write config: %v", err)
 	}
 
-	cfg, err := loadOptionalConfigForList(&Options{ConfigPath: cfgPath})
+	opts := &Options{ConfigPath: cfgPath}
+	cfg, err := loadOptionalConfig(opts)
 	if err != nil {
-		t.Fatalf("loadOptionalConfigForList returned error: %v", err)
+		t.Fatalf("loadOptionalConfig returned error: %v", err)
 	}
 	if cfg == nil {
 		t.Fatal("expected config")
 	}
 	if cfg.Spec.Namespace != "team-a" {
 		t.Fatalf("expected namespace team-a, got %q", cfg.Spec.Namespace)
+	}
+	if opts.Context != "team-a-cluster" {
+		t.Fatalf("expected the pinned kube context to be applied, got %q", opts.Context)
 	}
 }
 
