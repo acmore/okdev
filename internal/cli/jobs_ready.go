@@ -132,6 +132,11 @@ func runJobsReady(ctx context.Context, client detachJobClient, namespace string,
 	if strings.TrimSpace(id) == "" {
 		return logicalExecJobView{}, fmt.Errorf("a non-empty job ID is required")
 	}
+	// A zero interval would spin the poll loop, re-running the identity fanout
+	// as fast as the cluster answers, so the struct's zero value gets a floor.
+	if options.PollInterval <= 0 {
+		options.PollInterval = time.Second
+	}
 	last := "probe has not passed"
 	query := func() (logicalExecJobView, error) {
 		job, failures, err := resolveLogicalDetachJob(ctx, client, namespace, pods, container, id, pdshDefaultFanout)
