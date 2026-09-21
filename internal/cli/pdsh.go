@@ -52,6 +52,7 @@ const detachDirPlaceholder = "__OKDEV_DETACH_DIR__"
 
 func newExecCmd(opts *Options) *cobra.Command {
 	var shell string
+	var transport string
 	var scriptPath string
 	var noTTY bool
 	var stdin bool
@@ -139,7 +140,13 @@ func newExecCmd(opts *Options) *cobra.Command {
 			if preflightRetryTimeout < 0 {
 				return fmt.Errorf("--preflight-retry-timeout must not be negative")
 			}
+			if transport != "kubernetes" && transport != "ssh" {
+				return fmt.Errorf("--transport must be kubernetes or ssh")
+			}
 			sessionArgs, commandArgs := splitExecArgs(cmd, args)
+			if transport == "ssh" && (shell != "" || gatewayPod != "" || (len(commandArgs) == 0 && scriptPath == "" && pkillPattern == "" && !resetGPU)) {
+				return fmt.Errorf("--transport=ssh requires a noninteractive command and cannot use --shell or --gateway")
+			}
 			if stdin {
 				for _, name := range []string{"detach", "json", "script", "log-dir", "pkill", "reset-gpu", "shell"} {
 					if cmd.Flags().Changed(name) {
@@ -286,6 +293,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 			return connectErr
 		},
 	}
+	cmd.Flags().StringVar(&transport, "transport", "kubernetes", "Command transport: kubernetes or ssh (reuse a managed dev-container connection)")
 	cmd.Flags().StringVar(&shell, "shell", "", "Shell to start (default auto-detects bash/sh)")
 	cmd.Flags().StringVar(&scriptPath, "script", "", "Upload and run a local script file")
 	cmd.Flags().BoolVarP(&stdin, "stdin", "i", false, "Forward stdin to one foreground command (no TTY or automatic replay)")
@@ -748,8 +756,21 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvo
 		targetContainer = resolveTargetContainer(cc.cfg)
 	}
 
+	var client scriptCopyClient = cc.kube
+	routeConfig := cc.cfg
+	if transport, _ := cmd.Flags().GetString("transport"); transport == "ssh" {
+		sshClient, err := prepareExecSSH(ctx, cc, groups, targetContainer)
+		if err != nil {
+			return err
+		}
+		client = sshClient
+		copyConfig := *cc.cfg
+		copyConfig.Spec.Exec.FanoutMode = config.ExecFanoutDirect
+		routeConfig = &copyConfig
+	}
+
 	if stdin, _ := cmd.Flags().GetBool("stdin"); stdin {
-		return runExecStdin(ctx, cc.kube, cc.namespace, groups, targetContainer, invocation.Argv, timeout, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+		return runExecStdin(ctx, client, cc.namespace, groups, targetContainer, invocation.Argv, timeout, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 	}
 
 	if jsonOutput {
@@ -759,7 +780,7 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvo
 		if effectiveFanout <= 0 {
 			effectiveFanout = pdshDefaultFanout
 		}
-		return runExecJSONRouted(ctx, cc.kube, cc.cfg, cc.namespace, groups[0].Pods, targetContainer, invocation, timeout, effectiveFanout, gatewayPod, requireAll, cmd.OutOrStdout(), cmd.ErrOrStderr())
+		return runExecJSONRouted(ctx, client, routeConfig, cc.namespace, groups[0].Pods, targetContainer, invocation, timeout, effectiveFanout, gatewayPod, requireAll, cmd.OutOrStdout(), cmd.ErrOrStderr())
 	}
 
 	if logDir != "" {
@@ -785,7 +806,7 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvo
 
 	effectiveNoPrefix := resolveExecNoPrefix(cmd.Flags().Changed("no-prefix"), noPrefix, cmd.OutOrStdout())
 
-	return runExecPodGroups(ctx, cc.kube, cc.namespace, groups, execGroupRunOptions{
+	return runExecPodGroups(ctx, client, cc.namespace, groups, execGroupRunOptions{
 		Container:     targetContainer,
 		Invocation:    invocation,
 		Detach:        detach,
@@ -1545,6 +1566,10 @@ func classifyPodExecFailure(err error) (kind string, exitCode int) {
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "timeout", -1
+	}
+	var delivery *connect.DeliveryError
+	if errors.As(err, &delivery) {
+		return "transport", -1
 	}
 	var exitErr k8sexec.ExitError
 	if errors.As(err, &exitErr) {

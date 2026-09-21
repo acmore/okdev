@@ -156,5 +156,9 @@ func IsTransientExecError(err error) bool {
 }
 
 func isRetryableError(err error) bool {
+	var delivery *DeliveryError
+	if errors.As(err, &delivery) {
+		return false
+	}
 	return IsTransientExecError(err)
 }

@@ -1,13 +1,81 @@
 # Short-command latency and SSH connection reuse
 
-The #289 investigation found a useful latency reduction from reusing an SSH
-connection, but not an equivalent replacement for `okdev exec`. No
-`exec --transport=ssh` option is introduced by this investigation. Existing exec
-selectors, container targeting, authorization checks and command semantics remain
-unchanged. Use `exec` when those contracts matter; do not transparently substitute
-`ssh okdev-<session>` in an automation workflow.
+`okdev exec --transport=ssh -- <command>` opts into a reusable OpenSSH
+connection to a managed dev container. The default remains
+`--transport=kubernetes`; existing invocations keep their transport.
 
-## Measured result
+```bash
+okdev exec --transport=ssh -- python -c 'print("ready")'
+okdev exec --transport=ssh --all --json --require-all -- hostname
+printf 'input' | okdev exec --transport=ssh --stdin -- cat
+```
+
+## Requirements and behavior
+
+- Local OpenSSH, a Linux managed dev container with `readlink` and a POSIX-compatible SSH shell, a running
+  `okdev-sshd` on port 2222, and the configured SSH private key are required.
+  `okdev up` prepares the current target. For another pod, run
+  `okdev target set --pod <name>` followed by
+  `okdev ssh --setup-key --cmd true` before selecting it for SSH exec.
+  The exec transport itself never installs keys or starts sshd.
+- Selectors, groups, target pins, foreground commands, `--script`, `--detach`,
+  `--stdin`, timeouts, and JSON results retain their exec behavior. JSON uses
+  direct per-pod SSH channels even if `spec.exec.fanoutMode` selects a gateway.
+  Explicit `--gateway`, interactive shells, attach-only mode, and containers
+  other than the configured dev container are rejected. Use the default
+  Kubernetes transport for those targets.
+- Every invocation resolves current pods, checks each selected pod's owner, and
+  uses Kubernetes SelfSubjectAccessReview to verify `get` and `create` on both `pods/exec`
+  and `pods/portforward`. Denied, incomplete, or unavailable authorization fails
+  closed, including with a warm SSH connection. This still requires API access.
+  SelfSubjectAccessReview checks authorization, not command admission. Commands
+  sent over SSH do not pass through Kubernetes exec admission or produce
+  per-command Kubernetes exec audit records. Use the Kubernetes transport when
+  those mechanisms are required.
+- Connections are bound to the effective kubeconfig (including file-backed
+  credentials), namespace, pod UID, container ID/start time, SSH key/user, session,
+  and owner. Repinning or replacing a pod cannot reuse the former target's
+  connection. Initial setup compares mount namespaces through Kubernetes exec
+  and SSH, proving the shared pod SSH port belongs to the configured container.
+- Arguments are shell-quoted, stdin remains a byte stream, and stdout/stderr stay
+  separate. A completion record distinguishes remote exit 255 from SSH transport
+  failure. JSON reports completed remote exits as `status: responded`; lost or
+  unconfirmed delivery is `status: error`, `exit: -1`. `--require-all` makes an
+  incomplete JSON result fail the CLI call.
+- A failed command is never automatically replayed or sent through Kubernetes
+  as a fallback. A later, separately invoked command can establish a new master.
+  Cancellation closes the client channel; it does not prove that every remote
+  descendant stopped. Use tracked jobs and `jobs stop` for process lifetime.
+- Masters expire after 60 idle seconds. Private sockets and identity metadata
+  live under `~/.okdev/exec-ssh` (mode 0700); `okdev down` closes the session's
+  masters. Expired metadata is pruned on later connection creation or down.
+  Very long home paths are rejected because Unix socket paths have a size limit.
+- SSH commands run through the configured SSH login shell and its environment;
+  this may differ from Kubernetes exec's container environment/working directory.
+  Choose an explicit shell and working directory when your command depends on them.
+
+## Complete CLI measurement
+
+The `exec_ssh` Kind regression optionally compares the complete checked CLI paths
+with `EXEC_BENCH_RUNS=12`. It includes process startup, target/owner checks,
+SelfSubjectAccessReview and SSH channel creation. Warm samples exclude initial
+master creation and its container identity probe. It is separate from the earlier
+bare-SSH experiment below; the bare-SSH numbers are not this feature's latency.
+
+On 2026-09-21, local Kind (Kubernetes 1.32.2, macOS ARM64, Ubuntu 22.04,
+cached `okdev-sidecar:v0.0.0-e2e`) produced:
+
+| Transport | Sequential median (ms) | Sequential commands/s | Concurrency 4 median (ms) | Concurrency 4 commands/s |
+| --- | ---: | ---: | ---: | ---: |
+| `--transport=kubernetes` | 61.80 | 16.13 | 67.45 | 53.02 |
+| `--transport=ssh` | 42.05 | 23.49 | 53.62 | 74.22 |
+
+[Raw complete-CLI samples and source fingerprints](benchmarks/exec-ssh-kind-20260921.json)
+are retained. This small local sample shows lower warm latency and higher
+concurrent throughput; it does not reproduce the original remote-cluster report
+or set a production latency budget. Order and background load were not controlled.
+
+## Earlier bare-SSH measurement
 
 On 2026-09-21, the CLI at `1239990` was tested against local Kind on macOS 15.7.4
 ARM64, Kubernetes 1.32.2, with Ubuntu 22.04 and cached
@@ -47,32 +115,15 @@ established API connection, not every form of API-server outage. An outage that
 only prevents new requests can have different effects on already-open streams.
 Never automatically replay a possibly delivered mutating command.
 
-## Decision and requirements for a future exec transport
+## Regression coverage
 
-Connection reuse is promising for repeated calls to a fixed dev container. The
-experiment does not justify treating a bare SSH alias as an exec backend:
-
-- `exec` resolves selectors and checks session access on each invocation. Reusing
-  an established SSH connection does not repeat those Kubernetes checks; removing
-  them accounts for part of the measured difference.
-- A master remains connected to its original pod even if the session target is
-  repinned or replaced. A session alias alone is insufficient cache identity.
-- The managed SSH service runs in the configured dev container. It cannot honor
-  an arbitrary `exec --container` by connecting to that same service.
-- OpenSSH accepts a remote shell command string. An adapter must preserve argv
-  quoting, stdin, separate output streams, remote status and cancellation, not
-  reuse the combined-output helper behind `okdev ssh --cmd`.
-- Persistent sockets require ownership, lifetime and invalidation rules. A
-  transport error after delivery must stay an ambiguous failure, never trigger
-  command replay or silent fallback to Kubernetes exec.
-
-A future opt-in implementation should retain existing per-call authorization and
-selection, bind a connection to cluster/namespace/pod UID/container/SSH identity,
-reject unsupported targets explicitly, and measure the complete checked CLI path.
-It needs regressions for repinning, pod replacement, owner changes, non-dev
-containers, selectors/fanout, quoting, cancellation and ambiguous delivery before
-being presented as interchangeable with exec. The current result supports further
-implementation work; it does not claim these requirements are already implemented.
+The `exec_ssh` scenario exercises the integrated option's stream/exit contracts,
+quoting, binary stdin, warm reuse, concurrent calls, selectors/groups, script and
+detached execution, target changes, owner changes, real RBAC revocation on a warm
+master, same-name pod replacement, wrong-container rejection, cancellation, and
+API-stream interruption after a side effect. It verifies that the side effect is
+not replayed and that `down` removes the session's cache connections.
+The earlier `exec_transport` scenario remains as an independent bare-SSH baseline.
 
 ## Reproduce
 
@@ -80,7 +131,7 @@ The default regression runs without timing assertions in the existing local and
 CI Kind suites. The optional benchmark uses OpenSSH and Python's standard library:
 
 ```bash
-EXEC_BENCH_RUNS=12 bash scripts/e2e_kind_regressions.sh exec_transport >exec-benchmark.log 2>&1
+EXEC_BENCH_RUNS=12 bash scripts/e2e_kind_regressions.sh exec_ssh >exec-benchmark.log 2>&1
 result=$?
 cat exec-benchmark.log
 exit "$result"
@@ -89,6 +140,6 @@ exit "$result"
 Build `bin/okdev` first or set `OKDEV_BIN` to an existing binary. The fixture uses
 the existing `okdev-e2e` cluster and sidecar image, an isolated home and kubeconfig,
 and its own master socket. It tears down the session, namespace, SSH processes,
-relay and temporary files. `EXEC_BENCH_RESULT=` records all individual durations.
+relay and temporary files. `EXEC_SSH_BENCH_RESULT=` records all individual durations.
 Re-run against a representative environment before setting production latency
 expectations; do not infer API-outage independence from low local SSH latency.
