@@ -43,11 +43,23 @@ hashes, new downloads, complete/verified reuse, partial resume and failed-upload
 statistics. Set the following options to additionally run throughput experiments:
 
 ```bash
+(
 CP_BENCH_MIB=128 CP_BENCH_REPEATS=3 \
-  bash scripts/e2e_kind_regressions.sh cp_stats >cp-benchmark.log 2>&1
-# Capture this command's actual exit status before inspecting its log.
+  bash scripts/e2e_kind_regressions.sh cp_stats >cp-benchmark.log 2>&1 && result=0 || result=$?
+cat cp-benchmark.log
+exit "$result"
+)
+```
+
+For the separate 1 GiB run:
+
+```bash
+(
 CP_BENCH_MIB=1024 CP_BENCH_REPEATS=1 CP_BENCH_CONTENTS=random \
-  bash scripts/e2e_kind_regressions.sh cp_stats >cp-gib-benchmark.log 2>&1
+  bash scripts/e2e_kind_regressions.sh cp_stats >cp-gib-benchmark.log 2>&1 && result=0 || result=$?
+cat cp-gib-benchmark.log
+exit "$result"
+)
 ```
 
 This uses the existing `okdev-e2e` Kind cluster and cached sidecar image, creates
@@ -80,16 +92,16 @@ comparison. These are end-to-end CLI rates, including command startup, for three
 
 | Operation | Incompressible sample | Repeated text |
 | --- | ---: | ---: |
-| okdev upload | 78.71 | 91.14 |
+| okdev upload | 78.71 | 91.13 |
 | okdev download | 61.74 | 77.10 |
-| kubectl stdin to `/dev/null` | 75.86 | 92.60 |
+| kubectl stdin to `/dev/null` | 75.85 | 92.60 |
 | Remote `cp` via exec | 394.23 | 397.80 |
 | SFTP upload | 61.42 | 56.60 |
 
 [Raw 128 MiB measurements](benchmarks/copy-kind-20260921-128m.json) include
 per-run wall time, application counters, CPU and peak RSS. The incompressible
 payload repeats a random 1 MiB block, larger than gzip's history window. The
-repeated-text compression sample is 960 KiB; the random sample is 1 MiB.
+compression samples are each 1 MiB.
 
 A [single 1 GiB incompressible run](benchmarks/copy-kind-20260921-1g.json)
 measured 63.20 MiB/s upload and 66.17 MiB/s download, with CLI peak RSS of

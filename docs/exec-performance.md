@@ -39,9 +39,11 @@ printf 'input' | okdev exec --transport=ssh --stdin -- cat
   and SSH, proving the shared pod SSH port belongs to the configured container.
 - Arguments are shell-quoted, stdin remains a byte stream, and stdout/stderr stay
   separate. A completion record distinguishes remote exit 255 from SSH transport
-  failure. JSON reports completed remote exits as `status: responded`; lost or
-  unconfirmed delivery is `status: error`, `exit: -1`. `--require-all` makes an
-  incomplete JSON result fail the CLI call.
+  failure. JSON reports completed remote exits as `status: responded`. Delivery
+  failures use `status: error`, `exit: -1`; execution deadlines use `status: timeout`,
+  `exit: -1`. Failures before fanout (such as preflight rejection) can exit without
+  a JSON document. `--require-all` fails on incomplete results, but a responded
+  pod's nonzero exit is data: callers must check each pod's exit code too.
 - A failed command is never automatically replayed or sent through Kubernetes
   as a fallback. A later, separately invoked command can establish a new master.
   Cancellation closes the client channel; it does not prove that every remote
@@ -52,7 +54,9 @@ printf 'input' | okdev exec --transport=ssh --stdin -- cat
   Very long home paths are rejected because Unix socket paths have a size limit.
 - SSH commands run through the configured SSH login shell and its environment;
   this may differ from Kubernetes exec's container environment/working directory.
-  Choose an explicit shell and working directory when your command depends on them.
+  Pass an explicit shell and working directory in the command when needed, e.g.
+  `okdev exec --transport=ssh -- sh -c 'cd /workspace && exec python train.py'`.
+  The `--shell` flag selects interactive mode and is unsupported by this transport.
 
 ## Complete CLI measurement
 

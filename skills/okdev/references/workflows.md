@@ -146,10 +146,12 @@ read-only probes (e.g. curl with `--max-time`); cancellation cannot promise that
 remote helper is killed. Success is point-in-time, and previously undiscovered
 members are not inferred. JSON success contains jobId, ready and pods.
 
-Probe output is limited to 4096 bytes. Output overflow or a completed probe
-returning the wrong ID remains visible in the error when its deadline races
-with completion. Partial failed output is not treated as a completed identity;
-expired or canceled probes never establish readiness.
+Probe stdout is limited to 4096 bytes before surrounding whitespace is trimmed;
+stderr is discarded. For a given attempt, overflow or a successful probe returning
+the wrong ID takes precedence over a concurrent deadline in the rejection reason.
+Later failed attempts can replace that reason. Partial output from a failed probe
+is not treated as a completed identity; expired or canceled probes never establish
+readiness.
 
 For replacement, stop only the exact prior job ID and intended pod(s), check the
 exit, launch the replacement, keep its new ID, then run `jobs ready` before client
@@ -171,8 +173,10 @@ interactive shells, attach-only, non-dev containers and explicit gateways.
 A warm master does not bypass denied or unavailable API authorization. SSH user
 commands do not pass through Kubernetes exec admission or its per-command audit
 path; keep the Kubernetes transport when those mechanisms are required. JSON keeps
-remote exit 255 distinct from unknown delivery (`status: error`, `exit: -1`);
-use `--require-all` to fail on incomplete results. Masters expire after 60 idle
+remote exit 255 as `status: responded`; delivery failures use `status: error`
+and execution deadlines use `status: timeout`, both with `exit: -1`. Failures
+before fanout can exit without JSON. Use `--require-all` to fail on incomplete
+results, and check each responded pod's exit code separately. Masters expire after 60 idle
 seconds; `down` closes the session's connections. SSH uses its login-shell
 environment, which can differ from Kubernetes exec. Read `docs/exec-performance.md`
 for setup, complete checked-CLI measurements and the earlier bare-SSH experiment.

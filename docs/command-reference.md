@@ -549,8 +549,9 @@ check, not a promise that the service cannot fail immediately afterward.
 
 `--timeout` defaults to 2 minutes and bounds the wait; `--probe-timeout` defaults
 to 5 seconds per invocation. Both must be positive. Failed probes and wrong
-identities are retried until the deadline while the job remains live. Output is
-bounded; responses exceeding 4096 bytes cannot pass. Cancellation ends the wait.
+identities are retried until the deadline while the job remains live. Probe stdout
+is bounded; more than 4096 bytes before whitespace trimming cannot pass. Stderr
+is discarded. Cancellation ends the wait.
 Use read-only probes with their own remote timeout (for example `curl --max-time
 2`); closing an exec stream does not guarantee termination of a remote helper.
 
