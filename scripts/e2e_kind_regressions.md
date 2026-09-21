@@ -20,6 +20,7 @@ Available groups:
 | Group | Real Kind coverage |
 | --- | --- |
 | `sync_diagnostics` | Sync child death before Ready, exit evidence, repeated warnings, strict execution gate, repair and survival after parent exit |
+| `exec_retry` | Preflight budget exhaustion/recovery/cancellation, clean JSON, no replay after a delivered command loses its stream or exits nonzero |
 | `replicas` | Read-only Deployment scale/manifest differences, text/JSON and all-session isolation; PyTorchJob roles run after training-operator installation |
 | `podgroup` | Controlled PodGroup conditions/events through the real API, text/JSON, UID filtering, RBAC denial and absent CRD; no Volcano scheduler required |
 | `hook_evidence` | Successful no-op hooks, per-pod stdout/stderr, prerequisite failure, recorded exit states and retry after repair |

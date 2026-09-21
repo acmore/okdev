@@ -521,3 +521,12 @@ This compares against the file **as it exists now**. If the manifest itself was
 accidentally edited to a smaller count, restore the intended count from version
 control before expecting status to detect a difference. No temporary replica
 override or automatic repair is added.
+
+### Execution retry budget
+
+`exec --preflight-retry-timeout <duration>` bounds retries of the read-only
+session access check, before any command is sent (default `0`: existing two
+attempts). It does not extend retries to command delivery or alter the per-pod
+`--timeout`. Stream errors after delivery and remote nonzero exits do not replay
+user commands, scripts or detach launches. See [automation](automation.md#bounded-execution-preflight-retries)
+for deadlines, exit codes, JSON handling and checked reset/detach examples.
