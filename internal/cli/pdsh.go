@@ -65,6 +65,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 	var container string
 	var detach bool
 	var timeout time.Duration
+	var preflightRetryTimeout time.Duration
 	var logDir string
 	var noPrefix bool
 	var fanout int
@@ -135,6 +136,9 @@ func newExecCmd(opts *Options) *cobra.Command {
 		},
 		ValidArgsFunction: sessionCompletionFunc(opts),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if preflightRetryTimeout < 0 {
+				return fmt.Errorf("--preflight-retry-timeout must not be negative")
+			}
 			sessionArgs, commandArgs := splitExecArgs(cmd, args)
 			if stdin {
 				for _, name := range []string{"detach", "json", "script", "log-dir", "pkill", "reset-gpu", "shell"} {
@@ -174,7 +178,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := ensureExistingSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
+			if err := ensureExecSessionAccess(cmd.Context(), cc.opts, cc.kube, cc.namespace, cc.sessionName, preflightRetryTimeout, cmd.ErrOrStderr()); err != nil {
 				return err
 			}
 
@@ -295,6 +299,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringArrayVar(&groups, "group", nil, "Target explicit pod groups by comma-separated pod names (repeatable)")
 	cmd.Flags().StringVar(&container, "container", "", "Override target container")
 	cmd.Flags().BoolVar(&detach, "detach", false, "Launch command in background and return")
+	cmd.Flags().DurationVar(&preflightRetryTimeout, "preflight-retry-timeout", 0, "Total budget for retrying the read-only session access check (0 keeps the default two attempts; never replays commands)")
 	cmd.Flags().DurationVar(&timeout, "timeout", 0, "Per-pod command timeout (e.g., 30s, 5m)")
 	cmd.Flags().StringVar(&logDir, "log-dir", "", "Write per-pod logs to directory")
 	cmd.Flags().BoolVar(&noPrefix, "no-prefix", false, "Suppress pod name prefix in output (auto-enabled when stdout is not a terminal)")
@@ -1277,7 +1282,7 @@ func runMultiExecJSONResults(ctx context.Context, client scriptCopyClient, names
 			}
 
 			var stdoutBuf, stderrBuf bytes.Buffer
-			err := connect.RunOnContainer(execCtx, client, namespace, pod.Name, container, command, false, nil, &stdoutBuf, &stderrBuf)
+			err := connect.RunOnContainerWithRetry(execCtx, client, namespace, pod.Name, container, command, false, nil, &stdoutBuf, &stderrBuf, connect.RetryPolicy{MaxAttempts: 1})
 			res.Stdout = stdoutBuf.String()
 			res.Stderr = stderrBuf.String()
 			if err == nil {
@@ -1360,7 +1365,7 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 				podStderr = io.MultiWriter(podStderr, f)
 			}
 
-			err := connect.RunOnContainer(execCtx, client, namespace, pod.Name, container, command, false, nil, podStdout, podStderr)
+			err := connect.RunOnContainerWithRetry(execCtx, client, namespace, pod.Name, container, command, false, nil, podStdout, podStderr, connect.RetryPolicy{MaxAttempts: 1})
 			results <- podExecResult{pod: pod.Name, err: err}
 		}(pod, shortNames[i], displayPrefixes[i])
 	}
@@ -2009,7 +2014,7 @@ func runDetachExec(ctx context.Context, client scriptCopyClient, namespace strin
 			}
 			command := detachCommand(spec)
 			var remoteStdout, remoteStderr bytes.Buffer
-			err := connect.RunOnContainer(ctx, client, namespace, pod.Name, container, command, false, nil, &remoteStdout, &remoteStderr)
+			err := connect.RunOnContainerWithRetry(ctx, client, namespace, pod.Name, container, command, false, nil, &remoteStdout, &remoteStderr, connect.RetryPolicy{MaxAttempts: 1})
 			if err != nil {
 				results <- podDetachResult{pod: pod.Name, err: err}
 				return
@@ -2112,7 +2117,7 @@ func runMultiExecScript(ctx context.Context, client scriptCopyClient, namespace 
 				return
 			}
 			command := scriptExecCommand(remotePath, invocation.ScriptHasShebang, invocation.Argv, true)
-			err := connect.RunOnContainer(execCtx, client, namespace, pod.Name, container, command, false, nil, podStdout, podStderr)
+			err := connect.RunOnContainerWithRetry(execCtx, client, namespace, pod.Name, container, command, false, nil, podStdout, podStderr, connect.RetryPolicy{MaxAttempts: 1})
 			results <- podExecResult{pod: pod.Name, err: err}
 		}(pod, shortNames[i], displayPrefixes[i])
 	}

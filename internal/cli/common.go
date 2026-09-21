@@ -1003,35 +1003,7 @@ func sessionAccessParent(parents []context.Context) context.Context {
 // (exit 74). Permanent failures (RBAC, bad request) are returned verbatim and
 // fall through to exit 1.
 func listSessionPodsForAccess(k sessionAccessReader, namespace, sessionName string, parents ...context.Context) ([]kube.PodSummary, error) {
-	parent := sessionAccessParent(parents)
-	selector := "okdev.io/managed=true,okdev.io/session=" + sessionName
-	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		ctx, cancel := context.WithTimeout(parent, sessionAccessTimeout)
-		pods, err := k.ListPods(ctx, namespace, false, selector)
-		cancel()
-		if err == nil {
-			// A successful contact ends any transient-failure streak.
-			if clearErr := session.ClearTransientStreak(sessionName); clearErr != nil {
-				slog.Debug("failed to clear transient streak", "session", sessionName, "error", clearErr)
-			}
-			return pods, nil
-		}
-		if !isTransientClusterError(err) {
-			return nil, err
-		}
-		lastErr = err
-		if attempt == 0 {
-			timer := time.NewTimer(sessionAccessRetryDelay)
-			select {
-			case <-parent.Done():
-				timer.Stop()
-				return nil, parent.Err()
-			case <-timer.C:
-			}
-		}
-	}
-	return nil, transientClusterFailure(sessionName, lastErr, time.Now())
+	return listSessionPodsWithRetry(sessionAccessParent(parents), k, namespace, sessionName, 2, sessionAccessRetryDelay, sessionAccessRetryDelay, nil)
 }
 
 // Escalation thresholds for consecutive transient failures (#173): three
@@ -1079,6 +1051,10 @@ func ensureSessionAccess(opts *Options, k sessionAccessReader, namespace, sessio
 	if err != nil {
 		return err
 	}
+	return checkSessionAccessPods(opts, namespace, sessionName, requireExisting, pods)
+}
+
+func checkSessionAccessPods(opts *Options, namespace, sessionName string, requireExisting bool, pods []kube.PodSummary) error {
 	if len(pods) == 0 {
 		if requireExisting {
 			return fmt.Errorf("%w: session %q does not exist in namespace %q", ErrSessionNotFound, sessionName, namespace)

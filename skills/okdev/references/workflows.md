@@ -111,3 +111,21 @@ Use:
 
 - `okdev down`
 - `okdev down --wait` when the user wants workload removal confirmed
+
+## Temporary API outages before exec
+
+Use an explicit session and `exec --preflight-retry-timeout 30s` when a caller
+wants to tolerate a longer temporary API interruption during the read-only
+session access check. Default zero retains two attempts. The budget respects
+caller cancellation/deadlines, stops before command delivery, and does not
+retry RBAC denials or a confirmed missing session. Config/session inference
+and later target selection are outside this budget; `--timeout` is per-pod.
+
+Preflight exit 78 has stderr diagnostics and empty stdout even with `--json`.
+Once JSON envelopes exist, inspect every `status`, `exit` and `error`; process
+exit zero alone is insufficient. Check reset/stop/detach results before the next
+step, and retain the new detached job ID. A lost delivery response can hide a
+successful launch: inspect launch-specific state rather than replaying it.
+Commands, scripts and detach requests are not automatically replayed on stream
+failure or remote nonzero exit. This is not an exactly-once guarantee. See
+`docs/automation.md` for a checked reset/detach recipe.

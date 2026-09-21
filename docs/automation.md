@@ -100,3 +100,49 @@ When remote tools do not need Git history, add `.git` to the synced root's
 only when they are not required remotely. Ignore changes do not delete files
 that were already transferred. See [sync configuration](config-manifest.md)
 and the [command reference](command-reference.md) for detailed semantics.
+
+## Bounded execution preflight retries
+
+`okdev exec --preflight-retry-timeout 30s -- <command>` gives the read-only
+session access/ownership Pod-list check a total retry budget. Temporary cluster
+contact failures back off from 750 ms to at most 5 seconds; each request and
+sleep respects the budget and caller cancellation/deadline. Zero (the default)
+keeps the existing two attempts. Negative values are rejected. RBAC/authentication
+errors and a reachable-but-absent session are not retried.
+
+This budget starts after config/session resolution and ends before target
+selection, uploads, sync gates, or command delivery. Use an explicit session in
+automation when session inference might itself require cluster discovery.
+`--timeout` remains a per-pod command timeout, separate from this preflight budget.
+Retry notices go to stderr. Budget exhaustion exits 78 with empty stdout, even
+with `--json`; cancellation follows the caller context. A persistent outage
+still warrants checking connectivity rather than repeatedly restarting budgets.
+
+User commands, uploaded scripts and detach launch requests are sent once. A
+stream failure after delivery may mean the command already ran or is still
+running: do not blindly retry a non-idempotent command. A remote nonzero exit is
+also never retried. This does not provide exactly-once execution across a lost
+connection. Check job IDs, logs and launch-specific markers before deciding how
+to recover an ambiguous detach result.
+
+Check every step so a failed stop/reset cannot fall through to launching or
+probing an old service. For example, when GPU cleanup is explicitly intended for
+the selected pod:
+
+```bash
+set -euo pipefail
+okdev exec my-session --pod worker-0 --preflight-retry-timeout 30s --reset-gpu
+launch=$(okdev exec my-session --pod worker-0 --preflight-retry-timeout 30s \
+  --detach -- sh -c 'printf "STARTED\n"; exec python train.py')
+printf '%s\n' "$launch"
+# Keep the returned job ID; use jobs wait / jobs logs for that exact launch.
+# STARTED alone does not prove service readiness or successful initialization.
+```
+
+Exit 74 means the session was absent; 78 means transient preflight contact failure.
+After delivery starts, infrastructure failures use the exec delivery failure
+path (69 for fanout), while remote exits remain command results. In `--json`
+mode, produced envelopes are the result: inspect each `status`, `exit` and
+`error`, even if okdev exits zero. `--require-all` fails for missing responses;
+it does not turn every remote nonzero exit into a failing okdev process exit.
+`--detach` does not support `--json`; a failed preflight prints no launch ID.
