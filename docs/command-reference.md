@@ -568,3 +568,9 @@ has begun, including stream/reused bytes, elapsed time, average rate and success
 Default output remains unchanged. See [copy performance](copy-performance.md)
 for counter semantics, retry/resume interpretation, reproducible benchmarks and
 transport tradeoffs.
+
+### Short-command transport measurements
+
+See [exec latency and SSH reuse](exec-performance.md) for the controlled Kind
+comparison and API-disconnect regression. There is no `exec --transport=ssh`
+option; plain SSH reuse does not preserve all exec targeting/access contracts.

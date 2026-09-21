@@ -151,3 +151,19 @@ exit, launch the replacement, keep its new ID, then run `jobs ready` before clie
 work. Do not add GPU reset as an implicit cleanup prerequisite on shared pods.
 See `docs/automation.md` for the checked recipe. Keep `jobs wait` for completion
 and `jobs wait --grep` for job-specific log milestones.
+
+## Repeated Short Commands
+
+Keep `okdev exec` for selectors, explicit containers and per-call session access
+checks. There is no `exec --transport=ssh` flag. Local measurements show lower
+latency for a reused SSH master, but that path skips some exec work and remains
+bound to the original dev container; repinning the session does not retarget an
+existing connection. Read `docs/exec-performance.md` for raw measurements,
+reproduction and the remaining requirements for an integrated transport.
+
+An SSH connection through Kubernetes port-forward still relies on the API stream.
+A disconnected command may already have run: do not retry it automatically or
+silently fall back to exec. Killing a local client is not proof that all remote
+children stopped. Use tracked jobs with explicit stop operations when process
+lifetime matters. Do not present `okdev ssh --cmd` as a stream-preserving exec
+replacement; its helper combines output.
