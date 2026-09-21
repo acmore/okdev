@@ -530,3 +530,33 @@ attempts). It does not extend retries to command delivery or alter the per-pod
 `--timeout`. Stream errors after delivery and remote nonzero exits do not replay
 user commands, scripts or detach launches. See [automation](automation.md#bounded-execution-preflight-retries)
 for deadlines, exit codes, JSON handling and checked reset/detach examples.
+
+### Detached service readiness
+
+`okdev jobs ready <job-id> [session] --probe '<shell command>'` waits for health
+and launch identity, without changing `jobs wait` completion or `--grep`
+semantics. The probe runs in each selected tracked job member's container. It
+must exit zero and print **only that job's ID**, with optional surrounding
+whitespace. The service must expose its inherited `OKDEV_JOB_ID` only when
+healthy; a plain HTTP 200 or an old instance's ID cannot satisfy the new launch.
+Do not implement a probe that simply echoes the ID the caller expects.
+
+All selected tracked members must pass in the same polling round. The job must
+remain running, and its membership, PID, container and start timestamp must
+match the initial observation. Members that terminate (even with exit 0), query
+failures, or changed identity fail the wait. This is a point-in-time readiness
+check, not a promise that the service cannot fail immediately afterward.
+
+`--timeout` defaults to 2 minutes and bounds the wait; `--probe-timeout` defaults
+to 5 seconds per invocation. Both must be positive. Failed probes and wrong
+identities are retried until the deadline while the job remains live. Output is
+bounded; responses exceeding 4096 bytes cannot pass. Cancellation ends the wait.
+Use read-only probes with their own remote timeout (for example `curl --max-time
+2`); closing an exec stream does not guarantee termination of a remote helper.
+
+Selectors `--pod`, `--role`, `--label`, `--exclude` and `--container` follow other
+jobs commands. With no selectors, all discovered members of that job are
+checked; members already absent from discovery before the wait cannot be
+inferred. `--output json` returns `{ "jobId": "...", "ready": true, "pods": [...] }`
+only on success. Failures have nonzero exit and no readiness object. The command
+does not stop jobs, restart services or reset GPUs.

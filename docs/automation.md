@@ -146,3 +146,34 @@ mode, produced envelopes are the result: inspect each `status`, `exit` and
 `error`, even if okdev exits zero. `--require-all` fails for missing responses;
 it does not turn every remote nonzero exit into a failing okdev process exit.
 `--detach` does not support `--json`; a failed preflight prints no launch ID.
+
+## Stop, start, and verify a new service instance
+
+The service's `/ready` endpoint must return its inherited `OKDEV_JOB_ID` as the
+whole response body, and only when initialization is complete. Returning a
+constant `OK` is insufficient, and reading the expected ID from caller state
+would bypass instance verification. For file-based probes, use a health check
+plus an instance marker written by the launched service itself.
+
+```bash
+set -euo pipefail
+: "${OLD_JOB_ID:?set the exact old detached job ID}"
+okdev jobs stop "$OLD_JOB_ID" my-session --pod worker-0
+launch=$(okdev exec my-session --pod worker-0 --detach -- \
+  python /workspace/service.py)
+job_id=$(printf '%s\n' "$launch" | sed -n 's/.*job_id=\([^ ]*\).*/\1/p' | head -n 1)
+test -n "$job_id"
+okdev jobs ready "$job_id" my-session --pod worker-0 \
+  --timeout 2m --probe-timeout 5s \
+  --probe 'curl -fsS --max-time 2 http://127.0.0.1:8000/ready'
+okdev exec my-session --pod worker-0 -- python /workspace/client.py
+```
+
+Every stage is checked: a failed stop or launch prevents the next stage, and
+readiness is tied to the returned job ID rather than an old healthy service.
+Cleanup is restricted to that old job ID and pod; GPU reset is not a prerequisite.
+For a job-specific log milestone, keep using `jobs wait <id> --grep PATTERN`.
+For completion, keep using ordinary `jobs wait <id>`. `jobs ready` returns before
+completion and fails if a tracked member exits, even successfully, before the
+probe verifies readiness. See the command reference for member discovery,
+deadlines and JSON output limits.
