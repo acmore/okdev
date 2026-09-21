@@ -74,6 +74,9 @@ jobs:
           echo "Waiting for training-operator controller to be ready"
           kubectl -n kubeflow wait --for=condition=Available deployment/training-operator --timeout=120s
 
+      - name: Run PyTorchJob replica diagnostics
+        run: RUN_PYTORCHJOB=1 python3 -B scripts/e2e_kind_regression_replicas.py PyTorchReplicas
+
       - name: Run PyTorchJob test
         run: bash scripts/e2e_kind_pytorchjob_interpod_ssh.sh
 

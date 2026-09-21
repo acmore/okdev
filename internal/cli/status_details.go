@@ -29,6 +29,7 @@ type statusDetailsClient interface {
 }
 
 type detailedStatus struct {
+	Replicas         *replicaStatus                `json:"replicas,omitempty"`
 	PodGroups        []detailedStatusPodGroup      `json:"podGroups,omitempty"`
 	Session          string                        `json:"session"`
 	Namespace        string                        `json:"namespace"`
@@ -207,6 +208,7 @@ func gatherDetailedStatus(ctx context.Context, opts *Options, cfg *config.DevEnv
 			detail.Agents = rows
 		}
 	}
+	detail.Replicas = buildReplicaStatus(cfg, cfgPath, view)
 	detail.PodGroups = gatherPodGroupStatus(ctx, namespace, view.Pods, client)
 	detail.Logs = buildDetailedLogs()
 	attachPodHookStates(&detail, view, cfg, cfgPath, target)
@@ -680,6 +682,7 @@ func buildDetailedLogs() detailedStatusLogs {
 }
 
 func printDetailedStatus(w io.Writer, detail detailedStatus) {
+	printReplicaStatus(w, detail.Replicas)
 	fmt.Fprintf(w, "Session: %s\n", detail.Session)
 	fmt.Fprintf(w, "Namespace: %s\n", detail.Namespace)
 	fmt.Fprintf(w, "Owner: %s\n", detail.Owner)

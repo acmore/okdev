@@ -21,6 +21,27 @@ Use `docs/config-manifest.md` and `docs/command-reference.md` as the source of t
 
 These usually use `.okdev/okdev.yaml` plus companion manifests under `.okdev/`.
 
+## Replica Counts
+
+Use single-session `okdev status` (or `--details`, optionally `--output json`)
+when a run appears smaller than intended. Deployment/StatefulSet compare
+`spec.replicas`; PyTorchJob compares Master/Worker and other declared roles
+separately. JSON exposes `replicas.groups` with `declared`, `present`, `running`,
+`ready` and `countMismatch`, plus the source manifest path.
+
+Present excludes terminating and completed/failed Pods. Pending Pods count as
+present, not Running or Ready. A mismatch can occur during rollout, scaling or
+training completion; inspect those states before calling it under-provisioning.
+Missing/unreadable source produces `replicas.unavailable`, not a desired count
+of zero. Unsupported controllers and `status --all` omit replica comparison.
+
+Status only reads the current rendered manifest and observed Pods. It never
+scales or reconciles them. If the manifest was edited to a smaller count, it
+cannot recover the original intent from a forgotten `.bak`; compare version
+control or ask for the intended scale. There is no `up --workers N` override;
+`exec --workers` is a selector. Treat an actual scale/reconcile request separately
+from diagnosis, respecting the user's intended workload and scope.
+
 ## Attachable Pods
 
 Interactive access is shaped by attachable pods.
