@@ -95,3 +95,26 @@ func TestJobsReadyZeroPollIntervalDoesNotSpin(t *testing.T) {
 		t.Fatalf("zero poll interval spun the identity fanout %d times", calls)
 	}
 }
+
+func TestJobsReadyDoesNotRepeatTheIdentityFanoutPerPoll(t *testing.T) {
+	client := &fakeJobsClient{listOutputs: map[string][]string{}, streamPlans: map[string]fakeJobsStreamPlan{}}
+	pods := []kube.PodSummary{{Name: "a"}, {Name: "b"}}
+	for _, pod := range pods {
+		client.listOutputs[pod.Name] = []string{detachMetadataJSON("job", pod.Name, "dev", 100, "running", nil)}
+		client.streamPlans[pod.Name+"|read"] = fakeJobsStreamPlan{stdout: "a-different-job"}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if _, err := runJobsReady(ctx, client, "ns", pods, "dev", "job", jobsReadyOptions{Probe: "health", ProbeTimeout: time.Second}); err == nil {
+		t.Fatal("a probe returning another job's ID satisfied readiness")
+	}
+	// One poll costs the entry query, one before the member loop, and one after
+	// each member's probe. Nothing repeats that fanout again after the loop.
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	for _, pod := range pods {
+		if got := client.listCalls[pod.Name]; got != 4 {
+			t.Fatalf("pod %s saw %d identity fanouts in one poll, want 4", pod.Name, got)
+		}
+	}
+}

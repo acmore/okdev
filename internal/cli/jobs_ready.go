@@ -167,6 +167,10 @@ func runJobsReady(ctx context.Context, client detachJobClient, namespace string,
 			return before, fmt.Errorf("job %q membership or process identity changed", id)
 		}
 		allReady := true
+		// Each member's probe is already followed by an identity re-check, so
+		// the last one proves the job was unchanged after the final probe.
+		// A further check after the loop would only repeat that fanout.
+		latest := before
 		for _, member := range before.PodStates {
 			probeCtx, cancel := context.WithTimeout(ctx, options.ProbeTimeout)
 			var output readinessOutput
@@ -190,22 +194,16 @@ func runJobsReady(ctx context.Context, client detachJobClient, namespace string,
 			if !sameReadyJob(original, observed) {
 				return observed, fmt.Errorf("job %q membership or process identity changed", id)
 			}
-		}
-		after, err := query()
-		if err != nil {
-			return after, err
-		}
-		if !sameReadyJob(original, after) {
-			return after, fmt.Errorf("job %q membership or process identity changed", id)
+			latest = observed
 		}
 		if allReady && ctx.Err() == nil {
-			return after, nil
+			return latest, nil
 		}
 		timer := time.NewTimer(options.PollInterval)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return after, fmt.Errorf("job %q readiness: %s: %w", id, last, ctx.Err())
+			return latest, fmt.Errorf("job %q readiness: %s: %w", id, last, ctx.Err())
 		case <-timer.C:
 		}
 	}
