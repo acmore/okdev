@@ -64,6 +64,8 @@ Do not use this skill for:
 
 ## Quick Heuristics
 
+- For service health tied to a new detached launch, use `jobs ready <job-id> --probe ...`; the probe must check health and return the service’s inherited `OKDEV_JOB_ID`, not echo an expected ID supplied by the caller. Read `references/workflows.md` for the scoped stop/start/ready workflow. `jobs wait` still waits for completion; `--grep` remains the log-milestone path.
+
 - For unexpected worker counts, use single-session `okdev status` or `status --details`; replica diagnostics compare the current local manifest with live workload-labelled Pods. Read `references/multipod.md` before interpreting a count mismatch or suggesting a scale change. `up --workers` is not supported; `exec --workers` selects targets.
 
 - Config resolution: `--config` flag > `OKDEV_CONFIG` env var > walking up from cwd (`.okdev/okdev.yaml`, `.okdev.yaml`, `okdev.yaml` per dir, up to the outermost git root — submodules do not cut the walk short). Discovery cannot reach a repo that is not an ancestor of cwd: from scratch/experiment dirs use `--session <name>` (explicit, multi-session-safe) or set `OKDEV_CONFIG` (single-project loops; okdev warns if it overrides a config discoverable from cwd). Typo'd spec fields are ignored by parsing but `okdev up` warns about them with the known keys.

@@ -129,3 +129,25 @@ successful launch: inspect launch-specific state rather than replaying it.
 Commands, scripts and detach requests are not automatically replayed on stream
 failure or remote nonzero exit. This is not an exactly-once guarantee. See
 `docs/automation.md` for a checked reset/detach recipe.
+
+## Readiness of a Newly Launched Detached Service
+
+Use `jobs ready <job-id> --probe '<read-only command>' --timeout 2m` for health
+plus launch identity. Retain the ID from a checked `exec --detach` result. The
+probe runs in the job container and must exit zero with only that service's
+inherited `OKDEV_JOB_ID` on stdout. An endpoint returning the old ID cannot pass;
+a probe that echoes the expected ID without verifying the service defeats this
+check. Adapt the service endpoint or use a service-written instance marker.
+
+All selected discovered members must pass; terminal members and identity changes
+fail early, and probes have an individual deadline (`--probe-timeout`, default
+5s) inside the total wait. Probe failures/wrong IDs keep polling. Use bounded,
+read-only probes (e.g. curl with `--max-time`); cancellation cannot promise that a
+remote helper is killed. Success is point-in-time, and previously undiscovered
+members are not inferred. JSON success contains jobId, ready and pods.
+
+For replacement, stop only the exact prior job ID and intended pod(s), check the
+exit, launch the replacement, keep its new ID, then run `jobs ready` before client
+work. Do not add GPU reset as an implicit cleanup prerequisite on shared pods.
+See `docs/automation.md` for the checked recipe. Keep `jobs wait` for completion
+and `jobs wait --grep` for job-specific log milestones.

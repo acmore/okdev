@@ -39,6 +39,7 @@ func newJobsCmd(opts *Options) *cobra.Command {
 	cmd.AddCommand(newJobsLogsCmd(opts))
 	cmd.AddCommand(newJobsStopCmd(opts))
 	cmd.AddCommand(newJobsWaitCmd(opts))
+	cmd.AddCommand(newJobsReadyCmd(opts))
 	return cmd
 }
 
