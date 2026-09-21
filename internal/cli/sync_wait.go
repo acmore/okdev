@@ -96,6 +96,12 @@ func syncStalenessWarning(status syncHealthStatus, reason string, subject string
 // with a reason — and it used to cover only the detached half of the workload,
 // even though the failure being guarded is identical on both.
 func execSyncPreflight(cmd *cobra.Command, cc *commandContext, requireSync bool, subject string) error {
+	if cc.cfg.Spec.AttachOnly != nil {
+		if requireSync {
+			return fmt.Errorf("--require-sync is unavailable in attach-only mode")
+		}
+		return nil
+	}
 	if len(cc.cfg.Spec.Sync.Paths) == 0 {
 		if requireSync {
 			return fmt.Errorf("--require-sync: session %s has no sync mappings", cc.sessionName)

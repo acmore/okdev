@@ -574,3 +574,10 @@ transport tradeoffs.
 See [exec latency and SSH reuse](exec-performance.md) for the controlled Kind
 comparison and API-disconnect regression. There is no `exec --transport=ssh`
 option; plain SSH reuse does not preserve all exec targeting/access contracts.
+
+### Attach-only access
+
+`spec.attachOnly` enables exec/jobs/cp against existing scoped pods without a workload
+manifest. Lifecycle commands are rejected. `okdev attach-setup [--pod NAME | --all]`
+explicitly executes its configured setup command. See [attach-only access](attach-only.md)
+for scope, permissions, tool prerequisites and unsupported options.

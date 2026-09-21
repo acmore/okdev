@@ -287,7 +287,7 @@ func targetContainerForAliases(cc *commandContext, container string) string {
 // to run `up` first would leave the silent-hang failure in place for anyone
 // who does not read stderr before their command executes.
 func refreshStaleHostAliases(ctx context.Context, cc *commandContext, pods []kube.PodSummary, container string, warnOut io.Writer) {
-	if cc == nil || cc.kube == nil || strings.TrimSpace(cc.sessionName) == "" {
+	if cc == nil || cc.kube == nil || (cc.cfg != nil && cc.cfg.Spec.AttachOnly != nil) || strings.TrimSpace(cc.sessionName) == "" {
 		return
 	}
 	record, err := session.LoadHostAliases(cc.sessionName)

@@ -43,6 +43,9 @@ type fanoutRoute struct {
 }
 
 func fanoutRouteFromConfig(cfg *config.DevEnvironment, gatewayOverride string) fanoutRoute {
+	if cfg.Spec.AttachOnly != nil {
+		return fanoutRoute{mode: config.ExecFanoutDirect}
+	}
 	return fanoutRoute{
 		mode:            cfg.Spec.Exec.FanoutMode,
 		interPod:        cfg.Spec.SSH.InterPodEnabled(),

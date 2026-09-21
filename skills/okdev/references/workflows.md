@@ -167,3 +167,24 @@ silently fall back to exec. Killing a local client is not proof that all remote
 children stopped. Use tracked jobs with explicit stop operations when process
 lifetime matters. Do not present `okdev ssh --cmd` as a stream-preserving exec
 replacement; its helper combines output.
+
+## Attach-only Existing Pods
+
+Use `spec.attachOnly` with exactly one of `pods`, `selector`, or `session`, plus a
+required `container`; omit workload declarations. Read `docs/attach-only.md` for
+an example and prerequisites. Keep `--config` explicit: this mode does not save a
+session association or target pin. Command selectors only narrow this scope.
+Multi-pod exec/cp require explicit selection; jobs commands default to all scoped
+pods. Existing owner labels and Kubernetes RBAC still apply.
+
+Use exec/jobs/cp for access. Do not invoke up/down/restart, sync, managed SSH setup
+or workload management through this config. No sidecar, tools, labels, host
+aliases or lifecycle hooks are installed automatically. `attach-setup` runs the
+configured setup each time and only on explicit invocation. It can mutate the
+container, so match it to the user's requested setup, not ordinary inspection.
+
+Detached jobs require shell/process tools and writable metadata storage. They are
+tracked processes, not Kubernetes Jobs; arbitrary existing processes are not
+imported. Pod replacement can lose metadata without persistent storage. Role
+filters still require okdev labels: StatefulSet ordinals alone do not establish
+worker roles. Use the external controller for workload lifecycle operations.

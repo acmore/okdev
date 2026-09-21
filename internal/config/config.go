@@ -59,12 +59,13 @@ type Metadata struct {
 }
 
 type DevEnvSpec struct {
-	Namespace   string       `yaml:"namespace"`
-	KubeContext string       `yaml:"kubeContext"`
-	Template    *TemplateRef `yaml:"template,omitempty"`
-	Session     SessionSpec  `yaml:"session"`
-	Agents      []AgentSpec  `yaml:"agents,omitempty"`
-	Workload    WorkloadSpec `yaml:"workload"`
+	AttachOnly  *AttachOnlySpec `yaml:"attachOnly,omitempty"`
+	Namespace   string          `yaml:"namespace"`
+	KubeContext string          `yaml:"kubeContext"`
+	Template    *TemplateRef    `yaml:"template,omitempty"`
+	Session     SessionSpec     `yaml:"session"`
+	Agents      []AgentSpec     `yaml:"agents,omitempty"`
+	Workload    WorkloadSpec    `yaml:"workload"`
 	// Workloads are the named profiles a session can switch between. The
 	// singular Workload above stays as the *effective* one: SelectWorkload
 	// collapses a profile into it, so every reader of Spec.Workload keeps
@@ -345,13 +346,15 @@ func (d *DevEnvironment) SetDefaults() {
 	if d.Spec.Sync.Engine == "" {
 		d.Spec.Sync.Engine = "syncthing"
 	}
-	if strings.TrimSpace(d.Spec.Workload.Type) == "" {
+	if d.Spec.AttachOnly == nil && strings.TrimSpace(d.Spec.Workload.Type) == "" {
 		d.Spec.Workload.Type = "pod"
 	}
 	if d.Spec.Workload.Type == "job" && len(d.Spec.Workload.Inject) == 0 {
 		d.Spec.Workload.Inject = []WorkloadInjectSpec{{Path: "spec.template"}}
 	}
-	d.setWorkloadDefaults()
+	if d.Spec.AttachOnly == nil {
+		d.setWorkloadDefaults()
+	}
 	if d.Spec.Sync.Syncthing.Version == "" {
 		d.Spec.Sync.Syncthing.Version = DefaultSyncthingVersion
 	}
@@ -437,7 +440,11 @@ func (d *DevEnvironment) Validate() error {
 	if d.Spec.PodTemplate != nil {
 		return &MigrationEligibleError{Err: errors.New("spec.podTemplate is removed; every workload now has its own manifest — run \"okdev migrate\" to extract it automatically")}
 	}
-	if err := d.validateWorkloadProfiles(); err != nil {
+	if d.Spec.AttachOnly != nil {
+		if err := d.validateAttachOnly(); err != nil {
+			return err
+		}
+	} else if err := d.validateWorkloadProfiles(); err != nil {
 		return err
 	}
 	if d.Spec.Sync.Engine != "syncthing" {

@@ -297,8 +297,7 @@ func singlePodCpDoneLine(localPath, remotePath string, upload bool) string {
 
 func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath string, upload bool, allPods bool, podNames []string, role string, labels []string, exclude []string, container string, fanout int, readyOnly bool, verify bool, stats bool) (runErr error) {
 	ctx := cmd.Context()
-	labelSel := selectorForSessionRun(cc.sessionName)
-	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
+	sessionPods, err := listCommandPods(ctx, cc)
 	if err != nil {
 		return fmt.Errorf("list session pods: %w", err)
 	}

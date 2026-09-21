@@ -31,6 +31,7 @@ spec: {}
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `attachOnly` | `object` | — | [Access existing pods](attach-only.md) without a deployable workload; requires one scope and a container |
 | `namespace` | `string` | `default` | Kubernetes namespace |
 | `kubeContext` | `string` | — | Kubeconfig context for okdev commands |
 | `template` | `object` | — | Template reference and resolved custom variables from `okdev init --template` |
