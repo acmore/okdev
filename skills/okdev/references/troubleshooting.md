@@ -196,3 +196,22 @@ Escalate to `kubectl` only when `okdev` output is not enough, for example:
 - controller-side manifest issues
 
 When you do escalate, keep the command narrow and explain why that cluster-side view is needed.
+
+## Slow File Copies
+
+Use `okdev cp --stats` to collect the final `cp_stats` stderr JSON record. Record
+payload size/content, upload/download direction, fanout, endpoint location, CLI
+wall time and hashes. Compare fresh destinations: resumed/already-complete local
+bytes appear as `reusedBytes` and do not contribute to the average stream rate.
+`streamBytes` counts application-stream traffic including retries/archive framing,
+not wire bytes or uniquely committed payload. Earlier config/target setup is
+outside `elapsedSeconds`; failures before transfer setup have no stats record.
+
+Check stderr and the process exit as well as `success`. Without `--verify`,
+complete downloads still reuse by size; use verification for possibly changed
+same-size content. Keep upload acknowledgement/atomic replacement and download
+resume/checksum protections when evaluating alternatives. Remote in-pod `cp` and
+SFTP have different overhead/correctness properties; port-forward-based SSH still
+depends on the API server. Do not promise that a protocol switch fixes a reported
+slow link. Read `docs/copy-performance.md` for measured local Kind results,
+compression tradeoffs and reproducible benchmark commands.

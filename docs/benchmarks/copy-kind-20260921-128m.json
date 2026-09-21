@@ -1,0 +1,461 @@
+{
+  "platform": "macOS-15.7.4-arm64-arm-64bit-Mach-O",
+  "bytes": 134217728,
+  "repeats": 3,
+  "records": [
+    {
+      "operation": "okdev-upload",
+      "bytes": 134217728,
+      "wallSeconds": 1.7215786669403315,
+      "MiBPerSecond": 74.3503636853769,
+      "clientCPUSeconds": 0.141751,
+      "clientMaxRSSMiB": 33.078125,
+      "stats": {
+        "event": "cp_stats",
+        "direction": "upload",
+        "targets": 1,
+        "streamBytes": 134217728,
+        "reusedBytes": 0,
+        "elapsedSeconds": 1.684719375,
+        "averageBytesPerSecond": 79667706.08309767,
+        "success": true
+      },
+      "content": "random",
+      "repeat": 1
+    },
+    {
+      "operation": "okdev-download",
+      "bytes": 134217728,
+      "wallSeconds": 2.461238957941532,
+      "MiBPerSecond": 52.00632778340765,
+      "clientCPUSeconds": 0.479435,
+      "clientMaxRSSMiB": 33.890625,
+      "stats": {
+        "event": "cp_stats",
+        "direction": "download",
+        "targets": 1,
+        "streamBytes": 134217728,
+        "reusedBytes": 0,
+        "elapsedSeconds": 2.435364584,
+        "averageBytesPerSecond": 55111965.116759695,
+        "success": true
+      },
+      "content": "random",
+      "repeat": 1
+    },
+    {
+      "operation": "kubectl-stream-to-null",
+      "bytes": 134217728,
+      "wallSeconds": 1.8079874170944095,
+      "MiBPerSecond": 70.79695289345926,
+      "clientCPUSeconds": 0.19252999999999998,
+      "clientMaxRSSMiB": 42.1875,
+      "content": "random",
+      "repeat": 1
+    },
+    {
+      "operation": "remote-cp-via-exec",
+      "bytes": 134217728,
+      "wallSeconds": 0.3290519998408854,
+      "MiBPerSecond": 388.9962682551542,
+      "clientCPUSeconds": 0.048058000000000003,
+      "clientMaxRSSMiB": 41.734375,
+      "content": "random",
+      "repeat": 1
+    },
+    {
+      "operation": "sftp-upload",
+      "bytes": 134217728,
+      "wallSeconds": 2.084146542008966,
+      "MiBPerSecond": 61.41602685798537,
+      "clientCPUSeconds": 0.7124619999999999,
+      "clientMaxRSSMiB": 8.609375,
+      "content": "random",
+      "repeat": 1
+    },
+    {
+      "operation": "okdev-upload",
+      "bytes": 134217728,
+      "wallSeconds": 1.3599672080017626,
+      "MiBPerSecond": 94.11991645598127,
+      "clientCPUSeconds": 0.152756,
+      "clientMaxRSSMiB": 32.90625,
+      "stats": {
+        "event": "cp_stats",
+        "direction": "upload",
+        "targets": 1,
+        "streamBytes": 134217728,
+        "reusedBytes": 0,
+        "elapsedSeconds": 1.337315209,
+        "averageBytesPerSecond": 100363569.55841665,
+        "success": true
+      },
+      "content": "random",
+      "repeat": 2
+    },
+    {
+      "operation": "okdev-download",
+      "bytes": 134217728,
+      "wallSeconds": 2.073244208935648,
+      "MiBPerSecond": 61.73898832000693,
+      "clientCPUSeconds": 0.44006100000000004,
+      "clientMaxRSSMiB": 33.765625,
+      "stats": {
+        "event": "cp_stats",
+        "direction": "download",
+        "targets": 1,
+        "streamBytes": 134217728,
+        "reusedBytes": 0,
+        "elapsedSeconds": 2.048148041,
+        "averageBytesPerSecond": 65531263.030414894,
+        "success": true
+      },
+      "content": "random",
+      "repeat": 2
+    },
+    {
+      "operation": "kubectl-stream-to-null",
+      "bytes": 134217728,
+      "wallSeconds": 1.5257022911682725,
+      "MiBPerSecond": 83.89579064077229,
+      "clientCPUSeconds": 0.183089,
+      "clientMaxRSSMiB": 41.671875,
+      "content": "random",
+      "repeat": 2
+    },
+    {
+      "operation": "remote-cp-via-exec",
+      "bytes": 134217728,
+      "wallSeconds": 0.2736781663261354,
+      "MiBPerSecond": 467.70263670747346,
+      "clientCPUSeconds": 0.047603999999999994,
+      "clientMaxRSSMiB": 41.59375,
+      "content": "random",
+      "repeat": 2
+    },
+    {
+      "operation": "sftp-upload",
+      "bytes": 134217728,
+      "wallSeconds": 2.1976850419305265,
+      "MiBPerSecond": 58.243104702373614,
+      "clientCPUSeconds": 0.714361,
+      "clientMaxRSSMiB": 15.59375,
+      "content": "random",
+      "repeat": 2
+    },
+    {
+      "operation": "okdev-upload",
+      "bytes": 134217728,
+      "wallSeconds": 1.6263054581359029,
+      "MiBPerSecond": 78.70600160606706,
+      "clientCPUSeconds": 0.146832,
+      "clientMaxRSSMiB": 33.03125,
+      "stats": {
+        "event": "cp_stats",
+        "direction": "upload",
+        "targets": 1,
+        "streamBytes": 134217728,
+        "reusedBytes": 0,
+        "elapsedSeconds": 1.5169875830000001,
+        "averageBytesPerSecond": 88476484.25346404,
+        "success": true
+      },
+      "content": "random",
+      "repeat": 3
+    },
+    {
+      "operation": "okdev-download",
+      "bytes": 134217728,
+      "wallSeconds": 1.731283042114228,
+      "MiBPerSecond": 73.93360697606528,
+      "clientCPUSeconds": 0.469704,
+      "clientMaxRSSMiB": 33.90625,
+      "stats": {
+        "event": "cp_stats",
+        "direction": "download",
+        "targets": 1,
+        "streamBytes": 134217728,
+        "reusedBytes": 0,
+        "elapsedSeconds": 1.70618875,
+        "averageBytesPerSecond": 78665228.5686446,
+        "success": true
+      },
+      "content": "random",
+      "repeat": 3
+    },
+    {
+      "operation": "kubectl-stream-to-null",
+      "bytes": 134217728,
+      "wallSeconds": 1.6874332502484322,
+      "MiBPerSecond": 75.85485232150974,
+      "clientCPUSeconds": 0.176956,
+      "clientMaxRSSMiB": 41.765625,
+      "content": "random",
+      "repeat": 3
+    },
+    {
+      "operation": "remote-cp-via-exec",
+      "bytes": 134217728,
+      "wallSeconds": 0.32468291698023677,
+      "MiBPerSecond": 394.2307811894867,
+      "clientCPUSeconds": 0.053142999999999996,
+      "clientMaxRSSMiB": 42.734375,
+      "content": "random",
+      "repeat": 3
+    },
+    {
+      "operation": "sftp-upload",
+      "bytes": 134217728,
+      "wallSeconds": 2.0273865829221904,
+      "MiBPerSecond": 63.13546764007195,
+      "clientCPUSeconds": 0.697534,
+      "clientMaxRSSMiB": 13.46875,
+      "content": "random",
+      "repeat": 3
+    },
+    {
+      "content": "random",
+      "compressionSample": [
+        {
+          "level": 1,
+          "sampleBytes": 1048576,
+          "ratio": 1.0003223419189453,
+          "cpuSeconds": 0.016721999999999987
+        },
+        {
+          "level": 6,
+          "sampleBytes": 1048576,
+          "ratio": 1.0003223419189453,
+          "cpuSeconds": 0.017366999999999994
+        }
+      ]
+    },
+    {
+      "operation": "okdev-upload",
+      "bytes": 134217728,
+      "wallSeconds": 1.3580574579536915,
+      "MiBPerSecond": 94.25227132353386,
+      "clientCPUSeconds": 0.139059,
+      "clientMaxRSSMiB": 33.25,
+      "stats": {
+        "event": "cp_stats",
+        "direction": "upload",
+        "targets": 1,
+        "streamBytes": 134217728,
+        "reusedBytes": 0,
+        "elapsedSeconds": 1.335001292,
+        "averageBytesPerSecond": 100537526.67079815,
+        "success": true
+      },
+      "content": "repeated",
+      "repeat": 1
+    },
+    {
+      "operation": "okdev-download",
+      "bytes": 134217728,
+      "wallSeconds": 1.896450708154589,
+      "MiBPerSecond": 67.49450404885825,
+      "clientCPUSeconds": 0.5187729999999999,
+      "clientMaxRSSMiB": 33.234375,
+      "stats": {
+        "event": "cp_stats",
+        "direction": "download",
+        "targets": 1,
+        "streamBytes": 134217728,
+        "reusedBytes": 0,
+        "elapsedSeconds": 1.868823125,
+        "averageBytesPerSecond": 71819385.26151317,
+        "success": true
+      },
+      "content": "repeated",
+      "repeat": 1
+    },
+    {
+      "operation": "kubectl-stream-to-null",
+      "bytes": 134217728,
+      "wallSeconds": 2.2324725831858814,
+      "MiBPerSecond": 57.33553055210909,
+      "clientCPUSeconds": 0.188652,
+      "clientMaxRSSMiB": 44.15625,
+      "content": "repeated",
+      "repeat": 1
+    },
+    {
+      "operation": "remote-cp-via-exec",
+      "bytes": 134217728,
+      "wallSeconds": 0.3518448327668011,
+      "MiBPerSecond": 363.7967310574005,
+      "clientCPUSeconds": 0.046725,
+      "clientMaxRSSMiB": 42.5625,
+      "content": "repeated",
+      "repeat": 1
+    },
+    {
+      "operation": "sftp-upload",
+      "bytes": 134217728,
+      "wallSeconds": 2.483425624668598,
+      "MiBPerSecond": 51.541708649753105,
+      "clientCPUSeconds": 0.721213,
+      "clientMaxRSSMiB": 10.296875,
+      "content": "repeated",
+      "repeat": 1
+    },
+    {
+      "operation": "okdev-upload",
+      "bytes": 134217728,
+      "wallSeconds": 1.570814875420183,
+      "MiBPerSecond": 81.48636863765428,
+      "clientCPUSeconds": 0.15678999999999998,
+      "clientMaxRSSMiB": 33.0625,
+      "stats": {
+        "event": "cp_stats",
+        "direction": "upload",
+        "targets": 1,
+        "streamBytes": 134217728,
+        "reusedBytes": 0,
+        "elapsedSeconds": 1.548997708,
+        "averageBytesPerSecond": 86648112.716252,
+        "success": true
+      },
+      "content": "repeated",
+      "repeat": 2
+    },
+    {
+      "operation": "okdev-download",
+      "bytes": 134217728,
+      "wallSeconds": 1.6601256248541176,
+      "MiBPerSecond": 77.10259879353883,
+      "clientCPUSeconds": 0.454967,
+      "clientMaxRSSMiB": 34.34375,
+      "stats": {
+        "event": "cp_stats",
+        "direction": "download",
+        "targets": 1,
+        "streamBytes": 134217728,
+        "reusedBytes": 0,
+        "elapsedSeconds": 1.6344445410000001,
+        "averageBytesPerSecond": 82118251.57302782,
+        "success": true
+      },
+      "content": "repeated",
+      "repeat": 2
+    },
+    {
+      "operation": "kubectl-stream-to-null",
+      "bytes": 134217728,
+      "wallSeconds": 1.3822730830870569,
+      "MiBPerSecond": 92.60109421658936,
+      "clientCPUSeconds": 0.175585,
+      "clientMaxRSSMiB": 42.578125,
+      "content": "repeated",
+      "repeat": 2
+    },
+    {
+      "operation": "remote-cp-via-exec",
+      "bytes": 134217728,
+      "wallSeconds": 0.32176779210567474,
+      "MiBPerSecond": 397.8024001792023,
+      "clientCPUSeconds": 0.045143,
+      "clientMaxRSSMiB": 42.515625,
+      "content": "repeated",
+      "repeat": 2
+    },
+    {
+      "operation": "sftp-upload",
+      "bytes": 134217728,
+      "wallSeconds": 2.2614003336057067,
+      "MiBPerSecond": 56.602096540734756,
+      "clientCPUSeconds": 0.7289509999999999,
+      "clientMaxRSSMiB": 10.390625,
+      "content": "repeated",
+      "repeat": 2
+    },
+    {
+      "operation": "okdev-upload",
+      "bytes": 134217728,
+      "wallSeconds": 1.4045142498798668,
+      "MiBPerSecond": 91.13471081617598,
+      "clientCPUSeconds": 0.16530099999999998,
+      "clientMaxRSSMiB": 32.375,
+      "stats": {
+        "event": "cp_stats",
+        "direction": "upload",
+        "targets": 1,
+        "streamBytes": 134217728,
+        "reusedBytes": 0,
+        "elapsedSeconds": 1.378134709,
+        "averageBytesPerSecond": 97390862.53577553,
+        "success": true
+      },
+      "content": "repeated",
+      "repeat": 3
+    },
+    {
+      "operation": "okdev-download",
+      "bytes": 134217728,
+      "wallSeconds": 1.4357294593937695,
+      "MiBPerSecond": 89.1532866185301,
+      "clientCPUSeconds": 0.448181,
+      "clientMaxRSSMiB": 32.984375,
+      "stats": {
+        "event": "cp_stats",
+        "direction": "download",
+        "targets": 1,
+        "streamBytes": 134217728,
+        "reusedBytes": 0,
+        "elapsedSeconds": 1.412637,
+        "averageBytesPerSecond": 95012185.01285185,
+        "success": true
+      },
+      "content": "repeated",
+      "repeat": 3
+    },
+    {
+      "operation": "kubectl-stream-to-null",
+      "bytes": 134217728,
+      "wallSeconds": 1.3301976658403873,
+      "MiBPerSecond": 96.2263002612718,
+      "clientCPUSeconds": 0.187626,
+      "clientMaxRSSMiB": 42.59375,
+      "content": "repeated",
+      "repeat": 3
+    },
+    {
+      "operation": "remote-cp-via-exec",
+      "bytes": 134217728,
+      "wallSeconds": 0.26592854177579284,
+      "MiBPerSecond": 481.3323126026771,
+      "clientCPUSeconds": 0.04807,
+      "clientMaxRSSMiB": 42.203125,
+      "content": "repeated",
+      "repeat": 3
+    },
+    {
+      "operation": "sftp-upload",
+      "bytes": 134217728,
+      "wallSeconds": 2.2114975838921964,
+      "MiBPerSecond": 57.879330699842896,
+      "clientCPUSeconds": 0.70331,
+      "clientMaxRSSMiB": 15.40625,
+      "content": "repeated",
+      "repeat": 3
+    },
+    {
+      "content": "repeated",
+      "compressionSample": [
+        {
+          "level": 1,
+          "sampleBytes": 1048576,
+          "ratio": 0.005869865417480469,
+          "cpuSeconds": 0.0012910000000000421
+        },
+        {
+          "level": 6,
+          "sampleBytes": 1048576,
+          "ratio": 0.0019893646240234375,
+          "cpuSeconds": 0.0021610000000000795
+        }
+      ]
+    }
+  ]
+}
