@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/acmore/okdev/internal/config"
+	"github.com/acmore/okdev/internal/kube"
 	"github.com/acmore/okdev/internal/session"
 	"github.com/acmore/okdev/internal/workload"
 )
@@ -32,18 +33,7 @@ func buildReplicaStatus(cfg *config.DevEnvironment, cfgPath string, view session
 		return nil
 	}
 	info, _ := session.LoadInfo(view.Session)
-	name, runID := info.WorkloadName, info.RunID
-	for _, pod := range view.Pods {
-		if v := pod.Labels["okdev.io/workload-name"]; v != "" {
-			name = v
-		}
-		if v := pod.Labels["okdev.io/run-id"]; v != "" {
-			runID = v
-		}
-		if name != "" {
-			break
-		}
-	}
+	name, runID := replicaWorkloadIdentity(info, view.Pods)
 	rt, err := sessionRuntime(cfg, cfgPath, view.Session, name, discoveryLabelsForSession(cfg, view.Session, runID), nil, false, "")
 	result := &replicaStatus{Source: workload.ResolveManifestPath(cfgPath, cfg.Spec.Workload.ManifestPath)}
 	if err != nil {
@@ -91,10 +81,32 @@ func buildReplicaStatus(cfg *config.DevEnvironment, cfgPath string, view session
 	return result
 }
 
+// replicaWorkloadIdentity resolves the workload name and run id to compare
+// against. Live Pod labels outrank saved session info, and the two labels can
+// reach this scan on different Pods, so each is taken from the first Pod that
+// carries it rather than stopping as soon as a name is known.
+func replicaWorkloadIdentity(info session.Info, pods []kube.PodSummary) (name, runID string) {
+	name, runID = info.WorkloadName, info.RunID
+	haveName, haveRun := false, false
+	for _, pod := range pods {
+		if v := pod.Labels["okdev.io/workload-name"]; v != "" && !haveName {
+			name, haveName = v, true
+		}
+		if v := pod.Labels["okdev.io/run-id"]; v != "" && !haveRun {
+			runID, haveRun = v, true
+		}
+		if haveName && haveRun {
+			break
+		}
+	}
+	return name, runID
+}
+
 func printReplicaStatus(w io.Writer, status *replicaStatus) {
-	if status == nil {
+	if status == nil || (status.Unavailable == "" && len(status.Groups) == 0) {
 		return
 	}
+	fmt.Fprintln(w)
 	if status.Unavailable != "" {
 		fmt.Fprintf(w, "replicas: comparison unavailable (%s)\n", status.Unavailable)
 		return

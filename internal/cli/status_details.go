@@ -682,7 +682,6 @@ func buildDetailedLogs() detailedStatusLogs {
 }
 
 func printDetailedStatus(w io.Writer, detail detailedStatus) {
-	printReplicaStatus(w, detail.Replicas)
 	fmt.Fprintf(w, "Session: %s\n", detail.Session)
 	fmt.Fprintf(w, "Namespace: %s\n", detail.Namespace)
 	fmt.Fprintf(w, "Owner: %s\n", detail.Owner)
@@ -736,6 +735,7 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 		}
 	}
 
+	printReplicaStatus(w, detail.Replicas)
 	printPodGroupStatus(w, detail.PodGroups)
 	fmt.Fprintln(w, "\nSSH:")
 	fmt.Fprintf(w, "- host alias: %s\n", detail.SSH.HostAlias)

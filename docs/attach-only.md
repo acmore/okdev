@@ -56,6 +56,17 @@ all scoped pods. An explicit `--container` overrides the configured container.
 Role/worker selection still uses okdev role labels; StatefulSet ordinals do not
 imply Job/worker roles and okdev does not add those labels.
 
+`okdev status` and `okdev logs` are refused with an `attach-only` error before
+cluster contact. Both report on a session okdev
+deployed and owns: pinned target, sync channel, SSH alias, lifecycle hook state
+and declared-versus-observed replicas. None of that exists for pods okdev did not
+create, so the mode does not answer for them. Use `kubectl get pods` and
+`kubectl logs` for pod state and container logs, `okdev jobs list` and
+`okdev jobs logs` for detached jobs okdev itself started, and `okdev validate` to
+check the config. This restriction does not apply to every CLI command:
+`okdev list` still queries managed sessions and can contact the cluster; it does
+not list the attach-only scope.
+
 Commands run directly through Kubernetes exec, using the caller's kubeconfig
 credentials and RBAC. An existing `okdev.io/owner` label must match the selected
 owner identity, checked on **every** pod in the configured scope before access.

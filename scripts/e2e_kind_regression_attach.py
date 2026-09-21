@@ -39,6 +39,18 @@ class AttachOnly(KindRegression):
                          ("external-1", 7, "clean", "diagnostic"))
         self.remote("external-0", "touch", "/tmp/dev-only")
         self.run_cmd(base + ["exec", "--pod", "external-0", "--container", "other", "--", "test", "!", "-e", "/tmp/dev-only"])
+        # Flags that assume a session okdev owns. The last two are decided only
+        # after the scope resolves, so they need the live pods to be reached.
+        for args, expected in (
+            (["--gateway", "external-1", "--", "true"], b"--gateway is unavailable"),
+            (["--preflight-retry-timeout", "5s", "--", "true"], b"--preflight-retry-timeout is not supported"),
+            (["--require-sync", "--", "touch", "/tmp/gated"], b"--require-sync is unavailable"),
+            (["--transport=ssh", "--", "touch", "/tmp/gated"], b"attach-only uses kubernetes"),
+        ):
+            rejected = self.run_cmd(base + ["exec", "--pod", "external-0"] + args, check=False)
+            self.assertNotEqual(rejected.returncode, 0, args)
+            self.assertIn(expected, rejected.stderr)
+        self.remote("external-0", "test", "!", "-e", "/tmp/gated")
         payload = b"attach-only copy\x00" * 65536
         source = self.root / "payload"
         source.write_bytes(payload)

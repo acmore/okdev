@@ -76,3 +76,45 @@ func TestJobsReadyFlagValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestJobsReadyZeroPollIntervalDoesNotSpin(t *testing.T) {
+	client := &fakeJobsClient{
+		listOutputs: map[string][]string{"pod": {detachMetadataJSON("job", "pod", "dev", 100, "running", nil)}},
+		streamPlans: map[string]fakeJobsStreamPlan{"pod|read": {stdout: "a-different-job"}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	_, err := runJobsReady(ctx, client, "ns", []kube.PodSummary{{Name: "pod"}}, "dev", "job", jobsReadyOptions{Probe: "health", ProbeTimeout: time.Second})
+	if err == nil {
+		t.Fatal("a probe returning another job's ID satisfied readiness")
+	}
+	client.mu.Lock()
+	calls := client.listCalls["pod"]
+	client.mu.Unlock()
+	if calls > 20 {
+		t.Fatalf("zero poll interval spun the identity fanout %d times", calls)
+	}
+}
+
+func TestJobsReadyDoesNotRepeatTheIdentityFanoutPerPoll(t *testing.T) {
+	client := &fakeJobsClient{listOutputs: map[string][]string{}, streamPlans: map[string]fakeJobsStreamPlan{}}
+	pods := []kube.PodSummary{{Name: "a"}, {Name: "b"}}
+	for _, pod := range pods {
+		client.listOutputs[pod.Name] = []string{detachMetadataJSON("job", pod.Name, "dev", 100, "running", nil)}
+		client.streamPlans[pod.Name+"|read"] = fakeJobsStreamPlan{stdout: "job"}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := runJobsReady(ctx, client, "ns", pods, "dev", "job", jobsReadyOptions{Probe: "health", ProbeTimeout: time.Second}); err != nil {
+		t.Fatalf("matching probes did not satisfy readiness: %v", err)
+	}
+	// One poll costs the entry query, one before the member loop, and one after
+	// each member's probe. Nothing repeats that fanout again after the loop.
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	for _, pod := range pods {
+		if got := client.listCalls[pod.Name]; got != 4 {
+			t.Fatalf("pod %s saw %d identity fanouts in one poll, want 4", pod.Name, got)
+		}
+	}
+}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
+	"github.com/acmore/okdev/internal/session"
 )
 
 func TestReplicaStatusSeparatesRolesAndLifecycle(t *testing.T) {
@@ -55,5 +56,55 @@ func TestReplicaStatusSeparatesRolesAndLifecycle(t *testing.T) {
 	got = buildReplicaStatus(cfg, filepath.Join(dir, "okdev.yaml"), view)
 	if got == nil || got.Unavailable == "" {
 		t.Fatal("missing manifest must be unknown, not zero")
+	}
+}
+
+func TestReplicaWorkloadIdentityTakesEachLabelFromTheFirstPodCarryingIt(t *testing.T) {
+	info := session.Info{WorkloadName: "saved", RunID: "old-run"}
+	pod := func(name, run string) kube.PodSummary {
+		labels := map[string]string{}
+		if name != "" {
+			labels["okdev.io/workload-name"] = name
+		}
+		if run != "" {
+			labels["okdev.io/run-id"] = run
+		}
+		return kube.PodSummary{Labels: labels}
+	}
+	for _, tc := range []struct {
+		name           string
+		pods           []kube.PodSummary
+		wantName, want string
+	}{
+		// A saved name must not stop the scan before a later Pod's run id.
+		{"run id on a later pod", []kube.PodSummary{pod("", ""), pod("", "new-run")}, "saved", "new-run"},
+		{"both live", []kube.PodSummary{pod("live", "new-run")}, "live", "new-run"},
+		{"no pods falls back to saved", nil, "saved", "old-run"},
+		{"first carrier wins", []kube.PodSummary{pod("first", "first-run"), pod("second", "second-run")}, "first", "first-run"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			name, runID := replicaWorkloadIdentity(info, tc.pods)
+			if name != tc.wantName || runID != tc.want {
+				t.Fatalf("name=%q runID=%q, want %q/%q", name, runID, tc.wantName, tc.want)
+			}
+		})
+	}
+}
+
+func TestDetailedStatusPrintsReplicasWithTheWorkloadShapeSections(t *testing.T) {
+	var out bytes.Buffer
+	printDetailedStatus(&out, detailedStatus{
+		Session:  "demo",
+		Replicas: &replicaStatus{Kind: "Deployment", Name: "app", Groups: []replicaGroupStatus{{Present: 1}}},
+	})
+	text := out.String()
+	session := strings.Index(text, "Session: demo")
+	replicas := strings.Index(text, "replicas Deployment/app")
+	ssh := strings.Index(text, "\nSSH:")
+	if session < 0 || replicas < 0 || ssh < 0 {
+		t.Fatalf("missing sections in:\n%s", text)
+	}
+	if !(session < replicas && replicas < ssh) {
+		t.Fatalf("replicas must sit after the header and before SSH, got:\n%s", text)
 	}
 }
