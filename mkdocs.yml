@@ -55,6 +55,8 @@ nav:
   - Automation Recipes: automation.md
   - Snapshot Distribution: snapshot-distribution.md
   - Attach-only Access: attach-only.md
+  - Copy Performance: copy-performance.md
+  - Exec Performance: exec-performance.md
   - Config Manifest: config-manifest.md
   - Command Reference: command-reference.md
   - Troubleshooting: troubleshooting.md
