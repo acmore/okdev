@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -45,14 +46,15 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 // in-flight set is mutex-protected.
 //
 // In non-interactive writers the progress line is suppressed entirely. The
-// addBytes/addFile/startPod/finishPod calls remain safe no-ops in that mode.
+// counters remain active so explicit final statistics work without a TTY.
 type cpProgress struct {
 	out     io.Writer
 	prefix  string // single-pod message prefix; empty for multi-pod
 	enabled bool
 
-	bytes atomic.Int64
-	files atomic.Int64
+	reused atomic.Int64
+	bytes  atomic.Int64
+	files  atomic.Int64
 
 	multi bool
 	total int
@@ -120,6 +122,7 @@ func (p *cpProgress) addExistingBytes(n int64) {
 	if p == nil || n <= 0 {
 		return
 	}
+	p.reused.Add(n)
 	p.bytes.Add(n)
 	p.rateMu.Lock()
 	p.lastBytes = p.bytes.Load()
@@ -359,4 +362,43 @@ func formatRate(bps int64) string {
 func formatElapsed(d time.Duration) string {
 	total := int(d.Seconds())
 	return fmt.Sprintf("%02d:%02d", total/60, total%60)
+}
+
+// Bytes count the application copy stream, including retransmission and archive
+// framing, not wire traffic or uniquely committed payload bytes.
+type cpTransferStats struct {
+	Event                 string  `json:"event"`
+	Direction             string  `json:"direction"`
+	Targets               int     `json:"targets"`
+	StreamBytes           int64   `json:"streamBytes"`
+	ReusedBytes           int64   `json:"reusedBytes"`
+	ElapsedSeconds        float64 `json:"elapsedSeconds"`
+	AverageBytesPerSecond float64 `json:"averageBytesPerSecond"`
+	Success               bool    `json:"success"`
+}
+
+func (p *cpProgress) transferStats(upload, success bool, now time.Time) cpTransferStats {
+	direction := "download"
+	if upload {
+		direction = "upload"
+	}
+	targets := 1
+	if p.multi {
+		targets = p.total
+	}
+	reused := p.reused.Load()
+	streamed := p.bytes.Load() - reused
+	elapsed := now.Sub(p.started).Seconds()
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	rate := float64(0)
+	if elapsed > 0 {
+		rate = float64(streamed) / elapsed
+	}
+	return cpTransferStats{Event: "cp_stats", Direction: direction, Targets: targets, StreamBytes: streamed, ReusedBytes: reused, ElapsedSeconds: elapsed, AverageBytesPerSecond: rate, Success: success}
+}
+
+func (p *cpProgress) writeStats(out io.Writer, upload, success bool, now time.Time) {
+	_ = json.NewEncoder(out).Encode(p.transferStats(upload, success, now))
 }

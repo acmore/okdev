@@ -1261,6 +1261,8 @@ type CopyProgress struct {
 	// OnResume is invoked once before a resumable single-file download starts
 	// from existing local bytes.
 	OnResume func(int64)
+	// OnCompleteReuse reports accepted existing full-file bytes without starting a transfer.
+	OnCompleteReuse func(int64)
 }
 
 type singleFileDownloadState struct {
@@ -1345,9 +1347,35 @@ func (c *Client) copyToPodSingleFileOnce(ctx context.Context, namespace, localPa
 	if prog.OnBytes != nil {
 		src = io.TeeReader(f, byteCounterWriter(prog.OnBytes))
 	}
+	uploadCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	var stderr bytes.Buffer
-	execErr := runPodUploadExecForCopy(ctx, c, namespace, podName, container, buildSingleFileUploadCommand(remotePath, info.Size()), src, &stderr)
+	reporter := &uploadErrorWriter{out: &stderr, cancel: cancel}
+	execErr := runPodUploadExecForCopy(uploadCtx, c, namespace, podName, container, buildSingleFileUploadCommand(remotePath, info.Size()), src, reporter)
 	return verifySingleFileUploadResult(execErr, stderr.String(), info.Size(), remotePath)
+}
+
+// An early remote rejection can leave stdin blocked because the command never
+// reads it. Stop that stream when the upload protocol reports a permanent error.
+type uploadErrorWriter struct {
+	out    io.Writer
+	cancel context.CancelFunc
+	tail   []byte
+}
+
+func (w *uploadErrorWriter) Write(p []byte) (int, error) {
+	n, err := w.out.Write(p)
+	marker := []byte("okdev-cp-err:")
+	combined := append(w.tail, p[:n]...)
+	if bytes.Contains(combined, marker) {
+		w.cancel()
+	}
+	keep := len(marker) - 1
+	if len(combined) > keep {
+		combined = combined[len(combined)-keep:]
+	}
+	w.tail = append(w.tail[:0], combined...)
+	return n, err
 }
 
 // runPodUploadExecForCopy runs an upload script with stdin streamed from src.
@@ -1525,6 +1553,9 @@ func downloadSingleFileResumable(ctx context.Context, localPath string, info rem
 		return err
 	}
 	if state.AlreadyComplete {
+		if prog.OnCompleteReuse != nil {
+			prog.OnCompleteReuse(info.Size)
+		}
 		return nil
 	}
 	if state.ResumeOffset > 0 && prog.OnResume != nil {
@@ -1958,6 +1989,9 @@ func (c *Client) CopyFromPodInContainerVerifiedWithProgress(ctx context.Context,
 		localSum := strings.ToLower(verifier.SumHex())
 		if localSum != remoteSum {
 			return fmt.Errorf("%w: remote %s local %s", errChecksumMismatch, remoteSum, localSum)
+		}
+		if prog.OnCompleteReuse != nil {
+			prog.OnCompleteReuse(info.Size)
 		}
 		return nil
 	}

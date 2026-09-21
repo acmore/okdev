@@ -560,3 +560,11 @@ checked; members already absent from discovery before the wait cannot be
 inferred. `--output json` returns `{ "jobId": "...", "ready": true, "pods": [...] }`
 only on success. Failures have nonzero exit and no readiness object. The command
 does not stop jobs, restart services or reset GPUs.
+
+### Copy transfer statistics
+
+`cp --stats` emits one final `cp_stats` JSON record on stderr once transfer setup
+has begun, including stream/reused bytes, elapsed time, average rate and success.
+Default output remains unchanged. See [copy performance](copy-performance.md)
+for counter semantics, retry/resume interpretation, reproducible benchmarks and
+transport tradeoffs.

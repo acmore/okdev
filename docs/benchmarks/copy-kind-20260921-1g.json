@@ -1,0 +1,94 @@
+{
+  "platform": "macOS-15.7.4-arm64-arm-64bit-Mach-O",
+  "bytes": 1073741824,
+  "repeats": 1,
+  "records": [
+    {
+      "operation": "okdev-upload",
+      "bytes": 1073741824,
+      "wallSeconds": 16.203778791241348,
+      "MiBPerSecond": 63.195135726828376,
+      "clientCPUSeconds": 1.083812,
+      "clientMaxRSSMiB": 33.484375,
+      "stats": {
+        "event": "cp_stats",
+        "direction": "upload",
+        "targets": 1,
+        "streamBytes": 1073741824,
+        "reusedBytes": 0,
+        "elapsedSeconds": 16.1634365,
+        "averageBytesPerSecond": 66430293.0877354,
+        "success": true
+      },
+      "content": "random",
+      "repeat": 1
+    },
+    {
+      "operation": "okdev-download",
+      "bytes": 1073741824,
+      "wallSeconds": 15.476561000104994,
+      "MiBPerSecond": 66.16456976411317,
+      "clientCPUSeconds": 3.33357,
+      "clientMaxRSSMiB": 33.78125,
+      "stats": {
+        "event": "cp_stats",
+        "direction": "download",
+        "targets": 1,
+        "streamBytes": 1073741824,
+        "reusedBytes": 0,
+        "elapsedSeconds": 15.446422959,
+        "averageBytesPerSecond": 69513946.81150916,
+        "success": true
+      },
+      "content": "random",
+      "repeat": 1
+    },
+    {
+      "operation": "kubectl-stream-to-null",
+      "bytes": 1073741824,
+      "wallSeconds": 13.138297125231475,
+      "MiBPerSecond": 77.94008540372076,
+      "clientCPUSeconds": 1.2227999999999999,
+      "clientMaxRSSMiB": 42.234375,
+      "content": "random",
+      "repeat": 1
+    },
+    {
+      "operation": "remote-cp-via-exec",
+      "bytes": 1073741824,
+      "wallSeconds": 6.4252289165742695,
+      "MiBPerSecond": 159.3717536442211,
+      "clientCPUSeconds": 0.052461999999999995,
+      "clientMaxRSSMiB": 42.328125,
+      "content": "random",
+      "repeat": 1
+    },
+    {
+      "operation": "sftp-upload",
+      "bytes": 1073741824,
+      "wallSeconds": 19.391644374933094,
+      "MiBPerSecond": 52.80624892872361,
+      "clientCPUSeconds": 6.231824,
+      "clientMaxRSSMiB": 46.0625,
+      "content": "random",
+      "repeat": 1
+    },
+    {
+      "content": "random",
+      "compressionSample": [
+        {
+          "level": 1,
+          "sampleBytes": 1048576,
+          "ratio": 1.0003223419189453,
+          "cpuSeconds": 0.018374
+        },
+        {
+          "level": 6,
+          "sampleBytes": 1048576,
+          "ratio": 1.0003223419189453,
+          "cpuSeconds": 0.019120999999999944
+        }
+      ]
+    }
+  ]
+}

@@ -20,6 +20,7 @@ Available groups:
 | Group | Real Kind coverage |
 | --- | --- |
 | `sync_diagnostics` | Sync child death before Ready, exit evidence, repeated warnings, strict execution gate, repair and survival after parent exit |
+| `cp_stats` | Clean opt-in statistics, fanout counts, hashes, full/verified reuse, partial resume and failed uploads; optional large-file benchmark |
 | `jobs_ready` | Old healthy instance rejection, all-member readiness, job exit, deadlines/cancellation, scoped stop and unchanged completion wait |
 | `exec_retry` | Preflight budget exhaustion/recovery/cancellation, clean JSON, no replay after a delivered command loses its stream or exits nonzero |
 | `replicas` | Read-only Deployment scale/manifest differences, text/JSON and all-session isolation; PyTorchJob roles run after training-operator installation |

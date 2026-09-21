@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/acmore/okdev/internal/kube"
 	"github.com/spf13/cobra"
@@ -44,6 +45,7 @@ func newCpCmd(opts *Options) *cobra.Command {
 	var fanout int
 	var readyOnly bool
 	var verify bool
+	var stats bool
 
 	cmd := &cobra.Command{
 		Use:   "cp [session] <src> <dst>",
@@ -102,7 +104,7 @@ func newCpCmd(opts *Options) *cobra.Command {
 			}
 
 			if multiPod {
-				return runMultiPodCp(cmd, cc, localPath, remotePath, upload, allPods, podNames, role, labels, exclude, container, fanout, readyOnly, verify)
+				return runMultiPodCp(cmd, cc, localPath, remotePath, upload, allPods, podNames, role, labels, exclude, container, fanout, readyOnly, verify, stats)
 			}
 
 			// Single-pod mode.
@@ -119,6 +121,9 @@ func newCpCmd(opts *Options) *cobra.Command {
 			prog.start()
 			err = runSinglePodCpWithProgress(cmd.Context(), cc.kube, cc.namespace, target.PodName, targetContainer, localPath, remotePath, upload, verify, out, prog)
 			prog.stop()
+			if stats {
+				prog.writeStats(cmd.ErrOrStderr(), upload, err == nil, time.Now())
+			}
 			if err != nil {
 				return err
 			}
@@ -135,6 +140,7 @@ func newCpCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&container, "container", "", "Override target container")
 	cmd.Flags().IntVar(&fanout, "fanout", pdshDefaultFanout, "Maximum concurrent pod transfers")
 	cmd.Flags().BoolVar(&readyOnly, "ready-only", false, "Copy only to/from pods that are already running (skip readiness check)")
+	cmd.Flags().BoolVar(&stats, "stats", false, "Write final transfer statistics as one JSON record on stderr (including failed transfers)")
 	cmd.Flags().BoolVar(&verify, "verify", false, "Verify single-file download SHA-256 after copy")
 	return cmd
 }
@@ -182,6 +188,7 @@ func runSinglePodCp(ctx context.Context, client *kube.Client, namespace, pod, co
 func runSinglePodCpWithProgress(ctx context.Context, client *kube.Client, namespace, pod, container, localPath, remotePath string, upload bool, verify bool, out io.Writer, prog *cpProgress) error {
 	kp := kube.CopyProgress{}
 	if prog != nil {
+		kp.OnCompleteReuse = prog.addExistingBytes
 		kp.OnBytes = prog.addBytes
 		kp.OnFile = prog.addFile
 		kp.OnResume = func(n int64) {
@@ -288,7 +295,7 @@ func singlePodCpDoneLine(localPath, remotePath string, upload bool) string {
 	return fmt.Sprintf("Copied :%s -> %s", remotePath, localPath)
 }
 
-func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath string, upload bool, allPods bool, podNames []string, role string, labels []string, exclude []string, container string, fanout int, readyOnly bool, verify bool) error {
+func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath string, upload bool, allPods bool, podNames []string, role string, labels []string, exclude []string, container string, fanout int, readyOnly bool, verify bool, stats bool) (runErr error) {
 	ctx := cmd.Context()
 	labelSel := selectorForSessionRun(cc.sessionName)
 	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
@@ -372,7 +379,12 @@ func runMultiPodCp(cmd *cobra.Command, cc *commandContext, localPath, remotePath
 
 	prog := newMultiPodProgress(out, podCount)
 	prog.start()
-	defer prog.stop()
+	defer func() {
+		prog.stop()
+		if stats {
+			prog.writeStats(cmd.ErrOrStderr(), upload, runErr == nil, time.Now())
+		}
+	}()
 
 	var wg sync.WaitGroup
 	for _, pod := range pods {
