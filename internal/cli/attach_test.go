@@ -19,7 +19,7 @@ func TestAttachOnlyRejectsLifecycleBeforeClusterContact(t *testing.T) {
 	if err := os.WriteFile(p, []byte("apiVersion: okdev.io/v1alpha1\nkind: DevEnvironment\nmetadata: {name: access}\nspec:\n  attachOnly: {pods: [external-0], container: app}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{{"up"}, {"up", "--dry-run"}, {"up", "--reconcile", "--yes"}, {"down", "--yes"}, {"restart", "--yes"}, {"restart", "--pod", "external-0", "--yes"}, {"sync"}, {"ssh"}} {
+	for _, args := range [][]string{{"up"}, {"up", "--dry-run"}, {"up", "--reconcile", "--yes"}, {"down", "--yes"}, {"restart", "--yes"}, {"restart", "--pod", "external-0", "--yes"}, {"sync"}, {"ssh"}, {"status"}, {"status", "--details"}, {"logs"}} {
 		root := NewRootCmd()
 		root.SetOut(io.Discard)
 		root.SetErr(io.Discard)
