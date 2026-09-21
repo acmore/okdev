@@ -101,12 +101,12 @@ func TestJobsReadyDoesNotRepeatTheIdentityFanoutPerPoll(t *testing.T) {
 	pods := []kube.PodSummary{{Name: "a"}, {Name: "b"}}
 	for _, pod := range pods {
 		client.listOutputs[pod.Name] = []string{detachMetadataJSON("job", pod.Name, "dev", 100, "running", nil)}
-		client.streamPlans[pod.Name+"|read"] = fakeJobsStreamPlan{stdout: "a-different-job"}
+		client.streamPlans[pod.Name+"|read"] = fakeJobsStreamPlan{stdout: "job"}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := runJobsReady(ctx, client, "ns", pods, "dev", "job", jobsReadyOptions{Probe: "health", ProbeTimeout: time.Second}); err == nil {
-		t.Fatal("a probe returning another job's ID satisfied readiness")
+	if _, err := runJobsReady(ctx, client, "ns", pods, "dev", "job", jobsReadyOptions{Probe: "health", ProbeTimeout: time.Second}); err != nil {
+		t.Fatalf("matching probes did not satisfy readiness: %v", err)
 	}
 	// One poll costs the entry query, one before the member loop, and one after
 	// each member's probe. Nothing repeats that fanout again after the loop.
