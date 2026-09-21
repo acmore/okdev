@@ -496,3 +496,28 @@ agents can react without launching a diagnostic chain on every blip:
 - Downloads the correct archive for the current OS/architecture, verifies the SHA256 checksum, and atomically replaces the running binary.
 - No-op when already on the latest version.
 - After `okdev up` completes successfully, a non-blocking version check runs (cached for 24 hours) and prints a reminder to stderr if a newer version is available.
+
+### Replica diagnostics in status
+
+For a selected session, `okdev status` and `status --details` compare the current
+rendered local manifest with that session's workload-labelled Pods. Deployment
+and StatefulSet use `spec.replicas` (default 1); PyTorchJob reports each role in
+`spec.pytorchReplicaSpecs` separately (replicas default to 1).
+
+Each row shows declared, present, Running and Ready counts. Present excludes
+terminating, Succeeded and Failed Pods; Ready counts Running Pods whose reported
+containers are all ready. A count difference is an observation, not proof of
+configuration drift: scaling, rollout, pending scheduling and completed training
+can affect these counts. No workload or manifest is changed by this comparison.
+
+JSON adds `replicas` with the source path, workload identity and per-role `groups`
+containing `declared`, `present`, `running`, `ready` and `countMismatch`. If the
+source cannot be read or rendered, `replicas.unavailable` explains why comparison
+is unavailable. Unsupported workloads (including batch Job), and `status --all`,
+omit this diagnostic; the current config is never used as the desired scale of
+other sessions.
+
+This compares against the file **as it exists now**. If the manifest itself was
+accidentally edited to a smaller count, restore the intended count from version
+control before expecting status to detect a difference. No temporary replica
+override or automatic repair is added.

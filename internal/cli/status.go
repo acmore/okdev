@@ -120,18 +120,23 @@ func newStatusCmd(opts *Options) *cobra.Command {
 				printDetailedStatus(cmd.OutOrStdout(), detail)
 				return nil
 			}
+			var replicas *replicaStatus
+			if !all && len(views) == 1 {
+				replicas = buildReplicaStatus(cc.cfg, cc.cfgPath, views[0])
+			}
 			if cc.opts.Output == "json" {
 				type statusRow struct {
-					Session   string `json:"session"`
-					Owner     string `json:"owner"`
-					Workload  string `json:"workload"`
-					TargetPod string `json:"targetPod"`
-					Phase     string `json:"phase"`
-					Age       string `json:"age"`
-					Ready     string `json:"ready"`
-					Restarts  int32  `json:"restarts"`
-					Reason    string `json:"reason"`
-					PodCount  int    `json:"podCount"`
+					Replicas  *replicaStatus `json:"replicas,omitempty"`
+					Session   string         `json:"session"`
+					Owner     string         `json:"owner"`
+					Workload  string         `json:"workload"`
+					TargetPod string         `json:"targetPod"`
+					Phase     string         `json:"phase"`
+					Age       string         `json:"age"`
+					Ready     string         `json:"ready"`
+					Restarts  int32          `json:"restarts"`
+					Reason    string         `json:"reason"`
+					PodCount  int            `json:"podCount"`
 					// PreviousRunEnd is present only while this run is the one
 					// that replaced an ended run (#213).
 					PreviousRunEnd *session.RunEnd `json:"previousRunEnd,omitempty"`
@@ -143,6 +148,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 						previousRunEnd = &record
 					}
 					rows = append(rows, statusRow{
+						Replicas:       replicas,
 						Session:        view.Session,
 						Owner:          view.Owner,
 						Workload:       view.WorkloadType,
@@ -175,6 +181,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 				})
 			}
 			output.PrintTable(cmd.OutOrStdout(), []string{"SESSION", "OWNER", "WORKLOAD", "TARGET", "PHASE", "READY", "PODS", "RESTARTS", "REASON", "AGE"}, rows)
+			printReplicaStatus(cmd.OutOrStdout(), replicas)
 			if !all && len(views) == 1 && len(views[0].Pods) > 1 {
 				fmt.Fprintln(cmd.OutOrStdout(), "")
 				podRows := make([][]string, 0, len(views[0].Pods))
