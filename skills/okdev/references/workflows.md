@@ -146,6 +146,11 @@ read-only probes (e.g. curl with `--max-time`); cancellation cannot promise that
 remote helper is killed. Success is point-in-time, and previously undiscovered
 members are not inferred. JSON success contains jobId, ready and pods.
 
+Probe output is limited to 4096 bytes. Output overflow or a completed probe
+returning the wrong ID remains visible in the error when its deadline races
+with completion. Partial failed output is not treated as a completed identity;
+expired or canceled probes never establish readiness.
+
 For replacement, stop only the exact prior job ID and intended pod(s), check the
 exit, launch the replacement, keep its new ID, then run `jobs ready` before client
 work. Do not add GPU reset as an implicit cleanup prerequisite on shared pods.

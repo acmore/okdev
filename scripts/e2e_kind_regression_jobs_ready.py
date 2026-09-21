@@ -53,6 +53,12 @@ class JobsReady(KindRegression):
         self.assertIn(b"not running", failed.stderr)
         hung = self.run_cmd(base + ["jobs", "ready", new, "--probe", "sleep 20", "--probe-timeout", "200ms", "--timeout", "1s"], check=False)
         self.assertNotEqual(hung.returncode, 0)
+        oversized = self.run_cmd(base + ["jobs", "ready", new, "--pod", pods[0], "--probe",
+                                         "head -c 5000 /dev/zero | tr '\\000' x; sleep 20",
+                                         "--probe-timeout", "2s", "--timeout", "3s"], check=False)
+        self.assertNotEqual(oversized.returncode, 0)
+        self.assertIn(b"exceeded 4096 bytes", oversized.stderr)
+        self.assertIn(b"expected job ID", oversized.stderr)
         process = self.background(base + ["jobs", "ready", new, "--probe", "false", "--timeout", "1m"],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         time.sleep(1)

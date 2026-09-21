@@ -173,6 +173,11 @@ Every stage is checked: a failed stop or launch prevents the next stage, and
 readiness is tied to the returned job ID rather than an old healthy service.
 Cleanup is restricted to that old job ID and pod; GPU reset is not a prerequisite.
 For a job-specific log milestone, keep using `jobs wait <id> --grep PATTERN`.
+Probe output is limited to 4096 bytes. Output overflow or a completed probe
+returning the wrong ID remains visible in the error when its deadline races
+with completion. Partial failed output is not treated as a completed identity;
+expired or canceled probes never establish readiness.
+
 For completion, keep using ordinary `jobs wait <id>`. `jobs ready` returns before
 completion and fails if a tracked member exits, even successfully, before the
 probe verifies readiness. See the command reference for member discovery,

@@ -168,12 +168,15 @@ func runJobsReady(ctx context.Context, client detachJobClient, namespace string,
 			err := client.StreamShInContainer(probeCtx, namespace, member.Pod, member.Container, options.Probe, &output, io.Discard)
 			expired := probeCtx.Err() != nil
 			cancel()
-			if err != nil || expired {
+			if output.overflow {
 				allReady = false
-				last = "probe failed or timed out on pod " + member.Pod
-			} else if output.overflow || strings.TrimSpace(string(output.data)) != id {
+				last = "probe output exceeded 4096 bytes instead of the expected job ID on pod " + member.Pod
+			} else if err == nil && strings.TrimSpace(string(output.data)) != id {
 				allReady = false
 				last = "probe did not return the expected job ID on pod " + member.Pod
+			} else if err != nil || expired {
+				allReady = false
+				last = "probe failed or timed out on pod " + member.Pod
 			}
 			observed, err := query()
 			if err != nil {
