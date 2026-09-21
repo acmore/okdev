@@ -80,6 +80,7 @@ func newRootCmdWithOptions() (*cobra.Command, *Options) {
 	cmd.AddCommand(newLogsCmd(opts))
 	cmd.AddCommand(newSSHCmd(opts))
 	cmd.AddCommand(newSSHProxyCmd(opts))
+	cmd.AddCommand(newExecSSHProxyCmd(opts))
 	cmd.AddCommand(newPortsCmd(opts))
 	cmd.AddCommand(newSyncCmd(opts))
 	cmd.AddCommand(newEnvDiffCmd(opts))

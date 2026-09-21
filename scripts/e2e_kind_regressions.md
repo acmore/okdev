@@ -50,6 +50,7 @@ none exists, then removes only that test-created CRD. It reuses an existing CRD
 without modifying or deleting it. Conditions and events are injected fixtures;
 this checks diagnostic reads and RBAC, not Volcano scheduling or quota enforcement.
 
+- `exec_ssh`: integrated SSH transport, warm reuse, RBAC/owner revocation, target and container identity, pod replacement, argv/streams/exit 255, stdin, groups/scripts/detach, cancellation, delivery interruption without replay, and down cleanup. `EXEC_BENCH_RUNS=12` measures complete checked CLI calls.
 - `exec_transport`: real SSH master reuse, explicit exec pod/container, exit/stream/stdin contracts, client cancellation and API-stream interruption without command replay. `EXEC_BENCH_RUNS=12` enables the optional short-command latency/concurrency experiment.
 
 - `attach`: external StatefulSet exec/jobs/cp/setup without workload adoption, scope/container selection, owner and RBAC rejection, and lifecycle refusal with unchanged workload metadata/spec.

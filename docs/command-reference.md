@@ -571,9 +571,16 @@ transport tradeoffs.
 
 ### Short-command transport measurements
 
-See [exec latency and SSH reuse](exec-performance.md) for the controlled Kind
-comparison and API-disconnect regression. There is no `exec --transport=ssh`
-option; plain SSH reuse does not preserve all exec targeting/access contracts.
+`exec --transport=ssh -- <command>` reuses a checked SSH connection to the
+configured managed dev container. The default is `--transport=kubernetes`.
+SSH supports selectors, groups, scripts, detached commands, stdin, timeouts and
+JSON; it rejects interactive shells, attach-only mode, other containers and
+`--gateway`. Each selected pod needs its SSH service/key configured beforehand.
+Every invocation checks target ownership and Kubernetes exec/port-forward access.
+Connections expire after 60 idle seconds and are closed by `down`; delivery
+failures never trigger command replay or fallback.
+See [exec latency and SSH reuse](exec-performance.md) for setup, environment
+semantics, container identity verification, complete CLI measurements and tests.
 
 ### Attach-only access
 

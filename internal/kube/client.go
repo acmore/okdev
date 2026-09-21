@@ -112,10 +112,11 @@ type ContainerImage struct {
 	Digest string
 }
 
-// ContainerStart pairs a container name with its current start time.
+// ContainerStart identifies a running container instance and its start time.
 type ContainerStart struct {
-	Name      string
-	StartedAt time.Time
+	ContainerID string
+	Name        string
+	StartedAt   time.Time
 }
 
 // ContainerIssue describes a container that is (or last was) terminated
@@ -2705,7 +2706,7 @@ func podSummaryFromPod(p *corev1.Pod) PodSummary {
 			issues = append(issues, issue)
 		}
 		if st.State.Running != nil {
-			starts = append(starts, ContainerStart{Name: st.Name, StartedAt: st.State.Running.StartedAt.Time})
+			starts = append(starts, ContainerStart{Name: st.Name, ContainerID: st.ContainerID, StartedAt: st.State.Running.StartedAt.Time})
 		}
 	}
 	// A container terminated by the runtime (OOMKilled, Error) explains a

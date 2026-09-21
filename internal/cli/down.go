@@ -457,6 +457,12 @@ func downCleanupLocal(ui *upUI, payload *downOutput, sessionName string) error {
 		ui.stepDone("syncthing", "stopped")
 		payload.Cleanup["syncthing"] = "stopped"
 	}
+	if err := stopExecSSHSession(sessionName); err != nil {
+		ui.warnf("failed to stop SSH exec connections: %v", err)
+		payload.Cleanup["execSSH"] = "warning"
+	} else {
+		payload.Cleanup["execSSH"] = "stopped"
+	}
 	if err := stopManagedSSHForward(alias); err != nil {
 		slog.Debug("failed to stop managed SSH forward", "alias", alias, "error", err)
 		payload.Cleanup["sshForward"] = "warning"

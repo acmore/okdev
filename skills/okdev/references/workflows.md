@@ -154,12 +154,22 @@ and `jobs wait --grep` for job-specific log milestones.
 
 ## Repeated Short Commands
 
-Keep `okdev exec` for selectors, explicit containers and per-call session access
-checks. There is no `exec --transport=ssh` flag. Local measurements show lower
-latency for a reused SSH master, but that path skips some exec work and remains
-bound to the original dev container; repinning the session does not retarget an
-existing connection. Read `docs/exec-performance.md` for raw measurements,
-reproduction and the remaining requirements for an integrated transport.
+Use `okdev exec --transport=ssh -- <command>` for repeated noninteractive
+commands in managed dev containers with SSH already configured. The default
+remains Kubernetes. For another pod, prepare it with `target set --pod <name>`
+and `ssh --setup-key --cmd true`. The SSH transport retains per-call target,
+owner and Kubernetes exec/port-forward authorization checks, and isolates cached
+masters by kubeconfig, pod UID, container instance and SSH identity. It supports
+selectors/groups, stdin, scripts, detached commands and JSON, but rejects
+interactive shells, attach-only, non-dev containers and explicit gateways.
+
+A warm master does not bypass denied or unavailable API authorization. JSON keeps
+remote exit 255 distinct from unknown delivery (`status: error`, `exit: -1`);
+use `--require-all` to fail on incomplete results. Masters expire after 60 idle
+seconds; `down` closes the session's connections. SSH uses its login-shell
+environment, which can differ from Kubernetes exec. Read `docs/exec-performance.md`
+for setup, complete checked-CLI measurements and the earlier bare-SSH experiment.
+Do not advertise the bare master's latency as the checked transport's result.
 
 An SSH connection through Kubernetes port-forward still relies on the API stream.
 A disconnected command may already have run: do not retry it automatically or

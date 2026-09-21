@@ -66,7 +66,7 @@ Do not use this skill for:
 
 - For existing pods that okdev must not deploy or own, use `spec.attachOnly` and read `references/workflows.md` plus `docs/attach-only.md`. Keep its explicit pod/selector/session scope; use exec/jobs/cp and only explicitly requested `attach-setup`. Do not invent a dummy workload or infer Job roles from StatefulSet names.
 
-- For repeated short-command latency, read `references/workflows.md` and `docs/exec-performance.md`. SSH reuse can reduce connection cost but is not an interchangeable exec backend: retain targeting/access checks and do not claim API-outage independence or replay a possibly delivered command.
+- For repeated short-command latency, read `references/workflows.md` and `docs/exec-performance.md`. `exec --transport=ssh` is opt-in for prepared managed dev containers; keep the default Kubernetes transport for interactive, attach-only or other-container access. Never bypass targeting/access checks, claim API-outage independence, or replay a possibly delivered command.
 
 - For slow file copies, collect `cp --stats` and read `docs/copy-performance.md` before proposing another transport. Statistics are opt-in stderr JSON; stream bytes include retries/archive framing and exclude reused local bytes. Do not infer network bandwidth from in-pod copies or recommend gzip for already-compressed data without measurements.
 

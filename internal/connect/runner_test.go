@@ -119,3 +119,13 @@ func TestRunOnContainerDoesNotRetryNonTransientContainerExec(t *testing.T) {
 		t.Fatalf("expected no retry for non-transient container error, got calls=%d", fc.containerCalls)
 	}
 }
+
+func TestDeliveredCommandIsNeverRetried(t *testing.T) {
+	fc := &fakeExecClient{errs: []error{&DeliveryError{Err: errors.New("EOF: connection reset")}, nil}}
+	var out bytes.Buffer
+	err := RunOnContainerWithRetry(context.Background(), fc, "ns", "pod", "", []string{"mutation"}, false, &out, &out, &out, RetryPolicy{MaxAttempts: 3, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond})
+	var delivery *DeliveryError
+	if !errors.As(err, &delivery) || fc.calls != 1 {
+		t.Fatalf("err=%v calls=%d", err, fc.calls)
+	}
+}
