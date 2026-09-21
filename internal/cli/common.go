@@ -52,6 +52,15 @@ func loadConfigAndNamespace(opts *Options) (*config.DevEnvironment, string, erro
 		}
 		return nil, "", err
 	}
+	if cfg.Spec.AttachOnly != nil {
+		if err := allowAttachCommand(opts.commandName); err != nil {
+			return nil, "", err
+		}
+		if opts.Workload != "" {
+			return nil, "", fmt.Errorf("--workload is unavailable in attach-only mode")
+		}
+	}
+	opts.attachOnly = cfg.Spec.AttachOnly
 	applyConfigKubeContext(opts, cfg)
 	ns := cfg.Spec.Namespace
 	if opts.Namespace != "" {
@@ -106,6 +115,9 @@ func resolveCommandContext(opts *Options, resolver sessionResolver) (*commandCon
 }
 
 func selectCommandWorkload(cc *commandContext) error {
+	if cc.cfg.Spec.AttachOnly != nil {
+		return nil
+	}
 	profile, err := resolveWorkloadProfileName(cc.opts, cc.sessionName)
 	if err != nil {
 		return err
@@ -404,6 +416,9 @@ func resolveSessionNameWithState(opts *Options, cfg *config.DevEnvironment, name
 }
 
 func resolveSessionNameWithReader(opts *Options, cfg *config.DevEnvironment, namespace string, inferExisting bool, reader sessionAccessReader, parents ...context.Context) (string, error) {
+	if cfg.Spec.AttachOnly != nil && strings.TrimSpace(opts.Session) == "" {
+		return session.Resolve(cfg.Metadata.Name, cfg.Spec.Session.DefaultNameTemplate)
+	}
 	if strings.TrimSpace(opts.Session) != "" {
 		return session.Resolve(opts.Session, cfg.Spec.Session.DefaultNameTemplate)
 	}
@@ -1047,6 +1062,16 @@ func ordinal(n int) string {
 }
 
 func ensureSessionAccess(opts *Options, k sessionAccessReader, namespace, sessionName string, requireExisting bool, parents ...context.Context) error {
+	if opts != nil && opts.attachOnly != nil {
+		ctx := context.Background()
+		if len(parents) > 0 {
+			ctx = parents[0]
+		}
+		ctx, cancel := context.WithTimeout(ctx, sessionAccessTimeout)
+		defer cancel()
+		_, err := listAttachPods(ctx, opts, k, namespace)
+		return err
+	}
 	pods, err := listSessionPodsForAccess(k, namespace, sessionName, parents...)
 	if err != nil {
 		return err

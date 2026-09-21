@@ -114,6 +114,9 @@ type targetResolverClient interface {
 }
 
 func resolveTargetRef(ctx context.Context, opts *Options, cfg *config.DevEnvironment, namespace, sessionName string, k targetResolverClient) (workload.TargetRef, error) {
+	if cfg.Spec.AttachOnly != nil {
+		return resolveAttachTarget(ctx, opts, k, namespace)
+	}
 	target, err := loadTargetRef(sessionName)
 	if err != nil {
 		return workload.TargetRef{}, err
@@ -196,6 +199,9 @@ func validatePinnedTarget(ctx context.Context, k kubeClientTargetGetter, namespa
 }
 
 func resolveTargetContainer(cfg *config.DevEnvironment) string {
+	if cfg.Spec.AttachOnly != nil {
+		return cfg.Spec.AttachOnly.Container
+	}
 	if strings.TrimSpace(cfg.Spec.Workload.Attach.Container) != "" {
 		return strings.TrimSpace(cfg.Spec.Workload.Attach.Container)
 	}

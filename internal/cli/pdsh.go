@@ -178,6 +178,9 @@ func newExecCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if cc.cfg.Spec.AttachOnly != nil && gatewayPod != "" {
+				return fmt.Errorf("--gateway is unavailable in attach-only mode")
+			}
 			if err := ensureExecSessionAccess(cmd.Context(), cc.opts, cc.kube, cc.namespace, cc.sessionName, preflightRetryTimeout, cmd.ErrOrStderr()); err != nil {
 				return err
 			}
@@ -722,8 +725,7 @@ func printTargetOnlyNotice(w io.Writer, cc *commandContext, targetPod string, ra
 
 func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvocation, plan execTargetPlan, container string, detach, killGroupOnExit bool, timeout time.Duration, logDir string, noPrefix bool, fanout int, jsonOutput bool, gatewayPod string, requireAll bool) error {
 	ctx := cmd.Context()
-	labelSel := selectorForSessionRun(cc.sessionName)
-	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
+	sessionPods, err := listCommandPods(ctx, cc)
 	if err != nil {
 		return fmt.Errorf("list session pods: %w", err)
 	}
@@ -1129,8 +1131,7 @@ func sanitizeGroupLabel(label string) string {
 // exec-jobs and port-forward. It intentionally exposes only the pre-existing
 // selector surface; grouped orchestration stays local to exec.
 func selectSessionPods(ctx context.Context, cc *commandContext, podNames []string, role string, labels []string, exclude []string, readyOnly bool) ([]kube.PodSummary, error) {
-	labelSel := selectorForSessionRun(cc.sessionName)
-	sessionPods, err := cc.kube.ListPods(ctx, cc.namespace, false, labelSel)
+	sessionPods, err := listCommandPods(ctx, cc)
 	if err != nil {
 		return nil, fmt.Errorf("list session pods: %w", err)
 	}

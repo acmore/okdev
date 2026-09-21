@@ -58,6 +58,9 @@ func listSessionPodsWithRetry(parent context.Context, k sessionAccessReader, nam
 }
 
 func ensureExecSessionAccess(parent context.Context, opts *Options, k sessionAccessReader, namespace, name string, budget time.Duration, errOut io.Writer) error {
+	if opts != nil && opts.attachOnly != nil && budget != 0 {
+		return fmt.Errorf("--preflight-retry-timeout is not supported in attach-only mode")
+	}
 	if budget == 0 {
 		return ensureSessionAccess(opts, k, namespace, name, true, parent)
 	}

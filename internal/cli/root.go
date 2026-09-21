@@ -6,6 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/logx"
 	"github.com/spf13/cobra"
 )
@@ -19,6 +20,9 @@ type Options struct {
 	Output     string
 	Workload   string
 	Verbose    bool
+
+	commandName string
+	attachOnly  *config.AttachOnlySpec
 
 	// Distinguish a caller-selected config from a discovered or saved path.
 	explicitConfig bool
@@ -39,6 +43,11 @@ func newRootCmdWithOptions() (*cobra.Command, *Options) {
 		SilenceErrors: true,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			logx.Configure(opts.Verbose)
+			top := cmd
+			for top.Parent() != nil && top.Parent().Parent() != nil {
+				top = top.Parent()
+			}
+			opts.commandName = top.Name()
 		},
 	}
 
@@ -67,6 +76,7 @@ func newRootCmdWithOptions() (*cobra.Command, *Options) {
 	cmd.AddCommand(newExecJobsCmd(opts))
 	cmd.AddCommand(newPortForwardCmd(opts))
 	cmd.AddCommand(newCpCmd(opts))
+	cmd.AddCommand(newAttachSetupCmd(opts))
 	cmd.AddCommand(newLogsCmd(opts))
 	cmd.AddCommand(newSSHCmd(opts))
 	cmd.AddCommand(newSSHProxyCmd(opts))
