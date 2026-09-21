@@ -163,7 +163,9 @@ masters by kubeconfig, pod UID, container instance and SSH identity. It supports
 selectors/groups, stdin, scripts, detached commands and JSON, but rejects
 interactive shells, attach-only, non-dev containers and explicit gateways.
 
-A warm master does not bypass denied or unavailable API authorization. JSON keeps
+A warm master does not bypass denied or unavailable API authorization. SSH user
+commands do not pass through Kubernetes exec admission or its per-command audit
+path; keep the Kubernetes transport when those mechanisms are required. JSON keeps
 remote exit 255 distinct from unknown delivery (`status: error`, `exit: -1`);
 use `--require-all` to fail on incomplete results. Masters expire after 60 idle
 seconds; `down` closes the session's connections. SSH uses its login-shell

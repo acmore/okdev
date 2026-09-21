@@ -28,6 +28,10 @@ printf 'input' | okdev exec --transport=ssh --stdin -- cat
   uses Kubernetes SelfSubjectAccessReview to verify `get` and `create` on both `pods/exec`
   and `pods/portforward`. Denied, incomplete, or unavailable authorization fails
   closed, including with a warm SSH connection. This still requires API access.
+  SelfSubjectAccessReview checks authorization, not command admission. Commands
+  sent over SSH do not pass through Kubernetes exec admission or produce
+  per-command Kubernetes exec audit records. Use the Kubernetes transport when
+  those mechanisms are required.
 - Connections are bound to the effective kubeconfig (including file-backed
   credentials), namespace, pod UID, container ID/start time, SSH key/user, session,
   and owner. Repinning or replacing a pod cannot reuse the former target's
