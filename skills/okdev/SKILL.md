@@ -64,6 +64,8 @@ Do not use this skill for:
 
 ## Quick Heuristics
 
+- For repeated short-command latency, read `references/workflows.md` and `docs/exec-performance.md`. SSH reuse can reduce connection cost but is not an interchangeable exec backend: retain targeting/access checks and do not claim API-outage independence or replay a possibly delivered command.
+
 - For slow file copies, collect `cp --stats` and read `docs/copy-performance.md` before proposing another transport. Statistics are opt-in stderr JSON; stream bytes include retries/archive framing and exclude reused local bytes. Do not infer network bandwidth from in-pod copies or recommend gzip for already-compressed data without measurements.
 
 - For service health tied to a new detached launch, use `jobs ready <job-id> --probe ...`; the probe must check health and return the service’s inherited `OKDEV_JOB_ID`, not echo an expected ID supplied by the caller. Read `references/workflows.md` for the scoped stop/start/ready workflow. `jobs wait` still waits for completion; `--grep` remains the log-milestone path.
