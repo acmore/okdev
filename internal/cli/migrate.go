@@ -461,7 +461,10 @@ func renderMigrateTemplateFiles(cfgPath, templateRef string, meta *config.Templa
 		if strings.TrimSpace(renderedPath) == "" {
 			return nil, fmt.Errorf("template file path %q rendered empty", pathTemplate)
 		}
-		target := resolveInitScaffoldFilePath(cfgPath, renderedPath)
+		target, err := templateOutputPath(cfgPath, renderedPath, vars)
+		if err != nil {
+			return nil, err
+		}
 		raw, err := config.ResolveTemplateAssetFromDir(context.Background(), templateRef, assetRef, projectDir)
 		if err != nil {
 			return nil, fmt.Errorf("resolve template file %q: %w", assetRef, err)

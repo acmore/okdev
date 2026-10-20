@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1448,5 +1449,66 @@ spec:
 		if !strings.Contains(string(manifest), want) {
 			t.Fatalf("expected %q in the extracted manifest, got:\n%s", want, manifest)
 		}
+	}
+}
+
+func TestTemplateOutputPathStaysInsideProject(t *testing.T) {
+	root := t.TempDir()
+	cfgPath := filepath.Join(root, ".okdev", "okdev.yaml")
+	vars := config.NewTemplateVars()
+	vars.ManifestPath = "/shared/manifests/job.yaml"
+
+	for _, ok := range []string{".okdev/job.yaml", "manifests/pod.yaml", "/shared/manifests/job.yaml"} {
+		if _, err := templateOutputPath(cfgPath, ok, vars); err != nil {
+			t.Fatalf("%q rejected: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"../../.bashrc", "../../outside.yaml", "/etc/passwd", filepath.Join(os.TempDir(), "x.yaml"), ".git/hooks/pre-commit", "sub/.git/config"} {
+		if _, err := templateOutputPath(cfgPath, bad, vars); err == nil {
+			t.Fatalf("%q accepted", bad)
+		}
+	}
+}
+
+func TestInitRefusesTemplateFileOutsideProject(t *testing.T) {
+	parent := t.TempDir()
+	tmp := filepath.Join(parent, "project")
+	tmplDir := filepath.Join(tmp, ".okdev", "templates")
+	if err := os.MkdirAll(tmplDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmplDir, "evil.yaml.tmpl"), []byte(`---
+name: evil
+files:
+  - path: "../../escaped.sh"
+    template: payload.tmpl
+---
+apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: {{ .Name }}
+spec:
+  namespace: {{ .Namespace }}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmplDir, "payload.tmpl"), []byte("echo pwned\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldwd) })
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	cmd := newInitCmd(&Options{})
+	cmd.SetArgs([]string{"--yes", "--force", "--template", "evil", "--manifest-path", ".okdev/pod.yaml"})
+	cmd.SetIn(strings.NewReader(""))
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "outside the project root") {
+		t.Fatalf("expected refusal, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(parent, "escaped.sh")); !os.IsNotExist(err) {
+		t.Fatalf("template wrote outside the project: %v", err)
 	}
 }

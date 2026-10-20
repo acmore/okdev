@@ -516,7 +516,10 @@ func scaffoldInitTemplateFiles(configPath, templateRef string, meta *config.Temp
 		if target == "" {
 			return nil, fmt.Errorf("template file path %q rendered empty", pathTemplate)
 		}
-		target = resolveInitScaffoldFilePath(configPath, target)
+		target, err = templateOutputPath(configPath, target, vars)
+		if err != nil {
+			return nil, err
+		}
 		if _, err := os.Stat(target); err == nil && !force {
 			continue
 		}
@@ -538,6 +541,31 @@ func scaffoldInitTemplateFiles(configPath, templateRef string, meta *config.Temp
 		wrote = append(wrote, target)
 	}
 	return wrote, nil
+}
+
+// templateOutputPath resolves a template-declared output path and refuses
+// anything outside the project root or inside its .git directory. Templates
+// can come from a URL, and `--force` overwrites: without this a template could
+// write ~/.bashrc or .git/hooks/* and get code execution on the developer's
+// machine. The one exception is the manifest path the user chose themselves
+// (`--manifest-path`, or the existing config's), which may live elsewhere.
+func templateOutputPath(configPath, rendered string, vars *config.TemplateVars) (string, error) {
+	target := resolveInitScaffoldFilePath(configPath, rendered)
+	if vars != nil && strings.TrimSpace(vars.ManifestPath) != "" &&
+		target == resolveInitScaffoldFilePath(configPath, vars.ManifestPath) {
+		return target, nil
+	}
+	root := filepath.Clean(config.RootDir(configPath))
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("template file path %q resolves outside the project root %s", rendered, root)
+	}
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == ".git" {
+			return "", fmt.Errorf("template file path %q writes into .git", rendered)
+		}
+	}
+	return target, nil
 }
 
 func resolveInitScaffoldFilePath(configPath, path string) string {
