@@ -80,6 +80,9 @@ func TestNormalizeUpWaitCancellation(t *testing.T) {
 
 func TestUpValidateUsesResolvedOptionsContext(t *testing.T) {
 	tmp := t.TempDir()
+	// Run from the project, as users do: the default sync root "." is the
+	// working directory, and a root outside the project needs approval.
+	t.Chdir(tmp)
 	cfgPath := filepath.Join(tmp, ".okdev.yaml")
 	if err := os.WriteFile(cfgPath, []byte(""+
 		"apiVersion: okdev.io/v1alpha1\n"+

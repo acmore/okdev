@@ -162,6 +162,11 @@ func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, e
 	ui.stepDone("config", cc.cfgPath)
 	ui.stepDone("session", cc.sessionName)
 	ui.stepDone("namespace", cc.namespace)
+	if !flags.dryRun {
+		if err := requireConfigTrust(cmd, cc.cfg, cc.cfgPath, allCapabilityKinds...); err != nil {
+			return nil, err
+		}
+	}
 	// Typo'd config fields are silently ignored by the non-strict parser;
 	// surface them here at up time — the moment their absence bites (#172).
 	if raw, err := os.ReadFile(cc.cfgPath); err == nil {

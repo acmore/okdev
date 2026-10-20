@@ -18,6 +18,9 @@ func newPortsCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := requireConfigTrust(cmd, cc.cfg, cc.cfgPath, capReverseForward); err != nil {
+				return err
+			}
 			if err := ensureExistingSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 				return err
 			}

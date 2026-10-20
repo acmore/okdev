@@ -108,6 +108,26 @@ cat "$CFG_PATH"
 
 echo "hello from okdev e2e" >"$SYNC_DIR/hello.txt"
 
+# forwardAgent hands the pod this machine's SSH agent, so the config needs
+# explicit approval: non-interactively, up refuses before creating anything
+# and names `okdev trust`.
+echo "Verifying unapproved local capabilities are refused"
+set +e
+UNTRUSTED_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m </dev/null 2>&1)
+UNTRUSTED_STATUS=$?
+set -e
+if [[ "$UNTRUSTED_STATUS" -eq 0 || "$UNTRUSTED_OUTPUT" != *"forward this machine's SSH agent into the pod"* || "$UNTRUSTED_OUTPUT" != *"okdev trust"* ]]; then
+  echo "ERROR: expected up to refuse an unapproved config, got status=$UNTRUSTED_STATUS:" >&2
+  echo "$UNTRUSTED_OUTPUT" >&2
+  exit 1
+fi
+if [[ -n "$(session_attachable_pod_names "$NAMESPACE" "$SESSION_NAME")" ]]; then
+  echo "ERROR: refused up must not create the workload" >&2
+  exit 1
+fi
+"$OKDEV_BIN" --config "$CFG_PATH" trust --yes
+echo "config approval gate verified"
+
 echo "Starting kind smoke session"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m
 

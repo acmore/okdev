@@ -70,6 +70,16 @@ func newSSHCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Agent forwarding is the config's request only when no flag
+			// decided it: --forward-agent is the user's own choice, and
+			// --no-forward-agent turns it off.
+			trustKinds := []capabilityKind{capReverseForward}
+			if !forwardAgent && !noForwardAgent {
+				trustKinds = append(trustKinds, capAgentForward)
+			}
+			if err := requireConfigTrust(cmd, cc.cfg, cc.cfgPath, trustKinds...); err != nil {
+				return err
+			}
 			stopOwnership := startTransientStatus(errOut, "Verifying session access")
 			if err := ensureExistingSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 				stopOwnership()

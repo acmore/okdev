@@ -68,6 +68,8 @@ spec:
 
 ## `spec.agents`
 
+> Credential uploads (`auth.localPath`, including the catalog default) reach this machine, so `okdev up` asks before staging them the first time; see `okdev trust` in the command reference. The same applies to sync roots outside the project, reverse `ports`, and `ssh.forwardAgent`.
+
 Configures supported coding-agent CLIs for the session container.
 
 | Field | Type | Default | Description |

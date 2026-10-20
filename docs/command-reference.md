@@ -490,6 +490,14 @@ agents can react without launching a diagnostic chain on every blip:
 - Purely a wait: it does not start or repair sync. It fails fast with a state-accurate report: "not running" when the background process is gone (start it with `okdev sync`), or "running but unhealthy (…)" when the process is alive but the channel is broken (repair with `okdev sync`, which self-heals, or `okdev sync --reset`).
 - Prints pending-byte progress while waiting; exits non-zero if convergence is not reached within `--timeout`.
 
+### `okdev trust [--yes]`
+
+- Lists what the config can do **on this machine beyond its project directory** and approves it: sync roots outside the project (bidirectional, so the pod can read and write them), credential files uploaded into the pod (`spec.agents[].auth`), reverse port forwards (the pod reaches this machine's `localhost`), and SSH agent forwarding (`ssh.forwardAgent`).
+- Why: a config usually lives in the repository it describes, so whoever can change the repository can change it. Everything else it controls runs in the cluster; these few fields reach the developer's own machine and credentials, so they need the developer's explicit approval.
+- `up`, `restart`, `sync`, `ssh` and `ports` check the capabilities they actually use. On a terminal they list everything the config can do and ask once; without a terminal they refuse before doing anything and name `okdev trust --config <path>`. `--yes` approves non-interactively, which is the explicit opt-in for CI.
+- Approval is recorded per config path in `~/.okdev/trusted-configs.json`. Unrelated edits keep it; a capability added later asks again where it is used. A config with none of these capabilities never asks.
+- Sync roots are resolved like sync resolves them, relative to the working directory, so running from outside the project (where the default `.` is a different directory) is caught before anything syncs it.
+
 ### `okdev upgrade`
 
 - Checks the latest GitHub release and upgrades the `okdev` binary in place.

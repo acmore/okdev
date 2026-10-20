@@ -66,6 +66,10 @@ pods, and sync re-bootstraps against the new workload.`,
 			ui.stepDone("config", cc.cfgPath)
 			ui.stepDone("session", cc.sessionName)
 			ui.stepDone("namespace", cc.namespace)
+			// Before anything is deleted: the up that follows would refuse.
+			if err := requireConfigTrust(cmd, cc.cfg, cc.cfgPath, allCapabilityKinds...); err != nil {
+				return err
+			}
 			runtime, err := sessionRuntimeForExisting(cmd.Context(), cc.cfg, cc.cfgPath, cc.namespace, cc.sessionName, cc.kube)
 			if err != nil {
 				return err
@@ -138,6 +142,9 @@ func runRestartPods(cmd *cobra.Command, opts *Options, podNames []string, yes bo
 	ui.stepDone("config", cc.cfgPath)
 	ui.stepDone("session", cc.sessionName)
 	ui.stepDone("namespace", cc.namespace)
+	if err := requireConfigTrust(cmd, cc.cfg, cc.cfgPath, allCapabilityKinds...); err != nil {
+		return err
+	}
 	if err := ensureSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 		return err
 	}
