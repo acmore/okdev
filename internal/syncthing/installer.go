@@ -40,6 +40,11 @@ func EnsureBinary(ctx context.Context, version string, autoInstall bool) (string
 	if version == "" {
 		version = config.DefaultSyncthingVersion
 	}
+	// Re-checked here, not only in config validation: the version is spliced
+	// into both the download URL and the install path.
+	if err := config.ValidateSyncthingVersion(version); err != nil {
+		return "", fmt.Errorf("syncthing version %w", err)
+	}
 
 	platform, archiveNames, err := platformArchiveNames(version)
 	if err != nil {

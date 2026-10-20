@@ -336,7 +336,7 @@ spec:
 | `engine` | `string` | — | Sync engine (currently only `syncthing`) |
 | `paths` | `[]entry` | — | Sync mappings. Each entry is either the compact string `local:remote`, or a mapping `{local, remote, direction}` with an optional per-path `direction`. Multiple mappings are allowed as long as their roots are disjoint on both sides (equal or nested roots are rejected) |
 | `paths[].direction` | `string` | `bi` | Sync direction for this mapping's folder: `bi` (bidirectional), `up` (local is the authority: local sendonly, pod receiveonly), `down` (pod is the authority: pod sendonly, local receiveonly) |
-| `syncthing.version` | `string` | `v1.29.7` | Local Syncthing binary version |
+| `syncthing.version` | `string` | `v1.29.7` | Local Syncthing binary version; must be a Syncthing release tag (`vX.Y.Z` or `vX.Y.Z-rc.N`) |
 | `syncthing.autoInstall` | `bool` | `true` | Auto-install local Syncthing |
 | `syncthing.image` | `string` | `ghcr.io/acmore/okdev:<version>` | Sidecar image (fallback: `edge`) |
 | `syncthing.rescanIntervalSeconds` | `int` | `300` | Fallback full rescan interval; `0` disables periodic rescans |
@@ -344,7 +344,7 @@ spec:
 | `syncthing.compression` | `bool` | `false` | Use Syncthing `always` compression for peer connections instead of the default `metadata` mode |
 | `syncthing.versioningDays` | `int` | `30` | Keep files overwritten or deleted by sync in `.stversions` for this many days (staggered versioning, both sides); `0` disables |
 
-**Validation:** `engine` must be `syncthing`; each `paths[]` entry must have non-empty local and remote; `direction` must be `bi`, `up`, or `down`; mapping roots must be pairwise disjoint on both the local and the remote side (lexical check); `versioningDays` must be `>= 0`.
+**Validation:** `engine` must be `syncthing`; each `paths[]` entry must have non-empty local and remote; `direction` must be `bi`, `up`, or `down`; mapping roots must be pairwise disjoint on both the local and the remote side (lexical check); `versioningDays` must be `>= 0`; `syncthing.version` must be a release tag.
 
 **Multiple mappings.** Each mapping becomes its own syncthing folder with its own direction. The first entry is the **primary** mapping: it keeps the legacy folder identity (existing sessions upgrade in place), it is the folder shared to mesh receiver pods, and it is the only remote cleared by `okdev up --reset-workspace` / `okdev sync reset-remote` — additional mappings (typically datasets or results) are never touched by resets and stay local↔hub only. Removing a mapping from the config removes its folder from both syncthing instances on the next `okdev up`. A typical split:
 
