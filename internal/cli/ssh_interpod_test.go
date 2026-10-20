@@ -37,7 +37,7 @@ func TestBuildInterPodSSHConfigIncludesSessionPods(t *testing.T) {
 	cfg := buildInterPodSSHConfig("root", []interPodSSHEndpoint{
 		{PodName: "trainer-master-0", PodIP: "10.0.0.11"},
 		{PodName: "trainer-worker-0", PodIP: "10.0.0.12"},
-	})
+	}, false)
 
 	for _, want := range []string{
 		"Host trainer-master-0",
@@ -62,7 +62,7 @@ func TestConfigureInterPodSSHOnPodsInstallsKeysAndConfigOnAllPods(t *testing.T) 
 		{PodName: "trainer-worker-1", PodIP: "10.0.0.13"},
 	}
 
-	err := configureInterPodSSHOnPods(context.Background(), client, "default", "pytorch", endpoints, "PRIVATE KEY", "PUBLIC KEY", "root")
+	err := configureInterPodSSHOnPods(context.Background(), client, "default", "pytorch", endpoints, "PRIVATE KEY", "PUBLIC KEY", "root", false)
 	if err != nil {
 		t.Fatalf("configureInterPodSSHOnPods: %v", err)
 	}
@@ -96,5 +96,78 @@ func TestConfigureInterPodSSHOnPodsInstallsKeysAndConfigOnAllPods(t *testing.T) 
 				t.Fatalf("expected setup script for %s to contain %q, got:\n%s", call.pod, want, call.script)
 			}
 		}
+	}
+}
+
+const testHostKeyA = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+const testHostKeyB = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB7EX9Bd3RCSaxHdWSkb4aMH/LkUBnI1UrgZKNNA+hj5"
+
+type fakeHostKeyProbe struct {
+	out map[string]string
+}
+
+func (f fakeHostKeyProbe) ExecShInContainer(_ context.Context, _, pod, _, script string) ([]byte, error) {
+	if !strings.Contains(script, "--ensure-host-key") {
+		return nil, nil
+	}
+	return []byte(f.out[pod]), nil
+}
+
+func TestBuildInterPodSSHConfigPinsHostKeysByPodName(t *testing.T) {
+	cfg := buildInterPodSSHConfig("root", []interPodSSHEndpoint{
+		{PodName: "trainer-master-0", PodIP: "10.0.0.11"},
+	}, true)
+	for _, want := range []string{
+		"StrictHostKeyChecking yes",
+		"UserKnownHostsFile ~/.ssh/okdev_interpod_known_hosts",
+		// Keyed by pod name: an IP a recreated or foreign pod now holds
+		// must not inherit the old pod's trust.
+		"HostKeyAlias trainer-master-0",
+	} {
+		if !strings.Contains(cfg, want) {
+			t.Fatalf("pinned config missing %q:\n%s", want, cfg)
+		}
+	}
+	if strings.Contains(cfg, "StrictHostKeyChecking no") || strings.Contains(cfg, "/dev/null") {
+		t.Fatalf("pinned config must not disable host key checks:\n%s", cfg)
+	}
+}
+
+func TestCollectInterPodHostKeys(t *testing.T) {
+	endpoints := []interPodSSHEndpoint{{PodName: "a"}, {PodName: "b"}}
+	pinned, err := collectInterPodHostKeys(context.Background(), fakeHostKeyProbe{out: map[string]string{
+		"a": testHostKeyA + "\n", "b": testHostKeyB + "\n",
+	}}, "ns", "dev", endpoints)
+	if err != nil || !pinned || endpoints[0].HostKey != testHostKeyA || endpoints[1].HostKey != testHostKeyB {
+		t.Fatalf("expected both keys pinned, got pinned=%v err=%v %+v", pinned, err, endpoints)
+	}
+	if got := buildInterPodKnownHosts(endpoints); got != "a "+testHostKeyA+"\nb "+testHostKeyB+"\n" {
+		t.Fatalf("unexpected known_hosts:\n%s", got)
+	}
+
+	// One sidecar predating pinning: the session falls back as a whole.
+	pinned, err = collectInterPodHostKeys(context.Background(), fakeHostKeyProbe{out: map[string]string{
+		"a": testHostKeyA, "b": hostKeyUnsupportedToken + "\n",
+	}}, "ns", "dev", []interPodSSHEndpoint{{PodName: "a"}, {PodName: "b"}})
+	if err != nil || pinned {
+		t.Fatalf("expected legacy fallback, got pinned=%v err=%v", pinned, err)
+	}
+
+	// Anything else is an error, never a silent downgrade.
+	if _, err := collectInterPodHostKeys(context.Background(), fakeHostKeyProbe{out: map[string]string{
+		"a": "garbage",
+	}}, "ns", "dev", []interPodSSHEndpoint{{PodName: "a"}}); err == nil {
+		t.Fatal("unparseable host key must fail setup")
+	}
+}
+
+func TestInterPodSetupScriptWritesOrClearsKnownHosts(t *testing.T) {
+	pinned := buildInterPodSSHSetupScript("PUB", "CFG", "a "+testHostKeyA+"\n")
+	if !strings.Contains(pinned, "okdev_interpod_known_hosts") || !strings.Contains(pinned, testHostKeyA) {
+		t.Fatalf("pinned setup must write known_hosts:\n%s", pinned)
+	}
+	legacy := buildInterPodSSHSetupScript("PUB", "CFG", "")
+	if !strings.Contains(legacy, `rm -f "$HOME/.ssh/okdev_interpod_known_hosts"`) {
+		t.Fatalf("legacy setup must remove stale pinned keys:\n%s", legacy)
 	}
 }

@@ -338,3 +338,96 @@ func TestFanoutIntegrationBadKeyFailsBeforeAnyRun(t *testing.T) {
 		t.Fatalf("expected key error on stderr, got %q", stderr)
 	}
 }
+
+// startTestSSHDWithHostKey is startTestSSHD with a known host key, so tests
+// can pin (or deliberately mis-pin) it.
+func startTestSSHDWithHostKey(t *testing.T, pub gossh.PublicKey, hostKey gossh.Signer) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := newServer(ln.Addr().String(), "/bin/sh", []glssh.PublicKey{pub})
+	srv.AddHostKey(hostKey)
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+func writeKnownHosts(t *testing.T, dir string, entries map[string]gossh.PublicKey) string {
+	t.Helper()
+	var b strings.Builder
+	for pod, key := range entries {
+		b.WriteString(pod + " " + string(gossh.MarshalAuthorizedKey(key)))
+	}
+	path := filepath.Join(dir, "known_hosts")
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestFanoutIntegrationPinsHostKeys(t *testing.T) {
+	dir := t.TempDir()
+	keyPath, pub := newTestKeypair(t, dir)
+	hostKey, err := loadOrCreateHostKey(filepath.Join(dir, "host_key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	impostorKey, err := loadOrCreateHostKey(filepath.Join(dir, "impostor_key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := startTestSSHDWithHostKey(t, pub, hostKey)
+	marker := filepath.Join(dir, "ran")
+
+	req := baseRequest(keyPath, []fanout.Target{
+		{Pod: "pod-good", Addr: "127.0.0.1"},
+		{Pod: "pod-wrong", Addr: "127.0.0.1"},
+		{Pod: "pod-unknown", Addr: "127.0.0.1"},
+	})
+	req.Port = port
+	req.Retries = 2
+	req.Command = "echo ran >>" + marker
+	req.KnownHostsPath = writeKnownHosts(t, dir, map[string]gossh.PublicKey{
+		"pod-good":  hostKey.PublicKey(),
+		"pod-wrong": impostorKey.PublicKey(),
+	})
+
+	stream, stderr, code := runFanoutRequest(t, req)
+	if code != 0 {
+		t.Fatalf("runFanout exit %d, stderr: %s", code, stderr)
+	}
+	byPod := resultByPod(stream)
+	if r := byPod["pod-good"]; r.Status != fanout.StatusResponded || r.Exit != 0 {
+		t.Fatalf("pinned matching key must connect: %+v", r)
+	}
+	if r := byPod["pod-wrong"]; r.Status != fanout.StatusError || !strings.Contains(r.Error, "host key verification failed") || r.Attempts != 1 {
+		t.Fatalf("mismatched host key must fail once, without retry: %+v", r)
+	}
+	if r := byPod["pod-unknown"]; r.Status != fanout.StatusError || !strings.Contains(r.Error, "no pinned host key") {
+		t.Fatalf("unpinned pod must be refused: %+v", r)
+	}
+	ran, _ := os.ReadFile(marker)
+	if got := strings.Count(string(ran), "ran"); got != 1 {
+		t.Fatalf("command must run only on the verified pod, ran %d times", got)
+	}
+}
+
+func TestFanoutIntegrationWithoutKnownHostsFileStaysCompatible(t *testing.T) {
+	// Sessions set up before host-key pinning have no known_hosts file.
+	dir := t.TempDir()
+	keyPath, pub := newTestKeypair(t, dir)
+	port := startTestSSHD(t, pub)
+	req := baseRequest(keyPath, []fanout.Target{{Pod: "pod-a", Addr: "127.0.0.1"}})
+	req.Port = port
+	req.Command = "true"
+	req.KnownHostsPath = filepath.Join(dir, "missing_known_hosts")
+	stream, stderr, code := runFanoutRequest(t, req)
+	if code != 0 {
+		t.Fatalf("runFanout exit %d, stderr: %s", code, stderr)
+	}
+	if r := resultByPod(stream)["pod-a"]; r.Status != fanout.StatusResponded {
+		t.Fatalf("legacy session must keep working: %+v", r)
+	}
+}
