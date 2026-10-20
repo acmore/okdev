@@ -108,7 +108,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 			}
 			// Cache a live snapshot per session so a later externally-reclaimed
 			// session can still explain what its pods looked like (#166).
-			captureSessionLastSeen(views, cc.opts.Context)
+			captureSessionLastSeen(ctx, cc.kube, views, cc.opts.Context)
 			if details {
 				if all || len(views) != 1 {
 					return fmt.Errorf("--details requires a single session")
@@ -140,12 +140,19 @@ func newStatusCmd(opts *Options) *cobra.Command {
 					// PreviousRunEnd is present only while this run is the one
 					// that replaced an ended run (#213).
 					PreviousRunEnd *session.RunEnd `json:"previousRunEnd,omitempty"`
+					// PreviousPodEnd explains pods of this run that ended
+					// and were replaced by their controller (#325).
+					PreviousPodEnd *session.PodReplacement `json:"previousPodEnd,omitempty"`
 				}
 				rows := make([]statusRow, 0, len(views))
 				for _, view := range views {
 					var previousRunEnd *session.RunEnd
 					if record, ok := currentSessionPreviousRunEnd(view.Session); ok {
 						previousRunEnd = &record
+					}
+					var previousPodEnd *session.PodReplacement
+					if record, ok := currentSessionPodReplacement(view.Session); ok {
+						previousPodEnd = &record
 					}
 					rows = append(rows, statusRow{
 						Replicas:       replicas,
@@ -160,6 +167,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 						Reason:         view.Reason,
 						PodCount:       view.PodCount,
 						PreviousRunEnd: previousRunEnd,
+						PreviousPodEnd: previousPodEnd,
 					})
 				}
 				return outputJSON(cmd.OutOrStdout(), rows)
@@ -223,6 +231,12 @@ func newStatusCmd(opts *Options) *cobra.Command {
 				if record, ok := currentSessionPreviousRunEnd(views[0].Session); ok {
 					fmt.Fprintln(cmd.OutOrStdout(), "")
 					printPreviousRunEnd(cmd.OutOrStdout(), record)
+				}
+				// A controller replacement inside the run looks like a
+				// fresh pod that never ran anything (#325).
+				if record, ok := currentSessionPodReplacement(views[0].Session); ok {
+					fmt.Fprintln(cmd.OutOrStdout(), "")
+					printPodReplacement(cmd.OutOrStdout(), record)
 				}
 			}
 			return nil

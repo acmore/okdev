@@ -13,9 +13,10 @@ import (
 )
 
 // captureSessionLastSeen persists a live pod snapshot for every viewed
-// session that okdev tracks locally (has session.json). Best-effort: status
-// output must not fail because a cache write did.
-func captureSessionLastSeen(views []sessionView, contexts ...string) {
+// session that okdev tracks locally (has session.json), recording any in-run
+// pod replacement the refresh would otherwise erase (#325). Best-effort:
+// status output must not fail because a cache write did.
+func captureSessionLastSeen(ctx context.Context, k objectEventLister, views []sessionView, contexts ...string) {
 	for _, view := range views {
 		if len(view.Pods) == 0 {
 			continue
@@ -28,13 +29,11 @@ func captureSessionLastSeen(views []sessionView, contexts ...string) {
 			(info.Owner != "" && view.Owner != "" && info.Owner != view.Owner) {
 			continue
 		}
-		snapshot := buildLastSeenSnapshot(info, view.Namespace, view.Pods)
+		kubeContext := ""
 		if len(contexts) > 0 {
-			snapshot.Context = contexts[0]
+			kubeContext = contexts[0]
 		}
-		if err := session.SaveLastSeen(view.Session, snapshot); err != nil {
-			slog.Debug("failed to save last-seen snapshot", "session", view.Session, "error", err)
-		}
+		observeSessionPods(ctx, k, info, view.Namespace, view.Pods, kubeContext)
 	}
 }
 
@@ -56,6 +55,8 @@ func buildLastSeenSnapshot(info session.Info, namespace string, pods []kube.PodS
 	for _, pod := range pods {
 		entry := session.LastSeenPod{
 			Name:     pod.Name,
+			UID:      pod.UID,
+			Revision: podTemplateRevision(pod.Labels),
 			Phase:    pod.Phase,
 			Ready:    pod.Ready,
 			Reason:   pod.Reason,

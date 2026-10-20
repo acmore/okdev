@@ -1208,6 +1208,11 @@ func persistSessionState(state *upState) error {
 	if err := session.ClearLastSeen(state.command.sessionName); err != nil {
 		slog.Debug("failed to clear last-seen snapshot", "session", state.command.sessionName, "error", err)
 	}
+	// An intentional up (including restart --pod) supersedes any in-run
+	// pod replacement report (#325).
+	if err := session.ClearPodReplacement(state.command.sessionName); err != nil {
+		slog.Debug("failed to clear pod-replacement record", "session", state.command.sessionName, "error", err)
+	}
 	apiVersion, kind, workloadName := "", "", state.workloadName
 	if provider, ok := state.runtime.(workload.RefProvider); ok {
 		if refAPIVersion, refKind, refName, refErr := provider.WorkloadRef(); refErr == nil {
