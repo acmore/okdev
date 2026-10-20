@@ -692,6 +692,37 @@ echo "File copy (okdev cp) tests completed"
 
 echo "Capturing current pod identity before spec drift"
 ATTACHABLE_POD_NAME=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
+
+# The session pod must satisfy PodSecurity baseline (no privileged sidecar).
+# Submit its spec as a server-side dry-run into a throwaway namespace that
+# enforces baseline: the PodSecurity admission judges exactly this pod,
+# independent of anything else living in $NAMESPACE.
+echo "Verifying session pod satisfies PodSecurity baseline"
+PSA_NS="okdev-psa-$(date +%s)-$RANDOM"
+kubectl create namespace "$PSA_NS" >/dev/null
+kubectl label namespace "$PSA_NS" pod-security.kubernetes.io/enforce=baseline >/dev/null
+for _ in $(seq 1 30); do
+  kubectl -n "$PSA_NS" get serviceaccount default >/dev/null 2>&1 && break
+  sleep 1
+done
+set +e
+PSA_REPORT=$(kubectl -n "$NAMESPACE" get pod "$ATTACHABLE_POD_NAME" -o json | python3 -c '
+import json, sys
+pod = json.load(sys.stdin)
+spec = pod["spec"]
+for key in ("nodeName", "serviceAccountName", "serviceAccount"):
+    spec.pop(key, None)
+print(json.dumps({"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "psa-probe"}, "spec": spec}))
+' | kubectl -n "$PSA_NS" create --dry-run=server -f - 2>&1)
+PSA_STATUS=$?
+set -e
+kubectl delete namespace "$PSA_NS" --wait=false >/dev/null
+if [[ "$PSA_STATUS" -ne 0 ]]; then
+  echo "ERROR: session pod violates PodSecurity baseline:" >&2
+  echo "$PSA_REPORT" >&2
+  exit 1
+fi
+echo "PodSecurity baseline verified"
 ORIGINAL_POD_UID=$(kubectl -n "$NAMESPACE" get pod "$ATTACHABLE_POD_NAME" -o jsonpath='{.metadata.uid}')
 echo "Original pod UID: $ORIGINAL_POD_UID"
 
