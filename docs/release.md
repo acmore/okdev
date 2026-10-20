@@ -25,6 +25,12 @@ git push origin v0.1.0
 
 3. GitHub Actions `Release` workflow builds binaries for `linux/amd64`, `linux/arm64`, `darwin/amd64`, and `darwin/arm64`.
 4. Workflow publishes `okdev_<os>_<arch>.tar.gz` assets plus `checksums.txt`.
+5. Workflow signs a GitHub build provenance attestation for every archive (Sigstore keyless, `actions/attest-build-provenance`). `okdev upgrade` refuses archives without one; anyone can check an archive with:
+
+```bash
+gh attestation verify okdev_linux_amd64.tar.gz --repo acmore/okdev \
+  --signer-workflow acmore/okdev/.github/workflows/release.yml
+```
 
 ### Prereleases
 
@@ -51,11 +57,15 @@ curl -fsSL https://raw.githubusercontent.com/acmore/okdev/main/scripts/install.s
 
 Default sidecar image resolution uses the running `okdev` binary version, with `edge` fallback for dev builds.
 
+The sidecar image build verifies Syncthing's clearsigned `sha256sum.txt.asc` against Syncthing's release keys pinned in `internal/syncthing/release-keys.asc` (the same keys the CLI uses when it auto-installs Syncthing locally) before trusting any checksum.
+
 ## Install From Release
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/acmore/okdev/main/scripts/install.sh | sh
 ```
+
+The installer verifies the archive against `checksums.txt`, and, when the GitHub CLI is installed and logged in, verifies the build provenance attestation too (an attestation that exists but does not verify aborts the install).
 
 ### Install Specific Version
 

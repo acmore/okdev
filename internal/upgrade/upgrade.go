@@ -4,9 +4,11 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -18,6 +20,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sigstore/sigstore-go/pkg/root"
 )
 
 const (
@@ -173,6 +177,16 @@ type Upgrader struct {
 	goos         string
 	goarch       string
 	binPath      string
+	version      string
+	apiBase      string
+	trustedRoot  func() (root.TrustedMaterial, error)
+
+	// AllowUnattested installs a release that has no build-provenance
+	// attestation at all (one published before attestations existed). It
+	// never overrides an attestation that is present but fails to verify.
+	AllowUnattested bool
+	// Warn receives the notice printed when AllowUnattested is used.
+	Warn io.Writer
 }
 
 func NewUpgrader(version string) (*Upgrader, error) {
@@ -181,11 +195,15 @@ func NewUpgrader(version string) (*Upgrader, error) {
 		return nil, fmt.Errorf("resolve upgrade binary path: %w", err)
 	}
 	return &Upgrader{
-		assetBaseURL: fmt.Sprintf("https://github.com/acmore/okdev/releases/download/%s/", version),
+		assetBaseURL: fmt.Sprintf("https://github.com/%s/releases/download/%s/", releaseRepo, version),
 		httpClient:   &http.Client{Timeout: 60 * time.Second},
 		goos:         runtime.GOOS,
 		goarch:       runtime.GOARCH,
 		binPath:      binPath,
+		version:      version,
+		apiBase:      defaultAPIBase,
+		trustedRoot:  publicGoodTrustedRoot,
+		Warn:         io.Discard,
 	}, nil
 }
 
@@ -211,11 +229,39 @@ func (u *Upgrader) Upgrade() error {
 	if hex.EncodeToString(actualHash[:]) != expectedHash {
 		return fmt.Errorf("checksum mismatch for %s", assetName)
 	}
+	if err := u.verifyProvenance(context.Background(), actualHash[:]); err != nil {
+		if !errors.Is(err, ErrNoAttestation) || !u.AllowUnattested {
+			return fmt.Errorf("verify release provenance for %s: %w", assetName, err)
+		}
+		fmt.Fprintf(u.Warn, "warning: %s has no build provenance attestation; installing it on checksum alone because --allow-unattested was given\n", assetName)
+	}
 	bin, err := extractBinary(tarGzData)
 	if err != nil {
 		return fmt.Errorf("extract binary: %w", err)
 	}
 	return atomicReplace(u.binPath, bin)
+}
+
+// verifyProvenance requires a Sigstore-verified build-provenance
+// attestation for the archive digest, signed by this repository's release
+// workflow for exactly this tag.
+func (u *Upgrader) verifyProvenance(ctx context.Context, digest []byte) error {
+	bundles, err := fetchAttestationBundles(ctx, u.httpClient, u.apiBase, releaseRepo, hex.EncodeToString(digest))
+	if err != nil {
+		return err
+	}
+	if u.trustedRoot == nil {
+		return errors.New("no Sigstore trusted root configured")
+	}
+	trusted, err := u.trustedRoot()
+	if err != nil {
+		return err
+	}
+	identity, err := releaseIdentity(u.version)
+	if err != nil {
+		return err
+	}
+	return verifyAttestationBundles(trusted, bundles, digest, identity)
 }
 
 func (u *Upgrader) fetchChecksums() (map[string]string, error) {

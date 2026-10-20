@@ -6,6 +6,8 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sigstore/sigstore-go/pkg/root"
 )
 
 func TestLatestVersionFetchesFromGitHub(t *testing.T) {
@@ -97,28 +101,31 @@ func TestLatestVersionUsesCache(t *testing.T) {
 	}
 }
 
-func TestDownloadAndReplace(t *testing.T) {
-	// Create a fake binary tarball.
+// fakeReleaseServer serves a release archive, its checksums, and the
+// attestation API (attestations is the raw API body; "" means 404).
+func fakeReleaseServer(t *testing.T, attestations string) (*httptest.Server, []byte) {
+	t.Helper()
 	var tarBuf bytes.Buffer
 	tw := tar.NewWriter(&tarBuf)
 	content := []byte("#!/bin/sh\necho okdev-new")
-	hdr := &tar.Header{Name: "okdev", Size: int64(len(content)), Mode: 0o755}
-	tw.WriteHeader(hdr)
+	tw.WriteHeader(&tar.Header{Name: "okdev", Size: int64(len(content)), Mode: 0o755})
 	tw.Write(content)
 	tw.Close()
-
 	var gzBuf bytes.Buffer
 	gw := gzip.NewWriter(&gzBuf)
 	gw.Write(tarBuf.Bytes())
 	gw.Close()
-
 	tarGzBytes := gzBuf.Bytes()
 	checksum := sha256.Sum256(tarGzBytes)
-	checksumHex := hex.EncodeToString(checksum[:])
-	checksumBody := checksumHex + "  okdev_linux_amd64.tar.gz\n"
-
+	checksumBody := hex.EncodeToString(checksum[:]) + "  okdev_linux_amd64.tar.gz\n"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case strings.Contains(r.URL.Path, "/attestations/sha256:"+hex.EncodeToString(checksum[:])):
+			if attestations == "" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Write([]byte(attestations))
 		case strings.HasSuffix(r.URL.Path, ".tar.gz"):
 			w.Write(tarGzBytes)
 		case strings.HasSuffix(r.URL.Path, "checksums.txt"):
@@ -127,26 +134,80 @@ func TestDownloadAndReplace(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
+	return server, content
+}
 
-	binDir := t.TempDir()
-	binPath := filepath.Join(binDir, "okdev")
+func newTestUpgrader(t *testing.T, server *httptest.Server) (*Upgrader, string) {
+	t.Helper()
+	binPath := filepath.Join(t.TempDir(), "okdev")
 	os.WriteFile(binPath, []byte("old"), 0o755)
-
-	u := &Upgrader{
+	trusted := func() (root.TrustedMaterial, error) {
+		data, err := os.ReadFile("testdata/sigstore-public-good-trusted-root.json")
+		if err != nil {
+			return nil, err
+		}
+		return root.NewTrustedRootFromJSON(data)
+	}
+	return &Upgrader{
 		assetBaseURL: server.URL + "/",
 		httpClient:   server.Client(),
 		goos:         "linux",
 		goarch:       "amd64",
 		binPath:      binPath,
+		version:      "v9.9.9",
+		apiBase:      server.URL,
+		trustedRoot:  trusted,
+		Warn:         io.Discard,
+	}, binPath
+}
+
+func TestUpgradeRefusesReleaseWithoutAttestation(t *testing.T) {
+	server, _ := fakeReleaseServer(t, "")
+	u, binPath := newTestUpgrader(t, server)
+	if err := u.Upgrade(); err == nil || !errors.Is(err, ErrNoAttestation) {
+		t.Fatalf("expected ErrNoAttestation, got %v", err)
 	}
-	err := u.Upgrade()
+	if got, _ := os.ReadFile(binPath); string(got) != "old" {
+		t.Fatal("binary replaced without provenance")
+	}
+}
+
+func TestUpgradeRefusesUnverifiableAttestationEvenWhenAllowed(t *testing.T) {
+	// An attestation exists but is not okdev's (here: a genuine cli/cli
+	// bundle for another digest). --allow-unattested must not bypass it.
+	bundle, err := os.ReadFile("testdata/gh-cli-provenance-attestation.json")
 	if err != nil {
+		t.Fatal(err)
+	}
+	server, _ := fakeReleaseServer(t, `{"attestations":[{"bundle":`+string(bundle)+`}]}`)
+	u, binPath := newTestUpgrader(t, server)
+	u.AllowUnattested = true
+	if err := u.Upgrade(); err == nil || errors.Is(err, ErrNoAttestation) {
+		t.Fatalf("expected a verification failure, got %v", err)
+	}
+	if got, _ := os.ReadFile(binPath); string(got) != "old" {
+		t.Fatal("binary replaced despite a failed verification")
+	}
+}
+
+func TestDownloadAndReplace(t *testing.T) {
+	// A release predating attestations installs only with the explicit
+	// opt-out, and says so.
+	server, content := fakeReleaseServer(t, "")
+	u, binPath := newTestUpgrader(t, server)
+	u.AllowUnattested = true
+	var warn bytes.Buffer
+	u.Warn = &warn
+	if err := u.Upgrade(); err != nil {
 		t.Fatalf("Upgrade: %v", err)
 	}
 	got, _ := os.ReadFile(binPath)
 	if string(got) != string(content) {
 		t.Fatalf("expected new binary content, got %q", string(got))
+	}
+	if !strings.Contains(warn.String(), "no build provenance attestation") {
+		t.Fatalf("expected an unattested warning, got %q", warn.String())
 	}
 }
 

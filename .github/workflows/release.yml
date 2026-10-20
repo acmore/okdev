@@ -72,6 +72,11 @@ jobs:
     needs: build
     permissions:
       contents: write
+      # Keyless Sigstore signing of the build provenance: `okdev upgrade`
+      # refuses an archive unless it carries an attestation signed by this
+      # workflow for this tag.
+      id-token: write
+      attestations: write
     steps:
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
@@ -84,6 +89,11 @@ jobs:
         run: |
           cd dist
           sha256sum okdev_*.tar.gz > checksums.txt
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/okdev_*.tar.gz
 
       - name: Publish GitHub release assets
         uses: softprops/action-gh-release@v2
