@@ -2060,7 +2060,7 @@ func (c *Client) CopyFromPodInContainerVerifiedWithProgress(ctx context.Context,
 func createTempDownloadFile(localPath string) (*os.File, error) {
 	dir := filepath.Dir(localPath)
 	base := filepath.Base(localPath)
-	return os.CreateTemp(dir, base+".tmp-*")
+	return os.CreateTemp(dir, base+".okdev-tmp-*")
 }
 
 func extractSingleFileFromTar(r io.Reader, localPath string) error {

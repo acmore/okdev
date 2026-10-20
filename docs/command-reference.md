@@ -257,6 +257,7 @@ agents can react without launching a diagnostic chain on every blip:
 - Single-file uploads are size-verified and atomic: the pod receives into a temp file next to the destination, the byte count is checked against the local size, and the file is renamed into place — readers never observe a partial file, and a dropped exec stream is retried (up to 3 attempts) instead of silently leaving a missing or truncated file. Directory uploads likewise retry until the pod acknowledges a completed extraction.
 - Single-file downloads resume from an undersized `<dest>` or a saved `<dest>.okdev-part` from a previous attempt.
 - If a previous attempt finished streaming but failed before the final rename, rerunning `okdev cp` promotes the completed `<dest>.okdev-part` without redownloading.
+- In-flight transfer files (`*.okdev-part`, `*.okdev-tmp-*`, and the pod-side `.okdev-cp.*` upload temp) never cross the sync channel: every synced local root's `.stignore` carries an okdev-owned `// okdev:begin/end transfer temp files` block at the top, so copying into a synced directory does not stream a half-written file to the other side.
 - `--verify` verifies single-file download SHA-256 after copy. It is not supported for uploads or directory downloads.
 - With `--verify`, resumed downloads hash the existing local bytes once and continue hashing the streamed remainder, so success does not require a second full local reread.
 - `--verify` currently requires `python3` or `python` in the target container to emit the remote SHA-256 during the download stream.

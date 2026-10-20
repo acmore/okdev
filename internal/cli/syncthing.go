@@ -825,12 +825,69 @@ func writeSTIgnore(localPath string, excludes []string) error {
 
 func writeLocalSTIgnore(localPath string) error {
 	stignorePath := filepath.Join(localPath, ".stignore")
-	if _, err := os.Stat(stignorePath); err == nil {
-		return nil
-	} else if !os.IsNotExist(err) {
+	if _, err := os.Stat(stignorePath); err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		if err := writeSTIgnore(localPath, defaultSyncExcludes); err != nil {
+			return err
+		}
+	}
+	return ensureTransferTempSTIgnoreBlock(localPath)
+}
+
+// transferTempSTIgnorePatterns match the in-flight files of `okdev cp`:
+// local download partials and temps, and the pod-side upload temp (local
+// ignores also stop pulling it). Syncing them would stream half-written
+// files across the channel and race the final rename (#326).
+var transferTempSTIgnorePatterns = []string{"*.okdev-part", "*.okdev-tmp-*", ".okdev-cp.*"}
+
+// The markers are matched by prefix so the begin line's note can change
+// without orphaning blocks written by older versions.
+const (
+	transferTempSTIgnoreBegin = "// okdev:begin transfer temp files"
+	transferTempSTIgnoreEnd   = "// okdev:end transfer temp files"
+	transferTempSTIgnoreNote  = " (managed by okdev; edits are overwritten)"
+)
+
+// ensureTransferTempSTIgnoreBlock keeps the okdev-owned transfer-temp block
+// at the top of dir's .stignore, so it applies to existing files too and
+// wins over any later "!" negation. Other content is preserved verbatim.
+func ensureTransferTempSTIgnoreBlock(dir string) error {
+	path := filepath.Join(dir, ".stignore")
+	raw, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	return writeSTIgnore(localPath, defaultSyncExcludes)
+	var b strings.Builder
+	b.WriteString(transferTempSTIgnoreBegin + transferTempSTIgnoreNote + "\n")
+	for _, p := range transferTempSTIgnorePatterns {
+		b.WriteString(p + "\n")
+	}
+	b.WriteString(transferTempSTIgnoreEnd + "\n")
+	inBlock := false
+	for _, line := range strings.SplitAfter(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, transferTempSTIgnoreBegin):
+			inBlock = true
+			continue
+		case strings.HasPrefix(trimmed, transferTempSTIgnoreEnd):
+			inBlock = false
+			continue
+		}
+		if !inBlock {
+			b.WriteString(line)
+		}
+	}
+	content := b.String()
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	if content == string(raw) {
+		return nil
+	}
+	return os.WriteFile(path, []byte(content), 0o644)
 }
 
 func buildSTIgnoreContent(excludes []string) (string, bool) {
