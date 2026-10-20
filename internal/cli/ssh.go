@@ -27,6 +27,7 @@ import (
 	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/acmore/okdev/internal/workload"
 	"github.com/spf13/cobra"
+	xssh "golang.org/x/crypto/ssh"
 )
 
 func newSSHCmd(opts *Options) *cobra.Command {
@@ -403,7 +404,27 @@ func printContainerRestartNotice(w io.Writer, info *kube.ContainerRestartInfo) {
 type interPodSSHEndpoint struct {
 	PodName string
 	PodIP   string
+	// HostKey is the pod's okdev-sshd host public key in authorized_keys
+	// format, fetched over the Kubernetes API. Empty when the pod's sidecar
+	// predates host-key pinning.
+	HostKey string
 }
+
+const (
+	interPodKnownHostsPath  = "~/.ssh/okdev_interpod_known_hosts"
+	hostKeyUnsupportedToken = "OKDEV_HOSTKEY_UNSUPPORTED"
+)
+
+// hostKeyProbeScript prints the pod's persistent sshd host public key,
+// creating the key if sshd has not started yet (it loads the same file).
+// Capability is checked through --help first: an okdev-sshd that predates
+// pinning would exit on the unknown flag, but probing via the error text
+// would be fragile.
+const hostKeyProbeScript = `if /var/okdev/okdev-sshd --help 2>&1 | grep -q -- --ensure-host-key; then
+  /var/okdev/okdev-sshd --ensure-host-key
+else
+  echo ` + hostKeyUnsupportedToken + `
+fi`
 
 type interPodSSHClient interface {
 	interPodSSHInstaller
@@ -455,7 +476,11 @@ func interPodSSHKeyPath(sessionName string) (string, error) {
 	return filepath.Join(dir, "okdev_interpod_ed25519"), nil
 }
 
-func buildInterPodSSHConfig(user string, endpoints []interPodSSHEndpoint) string {
+// buildInterPodSSHConfig renders the per-pod Host blocks. With pinned host
+// keys each block verifies against its pod's entry (HostKeyAlias keys the
+// lookup by pod name, not by an IP that a recreated or foreign pod may now
+// hold); without them it keeps the unverified legacy behavior.
+func buildInterPodSSHConfig(user string, endpoints []interPodSSHEndpoint, pinned bool) string {
 	var b strings.Builder
 	for _, endpoint := range endpoints {
 		fmt.Fprintf(&b, "Host %s\n", endpoint.PodName)
@@ -464,20 +489,65 @@ func buildInterPodSSHConfig(user string, endpoints []interPodSSHEndpoint) string
 		fmt.Fprintf(&b, "  User %s\n", user)
 		fmt.Fprintln(&b, "  IdentityFile ~/.ssh/okdev_interpod_ed25519")
 		fmt.Fprintln(&b, "  IdentitiesOnly yes")
-		fmt.Fprintln(&b, "  StrictHostKeyChecking no")
-		fmt.Fprintln(&b, "  UserKnownHostsFile /dev/null")
+		if pinned {
+			fmt.Fprintln(&b, "  StrictHostKeyChecking yes")
+			fmt.Fprintf(&b, "  UserKnownHostsFile %s\n", interPodKnownHostsPath)
+			fmt.Fprintf(&b, "  HostKeyAlias %s\n", endpoint.PodName)
+		} else {
+			fmt.Fprintln(&b, "  StrictHostKeyChecking no")
+			fmt.Fprintln(&b, "  UserKnownHostsFile /dev/null")
+		}
 		fmt.Fprintln(&b, "  LogLevel ERROR")
 		fmt.Fprintln(&b)
 	}
 	return strings.TrimSpace(b.String())
 }
 
+// buildInterPodKnownHosts renders one known_hosts entry per pod name.
+func buildInterPodKnownHosts(endpoints []interPodSSHEndpoint) string {
+	var b strings.Builder
+	for _, endpoint := range endpoints {
+		fmt.Fprintf(&b, "%s %s\n", endpoint.PodName, strings.TrimSpace(endpoint.HostKey))
+	}
+	return b.String()
+}
+
+// collectInterPodHostKeys fetches every pod's sshd host key over the
+// Kubernetes API, the authenticated channel that makes pinning meaningful.
+// It reports pinned=false when any pod's sidecar predates pinning: a
+// partial set would leave some peers unverifiable, so the session falls
+// back to the legacy behavior as a whole.
+func collectInterPodHostKeys(ctx context.Context, k devSSHStarter, namespace, container string, endpoints []interPodSSHEndpoint) (bool, error) {
+	for i := range endpoints {
+		out, err := k.ExecShInContainer(ctx, namespace, endpoints[i].PodName, container, hostKeyProbeScript)
+		if err != nil {
+			return false, fmt.Errorf("read sshd host key on %s: %w", endpoints[i].PodName, err)
+		}
+		line := strings.TrimSpace(string(out))
+		if line == hostKeyUnsupportedToken {
+			return false, nil
+		}
+		if _, _, _, _, err := xssh.ParseAuthorizedKey([]byte(line)); err != nil {
+			return false, fmt.Errorf("parse sshd host key on %s: %w", endpoints[i].PodName, err)
+		}
+		endpoints[i].HostKey = line
+	}
+	return true, nil
+}
+
 // buildInterPodSSHSetupScript installs the inter-pod identity. The private
 // key arrives on stdin, never in the script: exec arguments travel in the
 // API request URL (and so into apiserver audit logs) and sit in the shell's
 // /proc/<pid>/cmdline, readable across a shared process namespace.
-func buildInterPodSSHSetupScript(publicKey, sshConfig string) string {
+func buildInterPodSSHSetupScript(publicKey, sshConfig, knownHosts string) string {
 	includeLine := "Include ~/.ssh/okdev_interpod_config"
+	// An empty knownHosts (legacy sidecar) removes a file a previous pinned
+	// setup left behind, so the fanout gateway does not enforce stale keys.
+	knownHostsStep := `rm -f "$HOME/.ssh/okdev_interpod_known_hosts"`
+	if knownHosts != "" {
+		knownHostsStep = fmt.Sprintf(`printf '%%s' %s >"$HOME/.ssh/okdev_interpod_known_hosts"
+chmod 644 "$HOME/.ssh/okdev_interpod_known_hosts"`, syncengine.ShellEscape(knownHosts))
+	}
 	return fmt.Sprintf(`set -eu
 mkdir -p "$HOME/.ssh"
 chmod 700 "$HOME/.ssh"
@@ -495,10 +565,12 @@ chmod 600 "$HOME/.ssh/okdev_interpod_config"
 touch "$HOME/.ssh/config"
 chmod 600 "$HOME/.ssh/config"
 grep -qxF %s "$HOME/.ssh/config" || printf '%%s\n' %s >>"$HOME/.ssh/config"
+%s
 `, syncengine.ShellEscape(publicKey),
 		syncengine.ShellEscape(publicKey), syncengine.ShellEscape(publicKey),
 		syncengine.ShellEscape(sshConfig),
-		syncengine.ShellEscape(includeLine), syncengine.ShellEscape(includeLine))
+		syncengine.ShellEscape(includeLine), syncengine.ShellEscape(includeLine),
+		knownHostsStep)
 }
 
 // interPodSSHInstaller runs the setup script with the private key on stdin.
@@ -506,8 +578,12 @@ type interPodSSHInstaller interface {
 	ExecInteractiveInContainer(ctx context.Context, namespace, pod, container string, tty bool, command []string, stdin io.Reader, stdout, stderr io.Writer) error
 }
 
-func configureInterPodSSHOnPods(ctx context.Context, k interPodSSHInstaller, namespace, container string, endpoints []interPodSSHEndpoint, privateKey, publicKey, user string) error {
-	script := buildInterPodSSHSetupScript(publicKey, buildInterPodSSHConfig(user, endpoints))
+func configureInterPodSSHOnPods(ctx context.Context, k interPodSSHInstaller, namespace, container string, endpoints []interPodSSHEndpoint, privateKey, publicKey, user string, pinned bool) error {
+	knownHosts := ""
+	if pinned {
+		knownHosts = buildInterPodKnownHosts(endpoints)
+	}
+	script := buildInterPodSSHSetupScript(publicKey, buildInterPodSSHConfig(user, endpoints, pinned), knownHosts)
 	for _, endpoint := range endpoints {
 		var stderr bytes.Buffer
 		err := k.ExecInteractiveInContainer(ctx, namespace, endpoint.PodName, container, false, []string{"sh", "-c", script},
@@ -546,34 +622,42 @@ func discoverInterPodSSHEndpoints(ctx context.Context, k interPodSSHClient, name
 	return endpoints, nil
 }
 
-func setupInterPodSSHWithClient(ctx context.Context, k interPodSSHClient, namespace, sessionName string, labels map[string]string, container, user string, timeout time.Duration) error {
+// setupInterPodSSHWithClient installs the inter-pod identity, config and
+// pinned host keys on every session pod. pinned reports whether host keys
+// are verified; false means at least one sidecar predates pinning and the
+// caller should tell the user.
+func setupInterPodSSHWithClient(ctx context.Context, k interPodSSHClient, namespace, sessionName string, labels map[string]string, container, user string, timeout time.Duration) (bool, error) {
 	endpoints, err := discoverInterPodSSHEndpoints(ctx, k, namespace, labels)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(endpoints) <= 1 {
-		return nil
+		return true, nil
 	}
 	keyPath, err := interPodSSHKeyPath(sessionName)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := ensureSSHKeyExists(keyPath); err != nil {
-		return err
+		return false, err
 	}
 	privateKey, publicKey, err := readSSHKeyMaterial(keyPath)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if err := configureInterPodSSHOnPods(ctx, k, namespace, container, endpoints, privateKey, publicKey, user); err != nil {
-		return err
+	pinned, err := collectInterPodHostKeys(ctx, k, namespace, container, endpoints)
+	if err != nil {
+		return false, err
+	}
+	if err := configureInterPodSSHOnPods(ctx, k, namespace, container, endpoints, privateKey, publicKey, user, pinned); err != nil {
+		return false, err
 	}
 	for _, endpoint := range endpoints {
 		if err := waitForSSHReadyWithClient(ctx, k, namespace, endpoint.PodName, container, timeout); err != nil {
-			return fmt.Errorf("wait for inter-pod ssh on %s: %w", endpoint.PodName, err)
+			return false, fmt.Errorf("wait for inter-pod ssh on %s: %w", endpoint.PodName, err)
 		}
 	}
-	return nil
+	return pinned, nil
 }
 
 func ensureSSHKeyOnPod(opts *Options, namespace, pod, container, keyPath string) error {

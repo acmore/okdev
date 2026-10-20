@@ -1272,8 +1272,12 @@ func upSetupSSH(state *upState, target workload.TargetRef, keyPath string) (stri
 	}
 	if state.command.cfg.Spec.SSH.InterPodEnabled() {
 		state.ui.stepRun("ssh", "configuring inter-pod access")
-		if err := setupInterPodSSHWithClient(state.ctx, state.command.kube, state.command.namespace, state.command.sessionName, state.labels, target.Container, state.command.cfg.Spec.SSH.User, state.flags.waitTimeout); err != nil {
+		pinned, err := setupInterPodSSHWithClient(state.ctx, state.command.kube, state.command.namespace, state.command.sessionName, state.labels, target.Container, state.command.cfg.Spec.SSH.User, state.flags.waitTimeout)
+		if err != nil {
 			return "", fmt.Errorf("setup inter-pod ssh: %w", err)
+		}
+		if !pinned {
+			state.ui.warnf("inter-pod SSH host keys are not verified: the sidecar image predates host-key pinning; update spec.sidecar.image to a current okdev release")
 		}
 	}
 	alias := sshHostAlias(state.command.sessionName)
