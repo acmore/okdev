@@ -86,11 +86,16 @@ class KindRegression(unittest.TestCase):
         if hooks:
             config["spec"]["lifecycle"] = hooks
         path.write_text(json.dumps(config))
-        # The data root lives outside the config's project directory, which
-        # okdev requires the user to approve once (`okdev trust`).
-        self.run_cmd(self.base(path) + ["trust", "--yes"])
+        self.trust(path)
         self.sessions.append((path, name))
         return path, data
+
+    def trust(self, config):
+        # Harness configs sync roots outside the config's own directory
+        # (the data dir, or the harness root when paths are emptied), which
+        # okdev requires approving explicitly. Call again after a rewrite
+        # changes the sync roots.
+        self.run_cmd(self.base(config) + ["trust", "--yes"])
 
     def up(self, config, session):
         # The documented sshd startup race is retried only for this exact error.

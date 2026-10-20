@@ -16,6 +16,7 @@ class SyncRevision(KindRegression):
         raw = json.loads(config.read_text())
         raw["spec"]["sync"]["paths"].append({"local": str(extra), "remote": "/var/okdev/data"})
         config.write_text(json.dumps(raw))
+        self.trust(config)
         self.up(config, "revision")
         pod = self.pods("revision")[0]["metadata"]["name"]
         base = self.base(config, "revision")

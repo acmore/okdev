@@ -16,6 +16,7 @@ class ExecRetry(KindRegression):
         raw = json.loads(config.read_text())
         raw["spec"]["sync"]["paths"] = []
         config.write_text(json.dumps(raw))
+        self.trust(config)
         self.up(config, "retry")
         pod = self.pods("retry")[0]["metadata"]["name"]
         base = self.base(config, "retry")
