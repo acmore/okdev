@@ -48,7 +48,7 @@ func localCapabilities(cfg *config.DevEnvironment, cfgPath string) ([]localCapab
 	if cfg == nil {
 		return nil, nil
 	}
-	root, err := filepath.Abs(config.RootDir(cfgPath))
+	root, err := canonicalPath(config.RootDir(cfgPath))
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +60,7 @@ func localCapabilities(cfg *config.DevEnvironment, cfgPath string) ([]localCapab
 	for _, pair := range pairs {
 		// Resolved exactly as the sync engine resolves it (relative to the
 		// working directory), so the approval covers what is actually synced.
-		local, err := filepath.Abs(pair.Local)
+		local, err := canonicalPath(pair.Local)
 		if err != nil {
 			return nil, err
 		}
@@ -98,6 +98,29 @@ func localCapabilities(cfg *config.DevEnvironment, cfgPath string) ([]localCapab
 	return caps, nil
 }
 
+// canonicalPath resolves p to an absolute path with symlinks evaluated, so
+// containment checks and approval keys agree however a path was spelled
+// (/tmp vs /private/tmp on macOS, a symlinked home). A path that does not
+// exist yet is resolved through its longest existing ancestor.
+func canonicalPath(p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved, nil
+	}
+	parent := filepath.Dir(abs)
+	if parent == abs {
+		return abs, nil
+	}
+	resolvedParent, err := canonicalPath(parent)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolvedParent, filepath.Base(abs)), nil
+}
+
 func pathContainedIn(root, path string) bool {
 	rel, err := filepath.Rel(root, path)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
@@ -111,7 +134,7 @@ func unapprovedCapabilities(cfg *config.DevEnvironment, cfgPath string, kinds []
 	if err != nil || len(all) == 0 {
 		return nil, all, "", err
 	}
-	absPath, err = filepath.Abs(cfgPath)
+	absPath, err = canonicalPath(cfgPath)
 	if err != nil {
 		return nil, nil, "", err
 	}

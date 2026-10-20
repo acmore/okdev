@@ -42,7 +42,14 @@ func TestLocalCapabilitiesOnlyListsReachBeyondTheProject(t *testing.T) {
 		t.Fatalf("an in-project config needs no approval, got %v %v", caps, err)
 	}
 
-	home := t.TempDir()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalProject, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg.Spec.Sync.Paths = append(cfg.Spec.Sync.Paths, config.SyncPathSpec{Local: home, Remote: "/home"})
 	cfg.Spec.Sync.Paths = append(cfg.Spec.Sync.Paths, config.SyncPathSpec{Local: "../sibling", Remote: "/sibling"})
 	cfg.Spec.Agents = []config.AgentSpec{{Name: "codex", Auth: &config.AgentAuth{LocalPath: "~/.codex/auth.json"}}}
@@ -54,6 +61,7 @@ func TestLocalCapabilitiesOnlyListsReachBeyondTheProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	project = canonicalProject
 	var texts []string
 	for _, c := range caps {
 		texts = append(texts, c.text)
@@ -170,5 +178,60 @@ spec:
 	trust.SetIn(strings.NewReader(""))
 	if err := trust.Execute(); err != nil || !strings.Contains(out.String(), "no approval needed") {
 		t.Fatalf("expected no approval needed: %v %s", err, out.String())
+	}
+}
+
+func TestConfigTrustAgreesAcrossSymlinkedPaths(t *testing.T) {
+	// macOS /tmp is a symlink to /private/tmp: the same project reached by
+	// either spelling must be one project with one approval.
+	t.Setenv("HOME", t.TempDir())
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(real)
+	_, cfgPath := trustTestConfig(t, real)
+	if err := os.WriteFile(cfgPath, []byte(`apiVersion: okdev.io/v1alpha1
+kind: DevEnvironment
+metadata:
+  name: demo
+spec:
+  namespace: demo
+  workload:
+    type: pod
+    manifestPath: pod.yaml
+  sync:
+    paths:
+      - "`+filepath.Join(link, "data")+`:/workspace"
+  ssh:
+    forwardAgent: true
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caps, err := localCapabilities(cfg, cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range caps {
+		if c.kind == capSyncOutsideProject {
+			t.Fatalf("in-project root reached through a symlink reported as outside: %s", c.text)
+		}
+	}
+	// Approve through the symlinked spelling, check through the real one.
+	trust := newTrustCmd(&Options{ConfigPath: filepath.Join(link, ".okdev", "okdev.yaml")})
+	trust.SetArgs([]string{"--yes"})
+	trust.SetOut(&bytes.Buffer{})
+	trust.SetIn(strings.NewReader(""))
+	if err := trust.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	cmd, _ := gateCmd()
+	if err := requireConfigTrust(cmd, cfg, cfgPath, allCapabilityKinds...); err != nil {
+		t.Fatalf("approval keyed by the other spelling: %v", err)
 	}
 }
