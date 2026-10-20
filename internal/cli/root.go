@@ -2,12 +2,14 @@ package cli
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/logx"
+	"github.com/acmore/okdev/internal/session"
 	"github.com/spf13/cobra"
 )
 
@@ -96,6 +98,11 @@ func Execute() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Best-effort: an unwritable home must not stop commands that never
+	// touch local state, and the directory is created on first use anyway.
+	if err := session.EnsureStateRoot(); err != nil {
+		slog.Debug("failed to restrict okdev state directory", "error", err)
+	}
 	cmd, _ := newRootCmdWithOptions()
 	return executeWithContext(ctx, cmd)
 }

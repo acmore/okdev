@@ -238,3 +238,41 @@ func TestSaveInfoConcurrentUpdatesPreserveFields(t *testing.T) {
 		t.Fatalf("expected merged concurrent fields, got %+v", info)
 	}
 }
+
+func TestEnsureStateRootIsOwnerOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, ".okdev")
+
+	if err := EnsureStateRoot(); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(root); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("new state root must be 0700: %v %v", info.Mode().Perm(), err)
+	}
+
+	// Existing installs created it 0755: tighten, keep contents.
+	if err := os.Chmod(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "keep"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureStateRoot(); err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := os.Stat(root); info.Mode().Perm() != 0o700 {
+		t.Fatalf("existing state root not tightened: %v", info.Mode().Perm())
+	}
+	if _, err := os.Stat(filepath.Join(root, "keep")); err != nil {
+		t.Fatal("contents must be preserved")
+	}
+
+	dir, err := SessionDir("s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := os.Stat(dir); info.Mode().Perm() != 0o700 {
+		t.Fatalf("session dir must be 0700: %v", info.Mode().Perm())
+	}
+}
