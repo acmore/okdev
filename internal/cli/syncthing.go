@@ -79,6 +79,7 @@ var (
 	runSyncHealthLoopFn                 = runSyncHealthLoop
 	waitForInitialSyncFn                = waitForInitialSync
 	waitForSyncthingBootstrapCompleteFn = waitForSyncthingBootstrapComplete
+	syncthingBootstrapContextsFn        = syncthingBootstrapAndRuntimeContexts
 )
 
 // syncFolder is one resolved syncthing folder for the session: a sync pair
@@ -144,7 +145,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		return fmt.Errorf("no sync path mappings configured")
 	}
 
-	bootstrapCtx, cancelBootstrap, runtimeCtx := syncthingBootstrapAndRuntimeContexts(cmd.Context())
+	bootstrapCtx, cancelBootstrap, runtimeCtx := syncthingBootstrapContextsFn(cmd.Context())
 	defer cancelBootstrap()
 	localBinary, err := syncthingEnsureBinaryFn(bootstrapCtx, cfg.Spec.Sync.Syncthing.Version, cfg.Spec.Sync.Syncthing.AutoInstallEnabled())
 	if err != nil {
@@ -278,12 +279,13 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 			}
 			continue
 		}
-		folderTypeLocal, folderTypeRemote := folderTypesForMode(folder.mode)
-		if err := configureSyncthingPeerFn(bootstrapCtx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folder.id, folder.absLocal, folderTypeLocal, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression, syncCfg.versioningDays); err != nil {
-			return fmt.Errorf("configure local syncthing (%s): %w", folder.id, err)
-		}
-		if err := configureSyncthingPeerFn(bootstrapCtx, remoteBase, remoteKey, remoteID, localID, "", folder.id, folder.remote, folderTypeRemote, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression, syncCfg.versioningDays); err != nil {
-			return fmt.Errorf("configure remote syncthing (%s): %w", folder.id, err)
+		// A preceding two-phase folder can outlive bootstrapCtx, so each
+		// folder gets its own configuration budget.
+		folderCtx, folderCancel := context.WithTimeout(runtimeCtx, syncthingBootstrapTimeout)
+		err := configureSyncthingFolderPair(folderCtx, localBase, localKey, localID, remoteBase, remoteKey, remoteID, localRemotePeerAddr, folder, syncCfg)
+		folderCancel()
+		if err != nil {
+			return err
 		}
 	}
 	if mode == "two-phase" {
@@ -300,16 +302,21 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	// Mappings removed from the config leave their syncthing folders behind
 	// on both sides, silently continuing to sync; drop managed folders that
 	// no longer correspond to a configured pair.
+	// The channel is already converged here, so a failed prune is only a
+	// warning: stale folders are retried on the next sync start, while
+	// returning would tear down the channel that just came up (#324).
 	keepFolderIDs := make(map[string]bool, len(folders))
 	for _, folder := range folders {
 		keepFolderIDs[folder.id] = true
 	}
-	if err := pruneManagedSessionFoldersFn(bootstrapCtx, localBase, localKey, sessionName, keepFolderIDs); err != nil {
-		return fmt.Errorf("prune stale local sync folders: %w", err)
+	pruneCtx, pruneCancel := context.WithTimeout(runtimeCtx, syncthingBootstrapTimeout)
+	if err := pruneManagedSessionFoldersFn(pruneCtx, localBase, localKey, sessionName, keepFolderIDs); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: prune stale local sync folders: %v\n", err)
 	}
-	if err := pruneManagedSessionFoldersFn(bootstrapCtx, remoteBase, remoteKey, sessionName, keepFolderIDs); err != nil {
-		return fmt.Errorf("prune stale remote sync folders: %w", err)
+	if err := pruneManagedSessionFoldersFn(pruneCtx, remoteBase, remoteKey, sessionName, keepFolderIDs); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: prune stale remote sync folders: %v\n", err)
 	}
+	pruneCancel()
 
 	if err := saveSyncthingConfigHashFn(sessionName, syncthingSessionConfigHash(cfg, pairs)); err != nil {
 		return fmt.Errorf("persist syncthing config state: %w", err)
@@ -352,6 +359,17 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	runSyncHealthLoopFn(sigCh, cmd.ErrOrStderr(), checker)
 	if checker.stopSignal != nil {
 		stopReason = "received " + checker.stopSignal.String()
+	}
+	return nil
+}
+
+func configureSyncthingFolderPair(ctx context.Context, localBase, localKey, localID, remoteBase, remoteKey, remoteID, localRemotePeerAddr string, folder syncFolder, syncCfg syncthingSyncConfig) error {
+	folderTypeLocal, folderTypeRemote := folderTypesForMode(folder.mode)
+	if err := configureSyncthingPeerFn(ctx, localBase, localKey, localID, remoteID, localRemotePeerAddr, folder.id, folder.absLocal, folderTypeLocal, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression, syncCfg.versioningDays); err != nil {
+		return fmt.Errorf("configure local syncthing (%s): %w", folder.id, err)
+	}
+	if err := configureSyncthingPeerFn(ctx, remoteBase, remoteKey, remoteID, localID, "", folder.id, folder.remote, folderTypeRemote, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.relays, syncCfg.compression, syncCfg.versioningDays); err != nil {
+		return fmt.Errorf("configure remote syncthing (%s): %w", folder.id, err)
 	}
 	return nil
 }

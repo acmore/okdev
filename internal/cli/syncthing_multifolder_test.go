@@ -242,3 +242,183 @@ func TestRunSyncthingSyncMarksBootstrapCompleteWithoutBiFolders(t *testing.T) {
 		t.Fatalf("bootstrap-complete marker must be written exactly once, got %d", completeCalls)
 	}
 }
+
+// stubRunSyncthingSyncDeps replaces every external dependency of
+// runSyncthingSync with a succeeding fake and restores them on cleanup.
+func stubRunSyncthingSyncDeps(t *testing.T) {
+	t.Helper()
+	origEnsureBinary := syncthingEnsureBinaryFn
+	origResolveTargetRef := resolveTargetRefFn
+	origExec := execInSyncthingContainerFn
+	origPF := startSyncthingPortForwardFn
+	origReadKey := readRemoteSyncthingAPIKeyFn
+	origStartLocal := startAndWaitForLocalSyncthingFn
+	origWaitAPI := waitSyncthingAPIFn
+	origDeviceID := syncthingDeviceIDFn
+	origMarkReady := markSyncthingReadyFn
+	origMarkComplete := markSyncthingBootstrapCompleteFn
+	origTwoPhase := runTwoPhaseInitialSyncFn
+	origConfigure := configureSyncthingPeerFn
+	origPrune := pruneManagedSessionFoldersFn
+	origVerify := verifyRemoteRootSharedFn
+	origSaveHash := saveSyncthingConfigHashFn
+	origStopOwned := stopOwnedLocalSyncthingFn
+	origHealth := runSyncHealthLoopFn
+	origContexts := syncthingBootstrapContextsFn
+	t.Cleanup(func() {
+		syncthingEnsureBinaryFn = origEnsureBinary
+		resolveTargetRefFn = origResolveTargetRef
+		execInSyncthingContainerFn = origExec
+		startSyncthingPortForwardFn = origPF
+		readRemoteSyncthingAPIKeyFn = origReadKey
+		startAndWaitForLocalSyncthingFn = origStartLocal
+		waitSyncthingAPIFn = origWaitAPI
+		syncthingDeviceIDFn = origDeviceID
+		markSyncthingReadyFn = origMarkReady
+		markSyncthingBootstrapCompleteFn = origMarkComplete
+		runTwoPhaseInitialSyncFn = origTwoPhase
+		configureSyncthingPeerFn = origConfigure
+		pruneManagedSessionFoldersFn = origPrune
+		verifyRemoteRootSharedFn = origVerify
+		saveSyncthingConfigHashFn = origSaveHash
+		stopOwnedLocalSyncthingFn = origStopOwned
+		runSyncHealthLoopFn = origHealth
+		syncthingBootstrapContextsFn = origContexts
+	})
+
+	syncthingEnsureBinaryFn = func(context.Context, string, bool) (string, error) { return "/tmp/syncthing", nil }
+	resolveTargetRefFn = func(context.Context, *Options, *config.DevEnvironment, string, string, targetResolverClient) (workload.TargetRef, error) {
+		return workload.TargetRef{PodName: "pod-0"}, nil
+	}
+	execInSyncthingContainerFn = func(context.Context, interface {
+		ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+	}, string, string, string) ([]byte, error) {
+		return nil, nil
+	}
+	startSyncthingPortForwardFn = func(context.Context, *Options, string, string) (context.CancelFunc, string, string, error) {
+		return func() {}, "http://remote", "tcp://127.0.0.1:22000", nil
+	}
+	readRemoteSyncthingAPIKeyFn = func(context.Context, interface {
+		ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
+	}, string, string) (string, error) {
+		return "remote-key", nil
+	}
+	startAndWaitForLocalSyncthingFn = func(context.Context, string, string) (string, string, int, error) {
+		return "http://local", "local-key", 4321, nil
+	}
+	waitSyncthingAPIFn = func(context.Context, string, string, time.Duration) error { return nil }
+	syncthingDeviceIDFn = func(_ context.Context, base, _ string) (string, error) {
+		if base == "http://local" {
+			return "LOCAL", nil
+		}
+		return "REMOTE", nil
+	}
+	markSyncthingReadyFn = func(string) error { return nil }
+	markSyncthingBootstrapCompleteFn = func(string) error { return nil }
+	runTwoPhaseInitialSyncFn = func(context.Context, io.Writer, string, string, string, string, string, string, string, string, string, string, syncthingSyncConfig) error {
+		return nil
+	}
+	configureSyncthingPeerFn = func(context.Context, string, string, string, string, string, string, string, string, int, int, bool, bool, bool, int) error {
+		return nil
+	}
+	pruneManagedSessionFoldersFn = func(context.Context, string, string, string, map[string]bool) error { return nil }
+	verifyRemoteRootSharedFn = func(context.Context, *kube.Client, string, string, string, syncFolder) error { return nil }
+	saveSyncthingConfigHashFn = func(string, string) error { return nil }
+	stopOwnedLocalSyncthingFn = func(string, int) error { return nil }
+	runSyncHealthLoopFn = func(<-chan os.Signal, io.Writer, syncHealthChecker) {}
+}
+
+func TestRunSyncthingSyncSurvivesTwoPhaseLongerThanBootstrapTimeout(t *testing.T) {
+	// Regression for #324: a two-phase initial sync that outlives the
+	// bootstrap budget must not leave the later folder configuration and
+	// prune steps on the expired bootstrap context.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stubRunSyncthingSyncDeps(t)
+
+	const bootstrapBudget = 20 * time.Millisecond
+	syncthingBootstrapContextsFn = func(parent context.Context) (context.Context, context.CancelFunc, context.Context) {
+		ctx, cancel := context.WithTimeout(parent, bootstrapBudget)
+		return ctx, cancel, parent
+	}
+	runTwoPhaseInitialSyncFn = func(ctx context.Context, _ io.Writer, _, _, _, _, _, _, _, _, _, _ string, _ syncthingSyncConfig) error {
+		time.Sleep(3 * bootstrapBudget)
+		return ctx.Err()
+	}
+	var stepErrs []string
+	configureSyncthingPeerFn = func(ctx context.Context, _, _, _, _, _, folderID, _, _ string, _, _ int, _, _, _ bool, _ int) error {
+		if err := ctx.Err(); err != nil {
+			stepErrs = append(stepErrs, "configure "+folderID+": "+err.Error())
+			return err
+		}
+		return nil
+	}
+	pruneManagedSessionFoldersFn = func(ctx context.Context, base, _, _ string, _ map[string]bool) error {
+		if err := ctx.Err(); err != nil {
+			stepErrs = append(stepErrs, "prune "+base+": "+err.Error())
+			return err
+		}
+		return nil
+	}
+	hashSaved := false
+	saveSyncthingConfigHashFn = func(string, string) error {
+		hashSaved = true
+		return nil
+	}
+	healthLoopReached := false
+	runSyncHealthLoopFn = func(<-chan os.Signal, io.Writer, syncHealthChecker) { healthLoopReached = true }
+
+	cfg := &config.DevEnvironment{}
+	cfg.SetDefaults()
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	err := runSyncthingSync(cmd, &Options{}, cfg, "default", "sess-slow", "two-phase", []syncengine.Pair{
+		{Local: filepath.Join(home, "code"), Remote: "/workspace", Direction: "bi"},
+		{Local: filepath.Join(home, "results"), Remote: "/data/results", Direction: "down"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("runSyncthingSync: %v", err)
+	}
+	if len(stepErrs) != 0 {
+		t.Fatalf("post-bootstrap steps ran on an expired context: %v", stepErrs)
+	}
+	if !hashSaved || !healthLoopReached {
+		t.Fatalf("sync must reach steady state: hashSaved=%v healthLoopReached=%v", hashSaved, healthLoopReached)
+	}
+}
+
+func TestRunSyncthingSyncPruneFailureIsNotFatal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stubRunSyncthingSyncDeps(t)
+
+	pruneManagedSessionFoldersFn = func(context.Context, string, string, string, map[string]bool) error {
+		return context.DeadlineExceeded
+	}
+	healthLoopReached := false
+	runSyncHealthLoopFn = func(<-chan os.Signal, io.Writer, syncHealthChecker) { healthLoopReached = true }
+
+	cfg := &config.DevEnvironment{}
+	cfg.SetDefaults()
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetOut(io.Discard)
+	var stderr strings.Builder
+	cmd.SetErr(&stderr)
+
+	err := runSyncthingSync(cmd, &Options{}, cfg, "default", "sess-prune", "", []syncengine.Pair{
+		{Local: filepath.Join(home, "code"), Remote: "/workspace", Direction: "bi"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("prune failure must not stop sync: %v", err)
+	}
+	if !healthLoopReached {
+		t.Fatal("sync must reach the health loop after a prune failure")
+	}
+	if !strings.Contains(stderr.String(), "warning: prune stale local sync folders") || !strings.Contains(stderr.String(), "warning: prune stale remote sync folders") {
+		t.Fatalf("expected prune warnings, got %q", stderr.String())
+	}
+}
