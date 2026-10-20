@@ -135,15 +135,17 @@ func PreparePodSpecForTargetWithShellAndSyncRoots(podSpec corev1.PodSpec, worksp
 	InjectPreStopForTarget(spec, preStop, targetContainer)
 
 	if !hasContainer(spec.Containers, "okdev-sidecar") {
-		privileged := true
+		// No securityContext: the sidecar only serves syncthing and stages
+		// files on shared volumes, which root with the runtime's default
+		// capabilities covers. It used to run privileged for an nsenter-based
+		// sshd that no longer exists; privileged handed node root to anyone
+		// with pods/exec and made every session pod fail PodSecurity
+		// baseline.
 		sidecarContainer := corev1.Container{
 			Name:            "okdev-sidecar",
 			Image:           sidecarImage,
 			ImagePullPolicy: syncthingImagePullPolicy(sidecarImage),
 			Resources:       sidecarResources,
-			SecurityContext: &corev1.SecurityContext{
-				Privileged: &privileged,
-			},
 			Ports: []corev1.ContainerPort{
 				{ContainerPort: 8384, Name: "st-gui"},
 				{ContainerPort: 22000, Name: "st-sync"},
