@@ -440,7 +440,7 @@ spec:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `user` | `string` | `root` | SSH user |
+| `user` | `string` | `root` | SSH user. Must be a plain POSIX user name (`[A-Za-z0-9._-]`, at most 32 characters, not starting with `.` or `-`): it is written into `~/.ssh/config`, so anything else is rejected. |
 | `privateKeyPath` | `string` | — | Path to SSH private key |
 | `autoDetectPorts` | `bool` | `true` | Auto-detect listening ports in the container |
 | `forwardAgent` | `bool` | `false` | Forward the local SSH agent for live `okdev ssh` sessions |

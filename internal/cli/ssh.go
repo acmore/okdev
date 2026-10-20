@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/kube"
@@ -85,6 +86,9 @@ func newSSHCmd(opts *Options) *cobra.Command {
 
 			if user == "" {
 				user = cc.cfg.Spec.SSH.User
+			}
+			if err := config.ValidateSSHUser(user); err != nil {
+				return err
 			}
 			if remotePort == 0 {
 				remotePort = sshPort
@@ -676,6 +680,12 @@ func sshConfigPath() (string, error) {
 }
 
 func ensureSSHConfigEntry(hostAlias, sessionName, namespace, user string, remotePort int, keyPath, okdevConfigPath string, forwards []config.PortMapping) (bool, error) {
+	if err := validateSSHConfigValues(map[string]string{
+		"host alias": hostAlias, "session": sessionName, "namespace": namespace,
+		"user": user, "identity file": keyPath, "config path": okdevConfigPath,
+	}); err != nil {
+		return false, err
+	}
 	sshConfigPath, err := sshConfigPath()
 	if err != nil {
 		return false, err
@@ -740,6 +750,28 @@ func ensureSSHConfigEntry(hostAlias, sessionName, namespace, user string, remote
 		return false, err
 	}
 	return true, nil
+}
+
+// validateSSHConfigValues refuses values that would break out of their
+// ~/.ssh/config line. ssh_config is line-oriented and honors the first value
+// of each option, so one embedded newline is enough to inject a directive
+// (ProxyCommand, LocalCommand) ahead of okdev's own.
+func validateSSHConfigValues(values map[string]string) error {
+	for _, field := range []string{"host alias", "session", "namespace", "user", "identity file", "config path"} {
+		value, ok := values[field]
+		if !ok {
+			continue
+		}
+		if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+			return fmt.Errorf("refusing to write ssh config: %s %q contains control characters", field, value)
+		}
+	}
+	for _, field := range []string{"host alias", "user"} {
+		if strings.IndexFunc(values[field], unicode.IsSpace) >= 0 {
+			return fmt.Errorf("refusing to write ssh config: %s %q contains whitespace", field, values[field])
+		}
+	}
+	return nil
 }
 
 func isManagedSSHForwardRunning(hostAlias string) (bool, error) {

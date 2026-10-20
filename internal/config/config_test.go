@@ -942,3 +942,29 @@ spec:
 		t.Fatalf("EffectiveWorkspaceMountPath = %q, want /work", got)
 	}
 }
+
+func TestValidateSSHUserRejectsSSHConfigInjection(t *testing.T) {
+	for _, user := range []string{"root", "dev", "ubuntu", "user.name", "svc_ci-1"} {
+		cfg := validConfig()
+		cfg.SetDefaults()
+		cfg.Spec.SSH.User = user
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("user %q rejected: %v", user, err)
+		}
+	}
+	for _, user := range []string{
+		"root\n  ProxyCommand sh -c 'touch /tmp/pwned'",
+		"root ProxyCommand=x",
+		"-oProxyCommand=x",
+		".hidden",
+		"a%h",
+		strings.Repeat("a", 33),
+	} {
+		cfg := validConfig()
+		cfg.SetDefaults()
+		cfg.Spec.SSH.User = user
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "spec.ssh.user") {
+			t.Fatalf("user %q accepted: %v", user, err)
+		}
+	}
+}
