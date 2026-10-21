@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
 )
@@ -14,17 +15,22 @@ type interPodSSHInstallCall struct {
 	namespace string
 	pod       string
 	container string
+	argv      string
 	script    string
+	stdin     string
 }
 
-func (f *fakeInterPodSSHClient) ExecShInContainer(_ context.Context, namespace, pod, container, script string) ([]byte, error) {
+func (f *fakeInterPodSSHClient) ExecInteractiveInContainer(_ context.Context, namespace, pod, container string, _ bool, command []string, stdin io.Reader, _, _ io.Writer) error {
+	in, _ := io.ReadAll(stdin)
 	f.calls = append(f.calls, interPodSSHInstallCall{
 		namespace: namespace,
 		pod:       pod,
 		container: container,
-		script:    script,
+		argv:      strings.Join(command, " "),
+		script:    command[len(command)-1],
+		stdin:     string(in),
 	})
-	return nil, nil
+	return nil
 }
 
 func TestBuildInterPodSSHConfigIncludesSessionPods(t *testing.T) {
@@ -70,11 +76,19 @@ func TestConfigureInterPodSSHOnPodsInstallsKeysAndConfigOnAllPods(t *testing.T) 
 		if call.container != "pytorch" {
 			t.Fatalf("call %d container = %q, want pytorch", i, call.container)
 		}
+		// The private key travels on stdin only: exec arguments land in the
+		// apiserver request URL (audit logs) and in /proc/<pid>/cmdline.
+		if strings.Contains(call.argv, "PRIVATE KEY") {
+			t.Fatalf("call %d: private key leaked into exec arguments:\n%s", i, call.argv)
+		}
+		if call.stdin != "PRIVATE KEY\n" {
+			t.Fatalf("call %d: private key must arrive on stdin, got %q", i, call.stdin)
+		}
 		for _, want := range []string{
 			"okdev_interpod_ed25519",
 			"okdev_interpod_config",
 			"PUBLIC KEY",
-			"PRIVATE KEY",
+			"umask 077",
 			"Host trainer-worker-0",
 			"Host trainer-worker-1",
 		} {

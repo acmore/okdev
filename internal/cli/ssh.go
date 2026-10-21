@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -409,6 +410,7 @@ type interPodSSHEndpoint struct {
 }
 
 type interPodSSHClient interface {
+	interPodSSHInstaller
 	ExecShInContainer(context.Context, string, string, string, string) ([]byte, error)
 	ListPods(context.Context, string, bool, string) ([]kube.PodSummary, error)
 }
@@ -474,12 +476,18 @@ func buildInterPodSSHConfig(user string, endpoints []interPodSSHEndpoint) string
 	return strings.TrimSpace(b.String())
 }
 
-func buildInterPodSSHSetupScript(privateKey, publicKey, sshConfig string) string {
+// buildInterPodSSHSetupScript installs the inter-pod identity. The private
+// key arrives on stdin, never in the script: exec arguments travel in the
+// API request URL (and so into apiserver audit logs) and sit in the shell's
+// /proc/<pid>/cmdline, readable across a shared process namespace.
+func buildInterPodSSHSetupScript(publicKey, sshConfig string) string {
 	includeLine := "Include ~/.ssh/okdev_interpod_config"
 	return fmt.Sprintf(`set -eu
 mkdir -p "$HOME/.ssh"
 chmod 700 "$HOME/.ssh"
-printf '%%s\n' %s >"$HOME/.ssh/okdev_interpod_ed25519"
+(umask 077 && cat >"$HOME/.ssh/okdev_interpod_ed25519.tmp")
+test -s "$HOME/.ssh/okdev_interpod_ed25519.tmp"
+mv -f "$HOME/.ssh/okdev_interpod_ed25519.tmp" "$HOME/.ssh/okdev_interpod_ed25519"
 chmod 600 "$HOME/.ssh/okdev_interpod_ed25519"
 printf '%%s\n' %s >"$HOME/.ssh/okdev_interpod_ed25519.pub"
 chmod 644 "$HOME/.ssh/okdev_interpod_ed25519.pub"
@@ -491,16 +499,27 @@ chmod 600 "$HOME/.ssh/okdev_interpod_config"
 touch "$HOME/.ssh/config"
 chmod 600 "$HOME/.ssh/config"
 grep -qxF %s "$HOME/.ssh/config" || printf '%%s\n' %s >>"$HOME/.ssh/config"
-`, syncengine.ShellEscape(privateKey), syncengine.ShellEscape(publicKey),
+`, syncengine.ShellEscape(publicKey),
 		syncengine.ShellEscape(publicKey), syncengine.ShellEscape(publicKey),
 		syncengine.ShellEscape(sshConfig),
 		syncengine.ShellEscape(includeLine), syncengine.ShellEscape(includeLine))
 }
 
-func configureInterPodSSHOnPods(ctx context.Context, k devSSHStarter, namespace, container string, endpoints []interPodSSHEndpoint, privateKey, publicKey, user string) error {
-	script := buildInterPodSSHSetupScript(privateKey, publicKey, buildInterPodSSHConfig(user, endpoints))
+// interPodSSHInstaller runs the setup script with the private key on stdin.
+type interPodSSHInstaller interface {
+	ExecInteractiveInContainer(ctx context.Context, namespace, pod, container string, tty bool, command []string, stdin io.Reader, stdout, stderr io.Writer) error
+}
+
+func configureInterPodSSHOnPods(ctx context.Context, k interPodSSHInstaller, namespace, container string, endpoints []interPodSSHEndpoint, privateKey, publicKey, user string) error {
+	script := buildInterPodSSHSetupScript(publicKey, buildInterPodSSHConfig(user, endpoints))
 	for _, endpoint := range endpoints {
-		if _, err := k.ExecShInContainer(ctx, namespace, endpoint.PodName, container, script); err != nil {
+		var stderr bytes.Buffer
+		err := k.ExecInteractiveInContainer(ctx, namespace, endpoint.PodName, container, false, []string{"sh", "-c", script},
+			strings.NewReader(strings.TrimSpace(privateKey)+"\n"), io.Discard, &stderr)
+		if err != nil {
+			if detail := strings.TrimSpace(stderr.String()); detail != "" {
+				err = fmt.Errorf("%w: %s", err, detail)
+			}
 			return fmt.Errorf("configure inter-pod ssh on %s: %w", endpoint.PodName, err)
 		}
 	}
