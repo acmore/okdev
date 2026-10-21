@@ -82,6 +82,10 @@ func localCapabilities(cfg *config.DevEnvironment, cfgPath string) ([]localCapab
 		if err != nil {
 			return nil, err
 		}
+		local, err = canonicalPath(local)
+		if err != nil {
+			return nil, err
+		}
 		caps = append(caps, localCapability{capCredentialUpload,
 			fmt.Sprintf("upload %s credentials %s into the pod", spec.Name, local)})
 	}

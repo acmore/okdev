@@ -1026,6 +1026,10 @@ func upSetup(state *upState) error {
 		if err != nil {
 			return fmt.Errorf("refresh target before agent install checks: %w", err)
 		}
+		// A repository symlink may have changed while the pod was starting.
+		if err := requireConfigTrust(state.cmd, state.command.cfg, state.command.cfgPath, capCredentialUpload); err != nil {
+			return err
+		}
 		state.ui.stepRun("agents", "checking configured CLIs and auth")
 		results := ensureConfiguredAgentsInstalled(state.ctx, state.command.kube, state.command.namespace, target.PodName, target.Container, state.command.cfg.Spec.Agents, state.ui.warnf, func(detail string) {
 			state.ui.stepRun("agents", detail)

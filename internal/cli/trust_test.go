@@ -235,3 +235,54 @@ spec:
 		t.Fatalf("approval keyed by the other spelling: %v", err)
 	}
 }
+
+func TestConfigTrustTracksAgentSymlinkTarget(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	project := t.TempDir()
+	t.Chdir(project)
+	cfg, cfgPath := trustTestConfig(t, project)
+	outside := t.TempDir()
+	safe := filepath.Join(outside, "safe")
+	secret := filepath.Join(outside, "secret")
+	for _, path := range []string{safe, secret} {
+		if err := os.WriteFile(path, []byte(path), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(project, "auth")
+	if err := os.Symlink(safe, link); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Spec.Agents = []config.AgentSpec{{Name: "codex", Auth: &config.AgentAuth{LocalPath: link}}}
+	caps, err := localCapabilities(cfg, cfgPath)
+	if err != nil || len(caps) != 1 {
+		t.Fatalf("capabilities: %v (%v)", caps, err)
+	}
+	absPath, err := canonicalPath(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := approveConfigTrust(absPath, caps); err != nil {
+		t.Fatal(err)
+	}
+	cmd, _ := gateCmd()
+	if err := requireConfigTrust(cmd, cfg, cfgPath, capCredentialUpload); err != nil {
+		t.Fatalf("approved credential refused: %v", err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireConfigTrust(cmd, cfg, cfgPath, capCredentialUpload); err == nil {
+		t.Fatal("retargeted credential was still approved")
+	}
+	canonicalSecret, err := filepath.EvalSymlinks(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved, found, err := resolveAgentLocalAuth(link); err != nil || !found || resolved != canonicalSecret {
+		t.Fatalf("upload path = %q, found=%v, err=%v", resolved, found, err)
+	}
+}
