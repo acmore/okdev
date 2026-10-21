@@ -438,7 +438,11 @@ func TestEnsureConfiguredAgentAuthStagesLocalFile(t *testing.T) {
 	if len(results) != 1 || results[0] != "codex: auth staged" {
 		t.Fatalf("unexpected results %#v", results)
 	}
-	if len(client.copyCalls) != 1 || client.copyCalls[0] != localAuth+"->/run/okdev/agents/codex/auth.json" {
+	resolvedLocalAuth, err := filepath.EvalSymlinks(localAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.copyCalls) != 1 || client.copyCalls[0] != resolvedLocalAuth+"->/run/okdev/agents/codex/auth.json" {
 		t.Fatalf("unexpected copy calls %#v", client.copyCalls)
 	}
 	if len(client.scripts) != 3 {
@@ -481,7 +485,11 @@ func TestEnsureConfiguredAgentAuthPreservesLocalBasename(t *testing.T) {
 	if len(results) != 1 || results[0] != "codex: auth staged" {
 		t.Fatalf("unexpected results %#v", results)
 	}
-	if len(client.copyCalls) != 1 || client.copyCalls[0] != localAuth+"->/run/okdev/agents/codex/config.toml" {
+	resolvedLocalAuth, err := filepath.EvalSymlinks(localAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(client.copyCalls) != 1 || client.copyCalls[0] != resolvedLocalAuth+"->/run/okdev/agents/codex/config.toml" {
 		t.Fatalf("unexpected copy calls %#v", client.copyCalls)
 	}
 	if !strings.Contains(client.scripts[1], `install -m 600 /dev/null '/run/okdev/agents/codex/config.toml'`) {

@@ -13,6 +13,7 @@ class Replicas(KindRegression):
         raw = json.loads(config.read_text())
         raw["spec"]["sync"]["paths"] = []
         config.write_text(json.dumps(raw))
+        self.trust(config)
         manifest = config.parent / "workload.json"
         original = manifest.read_bytes()
         self.up(config, "replicas")
@@ -58,6 +59,7 @@ class PyTorchReplicas(KindRegression):
                 {"path": "spec.pytorchReplicaSpecs.Master.template"},
                 {"path": "spec.pytorchReplicaSpecs.Worker.template"}]}
         config.write_text(json.dumps(raw))
+        self.trust(config)
         replica = {"replicas": 1, "restartPolicy": "Never", "template": {"spec": {
             "terminationGracePeriodSeconds": 1,
             "containers": [{"name": "pytorch", "image": "ubuntu:22.04", "command": ["sleep", "infinity"]}]}}}

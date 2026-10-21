@@ -34,7 +34,8 @@ scripts or `--script` to avoid local expansion. `port-forward --address
 
 Use this skill when the request involves:
 
-- `okdev init`, `up` (including `up --workload <name>`), `restart`, `status`, `ssh`, `exec`, `cp`, `sync` (including `sync pause`/`resume`/`wait`), `ports`, `down`, `jobs`, `env-diff`, `use`, `migrate`, `workload` (`workload list`/`use`/`show`)
+- `okdev init`, `up` (including `up --workload <name>`), `restart`, `status`, `ssh`, `exec`, `cp`, `sync` (including `sync pause`/`resume`/`wait`), `ports`, `down`, `jobs`, `env-diff`, `use`, `migrate`, `workload` (`workload list`/`use`/`show`), `trust`
+- an error or prompt saying a config "asks to act on this machine beyond the project", or approving a config with `okdev trust`
 - config discovery or `.okdev.yaml` / `.okdev/okdev.yaml`
 - choosing what `okdev init` scaffolds: `--template pod|job|pytorchjob|deployment|generic` or a template of their own (`--workload` and `--generic-preset` are removed and error with the replacement named)
 - sync behavior, session reuse, port forwards, or SSH access
@@ -61,6 +62,7 @@ Do not use this skill for:
 6. When the question is about multi-pod behavior, read `references/multipod.md`.
 7. When the question is about symptoms or failures, read `references/troubleshooting.md`.
 8. When the question is about normal usage flow, read `references/workflows.md`.
+9. **A config that reaches the local machine needs approval, and that approval is the user's call.** Sync roots outside the project, `spec.agents[].auth` credential uploads, reverse `spec.ports`, and `ssh.forwardAgent` make `up`/`restart`/`sync`/`ssh`/`ports` ask once (or refuse off a terminal, naming `okdev trust --config <path>`). Tell the user to read the listed capabilities before approving, especially in a repository they cloned; never suggest `okdev trust --yes` as a reflex to get past the error. In CI, `okdev trust --yes` is the explicit opt-in for a config the pipeline owns.
 
 ## Quick Heuristics
 

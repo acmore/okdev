@@ -25,6 +25,7 @@ class CopyStats(KindRegression):
         raw = json.loads(config.read_text())
         raw["spec"]["sync"]["paths"] = []
         config.write_text(json.dumps(raw))
+        self.trust(config)
         self.up(config, "cpstats")
         base = self.base(config, "cpstats")
         source = self.root / "payload"

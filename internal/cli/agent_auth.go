@@ -137,6 +137,10 @@ func resolveAgentLocalAuth(localPath string) (string, bool, error) {
 	if info.IsDir() {
 		return "", false, fmt.Errorf("local auth path %q is a directory", resolved)
 	}
+	resolved, err = filepath.EvalSymlinks(resolved)
+	if err != nil {
+		return "", false, err
+	}
 	return resolved, true, nil
 }
 

@@ -71,6 +71,11 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Also the gate for the detached sync child, which re-enters
+			// here without a terminal: its parent already asked.
+			if err := requireConfigTrust(cmd, cc.cfg, cc.cfgPath, capSyncOutsideProject); err != nil {
+				return err
+			}
 			if err := ensureExistingSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 				return err
 			}
@@ -256,6 +261,9 @@ synced workspace subtree is cleared.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cc, err := resolveCommandContext(opts, resolveSessionName)
 			if err != nil {
+				return err
+			}
+			if err := requireConfigTrust(cmd, cc.cfg, cc.cfgPath, capSyncOutsideProject); err != nil {
 				return err
 			}
 			if err := ensureExistingSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {

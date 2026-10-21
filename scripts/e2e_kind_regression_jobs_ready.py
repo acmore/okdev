@@ -15,6 +15,7 @@ class JobsReady(KindRegression):
         raw = json.loads(config.read_text())
         raw["spec"]["sync"]["paths"] = []
         config.write_text(json.dumps(raw))
+        self.trust(config)
         self.up(config, "ready")
         base = self.base(config, "ready")
         pods = [p["metadata"]["name"] for p in self.pods("ready")]

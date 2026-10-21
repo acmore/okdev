@@ -89,6 +89,7 @@ func newRootCmdWithOptions() (*cobra.Command, *Options) {
 	cmd.AddCommand(newMigrateCmd(opts))
 	cmd.AddCommand(newTemplateCmd(opts))
 	cmd.AddCommand(newUpgradeCmd())
+	cmd.AddCommand(newTrustCmd(opts))
 	initRootCompletion(cmd)
 
 	return cmd, opts

@@ -93,7 +93,9 @@ func TestUpValidatePinsCurrentContextForWaitRecovery(t *testing.T) {
 	defer server.Close()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("KUBECONFIG", writeCLITLSTestKubeconfig(t, server))
-	opts := &Options{ConfigPath: writeCLIConfig(t, "demo"), Session: "queued"}
+	cfgPath := writeCLIConfig(t, "demo")
+	t.Chdir(config.RootDir(cfgPath))
+	opts := &Options{ConfigPath: cfgPath, Session: "queued"}
 	cmd := newUpCmd(opts)
 	cmd.SetContext(context.Background())
 	cmd.SetOut(io.Discard)
