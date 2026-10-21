@@ -708,6 +708,43 @@ if [[ "$CP_DL_A" != "dir-a" || "$CP_DL_B" != "dir-b" ]]; then
 fi
 echo "cp download directory verified"
 
+# #326: okdev cp's in-flight files inside a sync root must never cross the
+# channel. Plant each temp shape next to a control file on both sides; once
+# the controls have synced, the temps must still be absent on the far side.
+echo "Testing cp transfer temp files stay out of sync"
+grep -q "okdev:begin transfer temp files" "$SYNC_DIR/.stignore" || {
+  echo "ERROR: expected transfer-temp block in local .stignore, got:" >&2
+  cat "$SYNC_DIR/.stignore" >&2
+  exit 1
+}
+echo partial >"$SYNC_DIR/inflight.bin.okdev-part"
+echo partial >"$SYNC_DIR/inflight.bin.okdev-tmp-123"
+echo control >"$SYNC_DIR/cp-temp-control.txt"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- \
+  sh -lc 'echo partial >/workspace/.okdev-cp.AbC123 && echo control >/workspace/cp-temp-remote-control.txt'
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync wait --timeout 3m >/dev/null
+TEMP_REMOTE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- \
+  sh -lc 'cat /workspace/cp-temp-control.txt; ls -a /workspace | grep -E "okdev-part|okdev-tmp-" || true')
+if [[ "$TEMP_REMOTE" != "control" ]]; then
+  echo "ERROR: expected only the control file to reach the pod, got: $TEMP_REMOTE" >&2
+  exit 1
+fi
+for _ in $(seq 1 60); do
+  [[ -f "$SYNC_DIR/cp-temp-remote-control.txt" ]] && break
+  sleep 1
+done
+if [[ ! -f "$SYNC_DIR/cp-temp-remote-control.txt" ]]; then
+  echo "ERROR: remote control file never synced back locally" >&2
+  exit 1
+fi
+if [[ -e "$SYNC_DIR/.okdev-cp.AbC123" ]]; then
+  echo "ERROR: pod-side upload temp file was synced to the local workspace" >&2
+  exit 1
+fi
+rm -f "$SYNC_DIR/inflight.bin.okdev-part" "$SYNC_DIR/inflight.bin.okdev-tmp-123" "$SYNC_DIR/cp-temp-control.txt" "$SYNC_DIR/cp-temp-remote-control.txt"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'rm -f /workspace/.okdev-cp.AbC123'
+echo "cp transfer temp files excluded from sync verified"
+
 echo "File copy (okdev cp) tests completed"
 
 echo "Capturing current pod identity before spec drift"

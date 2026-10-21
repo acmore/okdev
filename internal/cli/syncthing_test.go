@@ -742,8 +742,67 @@ func TestWriteLocalSTIgnorePreservesExistingFileWhenDefaultsImplicit(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != "custom/\n" {
-		t.Fatalf("expected existing stignore to be preserved, got %q", got)
+	if !strings.HasSuffix(string(got), "// okdev:end transfer temp files\ncustom/\n") {
+		t.Fatalf("expected existing stignore to be preserved after the transfer-temp block, got %q", got)
+	}
+}
+
+func TestEnsureTransferTempSTIgnoreBlockIsIdempotentAndStaysOnTop(t *testing.T) {
+	// #326: okdev cp partials inside a sync root must be ignored in
+	// existing .stignore files too, ahead of any user negation.
+	dir := t.TempDir()
+	stignorePath := filepath.Join(dir, ".stignore")
+	stale := "!keep.okdev-part\n// okdev:begin transfer temp files (older note)\n*.old-temp\n// okdev:end transfer temp files\ncustom/\n"
+	if err := os.WriteFile(stignorePath, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureTransferTempSTIgnoreBlock(dir); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(stignorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "// okdev:begin transfer temp files (managed by okdev; edits are overwritten)\n*.okdev-part\n*.okdev-tmp-*\n.okdev-cp.*\n// okdev:end transfer temp files\n!keep.okdev-part\ncustom/\n"
+	if string(first) != want {
+		t.Fatalf("got %q\nwant %q", first, want)
+	}
+	if err := ensureTransferTempSTIgnoreBlock(dir); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(stignorePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(second) != string(first) {
+		t.Fatalf("block not idempotent: %q", second)
+	}
+	patterns, err := loadSTIgnorePatterns(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"results/x.tgz.okdev-part", "results/x.tgz.okdev-tmp-123", "results/.okdev-cp.AbC123"} {
+		if !matchesSTIgnore(rel, false, patterns) {
+			t.Fatalf("%s not ignored by %v", rel, patterns)
+		}
+	}
+}
+
+func TestWriteLocalSTIgnoreRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("keep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, ".stignore")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeLocalSTIgnore(dir); err == nil {
+		t.Fatal("expected symlink to be rejected")
+	}
+	got, err := os.ReadFile(outside)
+	if err != nil || string(got) != "keep\n" {
+		t.Fatalf("outside file changed: %q (%v)", got, err)
 	}
 }
 
