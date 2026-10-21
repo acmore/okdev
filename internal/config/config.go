@@ -336,6 +336,20 @@ type AgentAuth struct {
 
 var agentEnvVarPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// sshUserPattern is the portable POSIX username shape. The value is written
+// verbatim into ~/.ssh/config and the in-pod ssh config, so anything wider
+// (whitespace, newlines) would let a project config inject ssh directives
+// such as ProxyCommand that run on the developer's machine.
+var sshUserPattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]{0,31}$`)
+
+// ValidateSSHUser rejects SSH user names that are not plain POSIX names.
+func ValidateSSHUser(user string) error {
+	if !sshUserPattern.MatchString(user) {
+		return fmt.Errorf("ssh user must be a plain POSIX user name ([A-Za-z0-9._-], at most 32 characters, not starting with '.' or '-'), got %q", user)
+	}
+	return nil
+}
+
 func (d *DevEnvironment) SetDefaults() {
 	if d == nil {
 		return
@@ -484,6 +498,9 @@ func (d *DevEnvironment) Validate() error {
 	}
 	if err := validateAgents(d.Spec.Agents); err != nil {
 		return err
+	}
+	if err := ValidateSSHUser(d.Spec.SSH.User); err != nil {
+		return fmt.Errorf("spec.ssh.user: %w", err)
 	}
 	if shell := strings.TrimSpace(d.Spec.SSH.Shell); shell != "" {
 		if !filepath.IsAbs(shell) {

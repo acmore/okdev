@@ -168,3 +168,26 @@ func TestStartManagedSSHForwardWithForwardsRemovesStaleSocketAfterFailedCheck(t 
 		t.Fatalf("expected stale socket to be removed, got err=%v", err)
 	}
 }
+
+func TestEnsureSSHConfigEntryRefusesDirectiveInjection(t *testing.T) {
+	// A project config must not be able to smuggle ssh_config directives
+	// (ProxyCommand runs locally) through any value okdev writes.
+	t.Setenv("HOME", t.TempDir())
+	injected := "x\n  ProxyCommand sh -c 'touch /tmp/pwned'"
+	cases := map[string][]string{
+		"user":        {"okdev-s", "s", "default", injected, "/k", ""},
+		"namespace":   {"okdev-s", "s", injected, "root", "/k", ""},
+		"session":     {"okdev-s", injected, "default", "root", "/k", ""},
+		"host alias":  {"okdev-s\nHost *", "s", "default", "root", "/k", ""},
+		"config path": {"okdev-s", "s", "default", "root", "/k", "/repo\n  LocalCommand id"},
+		"key path":    {"okdev-s", "s", "default", "root", "/k\rProxyCommand x", ""},
+	}
+	for name, v := range cases {
+		if _, err := ensureSSHConfigEntry(v[0], v[1], v[2], v[3], 2222, v[4], v[5], nil); err == nil {
+			t.Fatalf("%s: injection accepted", name)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".ssh", "config")); !os.IsNotExist(err) {
+		t.Fatalf("ssh config must not be written on refusal: %v", err)
+	}
+}
