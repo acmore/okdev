@@ -434,3 +434,21 @@ func TestImageTag(t *testing.T) {
 		}
 	}
 }
+
+func TestPreparePodSpecSidecarIsNotPrivileged(t *testing.T) {
+	spec, err := PreparePodSpec(corev1.PodSpec{}, "/workspace", "ghcr.io/acmore/okdev-sidecar:edge", corev1.ResourceRequirements{}, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range spec.Containers {
+		if c.Name != "okdev-sidecar" {
+			continue
+		}
+		sc := c.SecurityContext
+		if sc != nil && ((sc.Privileged != nil && *sc.Privileged) || (sc.Capabilities != nil && len(sc.Capabilities.Add) > 0)) {
+			t.Fatalf("okdev-sidecar must not run privileged or with added capabilities: %+v", sc)
+		}
+		return
+	}
+	t.Fatal("okdev-sidecar not injected")
+}
