@@ -10,6 +10,8 @@
 
 **Prebuilt binary:**
 
+Install and log in to the GitHub CLI (`gh`) first so the installer can verify release provenance.
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/acmore/okdev/main/scripts/install.sh | sh
 okdev version

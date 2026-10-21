@@ -502,6 +502,8 @@ agents can react without launching a diagnostic chain on every blip:
 
 - Checks the latest GitHub release and upgrades the `okdev` binary in place.
 - Downloads the correct archive for the current OS/architecture, verifies the SHA256 checksum, and atomically replaces the running binary.
+- Before replacing anything it also requires a GitHub build provenance attestation for the archive, verified with Sigstore and signed by okdev's `release.yml` workflow for exactly that tag. A missing or invalid attestation leaves the installed binary untouched.
+- `--allow-unattested` installs a release that has **no** attestation at all (published before attestations existed) on the checksum alone, with a warning. It never bypasses an attestation that exists but fails to verify.
 - No-op when already on the latest version.
 - After `okdev up` completes successfully, a non-blocking version check runs (cached for 24 hours) and prints a reminder to stderr if a newer version is available.
 

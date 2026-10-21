@@ -3,9 +3,11 @@ package syncthing
 import (
 	"archive/tar"
 	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +17,9 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/ProtonMail/go-crypto/openpgp"
+	"github.com/ProtonMail/go-crypto/openpgp/clearsign"
 
 	"github.com/acmore/okdev/internal/config"
 )
@@ -64,9 +69,13 @@ func EnsureBinary(ctx context.Context, version string, autoInstall bool) (string
 	}
 
 	checksumURL := fmt.Sprintf("%s/%s/sha256sum.txt.asc", releaseBaseURL, version)
-	checksums, err := httpGet(ctx, checksumURL)
+	signedChecksums, err := httpGet(ctx, checksumURL)
 	if err != nil {
 		return "", fmt.Errorf("download syncthing checksums: %w", err)
+	}
+	checksums, err := verifiedChecksums(signedChecksums)
+	if err != nil {
+		return "", fmt.Errorf("verify syncthing checksums for %s: %w", version, err)
 	}
 	archiveName, err := selectArchiveName(string(checksums), archiveNames)
 	if err != nil {
@@ -95,6 +104,35 @@ func EnsureBinary(ctx context.Context, version string, autoInstall bool) (string
 		return "", err
 	}
 	return binPath, nil
+}
+
+// releaseKeys are Syncthing's release signing certificates: the current
+// primary key FBA2E162F2F44657B38F0309E5665F9BD5970C47 (signs releases since
+// late 2024) and the previous key 37C84554E7E0A261E4F76E1ED26E6ED000654A3E
+// (signed everything before; recent releases carry both signatures).
+//
+//go:embed release-keys.asc
+var releaseKeys []byte
+
+// verifiedChecksums returns the signed text of a clearsigned sha256sum.txt.asc
+// after verifying it against the pinned Syncthing release keys. Only the
+// signed text is returned: anything an attacker could add outside the
+// signature never reaches the checksum lookup. Without this, the checksum
+// came from the same place as the archive and proved nothing about who
+// built it.
+func verifiedChecksums(signed []byte) ([]byte, error) {
+	block, _ := clearsign.Decode(signed)
+	if block == nil {
+		return nil, errors.New("checksum file is not a clearsigned message")
+	}
+	keyring, err := openpgp.ReadArmoredKeyRing(bytes.NewReader(releaseKeys))
+	if err != nil {
+		return nil, fmt.Errorf("load pinned Syncthing release keys: %w", err)
+	}
+	if _, err := block.VerifySignature(keyring, nil); err != nil {
+		return nil, fmt.Errorf("signature not made by a Syncthing release key: %w", err)
+	}
+	return block.Plaintext, nil
 }
 
 func platformArchiveNames(version string) (platform string, archiveNames []string, err error) {

@@ -390,3 +390,59 @@ func TestEnsureBinaryRejectsVersionTraversalBeforeAnyIO(t *testing.T) {
 		t.Fatalf("nothing may be created for invalid versions: %v", err)
 	}
 }
+
+func TestVerifiedChecksumsAcceptsRealSyncthingReleases(t *testing.T) {
+	// v1.27.0 is signed by the previous key only; v1.29.7 and v2.0.0 carry
+	// both the previous and the current key's signature.
+	for _, version := range []string{"v1.27.0", "v1.29.7", "v2.0.0"} {
+		signed, err := os.ReadFile("testdata/sha256sum-" + version + ".txt.asc")
+		if err != nil {
+			t.Fatal(err)
+		}
+		text, err := verifiedChecksums(signed)
+		if err != nil {
+			t.Fatalf("%s: genuine release checksums rejected: %v", version, err)
+		}
+		if !strings.Contains(string(text), "syncthing-linux-amd64-"+version+".tar.gz") {
+			t.Fatalf("%s: signed text missing the linux archive:\n%s", version, text)
+		}
+	}
+}
+
+func TestVerifiedChecksumsRejectsTamperingAndUnsigned(t *testing.T) {
+	signed, err := os.ReadFile("testdata/sha256sum-v1.29.7.txt.asc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Swap one checksum digit inside the signed text.
+	idx := bytes.Index(signed, []byte("syncthing-linux-amd64-v1.29.7.tar.gz"))
+	if idx < 70 {
+		t.Fatal("fixture layout changed")
+	}
+	tampered := append([]byte(nil), signed...)
+	line := bytes.LastIndexByte(tampered[:idx], '\n') + 1
+	if tampered[line] == 'a' {
+		tampered[line] = 'b'
+	} else {
+		tampered[line] = 'a'
+	}
+	if _, err := verifiedChecksums(tampered); err == nil {
+		t.Fatal("tampered checksums accepted")
+	}
+	if _, err := verifiedChecksums([]byte("abc123  syncthing-linux-amd64-v1.29.7.tar.gz\n")); err == nil {
+		t.Fatal("unsigned checksums accepted")
+	}
+}
+
+func TestEnsureBinaryRefusesUnsignedChecksums(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	old := installerHTTPClient
+	t.Cleanup(func() { installerHTTPClient = old })
+	installerHTTPClient = fakeHTTPDoer{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewBufferString("abc123  syncthing-linux-amd64-v1.29.7.tar.gz\nabc123  syncthing-macos-arm64-v1.29.7.zip\n")),
+	}}
+	if _, err := EnsureBinary(context.Background(), "v1.29.7", true); err == nil || !strings.Contains(err.Error(), "verify syncthing checksums") {
+		t.Fatalf("expected signature verification failure, got %v", err)
+	}
+}
