@@ -69,20 +69,26 @@ func TestNodeChangesSince(t *testing.T) {
 	}
 }
 
-func TestUpStorageNoticeClassifiesMountedVolumes(t *testing.T) {
+func TestUpStorageLinesClassifyUserMounts(t *testing.T) {
 	pod := &corev1.Pod{Spec: corev1.PodSpec{
 		Volumes: []corev1.Volume{
 			{Name: "scratch", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 			{Name: "host", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/scratch"}}},
 			{Name: "results", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "results"}}},
+			{Name: "okdev-runtime", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		},
-		Containers: []corev1.Container{{Name: "dev", VolumeMounts: []corev1.VolumeMount{{Name: "scratch", MountPath: "/tmp/scratch"}, {Name: "host", MountPath: "/data"}, {Name: "results", MountPath: "/results"}}}},
+		Containers: []corev1.Container{{Name: "dev", VolumeMounts: []corev1.VolumeMount{
+			{Name: "scratch", MountPath: "/tmp/scratch"}, {Name: "host", MountPath: "/data"},
+			{Name: "results", MountPath: "/results"}, {Name: "okdev-runtime", MountPath: "/var/okdev"},
+		}}},
 	}}
-	var out bytes.Buffer
-	printUpStorageNotice(&out, pod, "dev")
-	for _, want := range []string{"dev:/tmp/scratch — node-local emptyDir", "dev:/data — node-local hostPath", "dev:/results — PVC-backed"} {
-		if !strings.Contains(out.String(), want) {
-			t.Fatalf("missing %q in %q", want, out.String())
+	got := strings.Join(upStorageLines(pod, "dev"), "\n")
+	for _, want := range []string{"/tmp/scratch (node-local emptyDir", "/data (node-local hostPath", "/results (PVC-backed)"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
 		}
+	}
+	if strings.Contains(got, "/var/okdev") {
+		t.Fatalf("okdev's internal runtime volume must not be listed: %q", got)
 	}
 }

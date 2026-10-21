@@ -358,7 +358,7 @@ agents can react without launching a diagnostic chain on every blip:
 
 ### `okdev up [--wait-timeout 10m] [--dry-run] [--wait-hooks]`
 
-- The Ready output lists mounted `emptyDir` and `hostPath` paths as node-local, and PVC-backed paths separately. `emptyDir` contents disappear when a pod is replaced; `hostPath` contents belong to a node and may be absent after rescheduling. Put results that must follow a pod on a PVC-backed mount. `okdev status --details` shows the live mount source and persistence classification.
+- The Ready card's `storage:` section lists the dev container's mounted `emptyDir` and `hostPath` paths as node-local, and PVC-backed paths separately (okdev's own runtime and syncthing volumes are omitted). `emptyDir` contents disappear when a pod is replaced; `hostPath` contents belong to a node and may be absent after rescheduling. Put results that must follow a pod on a PVC-backed mount. `okdev status --details` shows the live mount source and persistence classification.
 
 - Reconciles Pod/PVC resources, updates SSH config, initializes managed forwarding/sync, then exits.
 - If the session workload already exists, `okdev up` reuses it and only reruns setup.

@@ -188,6 +188,7 @@ func TestUpUIPrintReadyCard(t *testing.T) {
 		},
 		[]syncengine.Pair{{Local: ".", Remote: "/workspace"}},
 		"<->",
+		[]string{"/workspace (node-local emptyDir, lost when this pod is replaced)"},
 		[]nextStepHint{{Subject: "okdev sync wait", Why: "block until local edits have reached the pods"}},
 	)
 
@@ -212,6 +213,11 @@ func TestUpUIPrintReadyCard(t *testing.T) {
 	}
 	if strings.Contains(got, "bad") {
 		t.Fatalf("did not expect invalid port mapping in output: %q", got)
+	}
+	// Storage describes the session; next: stays the card's last section.
+	storageAt, nextAt := strings.Index(got, "storage:\n- /workspace (node-local emptyDir"), strings.Index(got, "next:")
+	if storageAt < 0 || nextAt < 0 || storageAt > nextAt {
+		t.Fatalf("expected the storage section before next:: %q", got)
 	}
 }
 

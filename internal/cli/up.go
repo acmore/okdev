@@ -1116,7 +1116,13 @@ func upSetup(state *upState) error {
 		state.ui.stepDone("sync readiness", "local API reachable and peer connected")
 	}
 	state.ui.printWarnings()
-	state.ui.printReadyCard(state.command.sessionName, state.command.namespace, target.PodName, sshSummary, syncSummary, state.command.cfg.Spec.Ports, state.syncPairs, syncModeSymbol,
+	var storage []string
+	if pod, err := state.command.kube.GetPod(state.ctx, state.command.namespace, target.PodName); err == nil {
+		storage = upStorageLines(pod, target.Container)
+	} else {
+		slog.Debug("could not inspect storage mounts after up", "pod", target.PodName, "error", err)
+	}
+	state.ui.printReadyCard(state.command.sessionName, state.command.namespace, target.PodName, sshSummary, syncSummary, state.command.cfg.Spec.Ports, state.syncPairs, syncModeSymbol, storage,
 		buildUpNextSteps(
 			len(state.syncPairs) > 0,
 			postSyncCmd != "",
@@ -1124,11 +1130,6 @@ func upSetup(state *upState) error {
 			state.flags.waitHooks,
 			upSessionPodCount(state),
 		))
-	if pod, err := state.command.kube.GetPod(state.ctx, state.command.namespace, target.PodName); err == nil {
-		printUpStorageNotice(state.cmd.OutOrStdout(), pod, target.Container)
-	} else {
-		slog.Debug("could not inspect storage mounts after up", "pod", target.PodName, "error", err)
-	}
 	// Seed the snapshot for this run so the *next* end has something to
 	// explain it even if no `okdev status` ever runs (#213). Reported after
 	// the card because before it the line would scroll away under it.
@@ -2220,7 +2221,7 @@ func (u *upUI) warnWriter() io.Writer {
 	return upWarnSink{ui: u}
 }
 
-func (u *upUI) printReadyCard(sessionName, namespace, pod, sshSummary, syncSummary string, ports []config.PortMapping, syncPairs []syncengine.Pair, syncModeSymbol string, nextSteps []nextStepHint) {
+func (u *upUI) printReadyCard(sessionName, namespace, pod, sshSummary, syncSummary string, ports []config.PortMapping, syncPairs []syncengine.Pair, syncModeSymbol string, storage []string, nextSteps []nextStepHint) {
 	u.stopActive()
 	fmt.Fprintln(u.out, "\n== Ready ==")
 	fmt.Fprintf(u.out, "session:   %s\n", sessionName)
@@ -2240,6 +2241,14 @@ func (u *upUI) printReadyCard(sessionName, namespace, pod, sshSummary, syncSumma
 			if summary, ok := portMappingSummary(p); ok {
 				fmt.Fprintf(u.out, "- %s\n", summary)
 			}
+		}
+	}
+	// Storage describes the session, like paths and forwards: it belongs in
+	// the card, before "next:", which stays the card's last section.
+	if len(storage) > 0 {
+		fmt.Fprintln(u.out, "storage:")
+		for _, line := range storage {
+			fmt.Fprintf(u.out, "- %s\n", line)
 		}
 	}
 	fmt.Fprintln(u.out, "next:")
