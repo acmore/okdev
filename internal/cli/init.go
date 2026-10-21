@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -532,10 +533,7 @@ func scaffoldInitTemplateFiles(configPath, templateRef string, meta *config.Temp
 		if err != nil {
 			return nil, fmt.Errorf("render template file %q: %w", assetRef, err)
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return nil, fmt.Errorf("create template file directory: %w", err)
-		}
-		if err := os.WriteFile(target, []byte(rendered), 0o644); err != nil {
+		if err := writeTemplateCompanionFile(configPath, target, []byte(rendered)); err != nil {
 			return nil, fmt.Errorf("write template file %q: %w", target, err)
 		}
 		wrote = append(wrote, target)
@@ -555,7 +553,14 @@ func templateOutputPath(configPath, rendered string, vars *config.TemplateVars) 
 		target == resolveInitScaffoldFilePath(configPath, vars.ManifestPath) {
 		return target, nil
 	}
-	root := filepath.Clean(config.RootDir(configPath))
+	root, err := resolvedTemplatePath(config.RootDir(configPath))
+	if err != nil {
+		return "", fmt.Errorf("resolve project root: %w", err)
+	}
+	target, err = resolvedTemplatePath(target)
+	if err != nil {
+		return "", fmt.Errorf("resolve template file path %q: %w", rendered, err)
+	}
 	rel, err := filepath.Rel(root, target)
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("template file path %q resolves outside the project root %s", rendered, root)
@@ -566,6 +571,87 @@ func templateOutputPath(configPath, rendered string, vars *config.TemplateVars) 
 		}
 	}
 	return target, nil
+}
+
+// resolvedTemplatePath follows existing components, including symlinks in
+// parent directories, and retains components that have not been created yet.
+func resolvedTemplatePath(path string) (string, error) {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	var missing []string
+	for {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return resolved, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		if info, statErr := os.Lstat(path); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("dangling symlink %q", path)
+		} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			return "", statErr
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(path))
+		path = parent
+	}
+}
+
+// templateCompanionRoot confines companion file access even if a directory
+// changes into a symlink after templateOutputPath validates it.
+func templateCompanionRoot(configPath, target string) (*os.Root, string, error) {
+	rootPath, err := resolvedTemplatePath(config.RootDir(configPath))
+	if err != nil {
+		return nil, "", err
+	}
+	rel, err := filepath.Rel(rootPath, target)
+	if err != nil {
+		return nil, "", err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, "", nil // the user-chosen manifest path may be outside the project
+	}
+	root, err := os.OpenRoot(rootPath)
+	return root, rel, err
+}
+
+func writeTemplateCompanionFile(configPath, target string, data []byte) error {
+	root, rel, err := templateCompanionRoot(configPath, target)
+	if err != nil {
+		return err
+	}
+	if root == nil {
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0o644)
+	}
+	defer root.Close()
+	if err := root.MkdirAll(filepath.Dir(rel), 0o755); err != nil {
+		return err
+	}
+	return root.WriteFile(rel, data, 0o644)
+}
+
+func readTemplateCompanionFile(configPath, target string) ([]byte, error) {
+	root, rel, err := templateCompanionRoot(configPath, target)
+	if err != nil {
+		return nil, err
+	}
+	if root == nil {
+		return os.ReadFile(target)
+	}
+	defer root.Close()
+	return root.ReadFile(rel)
 }
 
 func resolveInitScaffoldFilePath(configPath, path string) string {

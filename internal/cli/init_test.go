@@ -1470,6 +1470,24 @@ func TestTemplateOutputPathStaysInsideProject(t *testing.T) {
 	}
 }
 
+func TestTemplateOutputPathRejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	cfgPath := filepath.Join(root, ".okdev", "okdev.yaml")
+	if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := templateOutputPath(cfgPath, "../linked/escaped.txt", nil); err == nil {
+		t.Fatal("template path escaped through a parent symlink")
+	}
+	if err := os.Symlink(filepath.Join(outside, "missing.txt"), filepath.Join(root, "dangling.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := templateOutputPath(cfgPath, "../dangling.txt", nil); err == nil {
+		t.Fatal("template path escaped through a dangling symlink")
+	}
+}
+
 func TestInitRefusesTemplateFileOutsideProject(t *testing.T) {
 	parent := t.TempDir()
 	tmp := filepath.Join(parent, "project")

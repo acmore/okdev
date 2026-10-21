@@ -542,3 +542,24 @@ func TestResolveTemplateAssetRejectsAbsolutePaths(t *testing.T) {
 		t.Fatalf("absolute asset read local file: %q", got)
 	}
 }
+
+func TestResolveTemplateAssetRejectsSymlinkEscape(t *testing.T) {
+	project := t.TempDir()
+	templateDir := filepath.Join(project, ".okdev", "templates")
+	if err := os.MkdirAll(templateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(templateDir, "custom.yaml.tmpl"), []byte("template"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(secret, []byte("private"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(templateDir, "payload.tmpl")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ResolveTemplateAssetFromDir(context.Background(), "custom", "payload.tmpl", project); err == nil {
+		t.Fatalf("asset escaped through a symlink: %q", got)
+	}
+}

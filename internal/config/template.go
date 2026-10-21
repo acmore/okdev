@@ -315,7 +315,16 @@ func ResolveTemplateAssetFromDir(ctx context.Context, templateRef, assetRef, pro
 		if err != nil {
 			return "", err
 		}
-		content, err := os.ReadFile(path)
+		root, err := os.OpenRoot(baseDir)
+		if err != nil {
+			return "", err
+		}
+		defer root.Close()
+		rel, err := filepath.Rel(baseDir, path)
+		if err != nil {
+			return "", err
+		}
+		content, err := root.ReadFile(rel)
 		if err != nil {
 			return "", err
 		}
