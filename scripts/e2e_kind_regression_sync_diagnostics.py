@@ -66,9 +66,11 @@ class SyncDiagnostics(KindRegression):
         second = self.run_cmd(base + ["exec", "--", "printf", "clean"])
         self.assertEqual(first.stdout, b"clean")
         self.assertEqual(second.stdout, b"clean")
-        self.assertIn(b"warning:", first.stderr)
-        self.assertIn(b"sync still unhealthy", second.stderr)
-        self.assertIn(b"may run stale code", second.stderr)
+        # The first call warns in full, with the exit cause; an identical
+        # warning within the rate-limit window is not repeated (#343).
+        self.assertIn(b"warning: sync is not running", first.stderr)
+        self.assertIn(b"may run stale code", first.stderr)
+        self.assertNotIn(b"warning: sync", second.stderr)
         blocked = self.run_cmd(base + ["exec", "--require-sync", "--", "touch", "/tmp/forbidden"], check=False)
         self.assertNotEqual(blocked.returncode, 0)
         self.remote(pod, "test", "!", "-e", "/tmp/forbidden")

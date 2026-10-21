@@ -524,9 +524,19 @@ if [[ "$NONZERO_STATUS" -ne 3 ]]; then
   echo "$NONZERO_OUTPUT" >&2
   exit 1
 fi
-if [[ "$NONZERO_OUTPUT" != *"COMMAND EXITED NON-ZERO"* || "$NONZERO_OUTPUT" == *"FAILED:"* ]]; then
-  echo "ERROR: expected command-result framing without FAILED header" >&2
+# Default: one line per result (#343); --verbose keeps the full report.
+if [[ "$NONZERO_OUTPUT" != *"exit 3 (remote) on "* || "$NONZERO_OUTPUT" == *"FAILED:"* || "$NONZERO_OUTPUT" == *"COMMAND EXITED NON-ZERO"* ]]; then
+  echo "ERROR: expected the one-line remote exit summary without FAILED header" >&2
   echo "$NONZERO_OUTPUT" >&2
+  exit 1
+fi
+set +e
+NONZERO_VERBOSE=$("$OKDEV_BIN" --verbose --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'exit 3' 2>&1)
+NONZERO_VERBOSE_STATUS=$?
+set -e
+if [[ "$NONZERO_VERBOSE_STATUS" -ne 3 || "$NONZERO_VERBOSE" != *"COMMAND EXITED NON-ZERO"* || "$NONZERO_VERBOSE" == *"FAILED:"* ]]; then
+  echo "ERROR: expected --verbose to keep the full command-result framing and exit 3, got $NONZERO_VERBOSE_STATUS" >&2
+  echo "$NONZERO_VERBOSE" >&2
   exit 1
 fi
 echo "exec non-zero command framing and exit status verified"
