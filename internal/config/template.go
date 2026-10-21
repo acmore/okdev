@@ -289,10 +289,11 @@ func ResolveTemplateAssetFromDir(ctx context.Context, templateRef, assetRef, pro
 	if assetRef == "" {
 		return "", fmt.Errorf("template file asset path is required")
 	}
+	// A template may only read its own assets: an absolute path would let any
+	// template (a remote one included) copy arbitrary local files, such as
+	// credentials, into the project, which okdev then syncs to the cluster.
 	if filepath.IsAbs(assetRef) {
-		if content, err := os.ReadFile(assetRef); err == nil {
-			return string(content), nil
-		}
+		return "", fmt.Errorf("template file asset %q must be relative to the template", assetRef)
 	}
 
 	templateRef = strings.TrimSpace(templateRef)
@@ -314,7 +315,16 @@ func ResolveTemplateAssetFromDir(ctx context.Context, templateRef, assetRef, pro
 		if err != nil {
 			return "", err
 		}
-		content, err := os.ReadFile(path)
+		root, err := os.OpenRoot(baseDir)
+		if err != nil {
+			return "", err
+		}
+		defer root.Close()
+		rel, err := filepath.Rel(baseDir, path)
+		if err != nil {
+			return "", err
+		}
+		content, err := root.ReadFile(rel)
 		if err != nil {
 			return "", err
 		}

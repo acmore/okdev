@@ -255,7 +255,7 @@ func runMigrateTemplate(cmd *cobra.Command, cfgPath, templateRef string, setFlag
 			return fmt.Errorf("write backup %q: %w", bakPath, err)
 		}
 		for _, file := range result.files {
-			existing, err := os.ReadFile(file.path)
+			existing, err := readTemplateCompanionFile(cfgPath, file.path)
 			if err != nil {
 				if os.IsNotExist(err) {
 					continue
@@ -263,7 +263,7 @@ func runMigrateTemplate(cmd *cobra.Command, cfgPath, templateRef string, setFlag
 				return fmt.Errorf("read existing companion file %q: %w", file.path, err)
 			}
 			bakPath := file.path + ".bak"
-			if err := os.WriteFile(bakPath, existing, 0o644); err != nil {
+			if err := writeTemplateCompanionFile(cfgPath, bakPath, existing); err != nil {
 				return fmt.Errorf("write backup %q: %w", bakPath, err)
 			}
 		}
@@ -273,10 +273,7 @@ func runMigrateTemplate(cmd *cobra.Command, cfgPath, templateRef string, setFlag
 		return fmt.Errorf("write migrated config %q: %w", cfgPath, err)
 	}
 	for _, file := range result.files {
-		if err := os.MkdirAll(filepath.Dir(file.path), 0o755); err != nil {
-			return fmt.Errorf("create parent directory for %q: %w", file.path, err)
-		}
-		if err := os.WriteFile(file.path, []byte(file.content), 0o644); err != nil {
+		if err := writeTemplateCompanionFile(cfgPath, file.path, []byte(file.content)); err != nil {
 			return fmt.Errorf("write migrated companion file %q: %w", file.path, err)
 		}
 	}
@@ -461,7 +458,10 @@ func renderMigrateTemplateFiles(cfgPath, templateRef string, meta *config.Templa
 		if strings.TrimSpace(renderedPath) == "" {
 			return nil, fmt.Errorf("template file path %q rendered empty", pathTemplate)
 		}
-		target := resolveInitScaffoldFilePath(cfgPath, renderedPath)
+		target, err := templateOutputPath(cfgPath, renderedPath, vars)
+		if err != nil {
+			return nil, err
+		}
 		raw, err := config.ResolveTemplateAssetFromDir(context.Background(), templateRef, assetRef, projectDir)
 		if err != nil {
 			return nil, fmt.Errorf("resolve template file %q: %w", assetRef, err)
