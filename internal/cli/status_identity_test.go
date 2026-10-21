@@ -90,7 +90,7 @@ func TestStatusDoesNotOverwriteHistoryFromAnotherNamespace(t *testing.T) {
 	if err := session.SaveLastSeen("sess1", before); err != nil {
 		t.Fatal(err)
 	}
-	captureSessionLastSeen([]sessionView{{Session: "sess1", Namespace: "other", Pods: []kube.PodSummary{{Name: "unrelated"}}}})
+	captureSessionLastSeen(context.Background(), nil, []sessionView{{Session: "sess1", Namespace: "other", Pods: []kube.PodSummary{{Name: "unrelated"}}}})
 	after, err := session.LoadLastSeen("sess1")
 	if err != nil || !after.At.Equal(before.At) || after.Pods[0].Name != "original" {
 		t.Fatalf("unrelated live session overwrote history: %+v, %v", after, err)

@@ -747,6 +747,7 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvo
 	// stale map does not fail, it hangs in rendezvous — and the pods are
 	// already listed here, so detection is free.
 	refreshStaleHostAliases(ctx, cc, sessionPods, targetContainerForAliases(cc, container), cmd.ErrOrStderr())
+	reportExecPodReplacement(ctx, cc, sessionPods, cmd.ErrOrStderr())
 	if plan.targetOnly && len(groups) == 1 && len(groups[0].Pods) > 0 {
 		printTargetOnlyNotice(cmd.ErrOrStderr(), cc, groups[0].Pods[0].Name,
 			len(groups[0].Pods), len(filterRunningPods(sessionPods)))

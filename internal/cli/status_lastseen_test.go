@@ -36,7 +36,7 @@ func TestCaptureSessionLastSeenPersistsSnapshotForTrackedSessions(t *testing.T) 
 	t.Setenv("HOME", t.TempDir())
 	seedSession(t, "sess1")
 
-	captureSessionLastSeen([]sessionView{
+	captureSessionLastSeen(context.Background(), nil, []sessionView{
 		{
 			Session:   "sess1",
 			Namespace: "default",

@@ -2426,6 +2426,7 @@ type EventSummary struct {
 	LastSeen     time.Time
 	InvolvedKind string
 	InvolvedName string
+	InvolvedUID  string
 }
 
 // ListObjectEvents returns the namespace events for the named object,
@@ -2458,6 +2459,7 @@ func (c *Client) ListObjectEvents(ctx context.Context, namespace, name string) (
 			LastSeen:     lastSeen,
 			InvolvedKind: item.InvolvedObject.Kind,
 			InvolvedName: item.InvolvedObject.Name,
+			InvolvedUID:  string(item.InvolvedObject.UID),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LastSeen.Before(out[j].LastSeen) })

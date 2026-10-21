@@ -38,7 +38,11 @@ type LastSeenWorkload struct {
 }
 
 type LastSeenPod struct {
-	Name     string             `json:"name"`
+	Name string `json:"name"`
+	UID  string `json:"uid,omitempty"`
+	// Revision is the controller's pod-template revision, so a rollout's
+	// retired pods are not mistaken for pods that ended unexpectedly.
+	Revision string             `json:"revision,omitempty"`
 	Phase    string             `json:"phase,omitempty"`
 	Ready    string             `json:"ready,omitempty"`
 	Reason   string             `json:"reason,omitempty"`

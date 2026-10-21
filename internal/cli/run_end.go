@@ -61,22 +61,29 @@ func detectPreviousRunEnd(ctx context.Context, k objectEventLister, sessionName,
 // status ran, which may be long before the run died, whereas an event is
 // recorded at the moment it happened.
 func explainRunEnd(ctx context.Context, k objectEventLister, namespace string, snapshot session.LastSeen) (class, reason, evidence string) {
-	names := make([]string, 0, len(snapshot.Pods)+1)
+	// A pod recreated under the same name shares its event stream with the
+	// pod it replaced, so pod events are matched by UID when both sides
+	// carry one.
+	type eventObject struct{ name, uid string }
+	objects := make([]eventObject, 0, len(snapshot.Pods)+1)
 	if strings.TrimSpace(snapshot.Workload.Name) != "" {
-		names = append(names, snapshot.Workload.Name)
+		objects = append(objects, eventObject{name: snapshot.Workload.Name})
 	}
 	for _, pod := range snapshot.Pods {
-		names = append(names, pod.Name)
+		objects = append(objects, eventObject{name: pod.Name, uid: pod.UID})
 	}
 	if k != nil {
 		best := ""
-		for _, name := range names {
-			events, err := k.ListObjectEvents(ctx, namespace, name)
+		for _, object := range objects {
+			events, err := k.ListObjectEvents(ctx, namespace, object.name)
 			if err != nil {
-				slog.Debug("failed to list events for ended run", "object", name, "error", err)
+				slog.Debug("failed to list events for ended run", "object", object.name, "error", err)
 				continue
 			}
 			for _, event := range events {
+				if object.uid != "" && event.InvolvedUID != "" && event.InvolvedUID != object.uid {
+					continue
+				}
 				eventClass := classifyRunEndEvent(event.Reason, event.Message)
 				if eventClass == session.RunEndClassUnknown {
 					continue

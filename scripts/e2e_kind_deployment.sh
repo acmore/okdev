@@ -146,6 +146,60 @@ if [[ "$RECONCILE_STATUS" != *"health: active"* ]]; then
   echo "$RECONCILE_STATUS" >&2
   exit 1
 fi
+# The rollout retired the old ReplicaSet's pod by design.
+if [[ "$RECONCILE_STATUS" == *"Replaced Pods:"* ]]; then
+  echo "ERROR: rollout-retired pod reported as an unexplained replacement" >&2
+  echo "$RECONCILE_STATUS" >&2
+  exit 1
+fi
+
+# #325: a pod the ReplicaSet replaces within the same run must be explained,
+# first by exec (where it is usually noticed) and then by status, even though
+# the snapshot that proves it is refreshed on the way.
+echo "Deleting the deployment pod outside okdev"
+# Let the rollout's terminating pod finish so exactly one pod is live.
+for i in $(seq 1 60); do
+  [[ "$(session_attachable_pod_names "$NAMESPACE" "$SESSION_NAME")" != *" "* ]] && break
+  sleep 2
+done
+REPLACED_POD=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME")
+kubectl -n "$NAMESPACE" delete pod "$REPLACED_POD" --wait=true >/dev/null
+NEW_POD=""
+for i in $(seq 1 60); do
+  NEW_POD=$(session_attachable_pod_name "$NAMESPACE" "$SESSION_NAME" || true)
+  if [[ -n "$NEW_POD" && "$NEW_POD" != "$REPLACED_POD" ]]; then
+    break
+  fi
+  sleep 2
+done
+kubectl -n "$NAMESPACE" wait --for=condition=Ready "pod/$NEW_POD" --timeout=180s >/dev/null
+EXEC_NOTICE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- true 2>&1 >/dev/null || true)
+if [[ "$EXEC_NOTICE" != *"notice: pod $REPLACED_POD replaced by $NEW_POD"* ]]; then
+  echo "ERROR: expected exec to report the replaced pod, got:" >&2
+  echo "$EXEC_NOTICE" >&2
+  exit 1
+fi
+REPLACED_STATUS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status)
+if [[ "$REPLACED_STATUS" != *"pod $REPLACED_POD replaced by $NEW_POD"* ]]; then
+  echo "ERROR: expected status to keep explaining the replaced pod, got:" >&2
+  echo "$REPLACED_STATUS" >&2
+  exit 1
+fi
+REPLACED_JSON=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --output json)
+if [[ "$REPLACED_JSON" != *'"previousPodEnd"'* || "$REPLACED_JSON" != *"\"name\": \"$REPLACED_POD\""* ]]; then
+  echo "ERROR: expected previousPodEnd in status json, got:" >&2
+  echo "$REPLACED_JSON" >&2
+  exit 1
+fi
+echo "An intentional up supersedes the replacement report"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m >/dev/null
+AFTER_UP_STATUS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status)
+if [[ "$AFTER_UP_STATUS" == *"replaced by"* ]]; then
+  echo "ERROR: replacement report must be cleared by an intentional up, got:" >&2
+  echo "$AFTER_UP_STATUS" >&2
+  exit 1
+fi
+echo "controller pod replacement report verified"
 
 echo "Tearing down deployment session"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes
