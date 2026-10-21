@@ -23,7 +23,7 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-3. GitHub Actions `Release` workflow builds binaries for `linux/amd64`, `linux/arm64`, `darwin/amd64`, and `darwin/arm64`.
+3. GitHub Actions `Release` workflow first requires successful `CI` and `E2E Kind` runs for the tagged commit (both run on every push to `main`), then builds binaries for `linux/amd64`, `linux/arm64`, `darwin/amd64`, and `darwin/arm64`. If GitHub dropped the push event so a `main` commit has no runs, the hourly `Main Checks Sweep` workflow dispatches the missing ones; you can also start `CI` or `E2E Kind` manually on that ref (workflow_dispatch) and re-run the release.
 4. Workflow publishes `okdev_<os>_<arch>.tar.gz` assets plus `checksums.txt`.
 5. Workflow signs a GitHub build provenance attestation for every archive (Sigstore keyless, `actions/attest-build-provenance`). `okdev upgrade` refuses archives without one; anyone can check an archive with:
 

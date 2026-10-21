@@ -1,0 +1,61 @@
+name: Main Checks Sweep
+
+# GitHub occasionally drops push events (v0.14.0's faa9878 merged during a
+# webhook-delivery incident and got no CI, E2E or Docs runs at all). Nothing
+# noticed until release. This sweep finds a main head commit with no run of a
+# required workflow and dispatches it, so the release gate (verify-checks)
+# finds the runs it needs.
+#
+# It only fills gaps: a workflow that has any run for the commit (queued,
+# running, failed or passed) is left alone, so it never re-runs the expensive
+# E2E suite or masks a real failure.
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: main-checks-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch required workflows missing for the main head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Give a normal push time to create its runs before treating them as
+          # missing.
+          GRACE_MINUTES: "15"
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha')
+          committed=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head}" --jq '.commit.committer.date')
+          age_minutes=$(( ( $(date -u +%s) - $(date -u -d "${committed}" +%s) ) / 60 ))
+          echo "main is ${head} (${age_minutes}m old)"
+          if [ "${age_minutes}" -lt "${GRACE_MINUTES}" ]; then
+            echo "Within the ${GRACE_MINUTES}m grace period; nothing to do yet."
+            exit 0
+          fi
+          for workflow in ci.yml e2e-kind.yml; do
+            runs=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?head_sha=${head}&per_page=1" --jq '.total_count')
+            if [ "${runs}" -gt 0 ]; then
+              echo "${workflow}: ${runs} run(s) for ${head}"
+              continue
+            fi
+            # Dispatch runs on the branch head; re-check it did not move, or
+            # the run would land on a newer commit that has its own push runs.
+            current=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha')
+            if [ "${current}" != "${head}" ]; then
+              echo "main moved to ${current}; the next sweep handles it."
+              exit 0
+            fi
+            echo "::warning::${workflow} has no run for main ${head}; its push event was likely lost. Dispatching."
+            gh workflow run "${workflow}" --ref main
+          done
