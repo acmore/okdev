@@ -1,0 +1,82 @@
+name: Verify Checks
+
+# Proves that a workflow (CI, E2E Kind) already passed for a specific commit,
+# so the release path does not have to re-run it.
+#
+# Tagging a commit that is already on main means the identical tree has just
+# been validated there — v0.11.0's tag run and its main run were both
+# bafdd68. Re-running E2E cost ~20 minutes and produced no new signal, and
+# because the suite can flake it was a second chance to block a good release
+# rather than added confidence.
+#
+# A tag pointing at a commit that never ran a required workflow is the case
+# this must catch: it fails loudly instead of publishing from an unvalidated
+# tree. That includes a main commit whose push event GitHub dropped (v0.14.0's
+# faa9878 got no runs during a webhook-delivery incident); main-checks-sweep
+# re-dispatches those, and both required workflows accept workflow_dispatch.
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: Commit that must have a successful run
+        required: true
+        type: string
+      workflow:
+        description: Workflow file that must have passed (e.g. ci.yml)
+        required: true
+        type: string
+      timeout_minutes:
+        description: How long to wait for an in-flight run on that commit
+        required: false
+        default: 45
+        type: number
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Require a successful ${{ inputs.workflow }} run for ${{ inputs.sha }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.sha }}
+          WORKFLOW: ${{ inputs.workflow }}
+          DEADLINE_MINUTES: ${{ inputs.timeout_minutes }}
+        run: |
+          set -euo pipefail
+          runs_url="repos/${GITHUB_REPOSITORY}/actions/workflows/${WORKFLOW}/runs"
+          deadline=$(( SECONDS + DEADLINE_MINUTES * 60 ))
+
+          count_runs() {
+            gh api "${runs_url}?head_sha=${SHA}&status=$1&per_page=1" --jq '.total_count'
+          }
+
+          while :; do
+            # A commit can have several runs (a re-run after a flake). Any
+            # success is proof the tree passed, whichever attempt produced it.
+            if [ "$(count_runs success)" -gt 0 ]; then
+              echo "${WORKFLOW} passed for ${SHA}"
+              exit 0
+            fi
+
+            pending=$(( $(count_runs in_progress) + $(count_runs queued) ))
+            if [ "${pending}" -gt 0 ]; then
+              if [ "${SECONDS}" -ge "${deadline}" ]; then
+                echo "::error::${WORKFLOW} is still running for ${SHA} after ${DEADLINE_MINUTES}m. Re-run this workflow once it finishes." >&2
+                exit 1
+              fi
+              echo "${WORKFLOW} in flight for ${SHA}; waiting..."
+              sleep 30
+              continue
+            fi
+
+            if [ "$(count_runs failure)" -gt 0 ]; then
+              echo "::error::${WORKFLOW} failed for ${SHA} and no later run succeeded. Fix it, or re-run ${WORKFLOW} on this commit if it was a flake." >&2
+              exit 1
+            fi
+
+            echo "::error::No ${WORKFLOW} run found for ${SHA}. It runs on pushes to main; if the push event was lost, or the tag points at a commit that never reached main, run ${WORKFLOW} manually on this ref (workflow_dispatch), then re-run this job." >&2
+            exit 1
+          done

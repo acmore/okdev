@@ -1,28 +1,39 @@
 name: Release
 
 # Triggered by the tag itself rather than by the E2E Kind run that used to
-# follow it. The gate is unchanged in strength — nothing publishes until a
-# successful E2E Kind run exists for this exact commit — but a tag on a commit
-# main already validated no longer re-runs the suite to learn what it knows.
+# follow it. Nothing publishes until successful CI and E2E Kind runs exist for
+# this exact commit, but a tag on a commit main already validated no longer
+# re-runs the suites to learn what they know.
 on:
   push:
     tags:
       - "v*"
 
 jobs:
-  verify-e2e:
-    uses: ./.github/workflows/verify-e2e.yml
-    # A called workflow cannot ask for more than its caller was given, and a
-    # caller that grants nothing gives it nothing — the whole run is rejected
-    # before any job starts. verify-e2e reads other runs, so grant that here.
+  # A called workflow cannot ask for more than its caller was given, and a
+  # caller that grants nothing gives it nothing — the whole run is rejected
+  # before any job starts. The verify jobs read other runs, so grant that here.
+  verify-ci:
+    uses: ./.github/workflows/verify-checks.yml
     permissions:
       actions: read
       contents: read
     with:
       sha: ${{ github.sha }}
+      workflow: ci.yml
+      timeout_minutes: 20
+
+  verify-e2e:
+    uses: ./.github/workflows/verify-checks.yml
+    permissions:
+      actions: read
+      contents: read
+    with:
+      sha: ${{ github.sha }}
+      workflow: e2e-kind.yml
 
   build:
-    needs: verify-e2e
+    needs: [verify-ci, verify-e2e]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -61,7 +72,7 @@ jobs:
   # rather than from its own tag trigger — see syncthing-image.yml for why a
   # push trigger cannot express "tags, regardless of which paths changed".
   sidecar-image:
-    needs: verify-e2e
+    needs: [verify-ci, verify-e2e]
     uses: ./.github/workflows/syncthing-image.yml
     permissions:
       contents: read

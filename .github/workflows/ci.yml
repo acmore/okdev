@@ -4,6 +4,9 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Lets a commit whose push event was lost get its CI run (main-checks-sweep
+  # does this automatically; the release gate requires it).
+  workflow_dispatch:
 
 jobs:
   test:
