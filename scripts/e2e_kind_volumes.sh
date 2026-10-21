@@ -86,6 +86,9 @@ spec:
           mountPath: /workspace
 $volumes
 EOF
+  # Both projects share the sibling $SYNC_DIR, outside each project
+  # directory: a local reach okdev requires approving explicitly.
+  "$OKDEV_BIN" --config "$dir/.okdev/okdev.yaml" trust --yes >/dev/null
 }
 
 live_pod() {
