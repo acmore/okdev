@@ -228,7 +228,10 @@ fi
 # Issue #222: the same guard must cover a FOREGROUND run. The failure being
 # prevented — running pre-edit code because the channel is dead — is identical,
 # and a foreground experiment that hits it returns a plausible-looking result
-# instead of crashing.
+# instead of crashing. An identical warning is printed at most once per ten
+# minutes (#343), so clear the detach launch's record to check this path on
+# its own.
+rm -f "$SYNC_HOME/sync.warning"
 FOREGROUND_WARN=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- true 2>&1 >/dev/null)
 if [[ "$FOREGROUND_WARN" != *"may run stale code"* ]]; then
   echo "ERROR: expected a foreground exec on a dead sync channel to warn about stale code" >&2
@@ -239,6 +242,13 @@ fi
 if [[ "$FOREGROUND_WARN" == *"detached job"* ]]; then
   echo "ERROR: foreground warning must not describe the run as a detached job:" >&2
   echo "$FOREGROUND_WARN" >&2
+  exit 1
+fi
+# The same warning is not repeated within the window.
+REPEAT_WARN=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- true 2>&1 >/dev/null)
+if [[ "$REPEAT_WARN" == *"may run stale code"* ]]; then
+  echo "ERROR: expected the repeated sync warning to be suppressed within the window, got:" >&2
+  echo "$REPEAT_WARN" >&2
   exit 1
 fi
 set +e
