@@ -70,12 +70,12 @@ func TestSyncExitEvidenceMatchesProcessAndOmitsRawError(t *testing.T) {
 	}
 }
 
-func TestSyncRepeatedWarningsRemainVisibleAndReset(t *testing.T) {
+func TestSyncRepeatedWarningsAreRateLimitedAndReset(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	full := syncPreflightWarning("test", syncHealthStopped, "dead", "exec")
-	compact := syncPreflightWarning("test", syncHealthStopped, "dead", "exec")
-	if !strings.Contains(full, "warning:") || !strings.Contains(compact, "sync still unhealthy") || !strings.Contains(compact, "may run stale code") || len(compact) >= len(full) {
-		t.Fatalf("full=%q compact=%q", full, compact)
+	repeated := syncPreflightWarning("test", syncHealthStopped, "dead", "exec")
+	if !strings.Contains(full, "warning:") || repeated != "" {
+		t.Fatalf("full=%q repeated=%q", full, repeated)
 	}
 	changed := syncPreflightWarning("test", syncHealthStale, "API lost", "exec")
 	if strings.Contains(changed, "still unhealthy") {
@@ -86,7 +86,7 @@ func TestSyncRepeatedWarningsRemainVisibleAndReset(t *testing.T) {
 		t.Fatal(got)
 	}
 	path := syncDiagnosticPath("test", "sync.warning")
-	if err := writeSyncDiagnostic(path, []byte(fmt.Sprintf("%d\nstopped\ndead", time.Now().Add(-2*time.Minute).Unix()))); err != nil {
+	if err := writeSyncDiagnostic(path, []byte(fmt.Sprintf("%d\nstopped\ndead", time.Now().Add(-11*time.Minute).Unix()))); err != nil {
 		t.Fatal(err)
 	}
 	if got := syncPreflightWarning("test", syncHealthStopped, "dead", "exec"); got != full {
@@ -94,8 +94,10 @@ func TestSyncRepeatedWarningsRemainVisibleAndReset(t *testing.T) {
 	}
 }
 
-func TestSyncRepeatedStoppedWarningKeepsExitCause(t *testing.T) {
-	// #324: the compact repeat must still say why the supervisor stopped.
+func TestSyncStoppedWarningCarriesExitCause(t *testing.T) {
+	// #324: the warning must say why the supervisor stopped. Repeats within
+	// the rate-limit window are suppressed (#343), so the one that prints
+	// carries the cause.
 	t.Setenv("HOME", t.TempDir())
 	recordSyncExit("test", "", context.DeadlineExceeded)
 	pidPath, err := syncthingPIDStatusPath("test")
@@ -108,10 +110,9 @@ func TestSyncRepeatedStoppedWarningKeepsExitCause(t *testing.T) {
 	reason := stoppedSyncReason("test", os.Getpid())
 	full := syncPreflightWarning("test", syncHealthStopped, reason, "exec")
 	if !strings.Contains(full, "sync command timed out") {
-		t.Fatalf("full warning dropped the exit cause: %q", full)
+		t.Fatalf("warning dropped the exit cause: %q", full)
 	}
-	compact := syncPreflightWarning("test", syncHealthStopped, reason, "exec")
-	if !strings.Contains(compact, "sync still unhealthy (stopped: sync command timed out)") {
-		t.Fatalf("compact warning dropped the exit cause: %q", compact)
+	if repeat := syncPreflightWarning("test", syncHealthStopped, reason, "exec"); repeat != "" {
+		t.Fatalf("repeat within the window must be suppressed, got %q", repeat)
 	}
 }

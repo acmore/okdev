@@ -520,9 +520,18 @@ if [[ "$EXEC_DEFAULT_NONZERO" == *"every pod"* ]]; then
   echo "$EXEC_DEFAULT_NONZERO" >&2
   exit 1
 fi
-if [[ "$EXEC_DEFAULT_NONZERO" != *"ran on the 1 targeted pod"* ]]; then
-  echo "ERROR: expected the targeted-count delivery note, got:" >&2
+# The default one-line summary names exactly the pods that ran (#343).
+if [[ "$(grep -o 'exit 3 (remote) on ' <<<"$EXEC_DEFAULT_NONZERO" | wc -l | tr -d ' ')" -ne 1 ]]; then
+  echo "ERROR: expected the summary to name exactly the 1 targeted pod, got:" >&2
   echo "$EXEC_DEFAULT_NONZERO" >&2
+  exit 1
+fi
+set +e
+EXEC_DEFAULT_NONZERO_VERBOSE=$("$OKDEV_BIN" --verbose --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'exit 3' 2>&1)
+set -e
+if [[ "$EXEC_DEFAULT_NONZERO_VERBOSE" != *"ran on the 1 targeted pod"* ]]; then
+  echo "ERROR: expected the targeted-count delivery note under --verbose, got:" >&2
+  echo "$EXEC_DEFAULT_NONZERO_VERBOSE" >&2
   exit 1
 fi
 echo "selector-less exec failure summary verified (1 targeted pod, no coverage claim)"
@@ -552,14 +561,24 @@ if [[ "$EXEC_NONZERO_STATUS" -ne 1 ]]; then
   echo "$EXEC_NONZERO_OUTPUT" >&2
   exit 1
 fi
-if [[ "$EXEC_NONZERO_OUTPUT" != *"COMMAND EXITED NON-ZERO"* || "$EXEC_NONZERO_OUTPUT" == *"FAILED:"* ]]; then
-  echo "ERROR: expected command-result framing without FAILED header" >&2
+# Default: one line naming every pod's remote exit (#343).
+if [[ "$(grep -o 'exit 3 (remote) on ' <<<"$EXEC_NONZERO_OUTPUT" | wc -l | tr -d ' ')" -ne 3 || "$EXEC_NONZERO_OUTPUT" == *"FAILED:"* ]]; then
+  echo "ERROR: expected a one-line remote exit summary for all 3 pods without FAILED header" >&2
   echo "$EXEC_NONZERO_OUTPUT" >&2
   exit 1
 fi
-if [[ "$EXEC_NONZERO_OUTPUT" != *"delivered and ran on all 3 targeted pods"* ]]; then
+# --verbose keeps the full report, including the delivered-vs-failed clarifier.
+set +e
+EXEC_NONZERO_VERBOSE=$("$OKDEV_BIN" --verbose --config "$CFG_PATH" --session "$SESSION_NAME" exec --all --no-tty -- sh -lc 'exit 3' 2>&1)
+set -e
+if [[ "$EXEC_NONZERO_VERBOSE" != *"COMMAND EXITED NON-ZERO"* || "$EXEC_NONZERO_VERBOSE" == *"FAILED:"* ]]; then
+  echo "ERROR: expected --verbose command-result framing without FAILED header" >&2
+  echo "$EXEC_NONZERO_VERBOSE" >&2
+  exit 1
+fi
+if [[ "$EXEC_NONZERO_VERBOSE" != *"delivered and ran on all 3 targeted pods"* ]]; then
   echo "ERROR: expected the delivered-vs-failed clarifier with the targeted count" >&2
-  echo "$EXEC_NONZERO_OUTPUT" >&2
+  echo "$EXEC_NONZERO_VERBOSE" >&2
   exit 1
 fi
 # A bare pkill matching nothing exits 1 and gets the benign-cleanup signpost.

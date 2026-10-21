@@ -99,19 +99,6 @@ func stoppedSyncCause(sessionName string, pid int) string {
 	return "exit cause unavailable"
 }
 
-// syncWarningCause is the one-line cause kept in the compact repeat warning.
-func syncWarningCause(sessionName string, status syncHealthStatus, reason string) string {
-	if status != syncHealthStopped {
-		return reason
-	}
-	pidPath, err := syncthingPIDStatusPath(sessionName)
-	if err != nil {
-		return stoppedSyncCause(sessionName, 0)
-	}
-	pid, _ := readSyncthingPID(pidPath)
-	return stoppedSyncCause(sessionName, pid)
-}
-
 func waitForReadySync(ctx context.Context, sessionName string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -144,8 +131,8 @@ func syncPreflightWarning(sessionName string, status syncHealthStatus, reason, s
 		stamp, previous, ok := strings.Cut(string(data), "\n")
 		at, _ := strconv.ParseInt(stamp, 10, 64)
 		elapsed := time.Since(time.Unix(at, 0))
-		if ok && previous == key && elapsed >= 0 && elapsed < time.Minute {
-			return fmt.Sprintf("warning: sync still unhealthy (%s: %s); command may run stale code; see `okdev status --details`", status, syncWarningCause(sessionName, status, reason))
+		if ok && previous == key && elapsed >= 0 && elapsed < 10*time.Minute {
+			return ""
 		}
 	}
 	_ = writeSyncDiagnostic(path, []byte(strconv.FormatInt(time.Now().Unix(), 10)+"\n"+key))

@@ -113,6 +113,9 @@ func execSyncPreflight(cmd *cobra.Command, cc *commandContext, requireSync bool,
 	}
 	status, reason := checkSyncHealth(cc.sessionName)
 	if !requireSync {
+		if suppressed, _ := cmd.Flags().GetBool("no-sync-warning"); suppressed {
+			return nil
+		}
 		if warn := syncPreflightWarning(cc.sessionName, status, reason, subject); warn != "" {
 			fmt.Fprintln(cmd.ErrOrStderr(), warn)
 		}

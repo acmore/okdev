@@ -7,10 +7,85 @@ import (
 	"github.com/acmore/okdev/internal/kube"
 	"io"
 	k8sexec "k8s.io/client-go/util/exec"
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestExecWarnsWhenPipedInputIsNotForwarded(t *testing.T) {
+	// A heredoc arrives as a pipe that already holds the script.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	if _, err := w.Write([]byte("print('hi')\n")); err != nil {
+		t.Fatal(err)
+	}
+	cmd := newExecCmd(&Options{ConfigPath: "/does/not/exist"})
+	var stderr bytes.Buffer
+	cmd.SetIn(r)
+	cmd.SetErr(&stderr)
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"--", "python3", "-"})
+	_ = cmd.Execute()
+	if !strings.Contains(stderr.String(), "stdin is piped or redirected but -i/--stdin was not given") {
+		t.Fatalf("missing stdin hint: %q", stderr.String())
+	}
+	// The check must not consume what the user piped in.
+	buf := make([]byte, 64)
+	n, _ := r.Read(buf)
+	if string(buf[:n]) != "print('hi')\n" {
+		t.Fatalf("stdin consumed by the check: %q", buf[:n])
+	}
+}
+
+func TestPipedExecInputOnlyCountsPendingData(t *testing.T) {
+	// Automation commonly hands okdev an empty pipe or /dev/null; those
+	// must stay quiet (#343).
+	empty, emptyW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer empty.Close()
+	defer emptyW.Close()
+	if pipedExecInput(empty) {
+		t.Fatal("empty pipe reported as pending input")
+	}
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devNull.Close()
+	if pipedExecInput(devNull) {
+		t.Fatal("/dev/null reported as pending input")
+	}
+	dir := t.TempDir()
+	emptyFile, err := os.Create(dir + "/empty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer emptyFile.Close()
+	if pipedExecInput(emptyFile) {
+		t.Fatal("empty redirected file reported as pending input")
+	}
+	if err := os.WriteFile(dir+"/script", []byte("echo hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script, err := os.Open(dir + "/script")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer script.Close()
+	if !pipedExecInput(script) {
+		t.Fatal("`< file` redirect not reported")
+	}
+	if pipedExecInput(strings.NewReader("")) || !pipedExecInput(strings.NewReader("x")) {
+		t.Fatal("in-memory readers must follow their pending length")
+	}
+}
 
 type unreadableExecInput struct{ t *testing.T }
 

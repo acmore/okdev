@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/acmore/okdev/internal/session"
 )
@@ -20,12 +21,19 @@ func TestNewStatusCmdOutputsJSON(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/v1/namespaces/demo/pods":
-			_, _ = io.WriteString(w, `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"namespace":"demo","name":"okdev-sess-a","creationTimestamp":"2026-03-29T00:00:00Z","labels":{"okdev.io/session":"sess-a","okdev.io/owner":"alice","okdev.io/workload-type":"pod"}},"status":{"phase":"Running","containerStatuses":[{"name":"dev","ready":true,"restartCount":1}]}}]}`)
+			_, _ = io.WriteString(w, `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"namespace":"demo","name":"okdev-sess-a","creationTimestamp":"2026-03-29T00:00:00Z","labels":{"okdev.io/session":"sess-a","okdev.io/owner":"alice","okdev.io/workload-type":"pod"}},"spec":{"nodeName":"node-b"},"status":{"phase":"Running","containerStatuses":[{"name":"dev","ready":true,"restartCount":1}]}}]}`)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+	if err := session.SaveInfo(session.Info{Name: "sess-a", Namespace: "demo", KubeContext: "dev", RunID: "run-a", Owner: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SaveLastSeen("sess-a", session.LastSeen{At: time.Now(), Namespace: "demo", Context: "dev", RunID: "run-a", Pods: []session.LastSeenPod{{Name: "okdev-sess-a", Node: "node-a"}}}); err != nil {
+		t.Fatal(err)
+	}
 
 	t.Setenv("KUBECONFIG", writeCLITLSTestKubeconfig(t, server))
 	cfgPath := writeCLIConfig(t, "demo")
@@ -44,7 +52,7 @@ func TestNewStatusCmdOutputsJSON(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
 		t.Fatalf("json unmarshal: %v\n%s", err, out.String())
 	}
-	if len(rows) != 1 || rows[0]["session"] != "sess-a" || rows[0]["phase"] != "Running" {
+	if len(rows) != 1 || rows[0]["session"] != "sess-a" || rows[0]["phase"] != "Running" || rows[0]["node"] != "node-b" || rows[0]["nodeChangedFrom"] != "node-a" {
 		t.Fatalf("unexpected status rows: %#v", rows)
 	}
 }

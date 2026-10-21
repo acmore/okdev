@@ -1116,7 +1116,13 @@ func upSetup(state *upState) error {
 		state.ui.stepDone("sync readiness", "local API reachable and peer connected")
 	}
 	state.ui.printWarnings()
-	state.ui.printReadyCard(state.command.sessionName, state.command.namespace, target.PodName, sshSummary, syncSummary, state.command.cfg.Spec.Ports, state.syncPairs, syncModeSymbol,
+	var storage []string
+	if pod, err := state.command.kube.GetPod(state.ctx, state.command.namespace, target.PodName); err == nil {
+		storage = upStorageLines(pod, target.Container)
+	} else {
+		slog.Debug("could not inspect storage mounts after up", "pod", target.PodName, "error", err)
+	}
+	state.ui.printReadyCard(state.command.sessionName, state.command.namespace, target.PodName, sshSummary, syncSummary, state.command.cfg.Spec.Ports, state.syncPairs, syncModeSymbol, storage,
 		buildUpNextSteps(
 			len(state.syncPairs) > 0,
 			postSyncCmd != "",
@@ -1166,7 +1172,9 @@ func refreshSessionLastSeen(state *upState) {
 		slog.Debug("skipped last-seen refresh after up", "session", state.command.sessionName, "pods", len(pods), "error", err)
 		return
 	}
-	if err := session.SaveLastSeen(state.command.sessionName, buildLastSeenSnapshot(info, state.command.namespace, pods)); err != nil {
+	snapshot := buildLastSeenSnapshot(info, state.command.namespace, pods)
+	snapshot.NodeChanges = statusNodeChanges(sessionView{Session: info.Name, Namespace: state.command.namespace, Owner: info.Owner, Pods: pods}, info.KubeContext)
+	if err := session.SaveLastSeen(state.command.sessionName, snapshot); err != nil {
 		slog.Debug("failed to refresh last-seen snapshot after up", "session", state.command.sessionName, "error", err)
 	}
 }
@@ -2213,7 +2221,7 @@ func (u *upUI) warnWriter() io.Writer {
 	return upWarnSink{ui: u}
 }
 
-func (u *upUI) printReadyCard(sessionName, namespace, pod, sshSummary, syncSummary string, ports []config.PortMapping, syncPairs []syncengine.Pair, syncModeSymbol string, nextSteps []nextStepHint) {
+func (u *upUI) printReadyCard(sessionName, namespace, pod, sshSummary, syncSummary string, ports []config.PortMapping, syncPairs []syncengine.Pair, syncModeSymbol string, storage []string, nextSteps []nextStepHint) {
 	u.stopActive()
 	fmt.Fprintln(u.out, "\n== Ready ==")
 	fmt.Fprintf(u.out, "session:   %s\n", sessionName)
@@ -2233,6 +2241,14 @@ func (u *upUI) printReadyCard(sessionName, namespace, pod, sshSummary, syncSumma
 			if summary, ok := portMappingSummary(p); ok {
 				fmt.Fprintf(u.out, "- %s\n", summary)
 			}
+		}
+	}
+	// Storage describes the session, like paths and forwards: it belongs in
+	// the card, before "next:", which stays the card's last section.
+	if len(storage) > 0 {
+		fmt.Fprintln(u.out, "storage:")
+		for _, line := range storage {
+			fmt.Fprintf(u.out, "- %s\n", line)
 		}
 	}
 	fmt.Fprintln(u.out, "next:")
