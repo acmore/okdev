@@ -711,3 +711,27 @@ func TestLoadOrCreateHostKeyIsStableAndRaceSafe(t *testing.T) {
 		t.Fatalf("temp files left behind: %v", leftovers)
 	}
 }
+
+func TestServerHostKeyFallsBackWhenPersistentKeyIsUnusable(t *testing.T) {
+	// A corrupt key file must not keep sshd from starting for the life of
+	// the pod; the server degrades to an ephemeral key.
+	path := filepath.Join(t.TempDir(), "ssh_host_ed25519_key")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadOrCreateHostKey(path); err == nil {
+		t.Fatal("expected the corrupt key to be rejected")
+	}
+	if serverHostKey(path) == nil {
+		t.Fatal("expected an ephemeral fallback key")
+	}
+	// A usable persistent key is presented as-is.
+	good := filepath.Join(t.TempDir(), "good_key")
+	want, err := loadOrCreateHostKey(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := serverHostKey(good); string(got.PublicKey().Marshal()) != string(want.PublicKey().Marshal()) {
+		t.Fatal("persistent key not used")
+	}
+}
