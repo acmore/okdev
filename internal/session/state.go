@@ -77,6 +77,31 @@ func stateRootDir() (string, error) {
 	return filepath.Join(home, stateDirName), nil
 }
 
+// EnsureStateRoot makes ~/.okdev owner-only, creating it if needed and
+// tightening an existing one. Everything okdev keeps locally lives beneath it
+// (session state, logs that name project files and commands, syncthing homes,
+// control sockets), so the root's mode is the one control that covers every
+// file regardless of the mode it was written with.
+func EnsureStateRoot() error {
+	root, err := stateRootDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return fmt.Errorf("create state directory: %w", err)
+	}
+	info, err := os.Stat(root)
+	if err != nil {
+		return fmt.Errorf("stat state directory: %w", err)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(root, 0o700); err != nil {
+			return fmt.Errorf("restrict state directory permissions: %w", err)
+		}
+	}
+	return nil
+}
+
 func sessionsRootDir() (string, error) {
 	root, err := stateRootDir()
 	if err != nil {
@@ -91,7 +116,7 @@ func SessionDir(name string) (string, error) {
 		return "", err
 	}
 	dir := filepath.Join(root, sessionsDirName, sanitize(name))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create session directory: %w", err)
 	}
 	return dir, nil
@@ -103,7 +128,7 @@ func SyncthingDir(name string) (string, error) {
 		return "", err
 	}
 	path := filepath.Join(dir, syncthingDirName)
-	if err := os.MkdirAll(path, 0o755); err != nil {
+	if err := os.MkdirAll(path, 0o700); err != nil {
 		return "", fmt.Errorf("create syncthing directory: %w", err)
 	}
 	return path, nil
