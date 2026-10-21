@@ -18,7 +18,10 @@ RUN apk add --no-cache ca-certificates curl tar util-linux
 # cannot vouch for a substituted one.
 COPY internal/syncthing/release-keys.asc /tmp/syncthing-release-keys.asc
 
-# Install syncthing. gpg's exit status is not used: Syncthing's signed files
+# Install syncthing. gpg leaves gpg-agent/keyboxd running in GNUPGHOME and
+# they delete their own sockets on exit, so they are stopped before the
+# directory is removed; otherwise rm races them and fails the build.
+# gpg's exit status is not used: Syncthing's signed files
 # carry trailing data that makes gpg exit 2 (NODATA) after verifying both
 # signatures, so the decision rests on the status lines alone, against a
 # keyring that holds only the pinned keys.
@@ -42,6 +45,7 @@ RUN apk add --no-cache --virtual .verify gnupg \
     && (cd /tmp && grep " ${archive}$" sha256sum.txt | sha256sum -c -) \
     && tar -xzf "/tmp/${archive}" -C /tmp \
     && install -m 0755 "/tmp/syncthing-${os}-${syncthing_arch}-${SYNCTHING_VERSION}/syncthing" /usr/local/bin/syncthing \
+    && gpgconf --kill all \
     && rm -rf /tmp/syncthing* /tmp/sha256sum.txt* /tmp/gpg-status "$GNUPGHOME" \
     && apk del .verify
 
