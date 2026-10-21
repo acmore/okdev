@@ -302,21 +302,21 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	// Mappings removed from the config leave their syncthing folders behind
 	// on both sides, silently continuing to sync; drop managed folders that
 	// no longer correspond to a configured pair.
-	// The channel is already converged here, so a failed prune is only a
-	// warning: stale folders are retried on the next sync start, while
-	// returning would tear down the channel that just came up (#324).
+	// A failed prune must stop this channel: removed mappings would otherwise
+	// keep syncing, and persisting the new config hash would hide the failure.
 	keepFolderIDs := make(map[string]bool, len(folders))
 	for _, folder := range folders {
 		keepFolderIDs[folder.id] = true
 	}
 	pruneCtx, pruneCancel := context.WithTimeout(runtimeCtx, syncthingBootstrapTimeout)
-	if err := pruneManagedSessionFoldersFn(pruneCtx, localBase, localKey, sessionName, keepFolderIDs); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: prune stale local sync folders: %v\n", err)
-	}
-	if err := pruneManagedSessionFoldersFn(pruneCtx, remoteBase, remoteKey, sessionName, keepFolderIDs); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: prune stale remote sync folders: %v\n", err)
+	pruneErr := pruneManagedSessionFoldersFn(pruneCtx, localBase, localKey, sessionName, keepFolderIDs)
+	if pruneErr == nil {
+		pruneErr = pruneManagedSessionFoldersFn(pruneCtx, remoteBase, remoteKey, sessionName, keepFolderIDs)
 	}
 	pruneCancel()
+	if pruneErr != nil {
+		return fmt.Errorf("prune stale sync folders: %w", pruneErr)
+	}
 
 	if err := saveSyncthingConfigHashFn(sessionName, syncthingSessionConfigHash(cfg, pairs)); err != nil {
 		return fmt.Errorf("persist syncthing config state: %w", err)

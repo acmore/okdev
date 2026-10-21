@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -390,13 +391,18 @@ func TestRunSyncthingSyncSurvivesTwoPhaseLongerThanBootstrapTimeout(t *testing.T
 	}
 }
 
-func TestRunSyncthingSyncPruneFailureIsNotFatal(t *testing.T) {
+func TestRunSyncthingSyncPruneFailureStopsSync(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	stubRunSyncthingSyncDeps(t)
 
 	pruneManagedSessionFoldersFn = func(context.Context, string, string, string, map[string]bool) error {
 		return context.DeadlineExceeded
+	}
+	hashSaved := false
+	saveSyncthingConfigHashFn = func(string, string) error {
+		hashSaved = true
+		return nil
 	}
 	healthLoopReached := false
 	runSyncHealthLoopFn = func(<-chan os.Signal, io.Writer, syncHealthChecker) { healthLoopReached = true }
@@ -406,19 +412,15 @@ func TestRunSyncthingSyncPruneFailureIsNotFatal(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetContext(context.Background())
 	cmd.SetOut(io.Discard)
-	var stderr strings.Builder
-	cmd.SetErr(&stderr)
+	cmd.SetErr(io.Discard)
 
 	err := runSyncthingSync(cmd, &Options{}, cfg, "default", "sess-prune", "", []syncengine.Pair{
 		{Local: filepath.Join(home, "code"), Remote: "/workspace", Direction: "bi"},
 	}, nil)
-	if err != nil {
-		t.Fatalf("prune failure must not stop sync: %v", err)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected prune failure, got %v", err)
 	}
-	if !healthLoopReached {
-		t.Fatal("sync must reach the health loop after a prune failure")
-	}
-	if !strings.Contains(stderr.String(), "warning: prune stale local sync folders") || !strings.Contains(stderr.String(), "warning: prune stale remote sync folders") {
-		t.Fatalf("expected prune warnings, got %q", stderr.String())
+	if hashSaved || healthLoopReached {
+		t.Fatalf("failed prune must not mark sync healthy: hashSaved=%v healthLoopReached=%v", hashSaved, healthLoopReached)
 	}
 }
