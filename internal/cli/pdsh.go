@@ -24,6 +24,7 @@ import (
 	"github.com/acmore/okdev/internal/workload"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"golang.org/x/sys/unix"
 	k8sexec "k8s.io/client-go/util/exec"
 )
 
@@ -337,16 +338,33 @@ func newExecCmd(opts *Options) *cobra.Command {
 	return cmd
 }
 
+// pipedExecInput reports whether local stdin already holds data that a
+// command without -i would silently drop (#342): a heredoc or `< file`.
+// Automation often runs okdev with an empty pipe for stdin (subprocess
+// input=b"", CI runners); warning there would print on every call (#343),
+// so only pending bytes count. The check never consumes stdin. A producer
+// that writes after okdev starts can be missed, which only costs the hint.
 func pipedExecInput(r io.Reader) bool {
 	if isTerminalReader(r) {
 		return false
 	}
 	f, ok := r.(*os.File)
 	if !ok {
-		return true
+		pending, ok := r.(interface{ Len() int })
+		return ok && pending.Len() > 0
 	}
 	info, err := f.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice == 0
+	if err != nil {
+		return false
+	}
+	switch mode := info.Mode(); {
+	case mode.IsRegular():
+		return info.Size() > 0
+	case mode&(os.ModeNamedPipe|os.ModeSocket) != 0:
+		n, err := unix.IoctlGetInt(int(f.Fd()), fionread)
+		return err == nil && n > 0
+	}
+	return false
 }
 
 func validateExecGatewayFlags(jsonOutput bool, gatewayPod string, requireAll bool) error {
