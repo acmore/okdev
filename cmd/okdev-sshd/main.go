@@ -34,14 +34,15 @@ func main() {
 	ensureHostKey := flag.Bool("ensure-host-key", false, "Create the host key if missing, print its public key in authorized_keys format, and exit")
 	flag.Parse()
 
-	hostKey, err := loadOrCreateHostKey(*hostKeyPath)
-	if err != nil {
-		log.Fatalf("host key: %v", err)
-	}
 	if *ensureHostKey {
+		hostKey, err := loadOrCreateHostKey(*hostKeyPath)
+		if err != nil {
+			log.Fatalf("host key: %v", err)
+		}
 		fmt.Print(string(gossh.MarshalAuthorizedKey(hostKey.PublicKey())))
 		return
 	}
+	hostKey := serverHostKey(*hostKeyPath)
 
 	if *shell == "" {
 		*shell = detectShell()
@@ -62,6 +63,29 @@ func main() {
 // container restarts, new with every pod. A stable key is what lets peers pin
 // it; an ephemeral one forced every client to skip host-key checks.
 const defaultHostKeyPath = "/var/okdev/ssh_host_ed25519_key"
+
+// serverHostKey is the key the server presents. SSH availability wins over
+// pinning: when the persistent key cannot be loaded or created (a corrupt
+// file, an unwritable runtime volume) the server still starts, on an
+// ephemeral key as it always used to. Pinned peers then fail with an explicit
+// host key mismatch instead of every SSH path in the pod going dark;
+// `--ensure-host-key` stays fail-closed, so `okdev up` reports the problem.
+func serverHostKey(path string) gossh.Signer {
+	key, err := loadOrCreateHostKey(path)
+	if err == nil {
+		return key
+	}
+	log.Printf("warning: persistent host key %s unavailable (%v); using an ephemeral key, so pinned inter-pod peers will refuse this server", path, err)
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		log.Fatalf("generate ephemeral host key: %v", err)
+	}
+	signer, err := gossh.NewSignerFromKey(priv)
+	if err != nil {
+		log.Fatalf("ephemeral host key: %v", err)
+	}
+	return signer
+}
 
 // loadOrCreateHostKey returns the persistent host key, generating it on first
 // use. The key is written to a temp file and linked into place, so a racing
