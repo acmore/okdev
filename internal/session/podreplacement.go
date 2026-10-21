@@ -21,6 +21,8 @@ const podReplacementFileName = "pod-replacement.json"
 type PodReplacement struct {
 	RunID string        `json:"runID"`
 	Ended []ReplacedPod `json:"ended"`
+	// History retains earlier replacements from the same run, oldest first.
+	History []PodReplacement `json:"history,omitempty"`
 	// ReplacedBy names the live pods that were not in the snapshot.
 	ReplacedBy []string  `json:"replacedBy,omitempty"`
 	LastSeenAt time.Time `json:"lastSeenAt,omitempty"`

@@ -124,6 +124,21 @@ func sameEndedPods(a, b session.PodReplacement) bool {
 	return true
 }
 
+func replacementAlreadyRecorded(existing, candidate session.PodReplacement) bool {
+	if existing.RunID != candidate.RunID {
+		return false
+	}
+	if sameEndedPods(existing, candidate) {
+		return true
+	}
+	for _, earlier := range existing.History {
+		if sameEndedPods(earlier, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
 // observeSessionPods is where a fresh pod list meets the cached snapshot. It
 // records any in-run pod replacement before refreshing the snapshot, because
 // the snapshot is the only local evidence of the ended pods. It returns the
@@ -134,7 +149,12 @@ func observeSessionPods(ctx context.Context, k objectEventLister, info session.I
 	if previous, err := session.LoadLastSeen(info.Name); err == nil {
 		if record, ok := detectPodReplacement(ctx, k, namespace, previous, info.RunID, pods); ok {
 			existing, _ := session.LoadPodReplacement(info.Name)
-			if !sameEndedPods(existing, record) {
+			if !replacementAlreadyRecorded(existing, record) {
+				if existing.RunID == record.RunID && len(existing.Ended) > 0 {
+					record.History = append(record.History, existing.History...)
+					existing.History = nil
+					record.History = append(record.History, existing)
+				}
 				if err := session.SavePodReplacement(info.Name, record); err != nil {
 					slog.Debug("failed to save pod-replacement record", "session", info.Name, "error", err)
 				}
@@ -201,6 +221,13 @@ func printPodReplacement(w io.Writer, record session.PodReplacement) {
 	if w == nil {
 		return
 	}
+	for _, earlier := range record.History {
+		printSinglePodReplacement(w, earlier)
+	}
+	printSinglePodReplacement(w, record)
+}
+
+func printSinglePodReplacement(w io.Writer, record session.PodReplacement) {
 	fmt.Fprintln(w, formatPodReplacement(record))
 	if mitigation := podReplacementMitigation(record.Class); mitigation != "" {
 		fmt.Fprintf(w, "  %s\n", mitigation)

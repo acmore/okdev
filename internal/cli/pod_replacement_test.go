@@ -142,6 +142,37 @@ func TestObserveSessionPodsRecordsBeforeRefreshingSnapshot(t *testing.T) {
 	}
 }
 
+func TestObserveSessionPodsRetainsMultipleReplacements(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	info := session.Info{Name: "sess-history", Namespace: "default", RunID: "run1"}
+	if err := session.SaveInfo(info); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SaveLastSeen(info.Name, session.LastSeen{
+		At: time.Now(), RunID: info.RunID, Namespace: info.Namespace,
+		Pods: []session.LastSeenPod{{Name: "first", UID: "u1", Phase: "Running"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, pod := range []kube.PodSummary{
+		{Name: "second", UID: "u2", Phase: "Running"},
+		{Name: "third", UID: "u3", Phase: "Running"},
+	} {
+		if _, newly := observeSessionPods(context.Background(), nil, info, info.Namespace, []kube.PodSummary{pod}, ""); !newly {
+			t.Fatalf("replacement by %s not recorded", pod.Name)
+		}
+	}
+	record, ok := currentSessionPodReplacement(info.Name)
+	if !ok || record.Ended[0].Name != "second" || len(record.History) != 1 || record.History[0].Ended[0].Name != "first" {
+		t.Fatalf("earlier replacement lost: %+v", record)
+	}
+	var out strings.Builder
+	printPodReplacement(&out, record)
+	if !strings.Contains(out.String(), "pod first replaced by second") || !strings.Contains(out.String(), "pod second replaced by third") {
+		t.Fatalf("status omitted replacement history: %s", out.String())
+	}
+}
+
 func TestDetectPodReplacementIgnoresRolloutRetiredPods(t *testing.T) {
 	// `up --reconcile` rolls a Deployment: the old ReplicaSet's pod goes
 	// away by design and must not be reported as an unexplained end.
