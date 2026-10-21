@@ -1124,6 +1124,11 @@ func upSetup(state *upState) error {
 			state.flags.waitHooks,
 			upSessionPodCount(state),
 		))
+	if pod, err := state.command.kube.GetPod(state.ctx, state.command.namespace, target.PodName); err == nil {
+		printUpStorageNotice(state.cmd.OutOrStdout(), pod, target.Container)
+	} else {
+		slog.Debug("could not inspect storage mounts after up", "pod", target.PodName, "error", err)
+	}
 	// Seed the snapshot for this run so the *next* end has something to
 	// explain it even if no `okdev status` ever runs (#213). Reported after
 	// the card because before it the line would scroll away under it.
@@ -1166,7 +1171,9 @@ func refreshSessionLastSeen(state *upState) {
 		slog.Debug("skipped last-seen refresh after up", "session", state.command.sessionName, "pods", len(pods), "error", err)
 		return
 	}
-	if err := session.SaveLastSeen(state.command.sessionName, buildLastSeenSnapshot(info, state.command.namespace, pods)); err != nil {
+	snapshot := buildLastSeenSnapshot(info, state.command.namespace, pods)
+	snapshot.NodeChanges = statusNodeChanges(sessionView{Session: info.Name, Namespace: state.command.namespace, Owner: info.Owner, Pods: pods}, info.KubeContext)
+	if err := session.SaveLastSeen(state.command.sessionName, snapshot); err != nil {
 		slog.Debug("failed to refresh last-seen snapshot after up", "session", state.command.sessionName, "error", err)
 	}
 }

@@ -80,6 +80,7 @@ type detailedStatusPod struct {
 	Selected        bool                           `json:"selected"`
 	PodIP           string                         `json:"podIP,omitempty"`
 	NodeName        string                         `json:"nodeName,omitempty"`
+	NodeChangedFrom string                         `json:"nodeChangedFrom,omitempty"`
 	Mounts          []detailedStatusMount          `json:"mounts,omitempty"`
 	ContainerIssues []detailedStatusContainerIssue `json:"containerIssues,omitempty"`
 	Hooks           []detailedStatusHook           `json:"hooks,omitempty"`
@@ -403,6 +404,8 @@ func buildPathSemantics(pairs []detailedStatusPathPair, mounts []detailedStatusM
 			switch mount.Persistence {
 			case "persistent":
 				survival = "survives session restart"
+			case "node-local":
+				survival = "available only on the same node"
 			case "ephemeral":
 				survival = "ephemeral in pod"
 			}
@@ -462,7 +465,7 @@ func classifyMountSource(volume corev1.Volume) (string, string) {
 	case volume.PersistentVolumeClaim != nil:
 		return "persistentVolumeClaim", "persistent"
 	case volume.HostPath != nil:
-		return "hostPath", "persistent"
+		return "hostPath", "node-local"
 	case volume.ConfigMap != nil:
 		return "configMap", "ephemeral"
 	case volume.Secret != nil:
@@ -735,6 +738,9 @@ func printDetailedStatus(w io.Writer, detail detailedStatus) {
 			if extra != "" {
 				fmt.Fprintf(w, "  %s\n", extra)
 			}
+		}
+		if pod.NodeChangedFrom != "" {
+			fmt.Fprintf(w, "  warning: node changed from %s to %s; emptyDir data is gone and hostPath data may be unavailable\n", pod.NodeChangedFrom, pod.NodeName)
 		}
 		for _, issue := range pod.ContainerIssues {
 			fmt.Fprintf(w, "  %s\n", renderContainerIssueLine(issue))

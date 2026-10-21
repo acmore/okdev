@@ -7,10 +7,30 @@ import (
 	"github.com/acmore/okdev/internal/kube"
 	"io"
 	k8sexec "k8s.io/client-go/util/exec"
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestExecWarnsWhenPipedInputIsNotForwarded(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	cmd := newExecCmd(&Options{ConfigPath: "/does/not/exist"})
+	var stderr bytes.Buffer
+	cmd.SetIn(r)
+	cmd.SetErr(&stderr)
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"--", "python3", "-"})
+	_ = cmd.Execute()
+	if !strings.Contains(stderr.String(), "stdin is piped or redirected but -i/--stdin was not given") {
+		t.Fatalf("missing stdin hint: %q", stderr.String())
+	}
+}
 
 type unreadableExecInput struct{ t *testing.T }
 

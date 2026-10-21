@@ -109,11 +109,18 @@ func newStatusCmd(opts *Options) *cobra.Command {
 			// Cache a live snapshot per session so a later externally-reclaimed
 			// session can still explain what its pods looked like (#166).
 			captureSessionLastSeen(ctx, cc.kube, views, cc.opts.Context)
+			nodeChanges := make(map[string]map[string]string, len(views))
+			for _, view := range views {
+				nodeChanges[view.Session] = statusNodeChanges(view, cc.opts.Context)
+			}
 			if details {
 				if all || len(views) != 1 {
 					return fmt.Errorf("--details requires a single session")
 				}
 				detail := gatherDetailedStatus(cmd.Context(), cc.opts, cc.cfg, cc.cfgPath, cc.namespace, views[0], cc.kube)
+				for i := range detail.Pods {
+					detail.Pods[i].NodeChangedFrom = nodeChanges[views[0].Session][detail.Pods[i].Name]
+				}
 				if cc.opts.Output == "json" {
 					return outputJSON(cmd.OutOrStdout(), detail)
 				}
@@ -126,17 +133,19 @@ func newStatusCmd(opts *Options) *cobra.Command {
 			}
 			if cc.opts.Output == "json" {
 				type statusRow struct {
-					Replicas  *replicaStatus `json:"replicas,omitempty"`
-					Session   string         `json:"session"`
-					Owner     string         `json:"owner"`
-					Workload  string         `json:"workload"`
-					TargetPod string         `json:"targetPod"`
-					Phase     string         `json:"phase"`
-					Age       string         `json:"age"`
-					Ready     string         `json:"ready"`
-					Restarts  int32          `json:"restarts"`
-					Reason    string         `json:"reason"`
-					PodCount  int            `json:"podCount"`
+					Replicas        *replicaStatus `json:"replicas,omitempty"`
+					Session         string         `json:"session"`
+					Owner           string         `json:"owner"`
+					Workload        string         `json:"workload"`
+					TargetPod       string         `json:"targetPod"`
+					Node            string         `json:"node,omitempty"`
+					NodeChangedFrom string         `json:"nodeChangedFrom,omitempty"`
+					Phase           string         `json:"phase"`
+					Age             string         `json:"age"`
+					Ready           string         `json:"ready"`
+					Restarts        int32          `json:"restarts"`
+					Reason          string         `json:"reason"`
+					PodCount        int            `json:"podCount"`
 					// PreviousRunEnd is present only while this run is the one
 					// that replaced an ended run (#213).
 					PreviousRunEnd *session.RunEnd `json:"previousRunEnd,omitempty"`
@@ -155,19 +164,21 @@ func newStatusCmd(opts *Options) *cobra.Command {
 						previousPodEnd = &record
 					}
 					rows = append(rows, statusRow{
-						Replicas:       replicas,
-						Session:        view.Session,
-						Owner:          view.Owner,
-						Workload:       view.WorkloadType,
-						TargetPod:      view.TargetPod,
-						Phase:          view.Phase,
-						Age:            age(view.CreatedAt),
-						Ready:          view.Ready,
-						Restarts:       view.Restarts,
-						Reason:         view.Reason,
-						PodCount:       view.PodCount,
-						PreviousRunEnd: previousRunEnd,
-						PreviousPodEnd: previousPodEnd,
+						Replicas:        replicas,
+						Session:         view.Session,
+						Owner:           view.Owner,
+						Workload:        view.WorkloadType,
+						TargetPod:       view.TargetPod,
+						Node:            targetPodNode(view),
+						NodeChangedFrom: nodeChanges[view.Session][view.TargetPod],
+						Phase:           view.Phase,
+						Age:             age(view.CreatedAt),
+						Ready:           view.Ready,
+						Restarts:        view.Restarts,
+						Reason:          view.Reason,
+						PodCount:        view.PodCount,
+						PreviousRunEnd:  previousRunEnd,
+						PreviousPodEnd:  previousPodEnd,
 					})
 				}
 				return outputJSON(cmd.OutOrStdout(), rows)
@@ -180,6 +191,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 					view.Owner,
 					view.WorkloadType,
 					view.TargetPod,
+					targetPodNode(view),
 					view.Phase,
 					view.Ready,
 					fmt.Sprintf("%d", view.PodCount),
@@ -188,7 +200,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 					age(view.CreatedAt),
 				})
 			}
-			output.PrintTable(cmd.OutOrStdout(), []string{"SESSION", "OWNER", "WORKLOAD", "TARGET", "PHASE", "READY", "PODS", "RESTARTS", "REASON", "AGE"}, rows)
+			output.PrintTable(cmd.OutOrStdout(), []string{"SESSION", "OWNER", "WORKLOAD", "TARGET", "NODE", "PHASE", "READY", "PODS", "RESTARTS", "REASON", "AGE"}, rows)
 			printReplicaStatus(cmd.OutOrStdout(), replicas)
 			if !all && len(views) == 1 && len(views[0].Pods) > 1 {
 				fmt.Fprintln(cmd.OutOrStdout(), "")
@@ -207,6 +219,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 						marker,
 						aliases[i],
 						pod.Name,
+						pod.NodeName,
 						pod.Phase,
 						pod.Ready,
 						fmt.Sprintf("%d", pod.Restarts),
@@ -214,7 +227,7 @@ func newStatusCmd(opts *Options) *cobra.Command {
 						age(pod.CreatedAt),
 					})
 				}
-				output.PrintTable(cmd.OutOrStdout(), []string{"SEL", "ALIAS", "POD", "PHASE", "READY", "RESTARTS", "REASON", "AGE"}, podRows)
+				output.PrintTable(cmd.OutOrStdout(), []string{"SEL", "ALIAS", "POD", "NODE", "PHASE", "READY", "RESTARTS", "REASON", "AGE"}, podRows)
 				// Report, never repair: status is a read command, and the
 				// exec path already self-heals before it runs anything (#220).
 				if record, err := session.LoadHostAliases(views[0].Session); err == nil {
@@ -222,6 +235,9 @@ func newStatusCmd(opts *Options) *cobra.Command {
 						fmt.Fprintln(cmd.OutOrStdout(), hostAliasRefreshHint(reason))
 					}
 				}
+			}
+			if !all && len(views) == 1 {
+				printStatusNodeChanges(cmd.OutOrStdout(), views[0], nodeChanges[views[0].Session])
 			}
 			// A recreated session looks identical to one that never died, so
 			// carry the previous run's cause of death for as long as this run

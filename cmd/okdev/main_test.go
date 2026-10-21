@@ -49,6 +49,9 @@ func TestShouldPrintErrorSuppressesProxyDisconnect(t *testing.T) {
 	if shouldPrintError(cli.ErrProxyHealthDisconnect) {
 		t.Fatal("expected proxy disconnect error to be suppressed")
 	}
+	if shouldPrintError(cli.ErrExecResultReported) {
+		t.Fatal("expected summarized remote exit to avoid a second error line")
+	}
 }
 
 func TestShouldPrintErrorPrintsOtherErrors(t *testing.T) {

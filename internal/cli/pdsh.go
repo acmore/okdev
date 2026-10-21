@@ -39,6 +39,9 @@ const detachMetadataDir = "/var/okdev/exec"
 // versions keep their logs and metadata; listing scans it for compatibility.
 const legacyDetachMetadataDir = "/tmp/okdev-exec"
 
+// ErrExecResultReported marks a remote command result already summarized on stderr.
+var ErrExecResultReported = errors.New("remote command result reported")
+
 const detachPIDPlaceholder = "__OKDEV_DETACH_PID__"
 const detachPGIDPlaceholder = "__OKDEV_DETACH_PGID__"
 const detachExitPlaceholder = "__OKDEV_DETACH_EXIT__"
@@ -80,6 +83,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 	var pkillSignal string
 	var resetGPU bool
 	var requireSync bool
+	var noSyncWarning bool
 	var killGroupOnExit bool
 
 	cmd := &cobra.Command{
@@ -144,6 +148,9 @@ func newExecCmd(opts *Options) *cobra.Command {
 				return fmt.Errorf("--transport must be kubernetes or ssh")
 			}
 			sessionArgs, commandArgs := splitExecArgs(cmd, args)
+			if len(commandArgs) > 0 && !stdin && pipedExecInput(cmd.InOrStdin()) {
+				fmt.Fprintln(cmd.ErrOrStderr(), "stdin is piped or redirected but -i/--stdin was not given; the remote command sees EOF (use -i, or --script for a local file)")
+			}
 			if transport == "ssh" && (shell != "" || gatewayPod != "" || (len(commandArgs) == 0 && scriptPath == "" && pkillPattern == "" && !resetGPU)) {
 				return fmt.Errorf("--transport=ssh requires a noninteractive command and cannot use --shell or --gateway")
 			}
@@ -325,8 +332,21 @@ func newExecCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&pkillSignal, "signal", "TERM", "Signal name or number sent by --pkill")
 	cmd.Flags().BoolVar(&killGroupOnExit, "kill-group-on-exit", false, "With --detach on multiple pods: when any member exits, SIGKILL the whole cross-pod job group (requires spec.ssh.interPod)")
 	cmd.Flags().BoolVar(&requireSync, "require-sync", false, "Refuse to run unless sync is healthy and fully converged (foreground or --detach)")
+	cmd.Flags().BoolVar(&noSyncWarning, "no-sync-warning", false, "Suppress non-blocking sync health warnings for this exec call")
 	cmd.Flags().BoolVar(&requireAll, "require-all", false, "Exit non-zero unless every targeted pod responded (requires --json)")
 	return cmd
+}
+
+func pipedExecInput(r io.Reader) bool {
+	if isTerminalReader(r) {
+		return false
+	}
+	f, ok := r.(*os.File)
+	if !ok {
+		return true
+	}
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice == 0
 }
 
 func validateExecGatewayFlags(jsonOutput bool, gatewayPod string, requireAll bool) error {
@@ -403,6 +423,7 @@ type execGroupRunOptions struct {
 	Container  string
 	Invocation execInvocation
 	Detach     bool
+	Verbose    bool
 	// CascadeOnExit makes each detached member broadcast a group-kill to
 	// its peers when it exits (#179).
 	CascadeOnExit bool
@@ -811,6 +832,7 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvo
 		Container:     targetContainer,
 		Invocation:    invocation,
 		Detach:        detach,
+		Verbose:       cc.opts.Verbose,
 		CascadeOnExit: killGroupOnExit,
 		Timeout:       timeout,
 		LogDir:        logDir,
@@ -1073,9 +1095,9 @@ func runExecPodGroups(ctx context.Context, client scriptCopyClient, namespace st
 			return err
 		}
 		if opts.Invocation.ScriptLocalPath != "" {
-			return runMultiExecScript(ctx, client, namespace, group.Pods, opts.Container, opts.Invocation, groupLogDir, opts.Timeout, opts.NoPrefix, sem, stdout, stderr)
+			return runMultiExecScript(ctx, client, namespace, group.Pods, opts.Container, opts.Invocation, groupLogDir, opts.Timeout, opts.NoPrefix, sem, stdout, stderr, opts.Verbose)
 		}
-		return runMultiExec(ctx, client, namespace, group.Pods, opts.Container, opts.Invocation.Argv, groupLogDir, opts.Timeout, opts.NoPrefix, sem, stdout, stderr)
+		return runMultiExec(ctx, client, namespace, group.Pods, opts.Container, opts.Invocation.Argv, groupLogDir, opts.Timeout, opts.NoPrefix, sem, stdout, stderr, opts.Verbose)
 	}
 
 	groupErrs := make([]error, len(groups))
@@ -1334,7 +1356,7 @@ func collapseWhitespace(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-func runMultiExec(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, command []string, logDir string, timeout time.Duration, noPrefix bool, sem chan struct{}, stdout, stderr io.Writer) error {
+func runMultiExec(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, command []string, logDir string, timeout time.Duration, noPrefix bool, sem chan struct{}, stdout, stderr io.Writer, verbose ...bool) error {
 	podNames := make([]string, len(pods))
 	for i, p := range pods {
 		podNames[i] = p.Name
@@ -1405,7 +1427,7 @@ func runMultiExec(ctx context.Context, client connect.ExecClient, namespace stri
 		}
 	}
 	if len(failures) > 0 {
-		return reportFanoutFailures(ctx, client, namespace, container, failures, len(pods), stderr, strings.Join(command, " "))
+		return reportFanoutFailures(ctx, client, namespace, container, failures, len(pods), stderr, strings.Join(command, " "), len(verbose) > 0 && verbose[0])
 	}
 	return nil
 }
@@ -1471,13 +1493,20 @@ func fanoutDeliveryNote(total int) string {
 // failure (transport, timeout, container gone) keeps the FAILED framing and
 // wraps ErrExecInfraFailure so okdev exits with the dedicated infra code
 // (ExitExecInfraFailure), letting scripts and monitors tell the two apart.
-func reportFanoutFailures(ctx context.Context, client connect.ExecClient, namespace, container string, failures []podExecResult, total int, stderr io.Writer, commandDisplay string) error {
+func reportFanoutFailures(ctx context.Context, client connect.ExecClient, namespace, container string, failures []podExecResult, total int, stderr io.Writer, commandDisplay string, verbose ...bool) error {
 	remoteExitOnly := true
+	needsFullReport := len(verbose) > 0 && verbose[0]
 	parts := make([]string, 0, len(failures))
+	compact := make([]string, 0, len(failures))
 	for _, f := range failures {
-		if kind, _ := classifyPodExecFailure(f.err); kind != "remote-exit" {
+		kind, code := classifyPodExecFailure(f.err)
+		if kind != "remote-exit" {
 			remoteExitOnly = false
 		}
+		if code == 137 || code == 143 {
+			needsFullReport = true
+		}
+		compact = append(compact, fmt.Sprintf("exit %d (remote) on %s", code, f.pod))
 		part := formatPodExecFailureSummary(f.pod, container, f.err)
 		if isContainerUnavailableExecError(f.err) {
 			if hint := containerUnavailableHint(ctx, client, namespace, f.pod, container); hint != "" {
@@ -1488,10 +1517,12 @@ func reportFanoutFailures(ctx context.Context, client connect.ExecClient, namesp
 	}
 	summary := strings.Join(parts, "\n")
 	if remoteExitOnly {
-		fmt.Fprintf(stderr, "\nCOMMAND EXITED NON-ZERO:\n%s\n", summary)
-		// Cleanup loops routinely misread a non-zero cleanup command as a pod
-		// failure (#192) — say explicitly which side produced the status.
-		fmt.Fprintln(stderr, fanoutDeliveryNote(total))
+		if needsFullReport {
+			fmt.Fprintf(stderr, "\nCOMMAND EXITED NON-ZERO:\n%s\n", summary)
+			fmt.Fprintln(stderr, fanoutDeliveryNote(total))
+		} else {
+			fmt.Fprintln(stderr, strings.Join(compact, "; "))
+		}
 	} else {
 		fmt.Fprintf(stderr, "\nFAILED:\n%s\n", summary)
 	}
@@ -1506,9 +1537,9 @@ func reportFanoutFailures(ctx context.Context, client connect.ExecClient, namesp
 			// Single-pod runs keep the documented "remote exit status is
 			// always preserved" contract: wrap the pod's own ExitError so
 			// the top-level exit-code mapper propagates it verbatim.
-			return fmt.Errorf("command exited non-zero: %w", failures[0].err)
+			return fmt.Errorf("%w: command exited non-zero: %w", ErrExecResultReported, failures[0].err)
 		}
-		return fmt.Errorf("command exited non-zero on %d of %d pod(s)", len(failures), total)
+		return fmt.Errorf("%w: command exited non-zero on %d of %d pod(s)", ErrExecResultReported, len(failures), total)
 	}
 	return fmt.Errorf("%d of %d pods failed: %w", len(failures), total, ErrExecInfraFailure)
 }
@@ -2086,7 +2117,7 @@ func runDetachExec(ctx context.Context, client scriptCopyClient, namespace strin
 	return nil
 }
 
-func runMultiExecScript(ctx context.Context, client scriptCopyClient, namespace string, pods []kube.PodSummary, container string, invocation execInvocation, logDir string, timeout time.Duration, noPrefix bool, sem chan struct{}, stdout, stderr io.Writer) error {
+func runMultiExecScript(ctx context.Context, client scriptCopyClient, namespace string, pods []kube.PodSummary, container string, invocation execInvocation, logDir string, timeout time.Duration, noPrefix bool, sem chan struct{}, stdout, stderr io.Writer, verbose ...bool) error {
 	podNames := make([]string, len(pods))
 	for i, p := range pods {
 		podNames[i] = p.Name
@@ -2163,7 +2194,7 @@ func runMultiExecScript(ctx context.Context, client scriptCopyClient, namespace 
 	if len(failures) > 0 {
 		// Script exec runs the uploaded file (`sh <path>`), so no wrapper
 		// cmdline carries user text — the self-kill hint does not apply.
-		return reportFanoutFailures(ctx, client, namespace, container, failures, len(pods), stderr, "")
+		return reportFanoutFailures(ctx, client, namespace, container, failures, len(pods), stderr, "", len(verbose) > 0 && verbose[0])
 	}
 	return nil
 }

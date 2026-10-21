@@ -19,7 +19,7 @@ func main() {
 }
 
 func shouldPrintError(err error) bool {
-	return !errors.Is(err, cli.ErrProxyHealthDisconnect)
+	return !errors.Is(err, cli.ErrProxyHealthDisconnect) && !errors.Is(err, cli.ErrExecResultReported)
 }
 
 func exitCode(err error) int {

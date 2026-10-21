@@ -332,7 +332,7 @@ func TestPrintDetailedStatusIncludesSections(t *testing.T) {
 			NodeName: "gpu-node-a",
 			Mounts: []detailedStatusMount{
 				{Name: "workspace", MountPath: "/workspace", SourceType: "emptyDir", Persistence: "ephemeral"},
-				{Name: "data", MountPath: "/data", SourceType: "hostPath", Persistence: "persistent"},
+				{Name: "data", MountPath: "/data", SourceType: "hostPath", Persistence: "node-local"},
 			},
 			ContainerIssues: []detailedStatusContainerIssue{
 				{Container: "pytorch", Reason: "OOMKilled", ExitCode: 137, FinishedAt: "2026-07-05T06:32:11Z", Current: true},
@@ -388,7 +388,7 @@ func TestPrintDetailedStatusIncludesSections(t *testing.T) {
 		"Pods:",
 		"ip=10.0.0.10",
 		"node=gpu-node-a",
-		"mounts: /workspace [emptyDir, ephemeral], /data [hostPath, persistent]",
+		"mounts: /workspace [emptyDir, ephemeral], /data [hostPath, node-local]",
 		"container pytorch: OOMKilled (exit 137, finished 2026-07-05T06:32:11Z)",
 		"container dev: Error (exit 1) before last restart",
 		"SSH:",
@@ -432,7 +432,7 @@ func TestClassifyMountSourceAndPersistence(t *testing.T) {
 			name:        "hostPath",
 			volume:      corev1.Volume{Name: "data", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/data"}}},
 			wantSource:  "hostPath",
-			wantPersist: "persistent",
+			wantPersist: "node-local",
 		},
 		{
 			name:        "persistent volume claim",
@@ -460,7 +460,7 @@ func TestBuildPathSemanticsUsesLongestMatchingMount(t *testing.T) {
 	mounts := []detailedStatusMount{
 		{Name: "root", MountPath: "/", SourceType: "other", Persistence: "unknown"},
 		{Name: "workspace", MountPath: "/workspace", SourceType: "emptyDir", Persistence: "ephemeral"},
-		{Name: "data", MountPath: "/data", SourceType: "hostPath", Persistence: "persistent"},
+		{Name: "data", MountPath: "/data", SourceType: "hostPath", Persistence: "node-local"},
 	}
 
 	got := buildPathSemantics(pairs, mounts, "/workspace")
@@ -470,7 +470,7 @@ func TestBuildPathSemanticsUsesLongestMatchingMount(t *testing.T) {
 	if got[0].SyncScope != "all-pods-via-syncthing" || got[0].Survival != "ephemeral in pod" {
 		t.Fatalf("unexpected workspace path semantics: %+v", got[0])
 	}
-	if got[1].SyncScope != "not-shared-by-sync" || got[1].Survival != "survives session restart" {
+	if got[1].SyncScope != "not-shared-by-sync" || got[1].Survival != "available only on the same node" {
 		t.Fatalf("unexpected data path semantics: %+v", got[1])
 	}
 }

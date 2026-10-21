@@ -146,7 +146,8 @@ func replacementAlreadyRecorded(existing, candidate session.PodReplacement) bool
 func observeSessionPods(ctx context.Context, k objectEventLister, info session.Info, namespace string, pods []kube.PodSummary, kubeContext string) (session.PodReplacement, bool) {
 	var detected session.PodReplacement
 	newly := false
-	if previous, err := session.LoadLastSeen(info.Name); err == nil {
+	previous, previousErr := session.LoadLastSeen(info.Name)
+	if previousErr == nil {
 		if record, ok := detectPodReplacement(ctx, k, namespace, previous, info.RunID, pods); ok {
 			existing, _ := session.LoadPodReplacement(info.Name)
 			if !replacementAlreadyRecorded(existing, record) {
@@ -165,6 +166,12 @@ func observeSessionPods(ctx context.Context, k objectEventLister, info session.I
 	snapshot := buildLastSeenSnapshot(info, namespace, pods)
 	if kubeContext != "" {
 		snapshot.Context = kubeContext
+	}
+	// Node changes survive the refresh for the rest of the run (#344).
+	if previousErr == nil && !previous.At.IsZero() &&
+		(previous.Namespace == "" || previous.Namespace == namespace) &&
+		(previous.RunID == "" || info.RunID == "" || previous.RunID == info.RunID) {
+		snapshot.NodeChanges = nodeChangesSince(previous, pods)
 	}
 	if err := session.SaveLastSeen(info.Name, snapshot); err != nil {
 		slog.Debug("failed to save last-seen snapshot", "session", info.Name, "error", err)

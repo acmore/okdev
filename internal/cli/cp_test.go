@@ -59,6 +59,24 @@ func TestParseCpArgs(t *testing.T) {
 	}
 }
 
+func TestCpRejectsMultipleLocalSourcesBeforeSessionLookup(t *testing.T) {
+	first := filepath.Join(t.TempDir(), "run_point.sh")
+	if err := os.WriteFile(first, []byte("echo ok\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{first, "mid_tput.py", ":/remote/bin/"},
+		{first, "mid_tput.py", "other.py", ":/remote/bin/"},
+	} {
+		cmd := newCpCmd(&Options{})
+		cmd.SetArgs(args)
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "one source per call") {
+			t.Fatalf("args=%q: expected usage error, got %v", args, err)
+		}
+	}
+}
+
 func TestValidateCpFlags(t *testing.T) {
 	tests := []struct {
 		name     string

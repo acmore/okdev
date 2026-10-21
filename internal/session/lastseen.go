@@ -23,12 +23,13 @@ type LastSeen struct {
 	// RunID names the run this snapshot describes. A snapshot whose run-id no
 	// longer matches session.Info means the run it describes has ended and a
 	// different one took its place (#213).
-	RunID     string            `json:"runID,omitempty"`
-	Context   string            `json:"context,omitempty"`
-	Namespace string            `json:"namespace,omitempty"`
-	Workload  LastSeenWorkload  `json:"workload,omitempty"`
-	Pods      []LastSeenPod     `json:"pods,omitempty"`
-	Extra     map[string]string `json:"extra,omitempty"`
+	RunID       string            `json:"runID,omitempty"`
+	Context     string            `json:"context,omitempty"`
+	Namespace   string            `json:"namespace,omitempty"`
+	Workload    LastSeenWorkload  `json:"workload,omitempty"`
+	Pods        []LastSeenPod     `json:"pods,omitempty"`
+	NodeChanges map[string]string `json:"nodeChanges,omitempty"`
+	Extra       map[string]string `json:"extra,omitempty"`
 }
 
 type LastSeenWorkload struct {

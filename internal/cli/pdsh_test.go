@@ -724,11 +724,8 @@ func TestRunMultiExecPartialFailure(t *testing.T) {
 		t.Fatalf("remote-exit-only run must not carry the infra sentinel: %v", err)
 	}
 	got := stderr.String()
-	if !strings.Contains(got, "\nCOMMAND EXITED NON-ZERO:\n") || strings.Contains(got, "FAILED:") {
-		t.Fatalf("expected command-result framing without FAILED header, got %q", got)
-	}
-	if !strings.Contains(got, "pod=okdev-sess-worker-1 container=dev kind=remote-exit exit=1") {
-		t.Fatalf("expected classified failure summary for worker-1, got %q", got)
+	if strings.TrimSpace(got) != "exit 1 (remote) on okdev-sess-worker-1" {
+		t.Fatalf("expected compact remote exit summary, got %q", got)
 	}
 }
 
@@ -754,8 +751,8 @@ func TestRunMultiExecSinglePodPreservesRemoteExitStatus(t *testing.T) {
 	if errors.Is(err, ErrExecInfraFailure) {
 		t.Fatalf("remote-exit-only run must not carry the infra sentinel: %v", err)
 	}
-	if got := stderr.String(); !strings.Contains(got, "\nCOMMAND EXITED NON-ZERO:\n") || strings.Contains(got, "FAILED:") {
-		t.Fatalf("expected command-result framing without FAILED header, got %q", got)
+	if got := strings.TrimSpace(stderr.String()); got != "exit 7 (remote) on okdev-sess-master-0" {
+		t.Fatalf("expected compact remote exit summary, got %q", got)
 	}
 }
 
@@ -1422,13 +1419,17 @@ func TestReportFanoutFailuresClarifiesDeliveredVsFailed(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	got := stderr.String()
-	// The clarifier ties the exit codes to the command, not pod health (#192).
-	if !strings.Contains(got, "delivered and ran on the 1 targeted pod") || !strings.Contains(got, "exit 69") {
-		t.Fatalf("expected delivered-vs-failed clarifier, got %q", got)
+	if !strings.Contains(got, "exit 1 (remote) on okdev-sess-worker-0") || strings.Contains(got, "COMMAND EXITED NON-ZERO:") {
+		t.Fatalf("expected compact remote exit, got %q", got)
 	}
 	// A bare pkill exiting 1 gets the benign-cleanup signpost.
 	if !strings.Contains(got, "pkill/pgrep exit 1 when no process matched") || !strings.Contains(got, "--pkill") {
 		t.Fatalf("expected no-match pkill hint, got %q", got)
+	}
+	stderr.Reset()
+	_ = runMultiExec(context.Background(), client, "default", pods, "dev", []string{"sh", "-lc", "pkill -9 -f vllm"}, "", 0, false, make(chan struct{}, pdshDefaultFanout), &stdout, &stderr, true)
+	if got := stderr.String(); !strings.Contains(got, "delivered and ran on the 1 targeted pod") || !strings.Contains(got, "COMMAND EXITED NON-ZERO:") {
+		t.Fatalf("expected verbose delivered-vs-failed report, got %q", got)
 	}
 }
 

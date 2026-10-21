@@ -65,10 +65,13 @@ func newCpCmd(opts *Options) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The last two args are src and dst; anything before is the session.
 			if len(args) > 3 {
-				return fmt.Errorf("expected at most 3 positional arguments: [session] <src> <dst>")
+				return fmt.Errorf("cp copies one source per call; expected [session] <src> <dst> (use --session for the session)")
 			}
 			var src, dst string
 			if len(args) == 3 {
+				if info, err := os.Stat(args[0]); err == nil && !info.IsDir() {
+					return fmt.Errorf("cp copies one source per call; %q is a local file, not a session (use --session for the session)", args[0])
+				}
 				opts.Session = args[0]
 				src, dst = args[1], args[2]
 			} else {
