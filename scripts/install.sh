@@ -26,7 +26,20 @@ have_gh=0
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
   have_gh=1
 elif [ "$allow_unattested" != 1 ]; then
-  echo "GitHub CLI authentication is required to verify release provenance; install and log in to gh, or set OKDEV_ALLOW_UNATTESTED=1 to explicitly use checksum-only installation" >&2
+  echo "okdev verifies that the release was built by its release workflow, which needs the GitHub CLI (gh)." >&2
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "gh is not installed. Install it, then log in:" >&2
+    if [ "$os" = "darwin" ]; then
+      echo "  brew install gh" >&2
+    else
+      echo "  see https://github.com/cli/cli/blob/trunk/docs/install_linux.md (apt, dnf, ...)" >&2
+    fi
+  else
+    echo "gh is installed but not logged in. Log in:" >&2
+  fi
+  echo "  gh auth login" >&2
+  echo "then re-run this installer." >&2
+  echo "To install on the checksum alone instead, set OKDEV_ALLOW_UNATTESTED=1." >&2
   exit 1
 fi
 
