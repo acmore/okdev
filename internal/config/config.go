@@ -350,6 +350,20 @@ func ValidateSSHUser(user string) error {
 	return nil
 }
 
+// syncthingVersionPattern is a Syncthing release tag. The value becomes a
+// release download URL and a directory under ~/.okdev/bin, so anything that
+// is not a plain tag (a "../" segment above all) would redirect the download
+// to another GitHub repository and the install outside okdev's directory.
+var syncthingVersionPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$`)
+
+// ValidateSyncthingVersion rejects anything but a Syncthing release tag.
+func ValidateSyncthingVersion(version string) error {
+	if !syncthingVersionPattern.MatchString(version) {
+		return fmt.Errorf("must be a Syncthing release tag like %s, got %q", DefaultSyncthingVersion, version)
+	}
+	return nil
+}
+
 func (d *DevEnvironment) SetDefaults() {
 	if d == nil {
 		return
@@ -463,6 +477,11 @@ func (d *DevEnvironment) Validate() error {
 	}
 	if d.Spec.Sync.Engine != "syncthing" {
 		return fmt.Errorf("spec.sync.engine must be syncthing, got %q", d.Spec.Sync.Engine)
+	}
+	if v := d.Spec.Sync.Syncthing.Version; v != "" {
+		if err := ValidateSyncthingVersion(v); err != nil {
+			return fmt.Errorf("spec.sync.syncthing.version: %w", err)
+		}
 	}
 	if d.Spec.Sync.Syncthing.RescanIntervalSeconds < 0 {
 		return errors.New("spec.sync.syncthing.rescanIntervalSeconds must be >= 0")

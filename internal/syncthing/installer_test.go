@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -351,4 +352,41 @@ func writeZipArchive(path, name string, content []byte) error {
 	}
 	_, err = w.Write(content)
 	return err
+}
+
+type recordingHTTPDoer struct{ urls *[]string }
+
+func (r recordingHTTPDoer) Do(req *http.Request) (*http.Response, error) {
+	*r.urls = append(*r.urls, req.URL.String())
+	return nil, errors.New("unexpected request")
+}
+
+func TestEnsureBinaryRejectsVersionTraversalBeforeAnyIO(t *testing.T) {
+	// GitHub resolves "../" in release URLs, so this version would fetch an
+	// attacker's release (checksums included) and install it outside
+	// ~/.okdev/bin. Nothing may be requested or created.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	var urls []string
+	old := installerHTTPClient
+	t.Cleanup(func() { installerHTTPClient = old })
+	installerHTTPClient = recordingHTTPDoer{urls: &urls}
+
+	for _, version := range []string{
+		"../../../../attacker/repo/releases/download/v1",
+		"v1.29.7/../../../../attacker/repo/releases/download/v1",
+		"v1.29.7/x",
+		"1.29.7",
+		"v1.29.7 ",
+	} {
+		if _, err := EnsureBinary(context.Background(), version, true); err == nil {
+			t.Fatalf("version %q accepted", version)
+		}
+	}
+	if len(urls) != 0 {
+		t.Fatalf("requests issued for invalid versions: %v", urls)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".okdev")); !os.IsNotExist(err) {
+		t.Fatalf("nothing may be created for invalid versions: %v", err)
+	}
 }

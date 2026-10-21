@@ -968,3 +968,22 @@ func TestValidateSSHUserRejectsSSHConfigInjection(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateSyncthingVersionIsAReleaseTag(t *testing.T) {
+	for _, version := range []string{"v1.29.7", "v2.0.0", "v1.27.0-rc.2"} {
+		cfg := validConfig()
+		cfg.SetDefaults()
+		cfg.Spec.Sync.Syncthing.Version = version
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("version %q rejected: %v", version, err)
+		}
+	}
+	for _, version := range []string{"../../../../attacker/repo/releases/download/v1", "v1.29.7/..", "latest", "v1.29"} {
+		cfg := validConfig()
+		cfg.SetDefaults()
+		cfg.Spec.Sync.Syncthing.Version = version
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "spec.sync.syncthing.version") {
+			t.Fatalf("version %q accepted: %v", version, err)
+		}
+	}
+}
