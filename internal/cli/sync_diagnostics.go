@@ -86,12 +86,30 @@ func readSyncExit(sessionName string) *syncExitRecord {
 }
 
 func stoppedSyncReason(sessionName string, pid int) string {
-	reason := "exit cause unavailable"
-	if record := readSyncExit(sessionName); record != nil && record.PID == pid {
-		reason = record.Reason
-	}
 	logPath, _ := syncthingBackgroundLogPath(sessionName)
-	return fmt.Sprintf("sync is not running (pid %d; %s); log: %s", pid, reason, logPath)
+	return fmt.Sprintf("sync is not running (pid %d; %s); log: %s", pid, stoppedSyncCause(sessionName, pid), logPath)
+}
+
+// stoppedSyncCause is the recorded exit reason of the supervisor that last
+// owned pid, so a stale record from an older supervisor is never reported.
+func stoppedSyncCause(sessionName string, pid int) string {
+	if record := readSyncExit(sessionName); record != nil && record.PID == pid {
+		return record.Reason
+	}
+	return "exit cause unavailable"
+}
+
+// syncWarningCause is the one-line cause kept in the compact repeat warning.
+func syncWarningCause(sessionName string, status syncHealthStatus, reason string) string {
+	if status != syncHealthStopped {
+		return reason
+	}
+	pidPath, err := syncthingPIDStatusPath(sessionName)
+	if err != nil {
+		return stoppedSyncCause(sessionName, 0)
+	}
+	pid, _ := readSyncthingPID(pidPath)
+	return stoppedSyncCause(sessionName, pid)
 }
 
 func waitForReadySync(ctx context.Context, sessionName string, timeout time.Duration) error {
@@ -127,7 +145,7 @@ func syncPreflightWarning(sessionName string, status syncHealthStatus, reason, s
 		at, _ := strconv.ParseInt(stamp, 10, 64)
 		elapsed := time.Since(time.Unix(at, 0))
 		if ok && previous == key && elapsed >= 0 && elapsed < time.Minute {
-			return fmt.Sprintf("warning: sync still unhealthy (%s); command may run stale code; see `okdev status --details`", status)
+			return fmt.Sprintf("warning: sync still unhealthy (%s: %s); command may run stale code; see `okdev status --details`", status, syncWarningCause(sessionName, status, reason))
 		}
 	}
 	_ = writeSyncDiagnostic(path, []byte(strconv.FormatInt(time.Now().Unix(), 10)+"\n"+key))

@@ -81,7 +81,10 @@ func syncStalenessWarning(status syncHealthStatus, reason string, subject string
 	case syncHealthStale:
 		return fmt.Sprintf("warning: sync is running but unhealthy (%s) — %s may run stale code; repair with \"okdev sync\" or gate it with --require-sync", reason, subject)
 	default:
-		return fmt.Sprintf("warning: sync is not running — %s may run stale code; start it with \"okdev sync\" or gate it with --require-sync", subject)
+		if strings.TrimSpace(reason) == "" {
+			reason = "sync is not running"
+		}
+		return fmt.Sprintf("warning: %s — %s may run stale code; start it with \"okdev sync\" or gate it with --require-sync", reason, subject)
 	}
 }
 

@@ -93,3 +93,25 @@ func TestSyncRepeatedWarningsRemainVisibleAndReset(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestSyncRepeatedStoppedWarningKeepsExitCause(t *testing.T) {
+	// #324: the compact repeat must still say why the supervisor stopped.
+	t.Setenv("HOME", t.TempDir())
+	recordSyncExit("test", "", context.DeadlineExceeded)
+	pidPath, err := syncthingPIDStatusPath("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSyncDiagnostic(pidPath, []byte(fmt.Sprintf("%d\n", os.Getpid()))); err != nil {
+		t.Fatal(err)
+	}
+	reason := stoppedSyncReason("test", os.Getpid())
+	full := syncPreflightWarning("test", syncHealthStopped, reason, "exec")
+	if !strings.Contains(full, "sync command timed out") {
+		t.Fatalf("full warning dropped the exit cause: %q", full)
+	}
+	compact := syncPreflightWarning("test", syncHealthStopped, reason, "exec")
+	if !strings.Contains(compact, "sync still unhealthy (stopped: sync command timed out)") {
+		t.Fatalf("compact warning dropped the exit cause: %q", compact)
+	}
+}
