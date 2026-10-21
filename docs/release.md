@@ -65,10 +65,10 @@ The sidecar image build verifies Syncthing's clearsigned `sha256sum.txt.asc` aga
 curl -fsSL https://raw.githubusercontent.com/acmore/okdev/main/scripts/install.sh | sh
 ```
 
-The installer verifies the archive against `checksums.txt`, and, when the GitHub CLI is installed and logged in, verifies the build provenance attestation too (an attestation that exists but does not verify aborts the install).
+The installer requires the GitHub CLI (`gh`) to be installed and logged in. It verifies the archive against `checksums.txt` and verifies a build provenance attestation from this repository's release workflow for the selected tag. For an older release without an attestation, set `OKDEV_ALLOW_UNATTESTED=1` to explicitly install on the checksum alone; this also allows installation without `gh`. An attestation that exists but fails verification is never accepted.
 
 ### Install Specific Version
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/acmore/okdev/main/scripts/install.sh | sh -s -- v0.1.0
+curl -fsSL https://raw.githubusercontent.com/acmore/okdev/main/scripts/install.sh | OKDEV_ALLOW_UNATTESTED=1 sh -s -- v0.1.0
 ```

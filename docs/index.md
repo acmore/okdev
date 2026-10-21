@@ -33,6 +33,8 @@ okdev provisions and operates dev sessions using standard Pod/PVC resources -- n
 
 ## Quick start
 
+Install and log in to the GitHub CLI (`gh`) so the installer can verify the release attestation.
+
 ```bash
 # Install
 curl -fsSL https://raw.githubusercontent.com/acmore/okdev/main/scripts/install.sh | sh

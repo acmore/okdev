@@ -21,10 +21,27 @@ if [ "$os" != "linux" ] && [ "$os" != "darwin" ]; then
 fi
 
 artifact="okdev_${os}_${arch}.tar.gz"
+allow_unattested="${OKDEV_ALLOW_UNATTESTED:-0}"
+have_gh=0
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  have_gh=1
+elif [ "$allow_unattested" != 1 ]; then
+  echo "GitHub CLI authentication is required to verify release provenance; install and log in to gh, or set OKDEV_ALLOW_UNATTESTED=1 to explicitly use checksum-only installation" >&2
+  exit 1
+fi
+
+if [ "$VERSION" = "latest" ]; then
+  if [ "$have_gh" = 1 ]; then
+    VERSION="$(gh release view --repo "$REPO" --json tagName --jq '.tagName')"
+    if [ -z "$VERSION" ]; then
+      echo "could not resolve latest release tag" >&2
+      exit 1
+    fi
+  fi
+fi
+base="https://github.com/${REPO}/releases/download/${VERSION}"
 if [ "$VERSION" = "latest" ]; then
   base="https://github.com/${REPO}/releases/latest/download"
-else
-  base="https://github.com/${REPO}/releases/download/${VERSION}"
 fi
 url="${base}/${artifact}"
 
@@ -53,24 +70,21 @@ fi
 echo "Checksum verified"
 
 # The checksum only proves the archive matches a file published next to it.
-# The build provenance attestation proves okdev's release workflow built it.
-# A release published before attestations has none: that is the same
-# checksum-only trust as a machine without the GitHub CLI. An attestation
-# that exists but does not verify aborts the install.
-if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+# Pin the attestation to this release's tag as well as its signing workflow.
+if [ "$have_gh" = 1 ]; then
   if verify_out="$(gh attestation verify "$archive" --repo "$REPO" \
-    --signer-workflow "${REPO}/.github/workflows/release.yml" 2>&1)"; then
+    --signer-workflow "${REPO}/.github/workflows/release.yml" \
+    --source-ref "refs/tags/${VERSION}" 2>&1)"; then
     echo "Build provenance verified"
-  elif printf '%s' "$verify_out" | grep -q "HTTP 404"; then
-    echo "Warning: this release has no build provenance attestation; installed on checksum alone"
+  elif [ "$allow_unattested" = 1 ] && printf '%s' "$verify_out" | grep -q "HTTP 404"; then
+    echo "Warning: this release has no build provenance attestation; installing on checksum alone because OKDEV_ALLOW_UNATTESTED=1 was set" >&2
   else
     echo "build provenance verification failed:" >&2
     printf '%s\n' "$verify_out" >&2
     exit 1
   fi
 else
-  echo "Note: install and log in to the GitHub CLI to also verify build provenance:"
-  echo "  gh attestation verify <archive> --repo $REPO --signer-workflow ${REPO}/.github/workflows/release.yml"
+  echo "Warning: installing on checksum alone because OKDEV_ALLOW_UNATTESTED=1 was set" >&2
 fi
 
 tar -xzf "$archive" -C "$tmpdir"
