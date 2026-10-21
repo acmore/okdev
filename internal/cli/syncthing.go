@@ -824,15 +824,6 @@ func writeSTIgnore(localPath string, excludes []string) error {
 }
 
 func writeLocalSTIgnore(localPath string) error {
-	stignorePath := filepath.Join(localPath, ".stignore")
-	if _, err := os.Stat(stignorePath); err != nil {
-		if !os.IsNotExist(err) {
-			return err
-		}
-		if err := writeSTIgnore(localPath, defaultSyncExcludes); err != nil {
-			return err
-		}
-	}
 	return ensureTransferTempSTIgnoreBlock(localPath)
 }
 
@@ -855,9 +846,28 @@ const (
 // wins over any later "!" negation. Other content is preserved verbatim.
 func ensureTransferTempSTIgnoreBlock(dir string) error {
 	path := filepath.Join(dir, ".stignore")
-	raw, err := os.ReadFile(path)
+	source, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil && !os.IsNotExist(err) {
 		return err
+	}
+	mode := os.FileMode(0o644)
+	var raw []byte
+	if err == nil {
+		defer source.Close()
+		info, err := source.Stat()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing to update non-regular .stignore %q", path)
+		}
+		mode = info.Mode().Perm()
+		raw, err = io.ReadAll(source)
+		if err != nil {
+			return err
+		}
+	} else if defaults, ok := buildSTIgnoreContent(defaultSyncExcludes); ok {
+		raw = []byte(defaults)
 	}
 	var b strings.Builder
 	b.WriteString(transferTempSTIgnoreBegin + transferTempSTIgnoreNote + "\n")
@@ -887,7 +897,25 @@ func ensureTransferTempSTIgnoreBlock(dir string) error {
 	if content == string(raw) {
 		return nil
 	}
-	return os.WriteFile(path, []byte(content), 0o644)
+	// Renaming a temporary file replaces a raced symlink instead of following
+	// it, so an untrusted workspace cannot make okdev write outside the root.
+	tmp, err := os.CreateTemp(dir, ".stignore.tmp-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 func buildSTIgnoreContent(excludes []string) (string, bool) {

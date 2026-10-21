@@ -788,6 +788,24 @@ func TestEnsureTransferTempSTIgnoreBlockIsIdempotentAndStaysOnTop(t *testing.T) 
 	}
 }
 
+func TestWriteLocalSTIgnoreRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("keep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, ".stignore")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeLocalSTIgnore(dir); err == nil {
+		t.Fatal("expected symlink to be rejected")
+	}
+	got, err := os.ReadFile(outside)
+	if err != nil || string(got) != "keep\n" {
+		t.Fatalf("outside file changed: %q (%v)", got, err)
+	}
+}
+
 func TestStopLocalSyncthingForHomeStopsRecordedPID(t *testing.T) {
 	home := t.TempDir()
 	cmd := exec.Command("sleep", "30")
