@@ -120,10 +120,13 @@ func buildFanoutRequest(route fanoutRoute, pods []kube.PodSummary, invocation ex
 		Version: fanout.ProtocolVersion,
 		User:    route.user,
 		KeyPath: gatewayInterPodKeyPath,
-		Port:    gatewaySSHPort,
-		Targets: targets,
-		Fanout:  fanoutN,
-		Retries: gatewayFanoutRetries,
+		// Pinned by `okdev up`; the gateway skips checks only when the
+		// file is absent (sessions set up before pinning).
+		KnownHostsPath: interPodKnownHostsPath,
+		Port:           gatewaySSHPort,
+		Targets:        targets,
+		Fanout:         fanoutN,
+		Retries:        gatewayFanoutRetries,
 	}
 	if timeout > 0 {
 		req.TimeoutSec = int(timeout.Seconds())

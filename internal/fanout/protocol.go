@@ -70,6 +70,12 @@ type Request struct {
 	// established the command may have run, so post-connect failures are
 	// reported, never re-executed.
 	Retries int `json:"retries,omitempty"`
+	// KnownHostsPath names the inter-pod known_hosts file (one entry per
+	// pod name) written by `okdev up`. When the file exists every target's
+	// host key must match its pod's entry; when it is absent (a session set
+	// up before host keys were pinned) host keys are not checked. Older
+	// drivers ignore the field.
+	KnownHostsPath string `json:"knownHostsPath,omitempty"`
 }
 
 // Result is one pod's outcome, emitted as a frame as soon as the pod

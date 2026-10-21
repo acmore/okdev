@@ -142,6 +142,42 @@ if [[ "$INTERPOD_SSH_OUTPUT" != *"interpod-ssh-ok"* ]]; then
 fi
 echo "inter-pod SSH verified"
 
+# Host keys are pinned per pod name: a different sshd answering at the
+# worker's address (an IP reused by another pod, an impostor) must be
+# refused, and the next `okdev up` must re-pin the legitimate key.
+echo "Verifying inter-pod SSH pins worker host keys"
+MASTER_KNOWN_HOSTS=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --cmd 'cat ~/.ssh/okdev_interpod_known_hosts')
+if [[ "$MASTER_KNOWN_HOSTS" != *"$FIRST_WORKER_POD ssh-ed25519 "* ]]; then
+  echo "ERROR: expected a pinned host key for $FIRST_WORKER_POD, got:" >&2
+  echo "$MASTER_KNOWN_HOSTS" >&2
+  exit 1
+fi
+kubectl -n "$NAMESPACE" exec "$FIRST_WORKER_POD" -c pytorch -- sh -c '
+  for p in /proc/[0-9]*; do
+    if tr "\0" " " <"$p/cmdline" 2>/dev/null | grep -q "^/var/okdev/okdev-sshd --port"; then kill "${p#/proc/}"; fi
+  done
+  sleep 1
+  rm -f /var/okdev/ssh_host_ed25519_key
+  nohup /var/okdev/okdev-sshd --port 2222 --authorized-keys "$HOME/.ssh/authorized_keys" >/var/okdev/okdev-sshd.log 2>&1 </dev/null &
+  sleep 1'
+set +e
+IMPOSTOR_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --cmd "ssh -o BatchMode=yes $FIRST_WORKER_POD 'echo should-not-run' 2>&1")
+set -e
+if [[ "$IMPOSTOR_OUTPUT" == *"should-not-run"* || "$IMPOSTOR_OUTPUT" != *"verification failed"* ]]; then
+  echo "ERROR: expected inter-pod SSH to refuse a changed worker host key, got:" >&2
+  echo "$IMPOSTOR_OUTPUT" >&2
+  exit 1
+fi
+echo "changed worker host key refused"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m >/dev/null
+REPINNED_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" ssh --cmd "ssh -o BatchMode=yes $FIRST_WORKER_POD 'echo repinned-ok'")
+if [[ "$REPINNED_OUTPUT" != *"repinned-ok"* ]]; then
+  echo "ERROR: expected okdev up to re-pin the worker host key" >&2
+  echo "$REPINNED_OUTPUT" >&2
+  exit 1
+fi
+echo "inter-pod host key pinning verified"
+
 echo "Cleaning up focused inter-pod SSH session"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" down --yes
 assert_no_local_sync_processes "$SESSION_NAME" "$HOME_DIR/.okdev/sessions/${SESSION_NAME}/syncthing"

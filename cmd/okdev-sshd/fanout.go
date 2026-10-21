@@ -61,6 +61,12 @@ func runFanout(stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	hostKeys, err := loadPinnedHostKeys(expandHome(req.KnownHostsPath))
+	if err != nil {
+		fmt.Fprintf(stderr, "fanout: read known hosts: %v\n", err)
+		return 1
+	}
+
 	concurrency := req.Fanout
 	if concurrency <= 0 {
 		concurrency = fanoutDefaultConcurrency
@@ -73,7 +79,7 @@ func runFanout(stdin io.Reader, stdout, stderr io.Writer) int {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			res := runFanoutTarget(context.Background(), &req, target, signer)
+			res := runFanoutTarget(context.Background(), &req, target, signer, hostKeys)
 			frame, err := fanout.EncodeResult(res)
 			if err != nil {
 				fmt.Fprintf(stderr, "fanout: encode result for %s: %v\n", target.Pod, err)
@@ -97,12 +103,23 @@ func runFanout(stdin io.Reader, stdout, stderr io.Writer) int {
 // are retried: a dial failure guarantees the command never started, so a
 // retry cannot double-execute. Once a session exists, any failure is
 // reported as-is.
-func runFanoutTarget(ctx context.Context, req *fanout.Request, target fanout.Target, signer gossh.Signer) fanout.Result {
+func runFanoutTarget(ctx context.Context, req *fanout.Request, target fanout.Target, signer gossh.Signer, hostKeys map[string]gossh.PublicKey) fanout.Result {
 	res := fanout.Result{Pod: target.Pod}
+	hostKeyCallback := gossh.InsecureIgnoreHostKey()
+	if hostKeys != nil {
+		pinned, ok := hostKeys[target.Pod]
+		if !ok {
+			res.Status = fanout.StatusError
+			res.Exit = -1
+			res.Error = fmt.Sprintf("no pinned host key for pod %s; re-run `okdev up` to refresh inter-pod SSH", target.Pod)
+			return res
+		}
+		hostKeyCallback = gossh.FixedHostKey(pinned)
+	}
 	cfg := &gossh.ClientConfig{
 		User:            req.User,
 		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
-		HostKeyCallback: gossh.InsecureIgnoreHostKey(),
+		HostKeyCallback: hostKeyCallback,
 		Timeout:         fanoutDialTimeout,
 	}
 	addr := net.JoinHostPort(target.Addr, fmt.Sprintf("%d", req.Port))
@@ -115,6 +132,15 @@ func runFanoutTarget(ctx context.Context, req *fanout.Request, target fanout.Tar
 		client, dialErr = gossh.Dial("tcp", addr, cfg)
 		if dialErr == nil {
 			break
+		}
+		// A host key mismatch is an answer, not a transient failure: the
+		// address is not the pod okdev pinned (stale IP reused by another
+		// pod, or an impostor). Never retry it or send it the command.
+		if strings.Contains(dialErr.Error(), "host key mismatch") {
+			res.Status = fanout.StatusError
+			res.Exit = -1
+			res.Error = fmt.Sprintf("host key verification failed for pod %s at %s: %v; re-run `okdev up` if the pod was recreated", target.Pod, target.Addr, dialErr)
+			return res
 		}
 		if attempt < attempts {
 			time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
@@ -222,6 +248,35 @@ func scriptOverSSHCommand(args []string) string {
 // expandHome resolves a leading "~/" against the driver's own home
 // directory: the driver runs in the dev container, where the interpod
 // identity file lives under the user's home.
+// loadPinnedHostKeys reads the inter-pod known_hosts file into pod -> key.
+// A missing path or file returns nil (no pinning: a session set up by an
+// okdev that predates host-key pinning); a present but unreadable or
+// malformed file is an error, never a silent downgrade.
+func loadPinnedHostKeys(path string) (map[string]gossh.PublicKey, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	keys := map[string]gossh.PublicKey{}
+	for len(bytes.TrimSpace(data)) > 0 {
+		_, hosts, key, _, rest, err := gossh.ParseKnownHosts(data)
+		if err != nil {
+			return nil, err
+		}
+		for _, host := range hosts {
+			keys[host] = key
+		}
+		data = rest
+	}
+	return keys, nil
+}
+
 func expandHome(path string) string {
 	if !strings.HasPrefix(path, "~/") {
 		return path

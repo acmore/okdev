@@ -669,3 +669,69 @@ func TestSetWinsizeDoesNotPanic(t *testing.T) {
 
 	setWinsize(f, 120, 40)
 }
+
+func TestLoadOrCreateHostKeyIsStableAndRaceSafe(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "okdev", "ssh_host_ed25519_key")
+	const racers = 16
+	keys := make(chan string, racers)
+	errs := make(chan error, racers)
+	for i := 0; i < racers; i++ {
+		go func() {
+			signer, err := loadOrCreateHostKey(path)
+			if err != nil {
+				errs <- err
+				return
+			}
+			keys <- string(signer.PublicKey().Marshal())
+		}()
+	}
+	var first string
+	for i := 0; i < racers; i++ {
+		select {
+		case err := <-errs:
+			t.Fatal(err)
+		case k := <-keys:
+			if first == "" {
+				first = k
+			} else if k != first {
+				t.Fatal("racing creators must settle on one host key")
+			}
+		}
+	}
+	again, err := loadOrCreateHostKey(path)
+	if err != nil || string(again.PublicKey().Marshal()) != first {
+		t.Fatalf("host key must persist across restarts: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("host key must be 0600: %v %v", info.Mode().Perm(), err)
+	}
+	leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(path), ".host-key-*"))
+	if len(leftovers) != 0 {
+		t.Fatalf("temp files left behind: %v", leftovers)
+	}
+}
+
+func TestServerHostKeyFallsBackWhenPersistentKeyIsUnusable(t *testing.T) {
+	// A corrupt key file must not keep sshd from starting for the life of
+	// the pod; the server degrades to an ephemeral key.
+	path := filepath.Join(t.TempDir(), "ssh_host_ed25519_key")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadOrCreateHostKey(path); err == nil {
+		t.Fatal("expected the corrupt key to be rejected")
+	}
+	if serverHostKey(path) == nil {
+		t.Fatal("expected an ephemeral fallback key")
+	}
+	// A usable persistent key is presented as-is.
+	good := filepath.Join(t.TempDir(), "good_key")
+	want, err := loadOrCreateHostKey(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := serverHostKey(good); string(got.PublicKey().Marshal()) != string(want.PublicKey().Marshal()) {
+		t.Fatal("persistent key not used")
+	}
+}

@@ -1,4 +1,5 @@
 /bin/
+/okdev-sshd
 *.test
 .DS_Store
 

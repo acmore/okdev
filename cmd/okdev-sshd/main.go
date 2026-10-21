@@ -1,11 +1,15 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -16,6 +20,7 @@ import (
 	"github.com/gliderlabs/ssh"
 	"github.com/pkg/sftp"
 	flag "github.com/spf13/pflag"
+	gossh "golang.org/x/crypto/ssh"
 )
 
 func main() {
@@ -25,7 +30,19 @@ func main() {
 	port := flag.Int("port", 2222, "SSH listen port")
 	authorizedKeysPath := flag.String("authorized-keys", "/var/okdev/authorized_keys", "Path to authorized_keys file")
 	shell := flag.String("shell", "", "Shell to use (auto-detect if empty)")
+	hostKeyPath := flag.String("host-key", defaultHostKeyPath, "Path to the persistent ed25519 host key (created if missing)")
+	ensureHostKey := flag.Bool("ensure-host-key", false, "Create the host key if missing, print its public key in authorized_keys format, and exit")
 	flag.Parse()
+
+	if *ensureHostKey {
+		hostKey, err := loadOrCreateHostKey(*hostKeyPath)
+		if err != nil {
+			log.Fatalf("host key: %v", err)
+		}
+		fmt.Print(string(gossh.MarshalAuthorizedKey(hostKey.PublicKey())))
+		return
+	}
+	hostKey := serverHostKey(*hostKeyPath)
 
 	if *shell == "" {
 		*shell = detectShell()
@@ -36,9 +53,89 @@ func main() {
 	}
 
 	srv := newServerFromAuthorizedKeysFile(fmt.Sprintf(":%d", *port), *shell, *authorizedKeysPath)
+	srv.AddHostKey(hostKey)
 
 	log.Printf("okdev-sshd listening on :%d", *port)
 	log.Fatal(srv.ListenAndServe())
+}
+
+// defaultHostKeyPath lives on the pod's okdev-runtime emptyDir: stable across
+// container restarts, new with every pod. A stable key is what lets peers pin
+// it; an ephemeral one forced every client to skip host-key checks.
+const defaultHostKeyPath = "/var/okdev/ssh_host_ed25519_key"
+
+// serverHostKey is the key the server presents. SSH availability wins over
+// pinning: when the persistent key cannot be loaded or created (a corrupt
+// file, an unwritable runtime volume) the server still starts, on an
+// ephemeral key as it always used to. Pinned peers then fail with an explicit
+// host key mismatch instead of every SSH path in the pod going dark;
+// `--ensure-host-key` stays fail-closed, so `okdev up` reports the problem.
+func serverHostKey(path string) gossh.Signer {
+	key, err := loadOrCreateHostKey(path)
+	if err == nil {
+		return key
+	}
+	log.Printf("warning: persistent host key %s unavailable (%v); using an ephemeral key, so pinned inter-pod peers will refuse this server", path, err)
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		log.Fatalf("generate ephemeral host key: %v", err)
+	}
+	signer, err := gossh.NewSignerFromKey(priv)
+	if err != nil {
+		log.Fatalf("ephemeral host key: %v", err)
+	}
+	return signer
+}
+
+// loadOrCreateHostKey returns the persistent host key, generating it on first
+// use. The key is written to a temp file and linked into place, so a racing
+// `--ensure-host-key` and server start on a fresh pod settle on one key and
+// never read a half-written one.
+func loadOrCreateHostKey(path string) (gossh.Signer, error) {
+	if data, err := os.ReadFile(path); err == nil {
+		return gossh.ParsePrivateKey(data)
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	block, err := gossh.MarshalPrivateKey(priv, "okdev-sshd host key")
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".host-key-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return nil, err
+	}
+	if _, err := tmp.Write(pem.EncodeToMemory(block)); err != nil {
+		tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Link(tmp.Name(), path); err != nil {
+		if !os.IsExist(err) {
+			return nil, err
+		}
+		// Lost the race: the winner's complete key is authoritative.
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil, readErr
+		}
+		return gossh.ParsePrivateKey(data)
+	}
+	return gossh.NewSignerFromKey(priv)
 }
 
 func newServer(addr, shell string, keys []ssh.PublicKey) *ssh.Server {

@@ -1777,7 +1777,7 @@ func detachWrapperScript(jobID string, argv []string, cleanupPaths []string, met
 		cascadeBlock = fmt.Sprintf(
 			"cascade() {\n"+
 				"  for peer in %s; do\n"+
-				"    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 \"$peer\" 'sh -s' <<'OKDEV_CASCADE_KILL' >/dev/null 2>&1 || true\n"+
+				"    ssh -o BatchMode=yes -o ConnectTimeout=5 \"$peer\" 'sh -s' <<'OKDEV_CASCADE_KILL' >/dev/null 2>&1 || true\n"+
 				"%s"+
 				"OKDEV_CASCADE_KILL\n"+
 				"  done\n"+
