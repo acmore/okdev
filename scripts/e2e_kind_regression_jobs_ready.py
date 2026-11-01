@@ -12,10 +12,6 @@ from e2e_kind_support import KindRegression
 class JobsReady(KindRegression):
     def test_job_identity_exit_deadline_and_members(self):
         config, _ = self.config("ready", replicas=2)
-        raw = json.loads(config.read_text())
-        raw["spec"]["sync"]["paths"] = []
-        config.write_text(json.dumps(raw))
-        self.trust(config)
         self.up(config, "ready")
         base = self.base(config, "ready")
         pods = [p["metadata"]["name"] for p in self.pods("ready")]
