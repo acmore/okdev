@@ -22,5 +22,11 @@ export STNOUPGRADE=1
 #
 # The sync protocol port (22000) is deliberately left alone: mesh sync dials it
 # pod-to-pod, and it authenticates peers by device ID over TLS.
+if syncthing serve --help 2>&1 | grep -q -- '--no-port-probing'; then
+  port_probing_flag=--no-port-probing
+else
+  port_probing_flag=--skip-port-probing
+fi
+
 exec syncthing serve --home /var/syncthing --no-browser \
-  --gui-address=http://127.0.0.1:8384 --no-restart --no-upgrade --skip-port-probing
+  --gui-address=http://127.0.0.1:8384 --no-restart --no-upgrade "$port_probing_flag"
