@@ -1974,7 +1974,12 @@ echo "sync --reset --local verified"
 echo "Breaking a mesh receiver's syncthing config to test --reset --mesh"
 BREAK_WPOD=$(echo "$MESH_WORKERS" | awk '{print $1}')
 kubectl -n "$NAMESPACE" exec "$BREAK_WPOD" -c okdev-sidecar -- sh -c \
-  'syncthing generate --home /var/syncthing/config >/dev/null 2>&1; kill $(cat /var/syncthing/syncthing.pid 2>/dev/null) 2>/dev/null; sleep 1; syncthing serve --home /var/syncthing/config --no-browser --no-default-folder >/dev/null 2>&1 &'
+  'syncthing generate --home /var/syncthing/config >/dev/null 2>&1;
+   kill $(cat /var/syncthing/syncthing.pid 2>/dev/null) 2>/dev/null;
+   sleep 1;
+   no_default_folder="";
+   if syncthing serve --help 2>&1 | grep -q -- --no-default-folder; then no_default_folder=--no-default-folder; fi;
+   syncthing serve --home /var/syncthing/config --no-browser $no_default_folder >/dev/null 2>&1 &'
 
 echo "Waiting for receiver to become unhealthy"
 BROKEN_DETECTED=false

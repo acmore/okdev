@@ -33,10 +33,6 @@ class PodGroupStatus(KindRegression):
             self.created_crd = True
             self.run_cmd(["kubectl", "wait", "--for=condition=Established", "crd/podgroups.scheduling.volcano.sh", "--timeout=60s"])
         config, _ = self.config("pg-status", replicas=2)
-        raw = json.loads(config.read_text())
-        raw["spec"]["sync"]["paths"] = []
-        config.write_text(json.dumps(raw))
-        self.trust(config)
         self.up(config, "pg-status")
 
         def report():

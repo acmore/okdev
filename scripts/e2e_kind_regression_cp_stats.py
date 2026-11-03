@@ -22,10 +22,6 @@ class CopyStats(KindRegression):
 
     def test_counts_reuse_failures_and_hashes(self):
         config, _ = self.config("cpstats", replicas=2)
-        raw = json.loads(config.read_text())
-        raw["spec"]["sync"]["paths"] = []
-        config.write_text(json.dumps(raw))
-        self.trust(config)
         self.up(config, "cpstats")
         base = self.base(config, "cpstats")
         source = self.root / "payload"

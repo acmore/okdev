@@ -860,7 +860,7 @@ func (r *syncthingExecRecorder) ExecShInContainer(_ context.Context, namespace, 
 func TestParseLocalSyncthingAPIBaseUsesLatestLoopbackAddress(t *testing.T) {
 	logText := strings.Join([]string{
 		"INFO: GUI and API listening on 127.0.0.1:49100",
-		"INFO: GUI and API listening on 127.0.0.1:49101",
+		"INF GUI and API listening (address=127.0.0.1:49101 log.pkg=api)",
 	}, "\n")
 
 	base, ok := parseLocalSyncthingAPIBase(logText)

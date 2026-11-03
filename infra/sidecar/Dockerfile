@@ -1,13 +1,13 @@
-FROM golang:1.26-alpine AS builder
+FROM golang:1.26.10-alpine3.24 AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /okdev-sshd ./cmd/okdev-sshd/
 
-FROM alpine:3.21
+FROM alpine:3.24.3
 
-ARG SYNCTHING_VERSION=v1.29.7
+ARG SYNCTHING_VERSION=v2.1.7
 
 # Install syncthing dependencies and helpers used by the sidecar runtime.
 RUN apk add --no-cache ca-certificates curl tar util-linux

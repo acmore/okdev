@@ -25,7 +25,7 @@ func (e *MigrationEligibleError) Error() string { return e.Err.Error() }
 func (e *MigrationEligibleError) Unwrap() error { return e.Err }
 
 const (
-	DefaultSyncthingVersion       = "v1.29.7"
+	DefaultSyncthingVersion       = "v2.1.7"
 	DefaultSyncthingRescanSeconds = 300
 	// DefaultSyncthingVersioningDays is how long staggered file versioning
 	// keeps overwritten/deleted files in .stversions on each side of a

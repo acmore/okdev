@@ -10,10 +10,6 @@ from e2e_kind_support import KindRegression
 class Replicas(KindRegression):
     def test_deployment_scale_and_manifest_change(self):
         config, _ = self.config("replicas", replicas=2)
-        raw = json.loads(config.read_text())
-        raw["spec"]["sync"]["paths"] = []
-        config.write_text(json.dumps(raw))
-        self.trust(config)
         manifest = config.parent / "workload.json"
         original = manifest.read_bytes()
         self.up(config, "replicas")
@@ -53,7 +49,6 @@ class PyTorchReplicas(KindRegression):
     def test_master_and_worker_counts(self):
         config, _ = self.config("train")
         raw = json.loads(config.read_text())
-        raw["spec"]["sync"]["paths"] = []
         raw["spec"]["workload"] = {"type": "pytorchjob", "manifestPath": "workload.json",
             "attach": {"container": "pytorch"}, "inject": [
                 {"path": "spec.pytorchReplicaSpecs.Master.template"},

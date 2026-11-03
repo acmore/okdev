@@ -1078,6 +1078,10 @@ func rewriteLocalSyncthingConfigXML(raw []byte) ([]byte, bool, error) {
 }
 
 func newLocalSyncthingServeCommand(binary, home, localGUIAddr string) *exec.Cmd {
+	portProbingFlag := "--skip-port-probing"
+	if out, err := exec.Command(binary, "serve", "--help").CombinedOutput(); err == nil && strings.Contains(string(out), "--no-port-probing") {
+		portProbingFlag = "--no-port-probing"
+	}
 	cmd := exec.Command(
 		binary,
 		"serve",
@@ -1085,7 +1089,7 @@ func newLocalSyncthingServeCommand(binary, home, localGUIAddr string) *exec.Cmd 
 		"--no-browser",
 		"--gui-address=http://"+localGUIAddr,
 		"--no-restart",
-		"--skip-port-probing",
+		portProbingFlag,
 		"--no-upgrade",
 	)
 	cmd.Env = append(os.Environ(), "STNOUPGRADE=1")
@@ -1431,7 +1435,7 @@ func waitLocalSyncthingAPIEndpoint(ctx context.Context, proc localSyncthingProce
 	}
 }
 
-var syncthingGUIListenPattern = regexp.MustCompile(`GUI and API listening on (\[[^\]]+\]:\d+|[^\s/]+:\d+)`)
+var syncthingGUIListenPattern = regexp.MustCompile(`GUI and API listening(?: on | \(address=)(\[[^\]]+\]:\d+|[^\s/)]+:\d+)`)
 
 func parseLocalSyncthingAPIBase(logText string) (string, bool) {
 	matches := syncthingGUIListenPattern.FindAllStringSubmatch(logText, -1)

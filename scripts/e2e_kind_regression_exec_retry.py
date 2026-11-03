@@ -13,10 +13,6 @@ from e2e_kind_support import KindRegression
 class ExecRetry(KindRegression):
     def test_budget_recovery_cancellation_and_ambiguous_delivery(self):
         config, _ = self.config("retry")
-        raw = json.loads(config.read_text())
-        raw["spec"]["sync"]["paths"] = []
-        config.write_text(json.dumps(raw))
-        self.trust(config)
         self.up(config, "retry")
         pod = self.pods("retry")[0]["metadata"]["name"]
         base = self.base(config, "retry")
