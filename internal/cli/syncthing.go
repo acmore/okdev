@@ -42,9 +42,15 @@ const (
 )
 
 // defaultSyncExcludes are written to a starter .stignore when one does not
-// already exist. They prevent common large or noisy directories from being
-// synced by default.
+// already exist.
 var defaultSyncExcludes = []string{"node_modules", "vendor", "__pycache__", ".DS_Store"}
+
+func starterSyncExcludes(root string) []string {
+	if detectSTIgnorePreset(root) == "cmake" {
+		return config.STIgnorePreset("cmake")
+	}
+	return append([]string(nil), defaultSyncExcludes...)
+}
 
 const (
 	largeSyncWarnThreshold = 100 * 1024 * 1024
@@ -884,7 +890,7 @@ func ensureTransferTempSTIgnoreBlock(dir string) error {
 		if err != nil {
 			return err
 		}
-	} else if defaults, ok := buildSTIgnoreContent(defaultSyncExcludes); ok {
+	} else if defaults, ok := buildSTIgnoreContent(starterSyncExcludes(dir)); ok {
 		raw = []byte(defaults)
 	}
 	var b strings.Builder
@@ -3161,7 +3167,7 @@ func loadSTIgnorePatterns(root string) ([]string, error) {
 	content, err := os.ReadFile(filepath.Join(root, ".stignore"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return defaultSyncExcludes, nil
+			return starterSyncExcludes(root), nil
 		}
 		return nil, err
 	}

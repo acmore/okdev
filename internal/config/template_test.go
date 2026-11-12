@@ -83,6 +83,26 @@ func TestRenderBuiltinBasic(t *testing.T) {
 	}
 }
 
+func TestBuiltinTemplatesKeepLocalSourceAuthoritative(t *testing.T) {
+	for _, name := range BuiltinTemplateNames() {
+		t.Run(name, func(t *testing.T) {
+			vars := NewTemplateVars()
+			vars.Name = "demo"
+			rendered, err := RenderTemplate(name, vars)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var cfg DevEnvironment
+			if err := sigsyaml.Unmarshal([]byte(rendered), &cfg); err != nil {
+				t.Fatal(err)
+			}
+			if len(cfg.Spec.Sync.Paths) != 1 || cfg.Spec.Sync.Paths[0].Direction != SyncDirectionUp {
+				t.Fatalf("built-in template must generate local-authoritative sync, got %+v", cfg.Spec.Sync.Paths)
+			}
+		})
+	}
+}
+
 // The dev container's shape moved to the pod manifest template, so that is
 // where --dev-image and the resource defaults have to land.
 func TestRenderBuiltinPodManifest(t *testing.T) {
@@ -134,6 +154,11 @@ func TestSTIgnorePreset(t *testing.T) {
 	}
 	if got := STIgnorePreset("missing"); got != nil {
 		t.Fatalf("expected nil for unknown preset, got %+v", got)
+	}
+	for _, pattern := range []string{"build/", "out/", "cmake-build-*/", ".cache/", "node_modules/"} {
+		if !slices.Contains(STIgnorePreset("cmake"), pattern) {
+			t.Fatalf("cmake preset missing %q", pattern)
+		}
 	}
 }
 

@@ -20,7 +20,9 @@ spec:
       version: {{ .SyncthingVersion }}
       autoInstall: true
     paths:
-      - "{{ .SyncLocal }}:{{ .SyncRemote }}"
+      - local: "{{ .SyncLocal }}"
+        remote: "{{ .SyncRemote }}"
+        direction: up
   ports:
     - name: app
       local: 8080

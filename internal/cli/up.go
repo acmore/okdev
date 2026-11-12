@@ -195,6 +195,14 @@ func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, e
 	if err != nil {
 		return nil, err
 	}
+	if len(cc.cfg.Spec.Sync.Paths) == 0 {
+		ui.warnf("sync uses the implicit bidirectional default: pod edits and deletions can change local files; add a direction: up mapping to keep local source authoritative")
+	}
+	for _, path := range cc.cfg.Spec.Sync.Paths {
+		if strings.TrimSpace(path.Direction) == "" {
+			ui.warnf("sync path %q uses the implicit bidirectional default: pod edits and deletions can change local files; set direction: up to keep local source authoritative, or direction: bi to opt in explicitly", path.Local)
+		}
+	}
 	if flags.resetWorkspace && len(syncPairs) > 0 && syncPairs[0].Direction == config.SyncDirectionDown {
 		// reset-workspace clears the remote and reseeds it from local; with
 		// direction "down" the pod is the authority and local is
