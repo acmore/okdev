@@ -374,7 +374,7 @@ paths:
 **Sync direction.** `direction` applies to a mapping's whole synced folder — finer per-subpath direction inside one folder is impossible with Syncthing (ignore rules live in the directory itself; per-path folder types were rejected upstream). Pick the direction by what the folder carries:
 
 - `bi` (implicit default for older or hand-written mappings): source code you intentionally edit on both sides. Pod-side deletions also remove local files. `okdev up` warns when a mapping relies on this implicit default; set `direction: bi` to acknowledge it. Keep generated outputs (results, checkpoints, logs) out of the synced path and fetch them with `okdev cp` or `okdev jobs logs`. Versioning (`.stversions/`) is a recovery aid.
-- `up`: the folder is a code drop. Nothing the pod writes can ever touch local files; pod-side writes into the folder are flagged by Syncthing but not propagated.
+- `up`: the folder is a code drop. Nothing the pod writes can ever touch local files; unignored pod writes into the folder are flagged by Syncthing and keep `sync wait`/`exec --require-sync` from reporting convergence until they are removed or ignored. Keep build outputs out of the source mapping or add them to `.stignore`.
 - `down`: the folder carries pod-generated results. A stray local write (for example an empty file from a failed redirect) can never clobber the pod's data. `okdev up --reset-workspace` and `okdev sync reset-remote` are rejected in this direction because they reseed the remote from local.
 
 An explicit `okdev sync --mode` overrides the configured direction for that invocation. Changing `direction` takes effect on the next `okdev up` (it restarts sync with the new folder types). Mesh receiver pods are always receiveonly regardless of direction.

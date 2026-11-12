@@ -139,7 +139,7 @@ func TestMeshReceiverRejectsUnpublishedReceiveOnlyChanges(t *testing.T) {
 	}))
 	defer srv.Close()
 	health := observeMeshReceiver(context.Background(), "worker-0", srv.URL, "key", srv.URL, "key", "hub", "worker", "folder")
-	if !health.Connected || health.InSync {
+	if !health.Connected || health.InSync || !strings.Contains(health.Reason, "receive-only side has") {
 		t.Fatalf("local worker drift accepted: %+v", health)
 	}
 }

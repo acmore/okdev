@@ -732,9 +732,13 @@ echo partial >"$SYNC_DIR/inflight.bin.okdev-tmp-123"
 echo control >"$SYNC_DIR/cp-temp-control.txt"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- \
   sh -lc 'echo partial >/workspace/.okdev-cp.AbC123 && echo control >/workspace/cp-temp-remote-control.txt'
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync wait --timeout 3m >/dev/null
-TEMP_REMOTE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- \
-  sh -lc 'cat /workspace/cp-temp-control.txt; ls -a /workspace | grep -E "okdev-part|okdev-tmp-" || true')
+TEMP_REMOTE=""
+for _ in $(seq 1 30); do
+  TEMP_REMOTE=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- \
+    sh -lc 'cat /workspace/cp-temp-control.txt 2>/dev/null; ls -a /workspace | grep -E "okdev-part|okdev-tmp-" || true')
+  [[ "$TEMP_REMOTE" == "control" ]] && break
+  sleep 1
+done
 if [[ "$TEMP_REMOTE" != "control" ]]; then
   echo "ERROR: expected only the control file to reach the pod, got: $TEMP_REMOTE" >&2
   exit 1
@@ -750,16 +754,8 @@ if [[ -e "$SYNC_DIR/.okdev-cp.AbC123" ]]; then
 fi
 rm -f "$SYNC_DIR/inflight.bin.okdev-part" "$SYNC_DIR/inflight.bin.okdev-tmp-123" "$SYNC_DIR/cp-temp-control.txt" "$SYNC_DIR/cp-temp-remote-control.txt"
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- sh -lc 'rm -f /workspace/.okdev-cp.AbC123 /workspace/cp-temp-remote-control.txt'
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync wait --timeout 3m >/dev/null
 echo "cp transfer temp files excluded from sync verified"
-
-echo "Checking pod-side deletion cannot remove local source"
-"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- rm -f /workspace/sync-wait-probe.txt
-sleep 3
-if [[ "$(cat "$SYNC_DIR/sync-wait-probe.txt" 2>/dev/null)" != "sync-wait-payload" ]]; then
-  echo "ERROR: pod-side deletion removed the local source file" >&2
-  exit 1
-fi
-echo "local source survived pod-side deletion"
 
 echo "File copy (okdev cp) tests completed"
 
@@ -1000,6 +996,9 @@ if ! grep -q "direction: up" "$CFG_PATH"; then
   cat "$CFG_PATH" >&2
   exit 1
 fi
+# Later test edits use the unquoted YAML spelling; normalize the built-in
+# template's quoted remote path before those replacements.
+replace_first_in_file "$CFG_PATH" 'remote: "/workspace"' 'remote: /workspace'
 "$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" up --wait-timeout 5m
 DETAILS_UP=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" status --details)
 if [[ "$DETAILS_UP" != *"direction: up (->)"* ]]; then
@@ -1627,6 +1626,17 @@ if [[ "$LEFTOVER" != *"leftover=0"* ]]; then
   exit 1
 fi
 echo "jobs group stop verified"
+
+echo "Checking pod-side deletion cannot remove local source"
+echo "deletion-guard" > "$SYNC_DIR/deletion-guard.txt"
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" sync wait --timeout 3m >/dev/null
+"$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --no-prefix -- rm -f /workspace/deletion-guard.txt
+sleep 3
+if [[ "$(cat "$SYNC_DIR/deletion-guard.txt" 2>/dev/null)" != "deletion-guard" ]]; then
+  echo "ERROR: pod-side deletion removed the local source file" >&2
+  exit 1
+fi
+echo "local source survived pod-side deletion"
 
 echo "Testing detached job logs survive dev-container death via sidecar"
 MARKER_OUTPUT=$("$OKDEV_BIN" --config "$CFG_PATH" --session "$SESSION_NAME" exec --no-tty --detach -- sh -c 'echo sidecar-fallback-marker; exec sleep 7303')

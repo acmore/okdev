@@ -35,6 +35,7 @@
 Before treating "changes are not syncing" as a fault, rule out two by-design behaviors:
 
 - **Direction contract**: with `direction: up` pod-side writes never reach local; with `down` local writes never reach the pod (syncthing marks them as local additions). `okdev status --details` shows each mapping's direction arrow.
+- **Receive-only local changes**: if `sync wait` reports local changes on the pod's receive-only side, remove those generated files, add an appropriate `.stignore` rule, or write outputs outside the source mapping. The wait stays blocked because those files could shadow synced source.
 - **Managed excludes**: a directory that belongs to (or belonged to) its own nested mapping is excluded from the primary folder. `status --details` lists active excludes and tombstones retained after a mapping was removed; delete the entry from the primary root's `.stignore` to fold the directory back into the primary folder.
 
 ## Recovering A File Overwritten By Sync

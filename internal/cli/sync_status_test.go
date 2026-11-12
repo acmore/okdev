@@ -127,6 +127,22 @@ func TestPrintSyncStatusConverged(t *testing.T) {
 	}
 }
 
+func TestPrintSyncStatusShowsConfiguredDirection(t *testing.T) {
+	for _, tc := range []struct{ direction, arrow string }{
+		{direction: "up", arrow: "->"},
+		{direction: "down", arrow: "<-"},
+		{direction: "bi", arrow: "<->"},
+	} {
+		t.Run(tc.direction, func(t *testing.T) {
+			var sb strings.Builder
+			printSyncStatus(&sb, syncStatusReport{Folders: []syncFolderStatus{{Folder: "source", Local: "/local", Remote: "/workspace", Direction: tc.direction}}})
+			if want := "/local " + tc.arrow + " /workspace"; !strings.Contains(sb.String(), want) {
+				t.Fatalf("expected %q in sync status, got:\n%s", want, sb.String())
+			}
+		})
+	}
+}
+
 func TestSummarizeLargeSyncEntriesIsSelfContained(t *testing.T) {
 	root := t.TempDir()
 	big := make([]byte, largeSyncWarnThreshold+1)
