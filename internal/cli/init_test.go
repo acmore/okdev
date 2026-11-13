@@ -64,6 +64,16 @@ spec:
 	}
 }
 
+func TestDetectCMakeSTIgnorePreset(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "CMakeLists.txt"), []byte("project(demo)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectSTIgnorePreset(dir); got != "cmake" {
+		t.Fatalf("expected cmake preset, got %q", got)
+	}
+}
+
 func TestWriteInitSTIgnoreNeverOverwrites(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, ".okdev.yaml")

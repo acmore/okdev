@@ -450,6 +450,8 @@ func resolveSessionNameWithReader(opts *Options, cfg *config.DevEnvironment, nam
 				// Don't pin the user to a possibly-dead session on a transient
 				// API failure; fall through to inference instead.
 				slog.Debug("failed to verify active session workload", "session", resolvedActive, "namespace", namespace, "error", workloadErr)
+			} else if scopeErr := sessionContextMismatch(opts, namespace, resolvedActive); scopeErr != nil {
+				return "", scopeErr
 			} else if clearErr := session.ClearActiveSession(); clearErr != nil {
 				slog.Debug("failed to clear stale active session", "session", resolvedActive, "error", clearErr)
 			}
@@ -1082,6 +1084,9 @@ func ensureSessionAccess(opts *Options, k sessionAccessReader, namespace, sessio
 func checkSessionAccessPods(opts *Options, namespace, sessionName string, requireExisting bool, pods []kube.PodSummary) error {
 	if len(pods) == 0 {
 		if requireExisting {
+			if err := sessionContextMismatch(opts, namespace, sessionName); err != nil {
+				return err
+			}
 			return fmt.Errorf("%w: session %q does not exist in namespace %q", ErrSessionNotFound, sessionName, namespace)
 		}
 		return nil
@@ -1096,6 +1101,28 @@ func checkSessionAccessPods(opts *Options, namespace, sessionName string, requir
 		return nil
 	}
 	return fmt.Errorf("session %q is owned by %q (current owner: %q); set --owner %s", sessionName, otherOwner, owner, otherOwner)
+}
+
+func sessionContextMismatch(opts *Options, namespace, sessionName string) error {
+	info, err := session.LoadInfo(sessionName)
+	if err != nil || info.Name == "" || info.Namespace != namespace {
+		return nil
+	}
+	if opts != nil && normalizeConfigPath(info.ConfigPath) != "" && normalizeConfigPath(opts.ConfigPath) != "" && normalizeConfigPath(info.ConfigPath) != normalizeConfigPath(opts.ConfigPath) {
+		return nil
+	}
+	current := ""
+	if opts != nil {
+		current = strings.TrimSpace(opts.Context)
+	}
+	if current == "" {
+		current, _ = detectKubeDefaults()
+	}
+	previous := strings.TrimSpace(info.KubeContext)
+	if previous == "" || current == "" || previous == current {
+		return nil
+	}
+	return fmt.Errorf("%w: session %q was last used in context %q, but the selected context is %q; pass --context %s or set spec.kubeContext in the config", ErrSessionNotFound, sessionName, previous, current, previous)
 }
 
 func ensureCommand(name string) error {

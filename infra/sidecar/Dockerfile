@@ -5,7 +5,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /okdev-sshd ./cmd/okdev-sshd/
 
-FROM alpine:3.24.3
+FROM alpine:3.24.4
 
 ARG SYNCTHING_VERSION=v2.1.7
 
