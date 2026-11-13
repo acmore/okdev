@@ -89,6 +89,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - uses: actions/checkout@v4
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -101,10 +102,31 @@ jobs:
           cd dist
           sha256sum okdev_*.tar.gz > checksums.txt
 
+      - name: Prepare release policy
+        run: |
+          jq -e '
+            .schemaVersion == 1 and
+            (.minimumCliVersion | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
+            (.enforceAfter | fromdateiso8601 | type == "number")
+          ' .github/release-policy.json >/dev/null
+          minimum="$(jq -r .minimumCliVersion .github/release-policy.json)"
+          release_tag="${{ github.ref_name }}"
+          if { [ "${release_tag%%-*}" = "$minimum" ] && [ "$release_tag" != "$minimum" ]; } || \
+             [ "$(printf '%s\n' "$minimum" "$release_tag" | sort -V | head -n 1)" != "$minimum" ]; then
+            echo "minimum CLI version exceeds release tag" >&2
+            exit 1
+          fi
+          cp .github/release-policy.json dist/release-policy.json
+
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/okdev_*.tar.gz
+
+      - name: Attest release policy
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/release-policy.json
 
       - name: Publish GitHub release assets
         uses: softprops/action-gh-release@v2
@@ -115,3 +137,4 @@ jobs:
           files: |
             dist/okdev_*.tar.gz
             dist/checksums.txt
+            dist/release-policy.json

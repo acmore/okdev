@@ -55,6 +55,22 @@ curl -fsSL https://raw.githubusercontent.com/acmore/okdev/main/scripts/install.s
   `ghcr.io/acmore/okdev:edge`
 - `latest` is only published for stable `vX.Y.Z` tags, not prereleases.
 
+### Minimum supported CLI version
+
+The repository-wide floor is configured in `.github/release-policy.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "minimumCliVersion": "v0.14.1",
+  "enforceAfter": "2026-11-13T00:00:00Z"
+}
+```
+
+Change this file through a reviewed PR, then publish a new release. The release workflow validates and attests the policy as a separate release asset. Keep `minimumCliVersion` at or below the release tag; raise it only after a release containing the policy checker has been distributed. Existing binaries that predate the checker cannot be made to enforce the policy retroactively. The minimum version may only increase: clients with a verified cached policy reject a lower floor or older release tag.
+
+Released CLIs verify the policy's Sigstore attestation against this repository's release workflow and exact release tag before using it. They cache the verified policy for one hour. Once the cache expires, an unavailable or unverifiable policy blocks commands except `version`, `upgrade`, help and completion; no project config can override the floor. `okdev ssh-proxy` remains silent on success, and prints the upgrade error to stderr only when blocked. Development builds do not check the release policy.
+
 Default sidecar image resolution uses the running `okdev` binary version, with `edge` fallback for dev builds.
 
 The sidecar image build verifies Syncthing's clearsigned `sha256sum.txt.asc` against Syncthing's release keys pinned in `internal/syncthing/release-keys.asc` (the same keys the CLI uses when it auto-installs Syncthing locally) before trusting any checksum.
