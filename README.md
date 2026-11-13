@@ -25,9 +25,9 @@ session:   myproj-alice
 namespace: ml-team
 pod:       okdev-myproj-alice-3bce18ff
 ssh:       ssh okdev-myproj-alice
-sync:      active (<->)
+sync:      active (->)
 sync paths:
-- /Users/alice/work/myproj <-> /workspace
+- /Users/alice/work/myproj -> /workspace
 forwards:
 - app: localhost:8080 -> remote:8080
 ```
@@ -63,7 +63,7 @@ okdev down                # tear it down
 
 ### Your code, actually live
 
-Bidirectional [Syncthing](https://syncthing.net/)-backed sync between your working tree and the pod — not a one-shot copy. `okdev sync wait` blocks until every byte has landed, and `okdev exec --require-sync` *refuses to launch* until it has, so a run can never silently use pre-edit code.
+[Syncthing](https://syncthing.net/)-backed sync keeps your working tree live in the pod. New built-in `okdev init` configs send local source to the pod by default, so a pod-side deletion cannot remove a local source file. Set `paths[].direction: bi` when you intentionally edit the same files on both sides; use a separate `down` mapping or `okdev cp` to collect pod-generated results. `okdev sync wait` blocks until your edits have landed, and `okdev exec --require-sync` refuses to launch stale code.
 
 Sync is self-healing (it repairs broken peer connections on its own), pausable (`okdev sync pause` before a `git checkout`, so a branch switch cannot propagate onto a running job), and honest about failure — a dead channel is reported as dead rather than as "no pending changes".
 
@@ -110,6 +110,8 @@ At high pod counts, fanout routes through a single gateway pod over the pod netw
 ### Coding agents
 
 Configure `claude-code`, `codex`, `gemini`, or `opencode` under `spec.agents`; okdev installs them and stages your local auth into the session container.
+
+Agents that run builds, tests, or GPU jobs through okdev should load the [okdev agent skill](skills/okdev/SKILL.md) before their first `exec` or `sync`. Refresh an installed copy when upgrading okdev; older copies described only helping another user and can miss agent-operated sessions.
 
 ---
 

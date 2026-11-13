@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -99,6 +100,42 @@ func TestEnsureSessionAccessRequiresExistingSessionWhenRequested(t *testing.T) {
 	}
 	if code, ok := ClassifiedExitCode(err); !ok || code != ExitSessionNotFound {
 		t.Fatalf("expected exit %d for not-found, got code=%d ok=%v", ExitSessionNotFound, code, ok)
+	}
+}
+
+func TestEnsureSessionAccessExplainsContextDrift(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	kubeconfigPath := filepath.Join(t.TempDir(), "config")
+	if err := os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\nkind: Config\ncurrent-context: switched\ncontexts:\n  - name: switched\n    context:\n      cluster: new\n      user: demo\nclusters:\n  - name: new\n    cluster:\n      server: https://localhost\nusers:\n  - name: demo\n    user: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KUBECONFIG", kubeconfigPath)
+	configPath := filepath.Join(t.TempDir(), "okdev.yaml")
+	if err := session.SaveInfo(session.Info{Name: "demo", ConfigPath: configPath, Namespace: "team", KubeContext: "original"}); err != nil {
+		t.Fatal(err)
+	}
+	err := ensureSessionAccess(&Options{ConfigPath: configPath}, fakeSessionAccessReader{}, "team", "demo", true)
+	if !errors.Is(err, ErrSessionNotFound) || !strings.Contains(err.Error(), `context "original"`) || !strings.Contains(err.Error(), `context is "switched"`) || !strings.Contains(err.Error(), "--context original") {
+		t.Fatalf("expected actionable context mismatch, got %v", err)
+	}
+}
+
+func TestActiveSessionIsNotClearedWhenContextDrifts(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configPath := filepath.Join(t.TempDir(), "okdev.yaml")
+	if err := session.SaveInfo(session.Info{Name: "demo", ConfigPath: configPath, Namespace: "team", KubeContext: "original"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.SaveActiveSession("demo"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := resolveSessionNameWithReader(&Options{ConfigPath: configPath, Context: "switched"}, &config.DevEnvironment{}, "team", true, fakeSessionAccessReader{})
+	if !errors.Is(err, ErrSessionNotFound) || !strings.Contains(err.Error(), "--context original") {
+		t.Fatalf("expected context mismatch, got %v", err)
+	}
+	active, err := session.LoadActiveSession()
+	if err != nil || active != "demo" {
+		t.Fatalf("context drift must preserve active session, got %q, %v", active, err)
 	}
 }
 

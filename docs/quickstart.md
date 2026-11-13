@@ -39,8 +39,8 @@ okdev template list
 
 This generates `.okdev/okdev.yaml` in the current directory **plus the workload's manifest** beside it under `.okdev/` — `.okdev/pod.yaml` for the default pod workload. Every workload type is a manifest file; there is no inline form. In that folder-config layout, `spec.workload.manifestPath` can be the bare filename like `job.yaml` or `pytorchjob.yaml`. okdev resolves that relative to `.okdev/` first, then falls back to the project root for compatibility with older layouts. See [Config Manifest](config-manifest.md) for the full field reference and examples.
 
-For built-in templates, `okdev init` also writes a starter local `.stignore` file for the initialized sync root. Use `--stignore-preset` to override that starter with a project-oriented preset like `python`, `node`, `go`, or `rust`.
-When `--stignore-preset` is omitted, `okdev init` will try to detect a preset from common repo markers like `go.mod`, `package.json`, `Cargo.toml`, or `pyproject.toml`.
+For built-in templates, `okdev init` also writes a starter local `.stignore` file for the initialized sync root. Use `--stignore-preset` to override that starter with a project-oriented preset like `python`, `node`, `go`, `rust`, or `cmake`.
+When `--stignore-preset` is omitted, `okdev init` tries to detect a preset from repo markers such as `go.mod`, `package.json`, `Cargo.toml`, `pyproject.toml`, or `CMakeLists.txt`. The CMake preset excludes `build/`, `out/`, `cmake-build-*/`, `.cache/`, and common dependency caches such as `node_modules/`; review the generated file if your project keeps source there. An existing `.stignore` is preserved.
 `okdev init --template` resolves names from project templates in `.okdev/templates/`, user templates in `~/.okdev/templates/`, and then built-in templates. Template files can include YAML frontmatter with custom `string`, `int`, or `bool` variables; pass values with repeated `--set key=value` flags. Custom template usage is recorded in `spec.template` so `okdev migrate --template <name>` can re-render the template later while preserving local config edits.
 
 Templates can also declare companion files in frontmatter, for example a PyTorch template can render both the config and `pytorchjob.yaml`:
@@ -73,7 +73,7 @@ Specifically, `okdev up`:
 - ensures Pod and PVC state in the cluster
 - writes a managed `~/.ssh/config` host entry (`okdev-<session>`)
 - starts `okdev-sshd` inside the dev container
-- starts background Syncthing sync (bidirectional)
+- starts background Syncthing sync (local source to pod in new configs)
 - configures port forwarding from `spec.ports`
 
 **Named sessions** let you run multiple environments side by side:
@@ -142,7 +142,7 @@ Use `okdev ssh` when you want the tmux-backed interactive shell managed by okdev
 
 ## File Sync
 
-`okdev up` starts bidirectional Syncthing sync automatically and waits for the initial sync to finish before exiting. For manual control:
+`okdev up` starts Syncthing sync automatically and waits for the initial sync to finish before exiting. New built-in configs use `direction: up`, keeping local source authoritative: pod edits and deletions stay on the pod. Existing configs without an explicit direction retain bidirectional behavior and show a warning during `up`. Set `direction: bi` to opt into edits in both directions, or add a separate `direction: down` mapping for pod-generated results. For manual control:
 
 ```bash
 # Detached background sync (default)
@@ -205,6 +205,8 @@ okdev resolves the target cluster in this order:
 1. `--context` CLI flag (highest priority)
 2. `spec.kubeContext` in the manifest
 3. Active context from your kubeconfig
+
+When a config has no `spec.kubeContext`, switching the kubeconfig context can make an existing session appear absent. okdev compares the selected context with the context saved when the session was started and reports a mismatch without clearing the active session. Set `spec.kubeContext` to keep the intended cluster explicit.
 
 ## SSH Details
 

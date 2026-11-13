@@ -375,8 +375,8 @@ func printSyncStatus(w io.Writer, report syncStatusReport) {
 		fmt.Fprintf(w, "Pending: %s across %d file(s).\n", humanSizeIEC(report.NeedBytes), report.NeedFiles)
 	}
 	for _, folder := range report.Folders {
-		fmt.Fprintf(w, "\n%s  %s <-> %s  (direction: %s, state: %s)\n",
-			folder.Folder, folder.Local, folder.Remote, folder.Direction, emptyDash(folder.State))
+		fmt.Fprintf(w, "\n%s  %s %s %s  (direction: %s, state: %s)\n",
+			folder.Folder, folder.Local, modeSymbol(folder.Direction), folder.Remote, folder.Direction, emptyDash(folder.State))
 		fmt.Fprintf(w, "- pending: %s across %d file(s)\n", humanSizeIEC(folder.NeedBytes), folder.NeedFiles)
 		for _, file := range folder.Pending {
 			line := fmt.Sprintf("  %8s  %s  %s", humanSizeIEC(file.Size), file.Name, file.Direction)

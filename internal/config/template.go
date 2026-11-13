@@ -72,6 +72,16 @@ var stignorePresets = map[string][]string{
 		"target/",
 		".DS_Store",
 	},
+	"cmake": {
+		"build/",
+		"out/",
+		"cmake-build-*/",
+		".cache/",
+		"node_modules/",
+		"vendor/",
+		"__pycache__/",
+		".DS_Store",
+	},
 }
 
 var templateHTTPClient templateHTTPDoer = &http.Client{Timeout: 30 * time.Second}

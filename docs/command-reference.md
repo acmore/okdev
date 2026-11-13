@@ -6,7 +6,7 @@
 - `--session`: explicit session identifier. Saved configuration takes precedence over directory discovery; a new session without a saved configuration uses normal discovery (so `okdev up --session new-name` works from the repository). An explicit `--config` takes precedence over both.
 - `--owner`: owner label override (default: `OKDEV_OWNER` or local `USER`)
 - `-n, --namespace`: namespace override
-- `--context`: kubeconfig context override. When omitted, `spec.kubeContext` is used if set; otherwise kubeconfig current-context is used.
+- `--context`: kubeconfig context override. When omitted, `spec.kubeContext` is used if set; otherwise kubeconfig current-context is used. If an existing session is missing after a context switch, okdev names its saved context and keeps the active-session selection so `--context <saved>` can reach it.
 - `--output text|json`: output format (`list`, `status`)
 - `--verbose`: debug logging
 - `NO_COLOR=1` or `TERM=dumb`: disable ANSI color/styling in interactive terminal output
@@ -29,7 +29,7 @@ agents can react without launching a diagnostic chain on every blip:
 ## Commands
 
 - `okdev version`
-- `okdev init [--template <name>|<path>|<url>] [--workload-name <name>] [--dev-image <image>] [--set key=value] [--stignore-preset default|python|node|go|rust] [--force]`
+- `okdev init [--template <name>|<path>|<url>] [--workload-name <name>] [--dev-image <image>] [--set key=value] [--stignore-preset default|python|node|go|rust|cmake] [--force]`
 - `okdev template list [--all]`
 - `okdev template show <name>`
 - `okdev validate`
@@ -276,7 +276,7 @@ agents can react without launching a diagnostic chain on every blip:
 - `--verify`: verify single-file download SHA-256 after copy.
 - `--all`, `--pod`, `--role`, and `--label` are mutually exclusive.
 
-### `okdev init [--template <name>|<path>|<url>] [--workload-name <name>] [--set key=value] [--stignore-preset default|python|node|go|rust] [--force]`
+### `okdev init [--template <name>|<path>|<url>] [--workload-name <name>] [--set key=value] [--stignore-preset default|python|node|go|rust|cmake] [--force]`
 
 - Writes a starter config at `.okdev/okdev.yaml` **plus the workload's manifest** beside it — `.okdev/pod.yaml` for the default pod workload, `.okdev/job.yaml` for `--template job`, and so on. Every workload type, pod included, is a manifest file.
 - **On a project that already has a config, `okdev init` adds a workload to it** rather than refusing. That is the additive mode, and it requires `--workload-name`:
@@ -332,7 +332,8 @@ agents can react without launching a diagnostic chain on every blip:
 - The built-in templates are `pod` (aliased as `basic`, the default), `job`, `pytorchjob`, `deployment` and `generic`. Each declares its own starter manifest and `.stignore` preset in frontmatter — exactly as your own templates do — so a template of yours that shadows one of those names simply replaces it and inherits none of its behavior. `generic` declares no manifest: it is the bring-your-own shape, and needs `--manifest-path` plus `--inject-path`.
 - Generated `manifestPath` values are bare filenames (`job.yaml`). okdev resolves a manifest from the config's own directory, then the project root, then `.okdev/` — so the same value works whether the config is `.okdev/okdev.yaml` or a flat `.okdev.yaml` beside `.okdev/`.
 - `--stignore-preset`: override the starter `.stignore` patterns with a project-oriented preset.
-- When `--stignore-preset` is omitted, `okdev init` tries to detect a preset from common repo markers like `go.mod`, `package.json`, `Cargo.toml`, and `pyproject.toml`.
+- When `--stignore-preset` is omitted, `okdev init` tries to detect a preset from repo markers like `CMakeLists.txt`, `go.mod`, `package.json`, `Cargo.toml`, and `pyproject.toml`. The CMake preset excludes `build/`, `out/`, `cmake-build-*/`, and `.cache/`. `okdev up` uses those CMake exclusions when it creates a missing `.stignore` in a CMake root.
+- New built-in templates set the source mapping to `direction: up`. Existing compact or hand-written paths without a direction remain bidirectional and `up` warns about that implicit choice.
 
 ### `okdev template list [--all]`
 
@@ -370,7 +371,7 @@ agents can react without launching a diagnostic chain on every blip:
 - tmux-backed persistent interactive shells are enabled by default.
 - `--tmux`: explicitly enable tmux mode in the dev container.
 - `--no-tmux`: disable tmux mode for this pod.
-- When `sync.engine=syncthing`, `okdev up` refreshes the session's local Syncthing processes, starts background sync in bidirectional mode by default, then verifies the target and all intended primary-mapping mesh receivers before running hooks or reporting ready. A failed receiver causes `up` to fail with the workload retained for repair.
+- When `sync.engine=syncthing`, `okdev up` refreshes the session's local Syncthing processes, starts background sync in each mapping's configured direction, then verifies the target and all intended primary-mapping mesh receivers before running hooks or reporting ready. New built-in configs send local source to the pod; mappings without an explicit direction still use `bi` and show a warning. A failed receiver causes `up` to fail with the workload retained for repair.
 - Lifecycle hooks run synchronously inside `okdev up` and are tracked per pod: `okdev up && launch` is already hook-safe for pods that existed when the hook fanout started. A hook whose done-marker predates the container's current start (an in-place restart wiped its effects) reads as **stale** and is re-run by the next `okdev up`.
 - Hook success and the `done` state mean the command exited zero; they do not independently verify setup effects. `up` shows each attempted hook's last 32 KiB of combined stdout/stderr on stderr, prefixed with the hook and pod name, including failures. Use explicit prerequisite/postcondition checks in the hook; see [lifecycle recipes](config-manifest.md#speclifecycle).
 - `--wait-hooks`: keep converging `postSync` until every session pod — including pods the controller created after the initial fanout (operator recreations, late-scheduled workers) — has completed it. Use this in automation that launches work across all pods right after `up`; without it, a pod that appeared mid-`up` completes its hooks only on the next `okdev up`.
@@ -498,7 +499,7 @@ agents can react without launching a diagnostic chain on every blip:
 
 ### `okdev trust [--yes]`
 
-- Lists what the config can do **on this machine beyond its project directory** and approves it: sync roots outside the project (bidirectional, so the pod can read and write them), credential files uploaded into the pod (`spec.agents[].auth`), reverse port forwards (the pod reaches this machine's `localhost`), and SSH agent forwarding (`ssh.forwardAgent`).
+- Lists what the config can do **on this machine beyond its project directory** and approves it: sync roots outside the project (whose configured direction determines whether the pod can change local files), credential files uploaded into the pod (`spec.agents[].auth`), reverse port forwards (the pod reaches this machine's `localhost`), and SSH agent forwarding (`ssh.forwardAgent`).
 - Why: a config usually lives in the repository it describes, so whoever can change the repository can change it. Everything else it controls runs in the cluster; these few fields reach the developer's own machine and credentials, so they need the developer's explicit approval.
 - `up`, `restart`, `sync`, `ssh` and `ports` check the capabilities they actually use. On a terminal they list everything the config can do and ask once; without a terminal they refuse before doing anything and name `okdev trust --config <path>`. `--yes` approves non-interactively, which is the explicit opt-in for CI.
 - Approval is recorded per config path in `~/.okdev/trusted-configs.json`. Unrelated edits keep it; a capability added later asks again where it is used. Credential paths are approved by their resolved target, and `up` checks them again immediately before staging, so a retargeted symlink needs fresh approval. A config with none of these capabilities never asks.
