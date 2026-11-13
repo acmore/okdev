@@ -729,6 +729,25 @@ func TestWriteLocalSTIgnoreWritesDefaultsWhenMissing(t *testing.T) {
 	}
 }
 
+func TestWriteLocalSTIgnoreUsesCMakeDefaultsWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "CMakeLists.txt"), []byte("project(demo)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeLocalSTIgnore(dir); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, ".stignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pattern := range []string{"build/", "out/", "cmake-build-*/", ".cache/"} {
+		if !strings.Contains(string(got), pattern+"\n") {
+			t.Fatalf("CMake starter .stignore missing %q: %s", pattern, got)
+		}
+	}
+}
+
 func TestWriteLocalSTIgnorePreservesExistingFileWhenDefaultsImplicit(t *testing.T) {
 	dir := t.TempDir()
 	stignorePath := filepath.Join(dir, ".stignore")

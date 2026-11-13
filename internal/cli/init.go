@@ -271,7 +271,7 @@ func newInitCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&syncRemoteOverride, "sync-remote", "", "Remote sync path")
 	cmd.Flags().StringVar(&sshUserOverride, "ssh-user", "", "SSH user")
 	cmd.Flags().StringVar(&shellOverride, "shell", "", "Shell for interactive SSH sessions (e.g., /bin/zsh)")
-	cmd.Flags().StringVar(&stignorePreset, "stignore-preset", "", "Local .stignore preset: default|python|node|go|rust")
+	cmd.Flags().StringVar(&stignorePreset, "stignore-preset", "", "Local .stignore preset: default|python|node|go|rust|cmake")
 	cmd.Flags().StringArrayVar(&setFlags, "set", nil, "Set a template variable (repeatable: --set key=value)")
 	return cmd
 }
@@ -677,6 +677,7 @@ func detectSTIgnorePreset(dir string) string {
 	}
 
 	candidates := []candidate{
+		{preset: "cmake", markers: []string{"CMakeLists.txt"}},
 		{preset: "go", markers: []string{"go.mod"}},
 		{preset: "node", markers: []string{"package.json"}},
 		{preset: "rust", markers: []string{"Cargo.toml"}},

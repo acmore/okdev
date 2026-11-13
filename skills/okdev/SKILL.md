@@ -1,6 +1,6 @@
 ---
 name: okdev
-description: Load before running any okdev command yourself, including exec, cp, jobs, up, or down, even when okdev is only transport for another task. Also use when helping someone use okdev. Covers --pkill, -i/--script, detached jobs, and GPU cleanup.
+description: Load before an agent runs any okdev command, including exec, sync, jobs, cp, up, or down, even when okdev is only transport for a build, test, or GPU task. Also use when helping someone use okdev. Covers sync safety, detached jobs, fanout, and GPU cleanup.
 ---
 
 # okdev
@@ -11,9 +11,12 @@ Use this skill before driving the `okdev` CLI and for end-user questions about i
 
 When driving okdev from a script or agent:
 
+- New built-in configs sync local source to the pod (`direction: up`). Existing mappings without a direction remain bidirectional; pin `spec.kubeContext` or pass `--context` when changing kubeconfig contexts.
+- Use `exec --require-sync -- ...` before running code that depends on the latest local edits.
 - Use `exec --pkill` instead of raw `pkill -f`.
 - Use `exec -i` for piped stdin or `--script` for multi-line commands.
-- Launch with `--detach`, then use `jobs wait <id> [--grep]`, `jobs logs`, and `jobs stop`; do not poll a reused output file.
+- Launch long work with `exec --detach --require-sync -- ...`; keep the returned job ID and use `jobs wait <id> [--grep <regex>]`, `jobs logs`, and `jobs stop`. Do not poll a reused output file.
+- For intended multi-pod fanout, use `exec --all --json --require-all -- ...` and inspect each pod's JSON envelope. Without a selector, `exec` targets one pod.
 - Use `exec --reset-gpu` between GPU rounds.
 - Read `--help` before reporting a missing command or flag.
 

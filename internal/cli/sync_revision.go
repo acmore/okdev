@@ -49,6 +49,13 @@ func syncthingRevisionConvergence(ctx context.Context, localBase, localKey, remo
 		}
 		before[i] = info
 		if !syncFolderIdle(info) {
+			if info.ReceiveOnlyTotalItems > 0 {
+				side := "local"
+				if i == 1 {
+					side = "pod"
+				}
+				return info.NeedBytes, fmt.Sprintf("%s: %s receive-only side has %d local change(s); remove or ignore those files before sync can converge", folder, side, info.ReceiveOnlyTotalItems), nil
+			}
 			return info.NeedBytes, fmt.Sprintf("%s: indexing or applying changes (state=%s); current revision not settled", folder, info.State), nil
 		}
 	}

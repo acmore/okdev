@@ -337,7 +337,7 @@ spec:
 |-------|------|---------|-------------|
 | `engine` | `string` | — | Sync engine (currently only `syncthing`) |
 | `paths` | `[]entry` | — | Sync mappings. Each entry is either the compact string `local:remote`, or a mapping `{local, remote, direction}` with an optional per-path `direction`. Multiple mappings are allowed as long as their roots are disjoint on both sides (equal or nested roots are rejected) |
-| `paths[].direction` | `string` | `bi` | Sync direction for this mapping's folder: `bi` (bidirectional), `up` (local is the authority: local sendonly, pod receiveonly), `down` (pod is the authority: pod sendonly, local receiveonly) |
+| `paths[].direction` | `string` | `bi` if omitted | Sync direction for this mapping's folder: `bi` (bidirectional), `up` (local is the authority: local sendonly, pod receiveonly), `down` (pod is the authority: pod sendonly, local receiveonly). New built-in templates explicitly set `up` |
 | `syncthing.version` | `string` | `v2.1.7` | Local Syncthing binary version; must be a Syncthing release tag (`vX.Y.Z` or `vX.Y.Z-rc.N`) |
 | `syncthing.autoInstall` | `bool` | `true` | Auto-install local Syncthing |
 | `syncthing.image` | `string` | `ghcr.io/acmore/okdev:<version>` | Sidecar image (fallback: `edge`) |
@@ -354,7 +354,9 @@ Syncthing 2.x migrates its index database from LevelDB to SQLite on first start.
 
 ```yaml
 paths:
-  - .:/workspace                     # primary: code, bidirectional
+  - local: .                         # primary: local source is authoritative
+    remote: /workspace
+    direction: up
   - local: ./collected               # nested inside the repo — allowed:
     remote: /data/results            # okdev excludes it from the primary folder
     direction: down                  # pod-generated results, pod is authority
@@ -371,8 +373,8 @@ paths:
 
 **Sync direction.** `direction` applies to a mapping's whole synced folder — finer per-subpath direction inside one folder is impossible with Syncthing (ignore rules live in the directory itself; per-path folder types were rejected upstream). Pick the direction by what the folder carries:
 
-- `bi` (default): source code you edit on both sides. Either side can overwrite the other, so **keep generated outputs (results, checkpoints, logs) out of the synced path** — write them to a non-synced location and fetch with `okdev cp` or `okdev jobs logs`. Versioning (`.stversions/`) is the safety net, not the design.
-- `up`: the folder is a code drop. Nothing the pod writes can ever touch local files; pod-side writes into the folder are flagged by Syncthing but not propagated.
+- `bi` (implicit default for older or hand-written mappings): source code you intentionally edit on both sides. Pod-side deletions also remove local files. `okdev up` warns when a mapping relies on this implicit default; set `direction: bi` to acknowledge it. Keep generated outputs (results, checkpoints, logs) out of the synced path and fetch them with `okdev cp` or `okdev jobs logs`. Versioning (`.stversions/`) is a recovery aid.
+- `up`: the folder is a code drop. Nothing the pod writes can ever touch local files; unignored pod writes into the folder are flagged by Syncthing and keep `sync wait`/`exec --require-sync` from reporting convergence until they are removed or ignored. Keep build outputs out of the source mapping or add them to `.stignore`.
 - `down`: the folder carries pod-generated results. A stray local write (for example an empty file from a failed redirect) can never clobber the pod's data. `okdev up --reset-workspace` and `okdev sync reset-remote` are rejected in this direction because they reseed the remote from local.
 
 An explicit `okdev sync --mode` overrides the configured direction for that invocation. Changing `direction` takes effect on the next `okdev up` (it restarts sync with the new folder types). Mesh receiver pods are always receiveonly regardless of direction.
@@ -389,11 +391,11 @@ paths:
     direction: up
 ```
 
-Local ignore rules come from the synced workspace's `.stignore`. `okdev init` writes a starter `.stignore` for built-in templates, and `okdev up` creates one with default patterns if the local sync root does not already have one. Every sync start also keeps an okdev-owned block at the top of each local root's `.stignore` (`// okdev:begin/end transfer temp files`) that excludes `okdev cp`'s in-flight files; edits inside that block are overwritten, everything outside it is left alone. A `.stignore` symlink is refused so the update cannot modify a file outside the sync root. Editing `.stignore` takes effect automatically as Syncthing notices the change, but it does not remove files that were already synced to the remote workspace. For faster initial syncs, consider ignoring large generated build outputs or local test artifacts such as `debug/`, `release/`, caches, and dataset directories when they do not need to exist remotely.
+Local ignore rules come from the synced workspace's `.stignore`. `okdev init` writes a starter `.stignore` for built-in templates, and `okdev up` creates one with default patterns if the local sync root does not already have one. A root containing `CMakeLists.txt` also gets CMake build and cache exclusions. Every sync start keeps an okdev-owned block at the top of each local root's `.stignore` (`// okdev:begin/end transfer temp files`) that excludes `okdev cp`'s in-flight files; edits inside that block are overwritten, everything outside it is left alone. An existing `.stignore` is preserved outside that block, so add CMake exclusions manually there if it already exists. A `.stignore` symlink is refused so the update cannot modify a file outside the sync root. Editing `.stignore` takes effect automatically as Syncthing notices the change, but it does not remove files that were already synced to the remote workspace.
 
 The `syncthing.version` field controls the local binary on your machine. The Syncthing binary inside the sidecar comes from `spec.sidecar.image`.
 
-**File versioning (data-loss safety net).** The managed folder syncs bidirectionally in steady state, so a bad write on one side (for example an empty file created locally by a failed command redirect) propagates and overwrites the real file on the other side. With versioning enabled (the default), the side applying an incoming overwrite or deletion first archives the previous version into `.stversions/` at the sync root — on the pod under the remote workspace, locally under the local sync root — and staggered cleanup drops versions older than `versioningDays`. `.stversions` is Syncthing-internal and is never synced back. To recover a clobbered file, copy it out of `.stversions/` on the side that had the good copy (versioned names carry a `~YYYYMMDD-HHMMSS` suffix).
+**File versioning (recovery aid).** On a `bi` mapping, an incoming overwrite or deletion can replace a local file. With versioning enabled (the default), the receiving side first archives the previous version into `.stversions/` at its sync root; staggered cleanup drops versions older than `versioningDays`. `.stversions` is Syncthing-internal and is never synced back. To recover a clobbered file, copy it out of `.stversions/` on the side that had the good copy (versioned names carry a `~YYYYMMDD-HHMMSS` suffix).
 
 ```yaml
 spec:

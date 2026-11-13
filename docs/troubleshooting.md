@@ -35,11 +35,12 @@
 Before treating "changes are not syncing" as a fault, rule out two by-design behaviors:
 
 - **Direction contract**: with `direction: up` pod-side writes never reach local; with `down` local writes never reach the pod (syncthing marks them as local additions). `okdev status --details` shows each mapping's direction arrow.
+- **Receive-only local changes**: if `sync wait` reports local changes on the pod's receive-only side, remove those generated files, add an appropriate `.stignore` rule, or write outputs outside the source mapping. The wait stays blocked because those files could shadow synced source.
 - **Managed excludes**: a directory that belongs to (or belonged to) its own nested mapping is excluded from the primary folder. `status --details` lists active excludes and tombstones retained after a mapping was removed; delete the entry from the primary root's `.stignore` to fold the directory back into the primary folder.
 
 ## Recovering A File Overwritten By Sync
 
-With the default `direction: bi` a folder is bidirectional in steady state, so a bad write on one side (e.g. an empty file from a failed `okdev exec ... > result.txt` redirect) can propagate and overwrite the real file on the other side. (Directional mappings — `up`/`down` — are structurally immune: the non-authoritative side's writes are never propagated.) Versioning (on by default, `spec.sync.syncthing.versioningDays`) archives the previous version on the side that applied the incoming change:
+With an implicit or explicit `direction: bi`, a folder is bidirectional in steady state, so a bad write on one side (e.g. an empty file from a failed `okdev exec ... > result.txt` redirect) can propagate and overwrite the real file on the other side. New built-in configs use `direction: up` for local source; existing configs without a direction remain bidirectional and `okdev up` warns. Directional mappings (`up`/`down`) keep writes on the non-authoritative side from propagating. Versioning (on by default, `spec.sync.syncthing.versioningDays`) archives the previous version on the side that applied the incoming change:
 
 - On the pod: `<remote workspace>/.stversions/` (e.g. `/workspace/.stversions/`)
 - Locally: `<local sync root>/.stversions/`
