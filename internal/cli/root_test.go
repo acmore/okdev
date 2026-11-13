@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/acmore/okdev/internal/version"
 	"github.com/spf13/cobra"
 )
 
@@ -36,6 +37,57 @@ func TestNewRootCmdRegistersExpectedCommandsAndFlags(t *testing.T) {
 		if got := cmd.PersistentFlags().Lookup(flag); got == nil {
 			t.Fatalf("expected persistent flag %q", flag)
 		}
+	}
+}
+
+func TestMinimumVersionGateRunsBeforeCommandsButAllowsRecovery(t *testing.T) {
+	previousVersion := version.Version
+	version.Version = "v1.0.0"
+	defer func() { version.Version = previousVersion }()
+
+	root, opts := newRootCmdWithOptions()
+	gateErr := errors.New("upgrade required")
+	calls := 0
+	opts.policyCheck = func(_ context.Context, got string) error {
+		calls++
+		if got != "v1.0.0" {
+			t.Fatalf("unexpected version %q", got)
+		}
+		return gateErr
+	}
+	root.SetArgs([]string{"status"})
+	if err := root.Execute(); !errors.Is(err, gateErr) || calls != 1 {
+		t.Fatalf("status must be gated before execution: err=%v calls=%d", err, calls)
+	}
+
+	root.SetArgs([]string{"version"})
+	root.SetOut(io.Discard)
+	if err := root.Execute(); err != nil || calls != 1 {
+		t.Fatalf("version must remain available: err=%v calls=%d", err, calls)
+	}
+	root.SetArgs([]string{"help"})
+	if err := root.Execute(); err != nil || calls != 1 {
+		t.Fatalf("help must remain available: err=%v calls=%d", err, calls)
+	}
+	root.InitDefaultCompletionCmd()
+	root.SetArgs([]string{cobra.ShellCompRequestCmd, "st"})
+	if err := root.Execute(); err != nil || calls != 1 {
+		t.Fatalf("shell completion requests must bypass gate: err=%v calls=%d", err, calls)
+	}
+	for _, name := range []string{"upgrade", "completion"} {
+		command, _, err := root.Find([]string{name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := root.PersistentPreRunE(command, nil); err != nil || calls != 1 {
+			t.Fatalf("%s must bypass gate: err=%v calls=%d", name, err, calls)
+		}
+	}
+	var proxyOutput bytes.Buffer
+	root.SetOut(&proxyOutput)
+	root.SetArgs([]string{"ssh-proxy"})
+	if err := root.Execute(); !errors.Is(err, gateErr) || proxyOutput.Len() != 0 {
+		t.Fatalf("blocked ssh-proxy must only return an error: err=%v output=%q", err, proxyOutput.String())
 	}
 }
 

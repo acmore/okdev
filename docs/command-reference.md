@@ -513,6 +513,7 @@ agents can react without launching a diagnostic chain on every blip:
 - `--allow-unattested` installs a release that has **no** attestation at all (published before attestations existed) on the checksum alone, with a warning. It never bypasses an attestation that exists but fails to verify.
 - No-op when already on the latest version.
 - After `okdev up` completes successfully, a non-blocking version check runs (cached for 24 hours) and prints a reminder to stderr if a newer version is available.
+- Released binaries check the signed minimum CLI version policy before running commands. If their version is below the floor, `version`, `upgrade`, help and shell completion remain available; other commands stop with an upgrade instruction. GitHub is asked for the policy at most once every 24 hours. When the policy cannot be fetched or verified, commands are not blocked: the last verified floor keeps applying, or none if no policy was ever verified. Development builds (`0.0.0-dev`) skip this release-only check.
 
 ### Replica diagnostics in status
 

@@ -10,6 +10,8 @@ import (
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/logx"
 	"github.com/acmore/okdev/internal/session"
+	"github.com/acmore/okdev/internal/upgrade"
+	"github.com/acmore/okdev/internal/version"
 	"github.com/spf13/cobra"
 )
 
@@ -25,6 +27,7 @@ type Options struct {
 
 	commandName string
 	attachOnly  *config.AttachOnlySpec
+	policyCheck func(context.Context, string) error
 
 	// Distinguish a caller-selected config from a discovered or saved path.
 	explicitConfig bool
@@ -36,20 +39,28 @@ func NewRootCmd() *cobra.Command {
 }
 
 func newRootCmdWithOptions() (*cobra.Command, *Options) {
-	opts := &Options{}
+	opts := &Options{policyCheck: upgrade.NewPolicyChecker().Check}
 
 	cmd := &cobra.Command{
 		Use:           "okdev",
 		Short:         "Kubernetes-native developer environments",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			logx.Configure(opts.Verbose)
 			top := cmd
 			for top.Parent() != nil && top.Parent().Parent() != nil {
 				top = top.Parent()
 			}
 			opts.commandName = top.Name()
+			if version.Version == "0.0.0-dev" {
+				return nil
+			}
+			switch opts.commandName {
+			case "version", "upgrade", "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd:
+				return nil
+			}
+			return opts.policyCheck(cmd.Context(), version.Version)
 		},
 	}
 
