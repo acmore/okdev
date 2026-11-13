@@ -55,22 +55,33 @@ func TestPolicyCheckerEnforcesVerifiedMinimumAndCachesIt(t *testing.T) {
 		t.Fatalf("expected one release and one asset fetch, got %d", fetches)
 	}
 
-	now = now.Add(2 * time.Hour)
+	// Once the policy expires and GitHub is unreachable, the last verified
+	// floor keeps applying and the failed refresh is not retried per command.
+	now = now.Add(policyCheckInterval + time.Minute)
 	server.Close()
-	if err := checker.Check(context.Background(), "v1.3.0"); err == nil || !strings.Contains(err.Error(), "check minimum CLI version") {
-		t.Fatalf("expired policy must fail closed, got %v", err)
+	if err := checker.Check(context.Background(), "v1.3.0"); err != nil {
+		t.Fatalf("unreachable policy must not block a supported version: %v", err)
+	}
+	if err := checker.Check(context.Background(), "v1.1.0"); err == nil || !strings.Contains(err.Error(), "minimum supported version v1.2.0") {
+		t.Fatalf("stale policy must still enforce the known floor, got %v", err)
+	}
+	entry, err := checker.readCache()
+	if err != nil || !entry.RetryAt.Equal(now.Add(policyCheckInterval)) {
+		t.Fatalf("failed refresh must back off: entry=%+v err=%v", entry, err)
 	}
 }
 
-func TestPolicyCheckerRejectsMissingInvalidAndRolledBackPolicies(t *testing.T) {
+func TestPolicyCheckerFailsOpenWithoutVerifiedPolicy(t *testing.T) {
 	policy := `{"schemaVersion":1,"minimumCliVersion":"v1.2.0","enforceAfter":"2026-01-01T00:00:00Z"}`
 	tag := "v1.3.0"
 	includeAsset := true
 	badSignature := false
+	releaseFetches := 0
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case repoPath:
+			releaseFetches++
 			if !includeAsset {
 				fmt.Fprintf(w, `{"tag_name":%q,"assets":[]}`, tag)
 				return
@@ -85,6 +96,7 @@ func TestPolicyCheckerRejectsMissingInvalidAndRolledBackPolicies(t *testing.T) {
 	defer server.Close()
 
 	now := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
+	var logs []string
 	checker := &PolicyChecker{
 		apiBase:    server.URL,
 		httpClient: server.Client(),
@@ -95,33 +107,120 @@ func TestPolicyCheckerRejectsMissingInvalidAndRolledBackPolicies(t *testing.T) {
 			}
 			return nil
 		},
+		logf: func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) },
 	}
 	home := t.TempDir()
 	checker.homeDir = func() (string, error) { return home, nil }
+	expectOpen := func(reason string) {
+		t.Helper()
+		logs = nil
+		if err := checker.Check(context.Background(), "v1.0.0"); err != nil {
+			t.Fatalf("%s must not block: %v", reason, err)
+		}
+		if len(logs) != 1 || !strings.Contains(logs[0], reason) {
+			t.Fatalf("expected %q in log, got %q", reason, logs)
+		}
+		now = now.Add(policyCheckInterval)
+	}
 
 	includeAsset = false
-	if err := checker.Check(context.Background(), "v1.3.0"); err == nil || !strings.Contains(err.Error(), "has no release-policy.json") {
-		t.Fatalf("missing policy accepted: %v", err)
+	expectOpen("has no release-policy.json")
+	// The failure is cached: a second command inside the check interval does
+	// not hit the API again.
+	now = now.Add(-policyCheckInterval / 2)
+	before := releaseFetches
+	if err := checker.Check(context.Background(), "v1.0.0"); err != nil || releaseFetches != before {
+		t.Fatalf("failed refresh retried too early: err=%v fetches=%d", err, releaseFetches-before)
 	}
+	now = now.Add(policyCheckInterval)
+
 	includeAsset = true
 	badSignature = true
-	if err := checker.Check(context.Background(), "v1.3.0"); err == nil || !strings.Contains(err.Error(), "bad signature") {
-		t.Fatalf("unverified policy accepted: %v", err)
-	}
+	expectOpen("bad signature")
 	badSignature = false
 	policy = `{"schemaVersion":1,"minimumCliVersion":"v1.5.0","enforceAfter":"2026-01-01T00:00:00Z"}`
-	if err := checker.Check(context.Background(), "v1.3.0"); err == nil || !strings.Contains(err.Error(), "invalid release policy") {
-		t.Fatalf("floor above release accepted: %v", err)
-	}
+	expectOpen("invalid release policy")
+
 	policy = `{"schemaVersion":1,"minimumCliVersion":"v1.2.0","enforceAfter":"2026-01-01T00:00:00Z"}`
-	if err := checker.Check(context.Background(), "v1.3.0"); err != nil {
+	if err := checker.Check(context.Background(), "v1.0.0"); err == nil || !strings.Contains(err.Error(), "minimum supported version v1.2.0") {
+		t.Fatalf("verified policy must be enforced, got %v", err)
+	}
+}
+
+func TestPolicyCheckerKeepsFloorButAcceptsWithdrawnRelease(t *testing.T) {
+	policy := `{"schemaVersion":1,"minimumCliVersion":"v1.2.0","enforceAfter":"2026-01-01T00:00:00Z"}`
+	tag := "v1.4.0"
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case repoPath:
+			fmt.Fprintf(w, `{"tag_name":%q,"assets":[{"name":"release-policy.json","browser_download_url":%q}]}`, tag, server.URL+"/policy")
+		case "/policy":
+			fmt.Fprint(w, policy)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	now := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
+	home := t.TempDir()
+	checker := &PolicyChecker{
+		apiBase:    server.URL,
+		httpClient: server.Client(),
+		homeDir:    func() (string, error) { return home, nil },
+		now:        func() time.Time { return now },
+		verify:     func(context.Context, string, []byte) error { return nil },
+	}
+	if err := checker.Check(context.Background(), "v1.2.0"); err != nil {
 		t.Fatalf("valid policy rejected: %v", err)
 	}
-	now = now.Add(2 * time.Hour)
-	tag = "v1.4.0"
+
+	// v1.4.0 is withdrawn, so latest falls back to v1.3.0 and replays a lower
+	// floor. The older tag is accepted; the lower floor is not.
+	now = now.Add(policyCheckInterval + time.Minute)
+	tag = "v1.3.0"
 	policy = `{"schemaVersion":1,"minimumCliVersion":"v1.1.0","enforceAfter":"2026-01-01T00:00:00Z"}`
-	if err := checker.Check(context.Background(), "v1.3.0"); err == nil || !strings.Contains(err.Error(), "rollback") {
-		t.Fatalf("lower minimum accepted: %v", err)
+	if err := checker.Check(context.Background(), "v1.2.0"); err != nil {
+		t.Fatalf("withdrawn release must not block a supported version: %v", err)
+	}
+	err := checker.Check(context.Background(), "v1.1.0")
+	if err == nil || !strings.Contains(err.Error(), "minimum supported version v1.2.0 (latest: v1.3.0)") {
+		t.Fatalf("lower floor must not relax the cached one, got %v", err)
+	}
+
+	now = now.Add(policyCheckInterval + time.Minute)
+	policy = `{"schemaVersion":1,"minimumCliVersion":"v1.3.0","enforceAfter":"2026-01-01T00:00:00Z"}`
+	if err := checker.Check(context.Background(), "v1.2.0"); err == nil || !strings.Contains(err.Error(), "minimum supported version v1.3.0") {
+		t.Fatalf("raised floor not adopted, got %v", err)
+	}
+}
+
+func TestPolicyCheckerWorksWithoutWritableCache(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case repoPath:
+			fmt.Fprintf(w, `{"tag_name":"v1.3.0","assets":[{"name":"release-policy.json","browser_download_url":%q}]}`, server.URL+"/policy")
+		case "/policy":
+			fmt.Fprint(w, `{"schemaVersion":1,"minimumCliVersion":"v1.2.0","enforceAfter":"2026-01-01T00:00:00Z"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	checker := &PolicyChecker{
+		apiBase:    server.URL,
+		httpClient: server.Client(),
+		homeDir:    func() (string, error) { return "", errors.New("no home directory") },
+		now:        func() time.Time { return time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC) },
+		verify:     func(context.Context, string, []byte) error { return nil },
+	}
+	if err := checker.Check(context.Background(), "v1.2.0"); err != nil {
+		t.Fatalf("unwritable cache must not block: %v", err)
+	}
+	if err := checker.Check(context.Background(), "v1.1.0"); err == nil || !strings.Contains(err.Error(), "minimum supported version v1.2.0") {
+		t.Fatalf("policy must still be enforced without a cache, got %v", err)
 	}
 }
 

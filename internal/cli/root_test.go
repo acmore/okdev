@@ -69,6 +69,11 @@ func TestMinimumVersionGateRunsBeforeCommandsButAllowsRecovery(t *testing.T) {
 	if err := root.Execute(); err != nil || calls != 1 {
 		t.Fatalf("help must remain available: err=%v calls=%d", err, calls)
 	}
+	root.InitDefaultCompletionCmd()
+	root.SetArgs([]string{cobra.ShellCompRequestCmd, "st"})
+	if err := root.Execute(); err != nil || calls != 1 {
+		t.Fatalf("shell completion requests must bypass gate: err=%v calls=%d", err, calls)
+	}
 	for _, name := range []string{"upgrade", "completion"} {
 		command, _, err := root.Find([]string{name})
 		if err != nil {

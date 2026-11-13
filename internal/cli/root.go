@@ -57,7 +57,7 @@ func newRootCmdWithOptions() (*cobra.Command, *Options) {
 				return nil
 			}
 			switch opts.commandName {
-			case "version", "upgrade", "help", "completion":
+			case "version", "upgrade", "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd:
 				return nil
 			}
 			return opts.policyCheck(cmd.Context(), version.Version)

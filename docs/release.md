@@ -57,19 +57,15 @@ curl -fsSL https://raw.githubusercontent.com/acmore/okdev/main/scripts/install.s
 
 ### Minimum supported CLI version
 
-The repository-wide floor is configured in `.github/release-policy.json`:
+The repository-wide floor is configured in `.github/release-policy.json` (`schemaVersion`, `minimumCliVersion`, `enforceAfter`).
 
-```json
-{
-  "schemaVersion": 1,
-  "minimumCliVersion": "v0.14.1",
-  "enforceAfter": "2026-11-13T00:00:00Z"
-}
-```
+Change this file through a reviewed PR, then publish a new release. The release workflow validates and attests the policy as a separate release asset. Keep `minimumCliVersion` at or below the release tag; raise it only after a release containing the policy checker has been distributed. Existing binaries that predate the checker cannot be made to enforce the policy retroactively.
 
-Change this file through a reviewed PR, then publish a new release. The release workflow validates and attests the policy as a separate release asset. Keep `minimumCliVersion` at or below the release tag; raise it only after a release containing the policy checker has been distributed. Existing binaries that predate the checker cannot be made to enforce the policy retroactively. The minimum version may only increase: clients with a verified cached policy reject a lower floor or older release tag.
+Released CLIs verify the policy's Sigstore attestation against this repository's release workflow and exact release tag before using it, and ask GitHub for it at most once every 24 hours, so a raised floor can take up to a day to reach a client. Set `enforceAfter` with that in mind.
 
-Released CLIs verify the policy's Sigstore attestation against this repository's release workflow and exact release tag before using it. They cache the verified policy for one hour. Once the cache expires, an unavailable or unverifiable policy blocks commands except `version`, `upgrade`, help and completion; no project config can override the floor. `okdev ssh-proxy` remains silent on success, and prints the upgrade error to stderr only when blocked. Development builds do not check the release policy.
+The floor is an upgrade signal, not a security boundary, so it fails open: only a verified policy that puts the running version below the floor blocks commands (all except `version`, `upgrade`, help and shell completion). If the policy cannot be fetched or verified, the last verified policy keeps applying; a client that never verified one runs normally. Failures are recorded in `~/.okdev/logs/okdev.log` and never printed, so `okdev ssh-proxy` stays silent unless it is blocked. Development builds do not check the release policy.
+
+The floor a client enforces only increases: a later policy with a lower `minimumCliVersion` is ignored, so lowering the floor in the repository does not unblock clients that already saw the higher one. Withdrawing a release is safe, because the release tag itself may go backwards. To drop a floor raised by mistake, affected users delete `~/.okdev/upgrade/release_policy.json`.
 
 Default sidecar image resolution uses the running `okdev` binary version, with `edge` fallback for dev builds.
 

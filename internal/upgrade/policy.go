@@ -14,13 +14,19 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/acmore/okdev/internal/logx"
 )
 
 const (
 	policyAssetName = "release-policy.json"
 	policyCacheFile = "release_policy.json"
-	policyCacheTTL  = time.Hour
-	maxPolicyBytes  = 8 << 10
+	// GitHub is asked for the policy at most once per interval, whether or
+	// not the attempt succeeds: an unreachable or rate-limited API must not
+	// be hit on every command.
+	policyCheckInterval = 24 * time.Hour
+	policyFetchTimeout  = 15 * time.Second
+	maxPolicyBytes      = 8 << 10
 )
 
 // ReleasePolicy is published and attested with each release. The floor is a
@@ -31,10 +37,12 @@ type ReleasePolicy struct {
 	EnforceAfter      time.Time `json:"enforceAfter"`
 }
 
+// policyCacheEntry holds the last verified policy, if any, and when to try
+// refreshing it. Policy is nil until a policy has been verified once.
 type policyCacheEntry struct {
-	Policy    ReleasePolicy `json:"policy"`
-	LatestTag string        `json:"latestTag"`
-	CheckedAt time.Time     `json:"checkedAt"`
+	Policy    *ReleasePolicy `json:"policy,omitempty"`
+	LatestTag string         `json:"latestTag,omitempty"`
+	RetryAt   time.Time      `json:"retryAt"`
 }
 
 type policyReleaseResponse struct {
@@ -51,6 +59,7 @@ type PolicyChecker struct {
 	homeDir    func() (string, error)
 	now        func() time.Time
 	verify     func(context.Context, string, []byte) error
+	logf       func(string, ...any)
 }
 
 func NewPolicyChecker() *PolicyChecker {
@@ -59,21 +68,24 @@ func NewPolicyChecker() *PolicyChecker {
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 		homeDir:    os.UserHomeDir,
 		now:        time.Now,
+		logf:       logx.Printf,
 	}
 	c.verify = c.verifyPolicy
 	return c
 }
 
-// Check allows the command only after a recent, verified policy permits this
-// CLI version. Network or verification failures are errors, not permission.
+// Check blocks the command only when a verified policy puts this CLI version
+// below the floor. The floor is a cooperative upgrade signal, not a security
+// boundary, so a policy that cannot be fetched or verified never blocks: the
+// last verified policy keeps applying, and with none the command runs.
 func (c *PolicyChecker) Check(ctx context.Context, currentVersion string) error {
 	current, ok := parseSemver(currentVersion)
 	if !ok {
 		return fmt.Errorf("check minimum CLI version: invalid current version %q", currentVersion)
 	}
-	entry, err := c.load(ctx, currentVersion)
-	if err != nil {
-		return fmt.Errorf("check minimum CLI version: %w; run \"okdev upgrade\" when network access is available", err)
+	entry := c.load(ctx, currentVersion)
+	if entry.Policy == nil {
+		return nil
 	}
 	minimum, _ := parseSemver(entry.Policy.MinimumCLIVersion)
 	if !c.now().Before(entry.Policy.EnforceAfter) && compareSemver(current, minimum) < 0 {
@@ -82,32 +94,48 @@ func (c *PolicyChecker) Check(ctx context.Context, currentVersion string) error 
 	return nil
 }
 
-func (c *PolicyChecker) load(ctx context.Context, currentVersion string) (policyCacheEntry, error) {
-	previous, previousErr := c.readCache()
-	if previousErr == nil {
-		age := c.now().Sub(previous.CheckedAt)
-		if age >= 0 && age < policyCacheTTL {
-			return previous, nil
-		}
+func (c *PolicyChecker) load(ctx context.Context, currentVersion string) policyCacheEntry {
+	entry, _ := c.readCache()
+	now := c.now()
+	// A RetryAt further out than the interval means the clock moved backwards.
+	if now.Before(entry.RetryAt) && entry.RetryAt.Sub(now) <= policyCheckInterval {
+		return entry
 	}
-	entry, err := c.fetch(ctx, currentVersion)
+	fetchCtx, cancel := context.WithTimeout(ctx, policyFetchTimeout)
+	defer cancel()
+	fetched, err := c.fetch(fetchCtx, currentVersion)
 	if err != nil {
-		return policyCacheEntry{}, err
-	}
-	if previousErr == nil {
-		oldMinimum, _ := parseSemver(previous.Policy.MinimumCLIVersion)
-		newMinimum, _ := parseSemver(entry.Policy.MinimumCLIVersion)
-		oldTag, _ := parseSemver(previous.LatestTag)
-		newTag, _ := parseSemver(entry.LatestTag)
-		if compareSemver(newMinimum, oldMinimum) < 0 || compareSemver(newTag, oldTag) < 0 {
-			return policyCacheEntry{}, fmt.Errorf("release policy rollback detected")
+		c.log("release policy refresh failed: %v", err)
+		entry.RetryAt = now.Add(policyCheckInterval)
+	} else {
+		// The floor only moves up: a lower one is ignored so replaying an
+		// older attested policy cannot relax it. The release tag carries no
+		// such rule, because a withdrawn release legitimately lowers it.
+		if entry.Policy == nil || !policyFloorBelow(fetched.Policy, entry.Policy) {
+			entry.Policy = fetched.Policy
+		} else {
+			c.log("ignoring release policy for %s: floor %s is below the cached %s", fetched.LatestTag, fetched.Policy.MinimumCLIVersion, entry.Policy.MinimumCLIVersion)
 		}
+		entry.LatestTag = fetched.LatestTag
+		entry.RetryAt = now.Add(policyCheckInterval)
 	}
-	entry.CheckedAt = c.now()
+	// Without a writable cache the policy is simply refetched next time.
 	if err := c.writeCache(entry); err != nil {
-		return policyCacheEntry{}, fmt.Errorf("cache verified release policy: %w", err)
+		c.log("cache release policy: %v", err)
 	}
-	return entry, nil
+	return entry
+}
+
+func policyFloorBelow(a, b *ReleasePolicy) bool {
+	av, _ := parseSemver(a.MinimumCLIVersion)
+	bv, _ := parseSemver(b.MinimumCLIVersion)
+	return compareSemver(av, bv) < 0
+}
+
+func (c *PolicyChecker) log(format string, args ...any) {
+	if c.logf != nil {
+		c.logf("time=%s source=release-policy msg=%q\n", c.now().Format("2006-01-02T15:04:05.000Z07:00"), fmt.Sprintf(format, args...))
+	}
 }
 
 func (c *PolicyChecker) fetch(ctx context.Context, currentVersion string) (policyCacheEntry, error) {
@@ -163,8 +191,11 @@ func (c *PolicyChecker) fetch(ctx context.Context, currentVersion string) (polic
 	if err != nil {
 		return policyCacheEntry{}, err
 	}
-	if status != http.StatusOK || len(data) > maxPolicyBytes {
-		return policyCacheEntry{}, fmt.Errorf("fetch release policy: HTTP %d or policy too large", status)
+	if status != http.StatusOK {
+		return policyCacheEntry{}, fmt.Errorf("fetch release policy: HTTP %d", status)
+	}
+	if len(data) > maxPolicyBytes {
+		return policyCacheEntry{}, fmt.Errorf("release policy exceeds %d bytes", maxPolicyBytes)
 	}
 	digest := sha256.Sum256(data)
 	if err := c.verify(ctx, release.TagName, digest[:]); err != nil {
@@ -184,7 +215,7 @@ func (c *PolicyChecker) fetch(ctx context.Context, currentVersion string) (polic
 	if policy.SchemaVersion != 1 || !ok || policy.EnforceAfter.IsZero() || compareSemver(minimum, latest) > 0 {
 		return policyCacheEntry{}, fmt.Errorf("invalid release policy for %s", release.TagName)
 	}
-	return policyCacheEntry{Policy: policy, LatestTag: release.TagName}, nil
+	return policyCacheEntry{Policy: &policy, LatestTag: release.TagName}, nil
 }
 
 func (c *PolicyChecker) verifyPolicy(ctx context.Context, tag string, digest []byte) error {
@@ -224,10 +255,12 @@ func (c *PolicyChecker) readCache() (policyCacheEntry, error) {
 	if err := json.Unmarshal(data, &entry); err != nil {
 		return policyCacheEntry{}, err
 	}
-	minimum, okMinimum := validPolicyVersion(entry.Policy.MinimumCLIVersion)
-	latest, okLatest := parseSemver(entry.LatestTag)
-	if entry.Policy.SchemaVersion != 1 || !okMinimum || !okLatest || entry.Policy.EnforceAfter.IsZero() || entry.CheckedAt.IsZero() || compareSemver(minimum, latest) > 0 {
-		return policyCacheEntry{}, fmt.Errorf("invalid cached release policy")
+	if entry.Policy != nil {
+		_, okMinimum := validPolicyVersion(entry.Policy.MinimumCLIVersion)
+		_, okLatest := parseSemver(entry.LatestTag)
+		if entry.Policy.SchemaVersion != 1 || !okMinimum || !okLatest || entry.Policy.EnforceAfter.IsZero() {
+			return policyCacheEntry{}, fmt.Errorf("invalid cached release policy")
+		}
 	}
 	return entry, nil
 }
