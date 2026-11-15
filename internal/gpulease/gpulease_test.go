@@ -9,13 +9,14 @@ import (
 )
 
 type fakeProber struct {
-	gpus []GPU
-	busy map[string]bool
+	gpus    []GPU
+	busy    map[string]bool
+	busyErr error
 }
 
 func (p *fakeProber) GPUs(context.Context) ([]GPU, error) { return p.gpus, nil }
 func (p *fakeProber) BusyUUIDs(context.Context) (map[string]bool, error) {
-	return p.busy, nil
+	return p.busy, p.busyErr
 }
 
 func fourGPUs() *fakeProber {
@@ -82,6 +83,21 @@ func TestGPUUsedWithoutALeaseIsBusy(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "gpu 0: a process started without --gpus") {
 		t.Fatalf("unleased use not reported: %v", err)
 	}
+}
+
+func TestOccupancyProbeFailureDoesNotLeaseGPU(t *testing.T) {
+	prober := fourGPUs()
+	prober.busyErr = errors.New("compute process query failed")
+	dir := t.TempDir()
+	if lease, err := Acquire(context.Background(), dir, 1, time.Minute, Holder{}, prober); lease != nil || err == nil || !strings.Contains(err.Error(), "compute process query failed") {
+		t.Fatalf("probe failure: lease = %v, err = %v", lease, err)
+	}
+	prober.busyErr = nil
+	lease, err := Acquire(context.Background(), dir, 1, 0, Holder{}, prober)
+	if err != nil {
+		t.Fatalf("probe recovery: %v", err)
+	}
+	lease.Release()
 }
 
 func TestWaitingRequestGetsTheGPUWhenItIsFreed(t *testing.T) {

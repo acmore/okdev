@@ -51,6 +51,8 @@ func runGPUsProcess(t *testing.T, args ...string) (string, string, int) {
 
 func TestGPUsRunLeasesThenBecomesTheCommand(t *testing.T) {
 	fakeNvidiaSMI(t)
+	t.Setenv("CUDA_VISIBLE_DEVICES", "GPU-before-lease")
+	t.Setenv("OKDEV_GPUS", "before-lease")
 	dir := t.TempDir()
 
 	if _, _, code := runGPUsProcess(t, "--probe"); code != 0 {

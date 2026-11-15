@@ -175,9 +175,12 @@ func tryAcquire(ctx context.Context, dir string, want int, holder Holder, prober
 		return nil, fmt.Errorf("lock GPU allocation: %w", err)
 	}
 
-	// Compute processes are only consulted for GPUs nobody leased; if the
-	// query fails there is simply no such signal.
-	inUse, _ := prober.BusyUUIDs(ctx)
+	// Without a reliable occupancy query, an unleased compute process could
+	// receive a second allocation. Stop instead of assuming the GPUs are idle.
+	inUse, err := prober.BusyUUIDs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("query GPU compute processes: %w", err)
+	}
 
 	lease := &Lease{}
 	var busy []BusyGPU

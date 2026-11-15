@@ -350,7 +350,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Capture each pod's result into a JSON envelope {pod,exit,stdout,stderr,status}; remote exit codes become data, not okdev failures")
 	cmd.Flags().StringVar(&gatewayPod, "gateway", "", "Pod to use as the in-cluster fanout gateway (requires --json and interpod SSH)")
 	cmd.Flags().StringVar(&pkillPattern, "pkill", "", "Kill processes whose full cmdline matches this extended regex; never matches okdev's own exec machinery, and from an attached worktree only that worktree's processes (exit 0 if any process matched)")
-	cmd.Flags().BoolVar(&resetGPU, "reset-gpu", false, "Kill every process holding GPU compute in the targeted pods (SIGKILL by process group) and verify nvidia-smi returns to zero; from an attached worktree only that worktree's holders (exit 0 clear, 3 no nvidia-smi, 4 still busy)")
+	cmd.Flags().BoolVar(&resetGPU, "reset-gpu", false, "Kill GPU compute holders and verify nvidia-smi returns to zero; from an attached worktree, only tagged members of a holder's process group are killed (exit 0 clear, 3 no nvidia-smi, 4 still busy)")
 	cmd.Flags().StringVar(&pkillSignal, "signal", "TERM", "Signal name or number sent by --pkill")
 	cmd.Flags().BoolVar(&allWorktrees, "all-worktrees", false, "With --pkill or --reset-gpu from an attached worktree: act on the whole session instead of only this worktree's processes")
 	cmd.Flags().StringVar(&gpus, "gpus", "", "Lease this many GPUs (or \"all\") for the command and expose only those through CUDA_VISIBLE_DEVICES; fails with exit 75 when not enough are free, 69 when the pod can never provide them")
@@ -733,6 +733,24 @@ for pid in $pids; do
   rest="${stat##*) }"
   set -- $rest
   pgid=$3
+  if [ -n "$tag" ] && [ -n "$pgid" ] && [ "$pgid" -gt 1 ] 2>/dev/null; then
+    # A process group may contain another worktree's processes. In scoped
+    # mode, signal only members whose environment has this worktree's tag.
+    for memberstat in /proc/[0-9]*/stat; do
+      member="${memberstat#/proc/}"
+      member="${member%/stat}"
+      case "$excl" in *" $member "*) continue ;; esac
+      owned "$member" || continue
+      memberinfo=$(cat "$memberstat" 2>/dev/null) || continue
+      memberrest="${memberinfo##*) }"
+      set -- $memberrest
+      [ "$3" = "$pgid" ] || continue
+      if kill -9 "$member" 2>/dev/null; then
+        printf "killed %s (group %s)\n" "$member" "$pgid"
+      fi
+    done
+    continue
+  fi
   if [ -n "$pgid" ] && [ "$pgid" -gt 1 ] 2>/dev/null; then
     case "$killedgroups" in *" $pgid "*) : ;; *)
       if kill -9 "-$pgid" 2>/dev/null; then

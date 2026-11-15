@@ -20,11 +20,15 @@ import (
 // cmdline and belongs to the given worktree ("" for none), in its own process
 // group. The returned channel closes when it has exited and been reaped.
 func startMarkedProcess(t *testing.T, marker, worktree string) (*exec.Cmd, <-chan struct{}) {
+	return startMarkedProcessInGroup(t, marker, worktree, 0)
+}
+
+func startMarkedProcessInGroup(t *testing.T, marker, worktree string, group int) (*exec.Cmd, <-chan struct{}) {
 	t.Helper()
 	// The trailing `:` keeps sleep off the tail position so the shell — and
 	// with it the marker — stays in the process's cmdline.
 	cmd := exec.Command("sh", "-c", ": "+marker+"; sleep 300; :")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: group}
 	cmd.Env = os.Environ()
 	if worktree != "" {
 		cmd.Env = append(cmd.Env, "OKDEV_WORKTREE_ID="+worktree)
@@ -37,7 +41,13 @@ func startMarkedProcess(t *testing.T, marker, worktree string) (*exec.Cmd, <-cha
 		_ = cmd.Wait()
 		close(done)
 	}()
-	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
+	t.Cleanup(func() {
+		if group == 0 {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		} else {
+			_ = cmd.Process.Kill()
+		}
+	})
 	return cmd, done
 }
 
@@ -127,6 +137,28 @@ func TestResetGPUFromAWorktreeLeavesOtherHoldersAlone(t *testing.T) {
 	code, stdout, stderr = run("all")
 	if code != 0 || strings.TrimSpace(stdout[strings.LastIndex(strings.TrimSpace(stdout), "\n")+1:]) != "gpu-clear" || !exited(theirs) {
 		t.Fatalf("session-wide reset: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+}
+
+func TestResetGPUFromAWorktreeDoesNotKillOtherGroupMembers(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the helper reads /proc; linux only")
+	}
+	dir := t.TempDir()
+	stateFile := filepath.Join(dir, "gpu-pids")
+	installFakeNvidiaSMI(t, dir, stateFile)
+	mineCmd, mine := startMarkedProcess(t, "gpu-holder", "wt-a")
+	_, theirs := startMarkedProcessInGroup(t, "other-worktree", "wt-b", mineCmd.Process.Pid)
+	if err := os.WriteFile(stateFile, []byte(fmt.Sprintf("%d\n", mineCmd.Process.Pid)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", "-c", resetGPUHelperScript, "okdev-reset-gpu", "5", "")
+	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "OKDEV_WORKTREE_ID=wt-a")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("scoped reset: %v: %s", err, out)
+	}
+	if !exited(mine) || !alive(theirs) {
+		t.Fatal("scoped reset killed a process from another worktree in the same process group")
 	}
 }
 

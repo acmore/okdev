@@ -93,13 +93,24 @@ func runGPUs(args []string, stderr io.Writer) int {
 		}
 	}
 	fmt.Fprintf(stderr, "okdev: leased gpu %s\n", lease.Indices())
-	env := append(os.Environ(), "CUDA_VISIBLE_DEVICES="+lease.VisibleDevices(), "OKDEV_GPUS="+lease.Indices())
+	env := gpuCommandEnv(os.Environ(), lease.VisibleDevices(), lease.Indices())
 	stop()
 	if err := syscall.Exec(binary, command, env); err != nil {
 		fmt.Fprintf(stderr, "okdev: exec %s: %v\n", binary, err)
 		return 126
 	}
 	return 0
+}
+
+func gpuCommandEnv(base []string, visible, indices string) []string {
+	env := make([]string, 0, len(base)+2)
+	for _, entry := range base {
+		if strings.HasPrefix(entry, "CUDA_VISIBLE_DEVICES=") || strings.HasPrefix(entry, "OKDEV_GPUS=") {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return append(env, "CUDA_VISIBLE_DEVICES="+visible, "OKDEV_GPUS="+indices)
 }
 
 func parseGPUCount(count string) (int, error) {
