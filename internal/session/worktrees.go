@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,7 +11,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 )
 
 const (
@@ -147,19 +150,62 @@ func ClearWorktreeBindings(name string) error {
 	return os.RemoveAll(filepath.Join(dir, worktreeStateDir))
 }
 
-func WithWorktreeLock(name string, fn func() error) error {
+// worktreeLockPollInterval is how often a blocked AcquireWorktreeLock retries.
+const worktreeLockPollInterval = 200 * time.Millisecond
+
+// AcquireWorktreeLock takes the session's worktree lock and returns its
+// release function. The lock serializes everything that decides which
+// worktree folders the session syncs: attach, detach, and the bootstrap of a
+// sync start.
+//
+// It never blocks invisibly: onWait (optional) is called once if another
+// process holds the lock, and the wait ends with ctx. A holder that dies
+// releases the lock with its file descriptor.
+func AcquireWorktreeLock(ctx context.Context, name string, onWait func()) (func(), error) {
 	dir, err := SessionDir(name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	f, err := os.OpenFile(filepath.Join(dir, "worktrees.lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
+		return nil, err
+	}
+	waited := false
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) {
+			_ = f.Close()
+			return nil, fmt.Errorf("lock worktree state: %w", err)
+		}
+		if !waited && onWait != nil {
+			onWait()
+		}
+		waited = true
+		select {
+		case <-ctx.Done():
+			_ = f.Close()
+			return nil, fmt.Errorf("waiting for another okdev operation on session %s: %w", name, ctx.Err())
+		case <-time.After(worktreeLockPollInterval):
+		}
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+			_ = f.Close()
+		})
+	}, nil
+}
+
+// WithWorktreeLock runs fn while holding the session's worktree lock.
+func WithWorktreeLock(ctx context.Context, name string, onWait func(), fn func() error) error {
+	release, err := AcquireWorktreeLock(ctx, name, onWait)
+	if err != nil {
 		return err
 	}
-	defer f.Close()
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		return err
-	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	defer release()
 	return fn()
 }

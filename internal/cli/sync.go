@@ -121,7 +121,12 @@ func newSyncCmd(opts *Options) *cobra.Command {
 					displayMode = "per-path"
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: sync session=%s namespace=%s engine=%s mode=%s\n", cc.sessionName, cc.namespace, engine, displayMode)
-				fmt.Fprintf(cmd.OutOrStdout(), "- paths: %v\n", pairs)
+				type shownPair struct{ Local, Remote, Direction string }
+				shown := make([]shownPair, 0, len(pairs))
+				for _, pair := range pairs {
+					shown = append(shown, shownPair{pair.Local, pair.Remote, pair.Direction})
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "- paths: %v\n", shown)
 				if reset {
 					scope := "all"
 					if resetLocal && !resetMesh {
@@ -214,7 +219,22 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(), "Logs: %s\n", logPath)
 				return nil
 			}
-			return runSyncthingSync(cmd, cc.opts, cc.cfg, cc.namespace, cc.sessionName, mode, pairs, cc.kube)
+			// From here until every folder is configured, this run decides
+			// which worktree folders exist, so it holds the lock that attach
+			// and detach take — and re-reads the attachments under it, since
+			// one may have landed while this command was getting ready.
+			release, err := session.AcquireWorktreeLock(cmd.Context(), cc.sessionName, func() {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Waiting for a worktree attach or detach on session %s to finish\n", cc.sessionName)
+			})
+			if err != nil {
+				return err
+			}
+			defer release()
+			pairs, _, err = sessionSyncPairsAndWorktrees(cc)
+			if err != nil {
+				return err
+			}
+			return runSyncthingSync(cmd, cc.opts, cc.cfg, cc.namespace, cc.sessionName, mode, pairs, cc.kube, release)
 		},
 	}
 

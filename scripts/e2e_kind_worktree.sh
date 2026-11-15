@@ -73,12 +73,20 @@ fi
     fi
   done
 )
+SYNC_PID_FILE="$HOME/.okdev/sessions/$SESSION/syncthing/sync.pid"
+sync_pid_before="$(cat "$SYNC_PID_FILE")"
 (
   cd "$WT_B"
   "$OKDEV_BIN" --session "$SESSION" worktree attach
   "$OKDEV_BIN" sync wait --timeout 3m
   test "$("$OKDEV_BIN" exec --require-sync --no-tty --no-prefix -- cat marker.txt)" = B
 )
+# Attaching to a running sync adds a folder in place: the sync process, and
+# with it every other folder's connection, is not restarted.
+if [[ "$(cat "$SYNC_PID_FILE")" != "$sync_pid_before" ]]; then
+  echo "attaching a second worktree restarted the shared sync" >&2
+  exit 1
+fi
 (
   cd "$WT_A"
   test "$("$OKDEV_BIN" exec --require-sync --no-tty --no-prefix -- cat marker.txt)" = A
@@ -105,12 +113,25 @@ echo "Restarting the shared session from the primary checkout"
   cd "$WT_A"
   "$OKDEV_BIN" sync wait --timeout 3m
   test "$("$OKDEV_BIN" exec --require-sync --no-tty --no-prefix -- cat marker.txt)" = A2
-  test "$("$OKDEV_BIN" exec --no-tty --no-prefix -- stat -c %a .)" = 777
+  # Owned by the dev container's user, not opened to everyone.
+  test "$("$OKDEV_BIN" exec --no-tty --no-prefix -- sh -c 'echo "$(stat -c %a:%u .):$(id -u)"')" = 755:0:0
 )
 
+sync_pid_before="$(cat "$SYNC_PID_FILE")"
 (
   cd "$WT_B"
-  "$OKDEV_BIN" worktree detach
+  remote_b="$("$OKDEV_BIN" exec --no-tty --no-prefix -- pwd)"
+  case "$remote_b" in /var/okdev/worktrees/*) ;; *) echo "unexpected worktree directory: $remote_b" >&2; exit 1 ;; esac
+  "$OKDEV_BIN" worktree detach --delete-remote
+  cd "$MAIN"
+  "$OKDEV_BIN" --session "$SESSION" exec --no-tty --no-prefix -- test ! -e "$remote_b"
+)
+if [[ "$(cat "$SYNC_PID_FILE")" != "$sync_pid_before" ]]; then
+  echo "detaching a worktree restarted the shared sync" >&2
+  exit 1
+fi
+(
+  cd "$WT_B"
   if "$OKDEV_BIN" exec --no-tty -- true >/dev/null 2>&1; then
     echo "detached worktree unexpectedly executed" >&2
     exit 1

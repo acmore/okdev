@@ -232,7 +232,7 @@ func TestRunSyncthingSyncMarksBootstrapCompleteWithoutBiFolders(t *testing.T) {
 	err := runSyncthingSync(cmd, &Options{}, cfg, "default", "sess-directional", "two-phase", []syncengine.Pair{
 		{Local: localA, Remote: "/workspace", Direction: "up"},
 		{Local: localB, Remote: "/data/results", Direction: "down"},
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("runSyncthingSync: %v", err)
 	}
@@ -379,7 +379,7 @@ func TestRunSyncthingSyncSurvivesTwoPhaseLongerThanBootstrapTimeout(t *testing.T
 	err := runSyncthingSync(cmd, &Options{}, cfg, "default", "sess-slow", "two-phase", []syncengine.Pair{
 		{Local: filepath.Join(home, "code"), Remote: "/workspace", Direction: "bi"},
 		{Local: filepath.Join(home, "results"), Remote: "/data/results", Direction: "down"},
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("runSyncthingSync: %v", err)
 	}
@@ -416,7 +416,7 @@ func TestRunSyncthingSyncPruneFailureStopsSync(t *testing.T) {
 
 	err := runSyncthingSync(cmd, &Options{}, cfg, "default", "sess-prune", "", []syncengine.Pair{
 		{Local: filepath.Join(home, "code"), Remote: "/workspace", Direction: "bi"},
-	}, nil)
+	}, nil, nil)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected prune failure, got %v", err)
 	}

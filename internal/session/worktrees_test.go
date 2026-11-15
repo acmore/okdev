@@ -1,6 +1,8 @@
 package session
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -87,4 +89,30 @@ func TestTeardownReleasesAttachedWorktrees(t *testing.T) {
 	if got, err := LoadWorktreeBindings("shared"); err != nil || len(got) != 0 {
 		t.Fatalf("bindings after teardown = %+v, %v", got, err)
 	}
+}
+
+func TestWorktreeLockWaitIsVisibleAndBounded(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	release, err := AcquireWorktreeLock(context.Background(), "locked", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*worktreeLockPollInterval)
+	defer cancel()
+	waits := 0
+	if _, err := AcquireWorktreeLock(ctx, "locked", func() { waits++ }); err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second holder = %v", err)
+	}
+	if waits != 1 {
+		t.Fatalf("wait reported %d times", waits)
+	}
+
+	release()
+	release() // idempotent
+	again, err := AcquireWorktreeLock(context.Background(), "locked", func() { t.Error("waited for a released lock") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	again()
 }

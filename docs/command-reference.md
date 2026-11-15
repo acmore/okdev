@@ -58,7 +58,7 @@ agents can react without launching a diagnostic chain on every blip:
 - `okdev port-forward [session] <local:remote>... [--address <addr>[,<addr>...]] [--pod <name> | --role <role>] [--ready-only]`
 - `okdev sync [--mode up|down|bi] [--foreground] [--reset] [--dry-run]`
 - `okdev sync wait [session] [--timeout 10m]`
-- `okdev worktree attach` / `okdev worktree list` / `okdev worktree detach [--id <id>]`
+- `okdev worktree attach` / `okdev worktree list` / `okdev worktree detach [--id <id>] [--delete-remote]`
 - `okdev migrate [--template <name>] [--set key=value] [--dry-run] [--yes]`
 - `okdev upgrade`
 
@@ -491,7 +491,9 @@ agents can react without launching a diagnostic chain on every blip:
 
 ### `okdev worktree attach|list|detach`
 
-Attach multiple linked Git worktrees to one existing single-pod session. Each worktree gets a separate Syncthing folder under `/var/okdev/worktrees/<id>` on the session's shared runtime volume. This keeps one Pod, SSH service, port-forward setup, and GPU allocation. Source sync is local-to-pod (`up`). The attached folder is re-created from local source, writable for the dev container's user, whenever sync starts against a new Pod (`restart`, a replaced Pod); keep long-lived results outside it or copy them out.
+Attach multiple linked Git worktrees to one existing single-pod session. Each worktree gets a separate Syncthing folder under `/var/okdev/worktrees/<id>` on the session's shared runtime volume. This keeps one Pod, SSH service, port-forward setup, and GPU allocation. Source sync is local-to-pod (`up`). The attached folder is re-created from local source, owned by the dev container's user, whenever sync starts against a new Pod (`restart`, a replaced Pod); keep long-lived results outside it or copy them out.
+
+Storage: the runtime volume is an `emptyDir`, so every attached worktree is a full copy of its source (minus Git metadata) plus whatever is built in it, counted against the Pod's ephemeral storage on the node with no per-worktree limit. Detach worktrees that are done with `--delete-remote`; for large trees or many of them, set an ephemeral-storage request/limit in the pod template or use separate sessions.
 
 ```bash
 # Start the existing session from its primary checkout once.
@@ -505,9 +507,10 @@ okdev exec --require-sync -- pwd
 
 okdev worktree list             # also supports --output json
 okdev worktree detach           # leaves remote files in place; the tree no longer selects the session
+okdev worktree detach --delete-remote   # also frees the tree's directory in the Pod
 ```
 
-`attach` needs `--session` and reconfigures the background sync channel without creating another Pod. It writes a managed `.git` exclusion into the worktree's `.stignore`; the primary sync also excludes nested linked worktrees before they are attached. Review managed `.stignore` changes before committing. `exec` from an attached worktree runs in that worktree's remote directory, and `sync wait` / `--require-sync` check its folder. Running from an unbound linked worktree of the same repository fails with an attach hint. `worktree detach --id <id>` works after the local worktree has been removed. An attachment whose local directory is gone, or is no longer a worktree of the session's repository, stays listed but is not synced: `okdev sync` warns about it and `worktree list` marks it `not syncing` (`stale` in JSON) until it is detached. If Git cannot identify the current checkout (for example a `safe.directory` refusal) while the session has attachments, commands stop instead of assuming the primary checkout.
+`attach` needs `--session`. When the session's sync is running, `attach` and `detach` add or remove that one folder in place: the sync process, the primary folder, and other worktrees keep syncing undisturbed. Only a stopped or unhealthy sync is (re)started by `attach`; `detach` then just drops the attachment, and the next sync start no longer includes it. Attach, detach, and a starting sync take turns per session — a command that has to wait says so and gives up after 10 minutes. It writes a managed `.git` exclusion into the worktree's `.stignore`; the primary sync also excludes nested linked worktrees before they are attached. Review managed `.stignore` changes before committing. `exec` from an attached worktree runs in that worktree's remote directory, and `sync wait` / `--require-sync` check its folder. Running from an unbound linked worktree of the same repository fails with an attach hint. `worktree detach --id <id>` works after the local worktree has been removed. `detach` leaves the tree's remote directory in place (results may live there) and prints its path; `--delete-remote` deletes it, which needs the session's sync to be running. The remote directory contains no `.git`, so tools there that read VCS state (`git describe`, version stamping) see no repository. An attachment whose local directory is gone, or is no longer a worktree of the session's repository, stays listed but is not synced: `okdev sync` warns about it and `worktree list` marks it `not syncing` (`stale` in JSON) until it is detached. If Git cannot identify the current checkout (for example a `safe.directory` refusal) while the session has attachments, commands stop instead of assuming the primary checkout.
 
 Worktree execution currently targets one Pod. A session with multiple Pods cannot accept an attachment; `exec` with a pod selector and interactive `ssh` from an attached worktree are refused so they cannot run against another worktree's code. `up`, `down`, and `restart` from an attached worktree are refused; manage the shared Pod from its primary checkout. `okdev down` detaches every worktree and clears the session selection in each of them, so a later session with the same name starts without attachments. Processes, GPU memory, installed packages, ports, and `sync pause` / `resume` still belong to the shared session. Use separate sessions when those resources need isolation. `okdev cp` remains useful for one-off data and results.
 

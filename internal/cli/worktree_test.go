@@ -1,6 +1,10 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -267,8 +271,9 @@ func TestStaleWorktreeIsReportedAndNotSynced(t *testing.T) {
 }
 
 // The runtime volume is recreated with the Pod, so the sync start — not only
-// `worktree attach` — must open a worktree root to the dev container's user.
-func TestWorktreeFoldersArePreparedForTheDevUser(t *testing.T) {
+// `worktree attach` — prepares worktree roots, and it hands them to the dev
+// container's user instead of opening them to everyone.
+func TestWorktreeRootIsOwnedByTheDevUser(t *testing.T) {
 	folders, err := resolveSyncFolders("session", "", []syncengine.Pair{
 		{Local: "/source", Remote: "/workspace", Direction: "bi"},
 		{Local: "/linked", Remote: "/var/okdev/worktrees/1234567890abcdef", Direction: "up"},
@@ -279,8 +284,182 @@ func TestWorktreeFoldersArePreparedForTheDevUser(t *testing.T) {
 	if folders[0].worktree || !folders[1].worktree {
 		t.Fatalf("worktree flags = %+v", folders)
 	}
-	script := worktreeRemoteRootScript(folders[1].remote)
-	if !strings.Contains(script, "mkdir -p") || !strings.Contains(script, "chmod 0777") {
-		t.Fatalf("script = %q", script)
+
+	uid, gid, ok := parseContainerOwner("1000\n100\n")
+	if !ok || uid != 1000 || gid != 100 {
+		t.Fatalf("owner = %d:%d, %v", uid, gid, ok)
+	}
+	for _, bad := range []string{"", "1000", "root root", "1000 100 extra", "-1 0"} {
+		if _, _, ok := parseContainerOwner(bad); ok {
+			t.Fatalf("parsed owner from %q", bad)
+		}
+	}
+
+	dir := filepath.Join(t.TempDir(), "work tree")
+	run := func(script string) os.FileMode {
+		t.Helper()
+		if out, err := exec.Command("sh", "-c", script).CombinedOutput(); err != nil {
+			t.Fatalf("%s: %v: %s", script, err, out)
+		}
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.Mode().Perm()
+	}
+	if mode := run(worktreeRemoteRootScript(dir, os.Getuid(), os.Getgid(), true)); mode != 0o755 {
+		t.Fatalf("owned root mode = %o", mode)
+	}
+	// Ownership that cannot be handed over leaves the tree usable.
+	if os.Getuid() != 0 {
+		if mode := run(worktreeRemoteRootScript(dir, 0, 0, true)); mode != 0o777 {
+			t.Fatalf("root mode after a refused chown = %o", mode)
+		}
+	}
+	if mode := run(worktreeRemoteRootScript(dir, 0, 0, false)); mode != 0o777 {
+		t.Fatalf("root mode for an unknown owner = %o", mode)
+	}
+}
+
+// A mapping's folder ID is derived from the config's spelling of its local
+// root, so resolving relative roots to absolute paths must not rename the
+// folders of sessions created by earlier releases.
+func TestRelativeMappingKeepsItsFolderID(t *testing.T) {
+	project := t.TempDir()
+	cfg, cfgPath := trustTestConfig(t, project)
+	cfg.Spec.Sync.Paths = []config.SyncPathSpec{{Local: ".", Remote: "/workspace"}, {Local: "../sibling", Remote: "/sibling"}}
+	pairs, err := configSyncPairs(cfg, cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(pairs[1].Local) {
+		t.Fatalf("local root not resolved: %+v", pairs[1])
+	}
+	want := sessionSyncFolderID("session", 1, syncengine.Pair{Local: "../sibling", Remote: "/sibling"})
+	if got := sessionSyncFolderID("session", 1, pairs[1]); got != want {
+		t.Fatalf("folder ID = %s, want %s", got, want)
+	}
+}
+
+// One command asks Git about the same checkout several times; only the first
+// question may cost a process.
+func TestGitQueriesAreAnsweredOncePerProcess(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	main := initTestRepo(t)
+	linked := addTestWorktree(t, main)
+	if err := session.SaveInfo(session.Info{Name: "memo", RepoRoot: main}); err != nil {
+		t.Fatal(err)
+	}
+	saveTestBinding(t, "memo", linked)
+	t.Chdir(linked)
+	if binding, err := sessionWorktreeBinding("memo"); err != nil || binding == nil {
+		t.Fatalf("binding = %+v, %v", binding, err)
+	}
+	t.Setenv("PATH", t.TempDir()) // any further Git process would fail
+	if binding, err := sessionWorktreeBinding("memo"); err != nil || binding == nil {
+		t.Fatalf("second lookup = %+v, %v", binding, err)
+	}
+	states, err := sessionWorktreeStates("memo")
+	if err != nil || len(states) != 1 || states[0].Stale != "" {
+		t.Fatalf("states = %+v, %v", states, err)
+	}
+}
+
+// fakeSyncthingConfig serves /rest/config from memory and counts writes.
+type fakeSyncthingConfig struct {
+	cfg  map[string]any
+	puts int
+}
+
+func (f *fakeSyncthingConfig) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/rest/config" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method == http.MethodPut {
+		f.puts++
+		f.cfg = map[string]any{}
+		_ = json.NewDecoder(r.Body).Decode(&f.cfg)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(f.cfg)
+}
+
+func (f *fakeSyncthingConfig) folderIDs() []string {
+	var ids []string
+	folders, _ := f.cfg["folders"].([]any)
+	for _, folder := range folders {
+		ids = append(ids, asString(folder.(map[string]any)["id"]))
+	}
+	return ids
+}
+
+// Attaching and detaching change one folder of a running daemon in place;
+// the peer device and the folders already syncing are not rewritten.
+func TestWorktreeFolderIsAddedAndRemovedInPlace(t *testing.T) {
+	fake := &fakeSyncthingConfig{cfg: map[string]any{
+		"devices": []any{
+			map[string]any{"deviceID": "SELF"},
+			map[string]any{"deviceID": "PEER", "addresses": []any{"tcp://127.0.0.1:4242"}},
+		},
+		"folders": []any{map[string]any{"id": "okdev-s", "path": "/source", "type": "sendreceive"}},
+	}}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	ctx := context.Background()
+	syncCfg := syncthingSyncConfig{rescanInterval: 60, watcherDelay: 1}
+
+	ensure := func() {
+		t.Helper()
+		if err := ensureSyncthingFolder(ctx, server.URL, "key", "SELF", "PEER", "okdev-s-12345678", "/linked", "sendonly", syncCfg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ensure()
+	if got := fake.folderIDs(); len(got) != 2 || got[0] != "okdev-s" || got[1] != "okdev-s-12345678" {
+		t.Fatalf("folders = %v", got)
+	}
+	peer := fake.cfg["devices"].([]any)[1].(map[string]any)
+	if addrs := peer["addresses"].([]any); len(addrs) != 1 || addrs[0] != "tcp://127.0.0.1:4242" {
+		t.Fatalf("peer address rewritten: %v", addrs)
+	}
+	ensure()
+	if fake.puts != 1 {
+		t.Fatalf("an unchanged folder was written again: %d writes", fake.puts)
+	}
+
+	if err := ensureSyncthingFolder(ctx, server.URL, "key", "SELF", "STRANGER", "okdev-s-87654321", "/other", "sendonly", syncCfg); err == nil {
+		t.Fatal("folder added for a peer the daemon does not know")
+	}
+
+	for range 2 {
+		if err := removeSyncthingFolder(ctx, server.URL, "key", "okdev-s-12345678"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := fake.folderIDs(); len(got) != 1 || got[0] != "okdev-s" || fake.puts != 2 {
+		t.Fatalf("folders after removal = %v, %d writes", got, fake.puts)
+	}
+}
+
+func TestWorktreeOverlapRules(t *testing.T) {
+	primary := t.TempDir()
+	other := t.TempDir()
+	pairs := []syncengine.Pair{{Local: primary, Remote: "/workspace"}, {Local: other, Remote: "/data"}}
+	bind := func(root string) session.WorktreeBinding {
+		binding := session.WorktreeBinding{ID: session.WorktreeID(root), LocalRoot: root}
+		binding.RemoteRoot = session.WorktreeRemoteRoot(binding.ID)
+		return binding
+	}
+	if err := checkWorktreeOverlap(pairs, bind(filepath.Join(primary, ".worktrees", "a"))); err != nil {
+		t.Fatalf("nested worktree rejected: %v", err)
+	}
+	if err := checkWorktreeOverlap(pairs, bind(t.TempDir())); err != nil {
+		t.Fatalf("sibling worktree rejected: %v", err)
+	}
+	for _, root := range []string{filepath.Dir(primary), filepath.Join(other, "sub"), other} {
+		if err := checkWorktreeOverlap(pairs, bind(root)); err == nil {
+			t.Fatalf("overlapping worktree %s accepted", root)
+		}
 	}
 }

@@ -240,37 +240,11 @@ func runSyncWaitConvergence(ctx context.Context, cc *commandContext, pod string,
 		}
 		checks = append(checks, meshCheck)
 	}
-	localHome, err := localSyncthingStatusHome(cc.sessionName)
+	live, err := openLiveSync(ctx, cc, pod)
 	if err != nil {
-		return fmt.Errorf("resolve local syncthing home: %w", err)
+		return err
 	}
-	localBase, localKey, err := readLocalSyncthingEndpoint(localHome)
-	if err != nil {
-		return fmt.Errorf("read local syncthing endpoint: %w", err)
-	}
-	remoteKey, err := readRemoteSyncthingAPIKey(ctx, cc.kube, cc.namespace, pod)
-	if err != nil {
-		return fmt.Errorf("read remote syncthing API key: %w", err)
-	}
-	cancelPF, remoteBase, _, err := startSyncthingPortForward(ctx, cc.opts, cc.namespace, pod)
-	if err != nil {
-		return fmt.Errorf("port-forward to syncthing sidecar: %w", err)
-	}
-	defer cancelPF()
-	if err := waitSyncthingAPI(ctx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
-		return fmt.Errorf("remote syncthing not ready: %w", err)
-	}
-	if err := waitSyncthingAPI(ctx, localBase, localKey, syncthingAPIReadyTimeout); err != nil {
-		return fmt.Errorf("local syncthing not ready: %w", err)
-	}
-	localID, err := syncthingDeviceID(ctx, localBase, localKey)
-	if err != nil {
-		return fmt.Errorf("read local syncthing device id: %w", err)
-	}
-	remoteID, err := syncthingDeviceID(ctx, remoteBase, remoteKey)
-	if err != nil {
-		return fmt.Errorf("read remote syncthing device id: %w", err)
-	}
+	defer live.close()
 
-	return waitSyncthingRevisions(ctx, localBase, localKey, remoteBase, remoteKey, localID, remoteID, folders, out, checks...)
+	return waitSyncthingRevisions(ctx, live.localBase, live.localKey, live.remoteBase, live.remoteKey, live.localID, live.remoteID, folders, out, checks...)
 }
