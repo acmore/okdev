@@ -1058,8 +1058,8 @@ func TestValidateNoFlagLikeValues(t *testing.T) {
 }
 
 func TestPkillExecCommandShape(t *testing.T) {
-	argv := pkillExecCommand("train.py", "TERM")
-	if len(argv) != 6 || argv[0] != "sh" || argv[1] != "-c" || argv[3] != "okdev-pkill" || argv[4] != "train.py" || argv[5] != "TERM" {
+	argv := pkillExecCommand("train.py", "TERM", false)
+	if len(argv) != 7 || argv[6] != "" || argv[0] != "sh" || argv[1] != "-c" || argv[3] != "okdev-pkill" || argv[4] != "train.py" || argv[5] != "TERM" {
 		t.Fatalf("unexpected argv: %#v", argv)
 	}
 	// The script must exclude self+ancestors and follow pkill exit semantics.
@@ -1157,7 +1157,7 @@ func TestPkillHelperKillsMatchAndSparesSelf(t *testing.T) {
 	}
 	defer func() { _ = bystander.Process.Kill() }()
 
-	argv := pkillExecCommand(marker, "TERM")
+	argv := pkillExecCommand(marker, "TERM", false)
 	out, err := exec.Command(argv[0], argv[1:]...).Output()
 	if err != nil {
 		t.Fatalf("helper failed (self-kill or no match): %v, output %q", err, out)
@@ -1175,7 +1175,7 @@ func TestPkillHelperKillsMatchAndSparesSelf(t *testing.T) {
 	}
 
 	// No match: pkill convention exit 1.
-	argv = pkillExecCommand(marker+"-no-such-process", "TERM")
+	argv = pkillExecCommand(marker+"-no-such-process", "TERM", false)
 	if err := exec.Command(argv[0], argv[1:]...).Run(); err == nil {
 		t.Fatal("expected non-zero exit when nothing matches")
 	}

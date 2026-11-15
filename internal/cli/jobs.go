@@ -60,6 +60,7 @@ func newJobsListCmdWithUse(opts *Options, use string, short string) *cobra.Comma
 	var jobID string
 	var fanout int
 	var readyOnly bool
+	var allWorktrees bool
 
 	cmd := &cobra.Command{
 		Use:               use,
@@ -88,7 +89,15 @@ func newJobsListCmdWithUse(opts *Options, use string, short string) *cobra.Comma
 			if effectiveFanout <= 0 {
 				effectiveFanout = pdshDefaultFanout
 			}
-			return runExecJobs(cmd.Context(), cc.kube, cc.namespace, pods, targetContainer, jobID, effectiveFanout, cmd.OutOrStdout(), opts.Output == "json", fanoutRouteFromConfig(cc.cfg, ""))
+			// From an attached worktree the listing is that worktree's own
+			// jobs; an explicit --job-id is already as narrow as it gets.
+			scope := execJobsScope{showWorktree: allWorktrees}
+			if binding, err := sessionWorktreeBinding(cc.sessionName); err != nil {
+				return err
+			} else if binding != nil && !allWorktrees && jobID == "" {
+				scope.worktree = binding.ID
+			}
+			return runExecJobsScoped(cmd.Context(), cc.kube, cc.namespace, pods, targetContainer, jobID, effectiveFanout, cmd.OutOrStdout(), opts.Output == "json", fanoutRouteFromConfig(cc.cfg, ""), scope)
 		},
 	}
 	cmd.Flags().StringSliceVar(&podNames, "pod", nil, "Target specific pods by name (repeatable/comma-separated)")
@@ -99,6 +108,7 @@ func newJobsListCmdWithUse(opts *Options, use string, short string) *cobra.Comma
 	cmd.Flags().StringVar(&jobID, "job-id", "", "Filter to a specific detached exec job id")
 	cmd.Flags().IntVar(&fanout, "fanout", pdshDefaultFanout, "Maximum concurrent pod queries")
 	cmd.Flags().BoolVar(&readyOnly, "ready-only", false, "Query only pods that are already running (skip readiness check)")
+	cmd.Flags().BoolVar(&allWorktrees, "all-worktrees", false, "List the whole session's jobs with their worktree, instead of only the jobs launched from the current attached worktree")
 	return cmd
 }
 

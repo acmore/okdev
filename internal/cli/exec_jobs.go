@@ -22,6 +22,7 @@ type execJobView struct {
 	Pod       string `json:"pod"`
 	Container string `json:"container"`
 	JobID     string `json:"jobId"`
+	Worktree  string `json:"worktree,omitempty"`
 	PID       int    `json:"pid"`
 	PGID      int    `json:"pgid,omitempty"`
 	GroupLive int    `json:"groupLive,omitempty"`
@@ -35,6 +36,7 @@ type execJobView struct {
 
 type logicalExecJobView struct {
 	JobID        string        `json:"jobId"`
+	Worktree     string        `json:"worktree,omitempty"`
 	SummaryState string        `json:"state"`
 	Pods         int           `json:"pods"`
 	StartedAt    string        `json:"startedAt"`
@@ -63,11 +65,37 @@ type execJobsPodError struct {
 }
 
 func runExecJobs(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, jobID string, fanout int, out io.Writer, jsonOutput bool, route fanoutRoute) error {
+	return runExecJobsScoped(ctx, client, namespace, pods, container, jobID, fanout, out, jsonOutput, route, execJobsScope{})
+}
+
+// execJobsScope narrows a job listing to the worktree it is asked from.
+// Parallel agents share one pod, and each should see the jobs it launched,
+// not sift through everyone's.
+type execJobsScope struct {
+	// worktree, when non-empty, keeps only jobs launched from that worktree.
+	worktree string
+	// showWorktree adds the launching worktree to the table.
+	showWorktree bool
+}
+
+func runExecJobsScoped(ctx context.Context, client connect.ExecClient, namespace string, pods []kube.PodSummary, container string, jobID string, fanout int, out io.Writer, jsonOutput bool, route fanoutRoute, scope execJobsScope) error {
 	rows, podErrors, viaGateway := collectDetachJobsViaGateway(ctx, client, namespace, route, pods, container, jobID, fanout)
 	if !viaGateway {
 		rows, podErrors = collectDetachJobs(ctx, client, namespace, pods, container, jobID, fanout)
 	}
 	jobs := groupDetachJobs(rows)
+	hidden := 0
+	if scope.worktree != "" {
+		kept := jobs[:0]
+		for _, job := range jobs {
+			if job.Worktree == scope.worktree {
+				kept = append(kept, job)
+			} else {
+				hidden++
+			}
+		}
+		jobs = kept
+	}
 	if jsonOutput {
 		if err := outputJSON(out, execJobsOutput{Jobs: jobs, Errors: podErrors}); err != nil {
 			return err
@@ -76,19 +104,34 @@ func runExecJobs(ctx context.Context, client connect.ExecClient, namespace strin
 		if len(jobs) == 0 && len(podErrors) == 0 {
 			fmt.Fprintln(out, "No detached exec jobs found")
 		}
+		if hidden > 0 {
+			defer fmt.Fprintf(out, "\n%d job(s) from other worktrees or the primary checkout are hidden; --all-worktrees lists them\n", hidden)
+		}
 		if len(jobs) > 0 {
 			commandLimit := jobsListCommandLimit(out, jobs)
 			table := make([][]string, 0, len(jobs))
 			for _, job := range jobs {
-				table = append(table, []string{
+				row := []string{
 					job.JobID,
 					job.SummaryState,
 					fmt.Sprintf("%d", job.Pods),
 					job.StartedAt,
 					truncateTableCell(flattenCommandForTable(job.Command), commandLimit),
-				})
+				}
+				if scope.showWorktree {
+					worktree := job.Worktree
+					if worktree == "" {
+						worktree = "-"
+					}
+					row = append(row[:1], append([]string{worktree}, row[1:]...)...)
+				}
+				table = append(table, row)
 			}
-			output.PrintTable(out, []string{"JOB ID", "STATE", "PODS", "STARTED", "COMMAND"}, table)
+			headers := []string{"JOB ID", "STATE", "PODS", "STARTED", "COMMAND"}
+			if scope.showWorktree {
+				headers = append(headers[:1], append([]string{"WORKTREE"}, headers[1:]...)...)
+			}
+			output.PrintTable(out, headers, table)
 			if running := firstRunningJobID(jobs); running != "" {
 				fmt.Fprintf(out, "\nhint: `okdev jobs wait %s` blocks until it finishes; add --grep PATTERN to return when the log matches\n", running)
 			}
@@ -229,6 +272,7 @@ func appendDetachJobRows(rows []execJobView, jobs []detachMetadata, jobID, conta
 			Pod:       job.Pod,
 			Container: containerLabel,
 			JobID:     job.JobID,
+			Worktree:  job.Worktree,
 			PID:       job.PID,
 			PGID:      job.PGID,
 			GroupLive: job.GroupLive,
@@ -271,6 +315,7 @@ func groupDetachJobs(rows []execJobView) []logicalExecJobView {
 		})
 		logical = append(logical, logicalExecJobView{
 			JobID:        jobID,
+			Worktree:     members[0].Worktree,
 			SummaryState: summarizeLogicalJobState(members),
 			Pods:         len(members),
 			StartedAt:    earliestStartedAt(members),
