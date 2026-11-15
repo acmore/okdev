@@ -193,8 +193,8 @@ way:
 
 ```bash
 # 1. Every GPU run leases its GPUs. It sees only those devices; a run that
-#    cannot get all it asked for does not start (exit 75), instead of
-#    overlapping another agent's run.
+#    cannot get all it asked for exits 75 before its command starts, instead
+#    of overlapping another agent's run (check the job result with --detach).
 okdev exec --require-sync --detach --gpus 2 --gpu-wait 30m -- python train.py
 
 # 2. Cleanups are scoped to the calling worktree: these never touch another
@@ -206,10 +206,13 @@ okdev exec --reset-gpu
 okdev jobs list
 ```
 
-Exit `75` from `--gpus` means "busy now" — stderr names the worktree and job
-holding each GPU — and is worth retrying or waiting on; `69` means the pod
-can never satisfy the request. Leases are released by the processes ending,
-so a stopped or crashed job frees its GPUs with no further command.
+For a foreground `--gpus` command, exit `75` means "busy now" — stderr names
+the worktree and job holding each GPU — and is worth retrying or waiting on.
+Exit `69` means the command could not safely start; stderr distinguishes an
+impossible request from a failed GPU occupancy query. With `--detach`, the
+launch returns a job ID first, so inspect the job's result and logs for these
+exits. Leases are released by the processes ending, so a stopped or crashed
+job frees its GPUs with no further command.
 
 Per-tree state belongs under `$OKDEV_WORKTREE_ROOT`: an editable install into
 the pod's shared Python environment is session-wide, so the last tree to run
