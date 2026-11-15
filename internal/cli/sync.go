@@ -71,6 +71,9 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if _, err := sessionWorktreeBinding(cc.sessionName); err != nil {
+				return err
+			}
 			// Also the gate for the detached sync child, which re-enters
 			// here without a terminal: its parent already asked.
 			if err := requireConfigTrust(cmd, cc.cfg, cc.cfgPath, capSyncOutsideProject); err != nil {
@@ -98,12 +101,15 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if (resetLocal || resetMesh) && !reset {
 				return fmt.Errorf("--local and --mesh can only be used with --reset")
 			}
-			pairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
+			pairs, err := sessionSyncPairs(cc)
 			if err != nil {
 				return err
 			}
 			mode = resolveSyncMode(cmd.Flags().Changed("mode"), mode)
 			if err := validateSyncMode(mode); err != nil {
+				return err
+			}
+			if _, err := resolveSyncFolders(cc.sessionName, mode, pairs); err != nil {
 				return err
 			}
 			if dryRun {
@@ -506,6 +512,9 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 	}
 
 	cmd := execCommand(exe, args...)
+	if info, err := session.LoadInfo(sessionName); err == nil && info.RepoRoot != "" {
+		cmd.Dir = info.RepoRoot
+	}
 	cmd.Env = append(os.Environ(), "OKDEV_SYNCTHING_BACKGROUND_CHILD=1")
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile

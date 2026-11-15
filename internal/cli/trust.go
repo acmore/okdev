@@ -58,9 +58,11 @@ func localCapabilities(cfg *config.DevEnvironment, cfgPath string) ([]localCapab
 		return nil, err
 	}
 	for _, pair := range pairs {
-		// Resolved exactly as the sync engine resolves it (relative to the
-		// working directory), so the approval covers what is actually synced.
-		local, err := canonicalPath(pair.Local)
+		localPath := pair.Local
+		if !filepath.IsAbs(localPath) {
+			localPath = filepath.Join(root, localPath)
+		}
+		local, err := canonicalPath(localPath)
 		if err != nil {
 			return nil, err
 		}

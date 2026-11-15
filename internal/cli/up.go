@@ -155,6 +155,9 @@ func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, e
 	if err != nil {
 		return nil, err
 	}
+	if err := rejectSharedSessionLifecycle(cc.sessionName, "up"); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(cc.opts.Context) == "" {
 		cc.opts.Context, _ = detectKubeDefaults()
 		cc.kube = newKubeClient(cc.opts)
@@ -191,7 +194,7 @@ func upValidate(cmd *cobra.Command, opts *Options, flags upOptions) (*upState, e
 	labels := labelsForSession(opts, cc.cfg, cc.sessionName)
 	labels["okdev.io/run-id"] = runID
 	annotations := annotationsForSession(cc.cfg)
-	syncPairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
+	syncPairs, err := sessionSyncPairs(cc)
 	if err != nil {
 		return nil, err
 	}

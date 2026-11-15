@@ -96,6 +96,7 @@ func newRootCmdWithOptions() (*cobra.Command, *Options) {
 	cmd.AddCommand(newExecSSHProxyCmd(opts))
 	cmd.AddCommand(newPortsCmd(opts))
 	cmd.AddCommand(newSyncCmd(opts))
+	cmd.AddCommand(newWorktreeCmd(opts))
 	cmd.AddCommand(newEnvDiffCmd(opts))
 	cmd.AddCommand(newMigrateCmd(opts))
 	cmd.AddCommand(newTemplateCmd(opts))

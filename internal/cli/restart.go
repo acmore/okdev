@@ -63,6 +63,9 @@ pods, and sync re-bootstraps against the new workload.`,
 			if err != nil {
 				return err
 			}
+			if err := rejectSharedSessionLifecycle(cc.sessionName, "restart"); err != nil {
+				return err
+			}
 			ui.stepDone("config", cc.cfgPath)
 			ui.stepDone("session", cc.sessionName)
 			ui.stepDone("namespace", cc.namespace)
@@ -137,6 +140,9 @@ func runRestartPods(cmd *cobra.Command, opts *Options, podNames []string, yes bo
 	ui.section("Validate")
 	cc, err := resolveCommandContext(opts, resolveSessionName)
 	if err != nil {
+		return err
+	}
+	if err := rejectSharedSessionLifecycle(cc.sessionName, "restart"); err != nil {
 		return err
 	}
 	ui.stepDone("config", cc.cfgPath)

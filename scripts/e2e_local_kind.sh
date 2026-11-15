@@ -65,6 +65,7 @@ bash scripts/e2e_kind_smoke.sh
 bash scripts/e2e_kind_deployment.sh
 bash scripts/e2e_kind_job.sh
 bash scripts/e2e_kind_multi_session.sh
+bash scripts/e2e_kind_worktree.sh
 bash scripts/e2e_kind_init_add_workload.sh
 bash scripts/e2e_kind_migrate_podtemplate.sh
 bash scripts/e2e_kind_workload_switch.sh

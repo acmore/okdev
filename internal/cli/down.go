@@ -83,6 +83,9 @@ func newDownCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := rejectSharedSessionLifecycle(cc.sessionName, "down"); err != nil {
+				return err
+			}
 			ui.stepDone("config", cc.cfgPath)
 			ui.stepDone("session", cc.sessionName)
 			ui.stepDone("namespace", cc.namespace)

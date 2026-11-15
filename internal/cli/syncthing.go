@@ -116,6 +116,9 @@ func resolveSyncFolders(sessionName, mode string, pairs []syncengine.Pair) ([]sy
 			folderMode = config.SyncDirectionBi
 		}
 		if mode != "" && mode != "two-phase" {
+			if strings.HasPrefix(pair.Remote, session.WorktreeRemoteBase+"/") && mode != config.SyncDirectionUp {
+				return nil, fmt.Errorf("attached worktree %s must keep direction up; remove --mode=%s", pair.Local, mode)
+			}
 			folderMode = mode
 		}
 		folders = append(folders, syncFolder{
@@ -211,7 +214,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	// managed block, or the child subtree leaks through the primary channel
 	// once. okdev owns the daemon lifecycle, so file-before-daemon ordering
 	// is a hard guarantee here.
-	newlyRetained, err := mergeManagedSTIgnoreBlock(primary.absLocal, cfg.NestedLocalSyncIgnorePatterns())
+	newlyRetained, err := mergeManagedSTIgnoreBlock(primary.absLocal, nestedSyncIgnorePatterns(pairs))
 	if err != nil {
 		return fmt.Errorf("update primary folder ignore rules: %w", err)
 	}
@@ -294,17 +297,6 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 			return err
 		}
 	}
-	if mode == "two-phase" {
-		// The marker signals that the bootstrap phase concluded — `okdev up`
-		// waits on this handoff whenever it requested a bootstrap. It must
-		// be written even when no folder actually ran the two-phase
-		// protocol (all mappings directional), or the caller hangs until
-		// its handoff timeout.
-		if err := markSyncthingBootstrapCompleteFn(sessionName); err != nil {
-			return fmt.Errorf("mark syncthing bootstrap complete: %w", err)
-		}
-	}
-
 	// Mappings removed from the config leave their syncthing folders behind
 	// on both sides, silently continuing to sync; drop managed folders that
 	// no longer correspond to a configured pair.
@@ -326,6 +318,11 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 
 	if err := saveSyncthingConfigHashFn(sessionName, syncthingSessionConfigHash(cfg, pairs)); err != nil {
 		return fmt.Errorf("persist syncthing config state: %w", err)
+	}
+	// A detached parent can use this marker to wait until every folder is
+	// configured, including worktrees added to an already running session.
+	if err := markSyncthingBootstrapCompleteFn(sessionName); err != nil {
+		return fmt.Errorf("mark syncthing bootstrap complete: %w", err)
 	}
 
 	activeLabel := "per-path"

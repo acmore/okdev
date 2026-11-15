@@ -193,6 +193,13 @@ func newExecCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			binding, err := sessionWorktreeBinding(cc.sessionName)
+			if err != nil {
+				return err
+			}
+			if binding != nil {
+				invocation.WorkDir = binding.RemoteRoot
+			}
 			if cc.cfg.Spec.AttachOnly != nil && gatewayPod != "" {
 				return fmt.Errorf("--gateway is unavailable in attach-only mode")
 			}
@@ -215,6 +222,9 @@ func newExecCmd(opts *Options) *cobra.Command {
 
 			hasCommand := len(invocation.Argv) > 0 || invocation.ScriptLocalPath != ""
 			hasSelector := allPods || workers || len(podNames) > 0 || role != "" || len(labels) > 0 || len(groups) > 0 || len(exclude) > 0
+			if binding != nil && hasSelector {
+				return fmt.Errorf("worktree execution currently supports only the session target pod; remove the pod selector")
+			}
 			// Fanout is opt-in (#178): a command without a pod selector runs
 			// on the target pod only, like kubectl exec — a state-mutating
 			// command must never hit every pod because a flag was forgotten.
@@ -292,6 +302,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 			if len(execCmd) == 1 && strings.TrimSpace(execCmd[0]) == "" {
 				execCmd = []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}
 			}
+			execCmd = commandInWorkDir(execCmd, invocation.WorkDir)
 			connectErr := runConnectWithClient(cc.kube, cc.namespace, target, execCmd, !noTTY)
 			if connectErr != nil && isContainerUnavailableExecError(connectErr) {
 				if hint := containerUnavailableHint(cmd.Context(), cc.kube, cc.namespace, target.PodName, target.Container); hint != "" {
@@ -385,6 +396,15 @@ type execInvocation struct {
 	DisplayCommand   string
 	ScriptLocalPath  string
 	ScriptHasShebang bool
+	WorkDir          string
+}
+
+func commandInWorkDir(argv []string, dir string) []string {
+	if dir == "" || len(argv) == 0 {
+		return argv
+	}
+	command := []string{"sh", "-c", `cd "$1" || exit 1; shift; exec "$@"`, "okdev-worktree", dir}
+	return append(command, argv...)
 }
 
 type scriptCopyClient interface {
@@ -810,7 +830,7 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvo
 	}
 
 	if stdin, _ := cmd.Flags().GetBool("stdin"); stdin {
-		return runExecStdin(ctx, client, cc.namespace, groups, targetContainer, invocation.Argv, timeout, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+		return runExecStdin(ctx, client, cc.namespace, groups, targetContainer, commandInWorkDir(invocation.Argv, invocation.WorkDir), timeout, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 	}
 
 	if jsonOutput {
@@ -1115,7 +1135,7 @@ func runExecPodGroups(ctx context.Context, client scriptCopyClient, namespace st
 		if opts.Invocation.ScriptLocalPath != "" {
 			return runMultiExecScript(ctx, client, namespace, group.Pods, opts.Container, opts.Invocation, groupLogDir, opts.Timeout, opts.NoPrefix, sem, stdout, stderr, opts.Verbose)
 		}
-		return runMultiExec(ctx, client, namespace, group.Pods, opts.Container, opts.Invocation.Argv, groupLogDir, opts.Timeout, opts.NoPrefix, sem, stdout, stderr, opts.Verbose)
+		return runMultiExec(ctx, client, namespace, group.Pods, opts.Container, commandInWorkDir(opts.Invocation.Argv, opts.Invocation.WorkDir), groupLogDir, opts.Timeout, opts.NoPrefix, sem, stdout, stderr, opts.Verbose)
 	}
 
 	groupErrs := make([]error, len(groups))
@@ -1343,6 +1363,7 @@ func runMultiExecJSONResults(ctx context.Context, client scriptCopyClient, names
 				}
 				command = scriptExecCommand(remotePath, invocation.ScriptHasShebang, invocation.Argv, true)
 			}
+			command = commandInWorkDir(command, invocation.WorkDir)
 
 			var stdoutBuf, stderrBuf bytes.Buffer
 			err := connect.RunOnContainerWithRetry(execCtx, client, namespace, pod.Name, container, command, false, nil, &stdoutBuf, &stderrBuf, connect.RetryPolicy{MaxAttempts: 1})
@@ -2080,6 +2101,7 @@ func runDetachExec(ctx context.Context, client scriptCopyClient, namespace strin
 				argv = scriptExecCommand(remotePath, invocation.ScriptHasShebang, invocation.Argv, false)
 				cleanup = []string{remotePath}
 			}
+			argv = commandInWorkDir(argv, invocation.WorkDir)
 			spec := newDetachJobSpec(jobID, pod.Name, container, invocation.DisplayCommand, argv, cleanup)
 			if cascadeOnExit {
 				for _, peer := range podNames {
@@ -2193,6 +2215,7 @@ func runMultiExecScript(ctx context.Context, client scriptCopyClient, namespace 
 				return
 			}
 			command := scriptExecCommand(remotePath, invocation.ScriptHasShebang, invocation.Argv, true)
+			command = commandInWorkDir(command, invocation.WorkDir)
 			err := connect.RunOnContainerWithRetry(execCtx, client, namespace, pod.Name, container, command, false, nil, podStdout, podStderr, connect.RetryPolicy{MaxAttempts: 1})
 			results <- podExecResult{pod: pod.Name, err: err}
 		}(pod, shortNames[i], displayPrefixes[i])

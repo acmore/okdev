@@ -175,6 +175,21 @@ func optionsWithSessionConfig(opts *Options) (*Options, error) {
 		return &Options{}, nil
 	}
 	cloned := *opts
+	if strings.TrimSpace(cloned.ConfigPath) == "" && strings.TrimSpace(cloned.Session) == "" {
+		active, err := session.LoadActiveSession()
+		if err != nil {
+			return nil, err
+		}
+		if active != "" {
+			binding, err := sessionWorktreeBinding(active)
+			if err != nil {
+				return nil, err
+			}
+			if binding != nil {
+				cloned.Session = active
+			}
+		}
+	}
 	if strings.TrimSpace(cloned.ConfigPath) != "" || strings.TrimSpace(cloned.Session) == "" {
 		return &cloned, nil
 	}
