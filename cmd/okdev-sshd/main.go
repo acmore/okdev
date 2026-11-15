@@ -27,6 +27,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "fanout" {
 		os.Exit(runFanout(os.Stdin, os.Stdout, os.Stderr))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "gpus" {
+		os.Exit(runGPUs(os.Args[2:], os.Stderr))
+	}
 	port := flag.Int("port", 2222, "SSH listen port")
 	authorizedKeysPath := flag.String("authorized-keys", "/var/okdev/authorized_keys", "Path to authorized_keys file")
 	shell := flag.String("shell", "", "Shell to use (auto-detect if empty)")

@@ -14,22 +14,22 @@ import (
 )
 
 func TestBuildResetGPUInvocationConflicts(t *testing.T) {
-	if _, err := buildResetGPUInvocation([]string{"echo"}, "", "", false, ""); err == nil {
+	if _, err := buildResetGPUInvocation([]string{"echo"}, "", "", false, "", false); err == nil {
 		t.Fatal("command args must conflict")
 	}
-	if _, err := buildResetGPUInvocation(nil, "s.sh", "", false, ""); err == nil {
+	if _, err := buildResetGPUInvocation(nil, "s.sh", "", false, "", false); err == nil {
 		t.Fatal("--script must conflict")
 	}
-	if _, err := buildResetGPUInvocation(nil, "", "zsh", false, ""); err == nil {
+	if _, err := buildResetGPUInvocation(nil, "", "zsh", false, "", false); err == nil {
 		t.Fatal("--shell must conflict")
 	}
-	if _, err := buildResetGPUInvocation(nil, "", "", true, ""); err == nil {
+	if _, err := buildResetGPUInvocation(nil, "", "", true, "", false); err == nil {
 		t.Fatal("--detach must conflict")
 	}
-	if _, err := buildResetGPUInvocation(nil, "", "", false, "train"); err == nil {
+	if _, err := buildResetGPUInvocation(nil, "", "", false, "train", false); err == nil {
 		t.Fatal("--pkill must conflict")
 	}
-	inv, err := buildResetGPUInvocation(nil, "", "", false, "")
+	inv, err := buildResetGPUInvocation(nil, "", "", false, "", false)
 	if err != nil {
 		t.Fatalf("plain --reset-gpu: %v", err)
 	}

@@ -184,3 +184,33 @@ For completion, keep using ordinary `jobs wait <id>`. `jobs ready` returns befor
 completion and fails if a tracked member exits, even successfully, before the
 probe verifies readiness. See the command reference for member discovery,
 deadlines and JSON output limits.
+
+## Run parallel agents in one pod
+
+Several agents, each in its own Git worktree attached to one session, share
+that pod's GPUs and process table. Three rules keep them out of each other's
+way:
+
+```bash
+# 1. Every GPU run leases its GPUs. It sees only those devices; a run that
+#    cannot get all it asked for does not start (exit 75), instead of
+#    overlapping another agent's run.
+okdev exec --require-sync --detach --gpus 2 --gpu-wait 30m -- python train.py
+
+# 2. Cleanups are scoped to the calling worktree: these never touch another
+#    agent's processes.
+okdev exec --pkill 'train.py'
+okdev exec --reset-gpu
+
+# 3. A worktree lists its own jobs.
+okdev jobs list
+```
+
+Exit `75` from `--gpus` means "busy now" — stderr names the worktree and job
+holding each GPU — and is worth retrying or waiting on; `69` means the pod
+can never satisfy the request. Leases are released by the processes ending,
+so a stopped or crashed job frees its GPUs with no further command.
+
+Per-tree state belongs under `$OKDEV_WORKTREE_ROOT`: an editable install into
+the pod's shared Python environment is session-wide, so the last tree to run
+`pip install -e .` decides what every tree imports.

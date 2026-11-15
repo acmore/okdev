@@ -102,6 +102,60 @@ fi
 pod_count="$(kubectl get pods -l "okdev.io/session=$SESSION" --no-headers | wc -l | tr -d ' ')"
 test "$pod_count" = 1
 
+echo "Parallel worktrees: GPU leases, scoped cleanup, scoped job listing"
+# No GPUs in kind: a fake nvidia-smi reporting two idle devices drives the
+# real lease path.
+(
+  cd "$MAIN"
+  "$OKDEV_BIN" --session "$SESSION" exec --no-tty --no-prefix -- sh -c 'cat > /usr/local/bin/nvidia-smi <<"SMI"
+#!/bin/sh
+case "$*" in
+  *--query-gpu=index,uuid*) printf "0, GPU-e2e-a\n1, GPU-e2e-b\n" ;;
+esac
+SMI
+chmod +x /usr/local/bin/nvidia-smi'
+)
+wt_a_job="$(cd "$WT_A" && "$OKDEV_BIN" exec --no-tty --detach --gpus 2 -- sh -c 'echo "leased=$CUDA_VISIBLE_DEVICES"; sleep 7411' | sed -n 's/.*job_id=\([^ ]*\).*/\1/p' | head -n1)"
+test -n "$wt_a_job"
+(
+  cd "$WT_A"
+  "$OKDEV_BIN" jobs wait "$wt_a_job" --grep 'leased=GPU-e2e-a,GPU-e2e-b' >/dev/null
+)
+(
+  cd "$WT_B"
+  # Both GPUs are leased by worktree A: B's run must not start, and must be
+  # told who holds them.
+  set +e
+  busy_output="$("$OKDEV_BIN" exec --no-tty --no-prefix --gpus 1 -- echo started 2>&1)"
+  busy_status=$?
+  set -e
+  if [[ "$busy_status" -ne 75 || "$busy_output" == *started* || "$busy_output" != *"job $wt_a_job"* ]]; then
+    echo "expected exit 75 naming the holding job, got $busy_status: $busy_output" >&2
+    exit 1
+  fi
+  # B neither sees nor can pattern-kill A's job.
+  if "$OKDEV_BIN" jobs list | grep -q "$wt_a_job"; then
+    echo "worktree B lists worktree A's job" >&2
+    exit 1
+  fi
+  "$OKDEV_BIN" jobs list --all-worktrees | grep -q "$wt_a_job"
+  if "$OKDEV_BIN" exec --no-tty --pkill 'sleep 7411' >/dev/null 2>&1; then
+    echo "worktree B killed worktree A's process" >&2
+    exit 1
+  fi
+)
+(
+  cd "$WT_A"
+  "$OKDEV_BIN" jobs list | grep "$wt_a_job" | grep -q running
+  "$OKDEV_BIN" exec --no-tty --pkill 'sleep 7411' >/dev/null
+)
+(
+  cd "$WT_B"
+  # The lease ended with A's process; nothing had to release it.
+  test "$("$OKDEV_BIN" exec --no-tty --no-prefix --gpus 1 --gpu-wait 1m -- sh -c 'echo "$CUDA_VISIBLE_DEVICES:$OKDEV_GPUS"' 2>/dev/null)" = GPU-e2e-a:0
+  test "$("$OKDEV_BIN" exec --no-tty --no-prefix -- sh -c 'echo "$OKDEV_WORKTREE_ROOT"')" = "$("$OKDEV_BIN" exec --no-tty --no-prefix -- pwd)"
+)
+
 echo "Restarting the shared session from the primary checkout"
 (
   cd "$MAIN"

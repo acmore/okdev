@@ -16,18 +16,21 @@ import (
 	syncengine "github.com/acmore/okdev/internal/sync"
 )
 
-func TestCommandInWorkDirPreservesArguments(t *testing.T) {
+func TestCommandInWorktreePreservesArgumentsAndMarksTheProcess(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "work tree")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	argv := commandInWorkDir([]string{"sh", "-c", `printf '%s\n%s\n' "$PWD" "$1"`, "arg0", "a;$(false)"}, dir)
+	argv := commandInWorktree([]string{"sh", "-c", `printf '%s\n%s\n%s\n%s\n' "$PWD" "$1" "$OKDEV_WORKTREE_ROOT" "$OKDEV_WORKTREE_ID"`, "arg0", "a;$(false)"}, dir, "0123456789abcdef")
 	out, err := exec.Command(argv[0], argv[1:]...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("run wrapped command: %v: %s", err, out)
 	}
-	if got, want := string(out), dir+"\na;$(false)\n"; got != want {
+	if got, want := string(out), dir+"\na;$(false)\n"+dir+"\n0123456789abcdef\n"; got != want {
 		t.Fatalf("output = %q, want %q", got, want)
+	}
+	if got := commandInWorktree([]string{"true"}, "", ""); len(got) != 1 {
+		t.Fatalf("command outside a worktree was wrapped: %q", got)
 	}
 }
 

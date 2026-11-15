@@ -83,6 +83,9 @@ func newExecCmd(opts *Options) *cobra.Command {
 	var pkillPattern string
 	var pkillSignal string
 	var resetGPU bool
+	var allWorktrees bool
+	var gpus string
+	var gpuWait time.Duration
 	var requireSync bool
 	var noSyncWarning bool
 	var killGroupOnExit bool
@@ -171,15 +174,21 @@ func newExecCmd(opts *Options) *cobra.Command {
 			var invocation execInvocation
 			var err error
 			if resetGPU {
-				invocation, err = buildResetGPUInvocation(commandArgs, scriptPath, shell, detach, pkillPattern)
+				invocation, err = buildResetGPUInvocation(commandArgs, scriptPath, shell, detach, pkillPattern, allWorktrees)
 			} else if pkillPattern != "" || cmd.Flags().Changed("signal") {
 				// Before buildExecInvocation so a --script conflict reports
 				// as a conflict, not as a stat error on the script path.
-				invocation, err = buildPkillInvocation(pkillPattern, pkillSignal, commandArgs, scriptPath, shell, detach)
+				invocation, err = buildPkillInvocation(pkillPattern, pkillSignal, commandArgs, scriptPath, shell, detach, allWorktrees)
 			} else {
+				if allWorktrees {
+					return fmt.Errorf("--all-worktrees only applies to --pkill and --reset-gpu")
+				}
 				invocation, err = buildExecInvocation(commandArgs, scriptPath)
 			}
 			if err != nil {
+				return err
+			}
+			if err := applyGPURequest(&invocation, gpus, gpuWait, cmd.Flags().Changed("gpu-wait"), resetGPU || pkillPattern != "", transport); err != nil {
 				return err
 			}
 			// Pure flag validation, before any cluster work: an interactive
@@ -199,6 +208,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 			}
 			if binding != nil {
 				invocation.WorkDir = binding.RemoteRoot
+				invocation.WorktreeID = binding.ID
 			}
 			if cc.cfg.Spec.AttachOnly != nil && gatewayPod != "" {
 				return fmt.Errorf("--gateway is unavailable in attach-only mode")
@@ -302,7 +312,7 @@ func newExecCmd(opts *Options) *cobra.Command {
 			if len(execCmd) == 1 && strings.TrimSpace(execCmd[0]) == "" {
 				execCmd = []string{"sh", "-lc", "command -v bash >/dev/null 2>&1 && exec bash || exec sh"}
 			}
-			execCmd = commandInWorkDir(execCmd, invocation.WorkDir)
+			execCmd = invocation.wrap(execCmd)
 			connectErr := runConnectWithClient(cc.kube, cc.namespace, target, execCmd, !noTTY)
 			if connectErr != nil && isContainerUnavailableExecError(connectErr) {
 				if hint := containerUnavailableHint(cmd.Context(), cc.kube, cc.namespace, target.PodName, target.Container); hint != "" {
@@ -339,9 +349,12 @@ func newExecCmd(opts *Options) *cobra.Command {
 	cmd.Flags().BoolVar(&parallel, "parallel", false, "Run explicit groups in parallel")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Capture each pod's result into a JSON envelope {pod,exit,stdout,stderr,status}; remote exit codes become data, not okdev failures")
 	cmd.Flags().StringVar(&gatewayPod, "gateway", "", "Pod to use as the in-cluster fanout gateway (requires --json and interpod SSH)")
-	cmd.Flags().StringVar(&pkillPattern, "pkill", "", "Kill processes whose full cmdline matches this extended regex; never matches okdev's own exec machinery (exit 0 if any process matched)")
-	cmd.Flags().BoolVar(&resetGPU, "reset-gpu", false, "Kill every process holding GPU compute in the targeted pods (SIGKILL by process group) and verify nvidia-smi returns to zero (exit 0 clear, 3 no nvidia-smi, 4 still busy)")
+	cmd.Flags().StringVar(&pkillPattern, "pkill", "", "Kill processes whose full cmdline matches this extended regex; never matches okdev's own exec machinery, and from an attached worktree only that worktree's processes (exit 0 if any process matched)")
+	cmd.Flags().BoolVar(&resetGPU, "reset-gpu", false, "Kill every process holding GPU compute in the targeted pods (SIGKILL by process group) and verify nvidia-smi returns to zero; from an attached worktree only that worktree's holders (exit 0 clear, 3 no nvidia-smi, 4 still busy)")
 	cmd.Flags().StringVar(&pkillSignal, "signal", "TERM", "Signal name or number sent by --pkill")
+	cmd.Flags().BoolVar(&allWorktrees, "all-worktrees", false, "With --pkill or --reset-gpu from an attached worktree: act on the whole session instead of only this worktree's processes")
+	cmd.Flags().StringVar(&gpus, "gpus", "", "Lease this many GPUs (or \"all\") for the command and expose only those through CUDA_VISIBLE_DEVICES; fails with exit 75 when not enough are free, 69 when the pod can never provide them")
+	cmd.Flags().DurationVar(&gpuWait, "gpu-wait", 0, "With --gpus: wait this long for GPUs to become free instead of failing at once")
 	cmd.Flags().BoolVar(&killGroupOnExit, "kill-group-on-exit", false, "With --detach on multiple pods: when any member exits, SIGKILL the whole cross-pod job group (requires spec.ssh.interPod)")
 	cmd.Flags().BoolVar(&requireSync, "require-sync", false, "Refuse to run unless sync is healthy and fully converged (foreground or --detach)")
 	cmd.Flags().BoolVar(&noSyncWarning, "no-sync-warning", false, "Suppress non-blocking sync health warnings for this exec call")
@@ -396,15 +409,86 @@ type execInvocation struct {
 	DisplayCommand   string
 	ScriptLocalPath  string
 	ScriptHasShebang bool
-	WorkDir          string
+	// WorkDir and WorktreeID are set when the command runs from an attached
+	// Git worktree: it starts in that tree's remote directory, tagged as
+	// belonging to it.
+	WorkDir    string
+	WorktreeID string
+	// GPUs ("" for none, a count, or "all") makes the command lease that
+	// many GPUs first, waiting up to GPUWait for them.
+	GPUs    string
+	GPUWait time.Duration
 }
 
-func commandInWorkDir(argv []string, dir string) []string {
+// wrap applies the invocation's execution context to the remote command.
+func (inv execInvocation) wrap(argv []string) []string {
+	return commandInWorktree(commandWithGPUs(argv, inv.GPUs, inv.GPUWait), inv.WorkDir, inv.WorktreeID)
+}
+
+// commandInWorktree runs argv from an attached worktree's remote directory
+// and marks it as that worktree's. The marks are environment variables
+// because everything the command starts inherits them and they survive a
+// later chdir: they are how --pkill, --reset-gpu, job listings and GPU leases
+// tell one worktree's processes from another's.
+func commandInWorktree(argv []string, dir, id string) []string {
 	if dir == "" || len(argv) == 0 {
 		return argv
 	}
-	command := []string{"sh", "-c", `cd "$1" || exit 1; shift; exec "$@"`, "okdev-worktree", dir}
+	command := []string{"sh", "-c", `cd "$1" || exit 1; export OKDEV_WORKTREE_ROOT="$1" OKDEV_WORKTREE_ID="$2"; shift 2; exec "$@"`, "okdev-worktree", dir, id}
 	return append(command, argv...)
+}
+
+// gpuLeaseHelper is the okdev-sshd binary the sidecar stages on the shared
+// runtime volume; its `gpus` subcommand leases GPUs and execs the command.
+const gpuLeaseHelper = "/var/okdev/okdev-sshd"
+
+// commandWithGPUs makes argv lease GPUs before it starts. The probe keeps a
+// session whose sidecar predates the subcommand from failing obscurely: an
+// older okdev-sshd rejects the unknown flag instead.
+func commandWithGPUs(argv []string, gpus string, wait time.Duration) []string {
+	if gpus == "" || len(argv) == 0 {
+		return argv
+	}
+	script := `helper="$1"; count="$2"; wait="$3"; shift 3
+if ! "$helper" gpus --probe >/dev/null 2>&1; then
+  echo "okdev: --gpus needs a newer okdev sidecar than this pod runs; recreate the pod with the current okdev (okdev restart)" >&2
+  exit 69
+fi
+exec "$helper" gpus run --count "$count" --wait "$wait" -- "$@"`
+	command := []string{"sh", "-c", script, "okdev-gpus", gpuLeaseHelper, gpus, wait.String()}
+	return append(command, argv...)
+}
+
+// applyGPURequest validates --gpus/--gpu-wait and records them on the
+// invocation.
+func applyGPURequest(invocation *execInvocation, gpus string, wait time.Duration, waitSet, killMode bool, transport string) error {
+	gpus = strings.TrimSpace(gpus)
+	if gpus == "" {
+		if waitSet {
+			return fmt.Errorf("--gpu-wait requires --gpus")
+		}
+		return nil
+	}
+	if gpus != "all" {
+		if n, err := strconv.Atoi(gpus); err != nil || n < 1 {
+			return fmt.Errorf("--gpus must be a positive number or \"all\", got %q", gpus)
+		}
+	}
+	if wait < 0 {
+		return fmt.Errorf("--gpu-wait must not be negative")
+	}
+	if killMode {
+		return fmt.Errorf("--gpus cannot be combined with --pkill or --reset-gpu")
+	}
+	if len(invocation.Argv) == 0 && invocation.ScriptLocalPath == "" {
+		return fmt.Errorf("--gpus needs a command to run; pass one after -- or use --script")
+	}
+	if transport == "ssh" {
+		return fmt.Errorf("--gpus is not supported with --transport=ssh")
+	}
+	invocation.GPUs = gpus
+	invocation.GPUWait = wait
+	return nil
 }
 
 type scriptCopyClient interface {
@@ -529,8 +613,15 @@ func validateNoFlagLikeValues(fs *pflag.FlagSet) error {
 // convention (0 when at least one process matched, 1 otherwise) and prints one
 // `killed <pid> <cmdline>` line per signalled process. Busybox-compatible:
 // only sh, tr, grep, cut and kill are required.
+//
+// Run from an attached worktree (OKDEV_WORKTREE_ID in the environment) it
+// only signals processes carrying the same mark, so parallel agents sharing
+// the pod cannot kill each other's work by pattern; a third argument of "all"
+// lifts that.
 const pkillHelperScript = `pattern="$1"
 sig="$2"
+tag=""
+[ "${3:-}" = all ] || [ -z "${OKDEV_WORKTREE_ID:-}" ] || tag="OKDEV_WORKTREE_ID=$OKDEV_WORKTREE_ID"
 excl=" $$ "
 pid=$$
 while [ "$pid" -gt 1 ] 2>/dev/null; do
@@ -546,6 +637,9 @@ for f in /proc/[0-9]*/cmdline; do
   cmd=$(tr "\0" " " <"$f" 2>/dev/null)
   [ -n "$cmd" ] || continue
   printf "%s" "$cmd" | grep -Eq -- "$pattern" || continue
+  if [ -n "$tag" ]; then
+    tr "\0" "\n" <"/proc/$pid/environ" 2>/dev/null | grep -Fqx -- "$tag" || continue
+  fi
   if kill -s "$sig" "$pid" 2>/dev/null; then
     matched=1
     printf "killed %s %s\n" "$pid" "$cmd"
@@ -557,11 +651,19 @@ done
 // pkillExecCommand delivers pattern and signal as separate argv words after
 // the script, so the only remote cmdline containing the pattern is the helper
 // shell itself — which the script excludes by construction.
-func pkillExecCommand(pattern, signal string) []string {
-	return []string{"sh", "-c", pkillHelperScript, "okdev-pkill", pattern, signal}
+func pkillExecCommand(pattern, signal string, allWorktrees bool) []string {
+	return []string{"sh", "-c", pkillHelperScript, "okdev-pkill", pattern, signal, worktreeScopeArg(allWorktrees)}
 }
 
-func buildPkillInvocation(pattern, signal string, commandArgs []string, scriptPath, shell string, detach bool) (execInvocation, error) {
+// worktreeScopeArg is the helper-script argument that lifts worktree scoping.
+func worktreeScopeArg(allWorktrees bool) string {
+	if allWorktrees {
+		return "all"
+	}
+	return ""
+}
+
+func buildPkillInvocation(pattern, signal string, commandArgs []string, scriptPath, shell string, detach, allWorktrees bool) (execInvocation, error) {
 	if strings.TrimSpace(pattern) == "" {
 		return execInvocation{}, fmt.Errorf("--pkill requires a non-empty pattern (--signal is only meaningful with --pkill)")
 	}
@@ -580,7 +682,7 @@ func buildPkillInvocation(pattern, signal string, commandArgs []string, scriptPa
 		}
 	}
 	return execInvocation{
-		Argv:           pkillExecCommand(pattern, signal),
+		Argv:           pkillExecCommand(pattern, signal, allWorktrees),
 		DisplayCommand: fmt.Sprintf("--pkill %s --signal %s", shellutil.Quote(pattern), signal),
 	}, nil
 }
@@ -596,7 +698,16 @@ func buildPkillInvocation(pattern, signal string, commandArgs []string, scriptPa
 // container, 4 = still busy after the verify window (leftovers listed on
 // stderr). PIDs reported by nvidia-smi that do not exist in this PID
 // namespace are called out — killing them is impossible from here.
+//
+// Run from an attached worktree it resets that worktree's holders only (see
+// pkillHelperScript): "clear" then means none of its own processes hold GPU
+// memory, and holders of other worktrees are counted, not killed.
 const resetGPUHelperScript = `verify="${1:-30}"
+tag=""
+[ "${2:-}" = all ] || [ -z "${OKDEV_WORKTREE_ID:-}" ] || tag="OKDEV_WORKTREE_ID=$OKDEV_WORKTREE_ID"
+owned() {
+  [ -z "$tag" ] || tr "\0" "\n" <"/proc/$1/environ" 2>/dev/null | grep -Fqx -- "$tag"
+}
 if ! command -v nvidia-smi >/dev/null 2>&1; then
   echo "nvidia-smi not found in this container" >&2
   exit 3
@@ -616,6 +727,7 @@ for pid in $pids; do
     echo "pid $pid holds GPU but is not visible in this container namespace (host-pid mapping unavailable)" >&2
     continue
   fi
+  owned "$pid" || continue
   cmd=$(tr "\0" " " <"/proc/$pid/cmdline" 2>/dev/null)
   stat=$(cat "/proc/$pid/stat" 2>/dev/null) || continue
   rest="${stat##*) }"
@@ -636,9 +748,18 @@ for pid in $pids; do
 done
 i=0
 while [ "$i" -lt "$verify" ]; do
-  left=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -cE "^[0-9 ]+$" || true)
+  left=0
+  others=0
+  for pid in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | tr -d " " | grep -E "^[0-9]+$" || true); do
+    if owned "$pid"; then left=$((left+1)); else others=$((others+1)); fi
+  done
   if [ "$left" = "0" ]; then
-    echo "gpu-clear"
+    if [ -n "$tag" ]; then
+      echo "gpu-clear: worktree $OKDEV_WORKTREE_ID"
+      [ "$others" = "0" ] || echo "$others process(es) of other worktrees still hold GPU memory and were left alone; --all-worktrees resets them too" >&2
+    else
+      echo "gpu-clear"
+    fi
     exit 0
   fi
   sleep 1
@@ -649,11 +770,11 @@ nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,nohead
 exit 4
 `
 
-func resetGPUExecCommand() []string {
-	return []string{"sh", "-c", resetGPUHelperScript, "okdev-reset-gpu"}
+func resetGPUExecCommand(allWorktrees bool) []string {
+	return []string{"sh", "-c", resetGPUHelperScript, "okdev-reset-gpu", "30", worktreeScopeArg(allWorktrees)}
 }
 
-func buildResetGPUInvocation(commandArgs []string, scriptPath, shell string, detach bool, pkillPattern string) (execInvocation, error) {
+func buildResetGPUInvocation(commandArgs []string, scriptPath, shell string, detach bool, pkillPattern string, allWorktrees bool) (execInvocation, error) {
 	if len(commandArgs) > 0 || scriptPath != "" {
 		return execInvocation{}, fmt.Errorf("--reset-gpu cannot be combined with a command after -- or --script")
 	}
@@ -667,7 +788,7 @@ func buildResetGPUInvocation(commandArgs []string, scriptPath, shell string, det
 		return execInvocation{}, fmt.Errorf("--reset-gpu cannot be combined with --pkill (reset-gpu already kills the GPU holders)")
 	}
 	return execInvocation{
-		Argv:           resetGPUExecCommand(),
+		Argv:           resetGPUExecCommand(allWorktrees),
 		DisplayCommand: "--reset-gpu",
 	}, nil
 }
@@ -830,7 +951,7 @@ func runMultiPodExec(cmd *cobra.Command, cc *commandContext, invocation execInvo
 	}
 
 	if stdin, _ := cmd.Flags().GetBool("stdin"); stdin {
-		return runExecStdin(ctx, client, cc.namespace, groups, targetContainer, commandInWorkDir(invocation.Argv, invocation.WorkDir), timeout, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+		return runExecStdin(ctx, client, cc.namespace, groups, targetContainer, invocation.wrap(invocation.Argv), timeout, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 	}
 
 	if jsonOutput {
@@ -1135,7 +1256,7 @@ func runExecPodGroups(ctx context.Context, client scriptCopyClient, namespace st
 		if opts.Invocation.ScriptLocalPath != "" {
 			return runMultiExecScript(ctx, client, namespace, group.Pods, opts.Container, opts.Invocation, groupLogDir, opts.Timeout, opts.NoPrefix, sem, stdout, stderr, opts.Verbose)
 		}
-		return runMultiExec(ctx, client, namespace, group.Pods, opts.Container, commandInWorkDir(opts.Invocation.Argv, opts.Invocation.WorkDir), groupLogDir, opts.Timeout, opts.NoPrefix, sem, stdout, stderr, opts.Verbose)
+		return runMultiExec(ctx, client, namespace, group.Pods, opts.Container, opts.Invocation.wrap(opts.Invocation.Argv), groupLogDir, opts.Timeout, opts.NoPrefix, sem, stdout, stderr, opts.Verbose)
 	}
 
 	groupErrs := make([]error, len(groups))
@@ -1363,7 +1484,7 @@ func runMultiExecJSONResults(ctx context.Context, client scriptCopyClient, names
 				}
 				command = scriptExecCommand(remotePath, invocation.ScriptHasShebang, invocation.Argv, true)
 			}
-			command = commandInWorkDir(command, invocation.WorkDir)
+			command = invocation.wrap(command)
 
 			var stdoutBuf, stderrBuf bytes.Buffer
 			err := connect.RunOnContainerWithRetry(execCtx, client, namespace, pod.Name, container, command, false, nil, &stdoutBuf, &stderrBuf, connect.RetryPolicy{MaxAttempts: 1})
@@ -1692,12 +1813,16 @@ type detachJobSpec struct {
 	// group-kill to these peer pods the moment the local member exits
 	// (#179) — the cross-pod extension of the per-pod process group.
 	CascadePeers []string
+	// Worktree is the ID of the attached worktree the job was launched
+	// from; empty for the session's primary checkout.
+	Worktree string
 }
 
 type detachMetadata struct {
 	JobID     string `json:"jobId"`
 	Pod       string `json:"pod"`
 	Container string `json:"container"`
+	Worktree  string `json:"worktree,omitempty"`
 	PID       int    `json:"pid"`
 	// PGID is the job's process group id (== PID when the wrapper launched
 	// the command via setsid); 0 for jobs from containers without setsid or
@@ -1741,6 +1866,7 @@ func detachCommand(spec detachJobSpec) []string {
 		JobID:      spec.JobID,
 		Pod:        spec.Pod,
 		Container:  spec.Container,
+		Worktree:   spec.Worktree,
 		PID:        0,
 		Command:    spec.Command,
 		StartedAt:  spec.StartedAt,
@@ -1754,6 +1880,7 @@ func detachCommand(spec detachJobSpec) []string {
 		JobID:      spec.JobID,
 		Pod:        spec.Pod,
 		Container:  spec.Container,
+		Worktree:   spec.Worktree,
 		PID:        0,
 		Command:    spec.Command,
 		StartedAt:  spec.StartedAt,
@@ -2101,8 +2228,9 @@ func runDetachExec(ctx context.Context, client scriptCopyClient, namespace strin
 				argv = scriptExecCommand(remotePath, invocation.ScriptHasShebang, invocation.Argv, false)
 				cleanup = []string{remotePath}
 			}
-			argv = commandInWorkDir(argv, invocation.WorkDir)
+			argv = invocation.wrap(argv)
 			spec := newDetachJobSpec(jobID, pod.Name, container, invocation.DisplayCommand, argv, cleanup)
+			spec.Worktree = invocation.WorktreeID
 			if cascadeOnExit {
 				for _, peer := range podNames {
 					if peer != pod.Name {
@@ -2215,7 +2343,7 @@ func runMultiExecScript(ctx context.Context, client scriptCopyClient, namespace 
 				return
 			}
 			command := scriptExecCommand(remotePath, invocation.ScriptHasShebang, invocation.Argv, true)
-			command = commandInWorkDir(command, invocation.WorkDir)
+			command = invocation.wrap(command)
 			err := connect.RunOnContainerWithRetry(execCtx, client, namespace, pod.Name, container, command, false, nil, podStdout, podStderr, connect.RetryPolicy{MaxAttempts: 1})
 			results <- podExecResult{pod: pod.Name, err: err}
 		}(pod, shortNames[i], displayPrefixes[i])
