@@ -82,13 +82,16 @@ actually moving; "okdev sync wait" blocks until it is empty.`,
 			if err != nil {
 				return err
 			}
+			if _, err := sessionWorktreeBinding(cc.sessionName); err != nil {
+				return err
+			}
 			if err := ensureExistingSessionOwnership(cc.opts, cc.kube, cc.namespace, cc.sessionName); err != nil {
 				return err
 			}
 			if len(cc.cfg.Spec.Sync.Paths) == 0 {
 				return fmt.Errorf("session %s has no sync mappings", cc.sessionName)
 			}
-			pairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
+			pairs, err := sessionSyncPairs(cc)
 			if err != nil {
 				return err
 			}

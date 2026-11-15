@@ -1513,7 +1513,7 @@ func TestRunSyncthingSyncStopsOwnedLocalDaemonWhenTwoPhaseBootstrapFails(t *test
 	err := runSyncthingSync(cmd, &Options{}, cfg, "default", "sess-cleanup", "two-phase", []syncengine.Pair{{
 		Local:  localDir,
 		Remote: "/workspace",
-	}}, nil)
+	}}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "two-phase initial sync") {
 		t.Fatalf("expected two-phase initial sync error, got %v", err)
 	}
@@ -1628,7 +1628,7 @@ func TestRunSyncthingSyncMarksReadyBeforeTwoPhaseBootstrap(t *testing.T) {
 	if err := runSyncthingSync(cmd, &Options{}, cfg, "default", "sess-ready", "two-phase", []syncengine.Pair{{
 		Local:  localDir,
 		Remote: "/workspace",
-	}}, nil); err != nil {
+	}}, nil, nil); err != nil {
 		t.Fatalf("runSyncthingSync: %v", err)
 	}
 
@@ -1737,7 +1737,7 @@ func TestRunSyncthingSyncMarksBootstrapCompleteBeforeHealthLoop(t *testing.T) {
 	if err := runSyncthingSync(cmd, &Options{}, cfg, "default", "sess-handoff", "two-phase", []syncengine.Pair{{
 		Local:  localDir,
 		Remote: "/workspace",
-	}}, nil); err != nil {
+	}}, nil, nil); err != nil {
 		t.Fatalf("runSyncthingSync: %v", err)
 	}
 }

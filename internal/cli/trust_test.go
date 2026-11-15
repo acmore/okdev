@@ -83,6 +83,20 @@ func TestLocalCapabilitiesOnlyListsReachBeyondTheProject(t *testing.T) {
 	}
 }
 
+func TestLocalCapabilitiesAnchorRelativeSyncToConfigProject(t *testing.T) {
+	project := t.TempDir()
+	cfg, cfgPath := trustTestConfig(t, project)
+	cfg.Spec.Sync.Paths = []config.SyncPathSpec{{Local: ".", Remote: "/workspace"}, {Local: "../sibling", Remote: "/sibling"}}
+	t.Chdir(t.TempDir())
+	caps, err := localCapabilities(cfg, cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(caps) != 1 || !strings.Contains(caps[0].text, filepath.Join(filepath.Dir(project), "sibling")) {
+		t.Fatalf("relative sync roots should resolve from %s: %v", project, caps)
+	}
+}
+
 func TestRequireConfigTrustGatesUntilApproved(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	project := t.TempDir()

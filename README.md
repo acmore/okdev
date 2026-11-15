@@ -67,6 +67,8 @@ okdev down                # tear it down
 
 Sync is self-healing (it repairs broken peer connections on its own), pausable (`okdev sync pause` before a `git checkout`, so a branch switch cannot propagate onto a running job), and honest about failure — a dead channel is reported as dead rather than as "no pending changes".
 
+Agents using linked Git worktrees can attach each tree to one existing single-pod session with `okdev --session <name> worktree attach`. Each tree syncs to its own remote directory, and `okdev exec --require-sync` from that tree runs there. See the [worktree workflow](docs/command-reference.md#okdev-worktree-attachlistdetach).
+
 ### A real shell, not a notebook
 
 `okdev ssh` drops you into the dev container, optionally inside a tmux-backed persistent session so a closed laptop lid does not kill a training run. Port forwards come up with the session. Your editor's remote-SSH mode works, because it is just SSH.

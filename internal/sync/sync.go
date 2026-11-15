@@ -11,6 +11,11 @@ import (
 type Pair struct {
 	Local  string
 	Remote string
+	// ConfigLocal is Local exactly as the config wrote it. Callers resolve
+	// Local to an absolute path; identities derived from a mapping (its sync
+	// folder ID) use this spelling so they do not change with the directory
+	// the project lives in. Empty for pairs that do not come from the config.
+	ConfigLocal string
 	// Direction is the resolved sync direction for this mapping's folder
 	// (bi/up/down, never empty; see config.SyncPathSpec).
 	Direction string
@@ -18,7 +23,7 @@ type Pair struct {
 
 func ParsePairs(configured []config.SyncPathSpec, defaultRemote string) ([]Pair, error) {
 	if len(configured) == 0 {
-		return []Pair{{Local: ".", Remote: defaultRemote, Direction: config.SyncDirectionBi}}, nil
+		return []Pair{{Local: ".", ConfigLocal: ".", Remote: defaultRemote, Direction: config.SyncDirectionBi}}, nil
 	}
 	out := make([]Pair, 0, len(configured))
 	for _, item := range configured {
@@ -27,7 +32,7 @@ func ParsePairs(configured []config.SyncPathSpec, defaultRemote string) ([]Pair,
 		if local == "" || remote == "" {
 			return nil, fmt.Errorf("invalid sync path mapping %q, expected local:remote", item.Local+":"+item.Remote)
 		}
-		out = append(out, Pair{Local: local, Remote: remote, Direction: item.EffectiveDirection()})
+		out = append(out, Pair{Local: local, ConfigLocal: local, Remote: remote, Direction: item.EffectiveDirection()})
 	}
 	return out, nil
 }

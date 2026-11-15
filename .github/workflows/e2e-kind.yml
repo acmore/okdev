@@ -56,6 +56,9 @@ jobs:
       - name: Run multi-session test
         run: bash scripts/e2e_kind_multi_session.sh
 
+      - name: Run shared-session worktree test
+        run: bash scripts/e2e_kind_worktree.sh
+
       - name: Run init add-workload test
         run: bash scripts/e2e_kind_init_add_workload.sh
 

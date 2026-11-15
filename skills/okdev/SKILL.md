@@ -12,6 +12,7 @@ Use this skill before driving the `okdev` CLI and for end-user questions about i
 When driving okdev from a script or agent:
 
 - New built-in configs sync local source to the pod (`direction: up`). Existing mappings without a direction remain bidirectional; pin `spec.kubeContext` or pass `--context` when changing kubeconfig contexts.
+- In a linked Git worktree, use `okdev --session <existing> worktree attach` once, then `okdev sync wait` and `okdev exec --require-sync -- ...` from that tree. It reuses one single-pod session and runs in the tree's separate remote directory. When a tree is finished, `okdev worktree detach --delete-remote` also frees its copy in the Pod (plain `detach` keeps it). Use `cp` for one-off data/results, not repeated source uploads. Do not use `ssh` or pod selectors from an attached worktree; see `docs/command-reference.md`.
 - Use `exec --require-sync -- ...` before running code that depends on the latest local edits.
 - Use `exec --pkill` instead of raw `pkill -f`.
 - Use `exec -i` for piped stdin or `--script` for multi-line commands.

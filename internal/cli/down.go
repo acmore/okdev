@@ -83,6 +83,9 @@ func newDownCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := rejectSharedSessionLifecycle(cc.sessionName, "down"); err != nil {
+				return err
+			}
 			ui.stepDone("config", cc.cfgPath)
 			ui.stepDone("session", cc.sessionName)
 			ui.stepDone("namespace", cc.namespace)
@@ -167,6 +170,7 @@ func newDownCmd(opts *Options) *cobra.Command {
 				if err := downCleanupLocal(ui, &payload, cc.sessionName); err != nil {
 					return err
 				}
+				downReleaseWorktrees(ui, &payload, cc.sessionName)
 				if cc.opts.Output == "json" {
 					return outputJSON(cmd.OutOrStdout(), payload)
 				}
@@ -251,6 +255,7 @@ func newDownCmd(opts *Options) *cobra.Command {
 			if err := downCleanupLocal(ui, &payload, cc.sessionName); err != nil {
 				return err
 			}
+			downReleaseWorktrees(ui, &payload, cc.sessionName)
 			if cc.opts.Output == "json" {
 				if err := outputJSON(cmd.OutOrStdout(), payload); err != nil {
 					return err
@@ -425,6 +430,41 @@ func removeSSHConfigEntry(hostAlias string) error {
 		}
 		return updated + "\n"
 	})
+}
+
+// downReleaseWorktrees detaches every worktree when the session is torn down
+// for good. Left behind, the attachments would silently sync again under the
+// next session of the same name, and each attached checkout would keep
+// auto-selecting a session that no longer exists. `restart` shares
+// downCleanupLocal but keeps its attachments, so this is a separate step.
+func downReleaseWorktrees(ui *upUI, payload *downOutput, sessionName string) {
+	if ui == nil || payload == nil {
+		return
+	}
+	if payload.Cleanup == nil {
+		payload.Cleanup = map[string]any{}
+	}
+	bindings, bindingsErr := session.LoadWorktreeBindings(sessionName)
+	if bindingsErr != nil {
+		ui.warnf("failed to read worktree attachments: %v", bindingsErr)
+	}
+	worktreeErr := bindingsErr
+	for _, binding := range bindings {
+		if err := session.ClearActiveSessionFor(binding.LocalRoot, sessionName); err != nil {
+			ui.warnf("failed to clear active session for worktree %s: %v", binding.LocalRoot, err)
+			worktreeErr = err
+		}
+	}
+	if err := session.ClearWorktreeBindings(sessionName); err != nil {
+		ui.warnf("failed to clear worktree attachments: %v", err)
+		worktreeErr = err
+	}
+	if worktreeErr != nil {
+		payload.Cleanup["worktrees"] = "warning"
+	} else if len(bindings) > 0 {
+		ui.stepDone("worktrees", fmt.Sprintf("%d detached", len(bindings)))
+		payload.Cleanup["worktrees"] = "detached"
+	}
 }
 
 func downCleanupLocal(ui *upUI, payload *downOutput, sessionName string) error {

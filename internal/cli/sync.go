@@ -71,6 +71,9 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if _, err := sessionWorktreeBinding(cc.sessionName); err != nil {
+				return err
+			}
 			// Also the gate for the detached sync child, which re-enters
 			// here without a terminal: its parent already asked.
 			if err := requireConfigTrust(cmd, cc.cfg, cc.cfgPath, capSyncOutsideProject); err != nil {
@@ -98,12 +101,18 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if (resetLocal || resetMesh) && !reset {
 				return fmt.Errorf("--local and --mesh can only be used with --reset")
 			}
-			pairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
+			pairs, worktrees, err := sessionSyncPairsAndWorktrees(cc)
 			if err != nil {
 				return err
 			}
+			// Without this, a worktree that stopped qualifying would just
+			// lose its folder in the stale-folder cleanup below.
+			warnStaleWorktrees(cmd.ErrOrStderr(), worktrees)
 			mode = resolveSyncMode(cmd.Flags().Changed("mode"), mode)
 			if err := validateSyncMode(mode); err != nil {
+				return err
+			}
+			if _, err := resolveSyncFolders(cc.sessionName, mode, pairs); err != nil {
 				return err
 			}
 			if dryRun {
@@ -112,7 +121,12 @@ func newSyncCmd(opts *Options) *cobra.Command {
 					displayMode = "per-path"
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "DRY RUN: sync session=%s namespace=%s engine=%s mode=%s\n", cc.sessionName, cc.namespace, engine, displayMode)
-				fmt.Fprintf(cmd.OutOrStdout(), "- paths: %v\n", pairs)
+				type shownPair struct{ Local, Remote, Direction string }
+				shown := make([]shownPair, 0, len(pairs))
+				for _, pair := range pairs {
+					shown = append(shown, shownPair{pair.Local, pair.Remote, pair.Direction})
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "- paths: %v\n", shown)
 				if reset {
 					scope := "all"
 					if resetLocal && !resetMesh {
@@ -205,7 +219,22 @@ func newSyncCmd(opts *Options) *cobra.Command {
 				fmt.Fprintf(cmd.OutOrStdout(), "Logs: %s\n", logPath)
 				return nil
 			}
-			return runSyncthingSync(cmd, cc.opts, cc.cfg, cc.namespace, cc.sessionName, mode, pairs, cc.kube)
+			// From here until every folder is configured, this run decides
+			// which worktree folders exist, so it holds the lock that attach
+			// and detach take — and re-reads the attachments under it, since
+			// one may have landed while this command was getting ready.
+			release, err := session.AcquireWorktreeLock(cmd.Context(), cc.sessionName, func() {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Waiting for a worktree attach or detach on session %s to finish\n", cc.sessionName)
+			})
+			if err != nil {
+				return err
+			}
+			defer release()
+			pairs, _, err = sessionSyncPairsAndWorktrees(cc)
+			if err != nil {
+				return err
+			}
+			return runSyncthingSync(cmd, cc.opts, cc.cfg, cc.namespace, cc.sessionName, mode, pairs, cc.kube, release)
 		},
 	}
 
@@ -506,6 +535,9 @@ func startDetachedSyncthingSync(opts *Options, mode, sessionName, namespace, cfg
 	}
 
 	cmd := execCommand(exe, args...)
+	if info, err := session.LoadInfo(sessionName); err == nil && info.RepoRoot != "" {
+		cmd.Dir = info.RepoRoot
+	}
 	cmd.Env = append(os.Environ(), "OKDEV_SYNCTHING_BACKGROUND_CHILD=1")
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile

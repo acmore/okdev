@@ -73,6 +73,11 @@ func newSSHCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if binding, err := sessionWorktreeBinding(cc.sessionName); err != nil {
+				return err
+			} else if binding != nil {
+				return fmt.Errorf("interactive SSH does not yet select an attached worktree directory; use `okdev exec` from %s", binding.LocalRoot)
+			}
 			// Agent forwarding is the config's request only when no flag
 			// decided it: --forward-agent is the user's own choice, and
 			// --no-forward-agent turns it off.

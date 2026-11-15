@@ -80,6 +80,7 @@ var (
 	configureSyncthingPeerFn            = configureSyncthingPeer
 	pruneManagedSessionFoldersFn        = pruneManagedSessionFolders
 	verifyRemoteRootSharedFn            = verifyRemoteRootShared
+	prepareWorktreeRemoteRootFn         = prepareWorktreeRemoteRoot
 	saveSyncthingConfigHashFn           = saveSyncthingConfigHash
 	stopOwnedLocalSyncthingFn           = stopOwnedLocalSyncthing
 	runSyncHealthLoopFn                 = runSyncHealthLoop
@@ -96,6 +97,28 @@ type syncFolder struct {
 	remote   string
 	mode     string // bi | up | down
 	twoPhase bool   // run the two-phase bootstrap for this folder
+	worktree bool   // attached Git worktree, not a mapping from the config
+}
+
+// configSyncPairs parses the config's sync mappings and anchors relative
+// local roots at the config's project directory. The trust check and the sync
+// engine both resolve through here, so an approval always covers exactly the
+// directory that is synced, whatever directory the command runs from.
+func configSyncPairs(cfg *config.DevEnvironment, cfgPath string) ([]syncengine.Pair, error) {
+	pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.EffectiveWorkspaceMountPath(cfgPath))
+	if err != nil {
+		return nil, err
+	}
+	root := config.RootDir(cfgPath)
+	if root == "" {
+		return pairs, nil
+	}
+	for i := range pairs {
+		if !filepath.IsAbs(pairs[i].Local) {
+			pairs[i].Local = filepath.Join(root, pairs[i].Local)
+		}
+	}
+	return pairs, nil
 }
 
 // resolveSyncFolders maps pairs to folders. mode semantics: "" follows each
@@ -116,6 +139,9 @@ func resolveSyncFolders(sessionName, mode string, pairs []syncengine.Pair) ([]sy
 			folderMode = config.SyncDirectionBi
 		}
 		if mode != "" && mode != "two-phase" {
+			if session.IsWorktreeRemoteRoot(pair.Remote) && mode != config.SyncDirectionUp {
+				return nil, fmt.Errorf("attached worktree %s must keep direction up; remove --mode=%s", pair.Local, mode)
+			}
 			folderMode = mode
 		}
 		folders = append(folders, syncFolder{
@@ -124,6 +150,7 @@ func resolveSyncFolders(sessionName, mode string, pairs []syncengine.Pair) ([]sy
 			remote:   pair.Remote,
 			mode:     folderMode,
 			twoPhase: mode == "two-phase" && folderMode == "bi",
+			worktree: session.IsWorktreeRemoteRoot(pair.Remote),
 		})
 	}
 	return folders, nil
@@ -138,11 +165,22 @@ func sessionSyncFolderID(sessionName string, index int, pair syncengine.Pair) st
 	if index == 0 {
 		return "okdev-" + sessionName
 	}
-	sum := sha256.Sum256([]byte(pair.Local + "\x00" + pair.Remote))
+	// Hash the mapping as the config spells it, not its resolved path: the
+	// ID must stay what earlier releases derived, or an upgrade would drop
+	// and rebuild every folder declared with a relative local root.
+	local := pair.ConfigLocal
+	if local == "" {
+		local = pair.Local
+	}
+	sum := sha256.Sum256([]byte(local + "\x00" + pair.Remote))
 	return fmt.Sprintf("okdev-%s-%s", sessionName, hex.EncodeToString(sum[:4]))
 }
 
-func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironment, namespace, sessionName, mode string, pairs []syncengine.Pair, k *kube.Client) (runErr error) {
+// runSyncthingSync runs the session's sync until it is stopped. onBootstrapped
+// (optional) is called once every folder is configured and stale ones are
+// pruned — the point after which the folder set is only changed by explicit
+// worktree attach/detach.
+func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironment, namespace, sessionName, mode string, pairs []syncengine.Pair, k *kube.Client, onBootstrapped func()) (runErr error) {
 	stopReason := ""
 	if os.Getenv("OKDEV_SYNCTHING_BACKGROUND_CHILD") == "1" {
 		defer func() { recordSyncExit(sessionName, stopReason, runErr) }()
@@ -190,7 +228,14 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		if err := writeLocalSTIgnore(folder.absLocal); err != nil {
 			return err
 		}
-		if _, err := execInSyncthingContainerFn(bootstrapCtx, k, namespace, pod, fmt.Sprintf("mkdir -p %s", syncengine.ShellEscape(folder.remote))); err != nil {
+		if folder.worktree {
+			// Worktree roots live on the Pod's runtime volume, which is
+			// recreated empty with the Pod, so every sync start must be able
+			// to rebuild them — not only `worktree attach`.
+			if err := prepareWorktreeRemoteRootFn(bootstrapCtx, k, namespace, pod, target.Container, folder.remote); err != nil {
+				return err
+			}
+		} else if _, err := execInSyncthingContainerFn(bootstrapCtx, k, namespace, pod, fmt.Sprintf("mkdir -p %s", syncengine.ShellEscape(folder.remote))); err != nil {
 			return err
 		}
 		// The sidecar's syncthing can only serve paths it can see: an
@@ -211,7 +256,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 	// managed block, or the child subtree leaks through the primary channel
 	// once. okdev owns the daemon lifecycle, so file-before-daemon ordering
 	// is a hard guarantee here.
-	newlyRetained, err := mergeManagedSTIgnoreBlock(primary.absLocal, cfg.NestedLocalSyncIgnorePatterns())
+	newlyRetained, err := mergeManagedSTIgnoreBlock(primary.absLocal, nestedSyncIgnorePatterns(pairs))
 	if err != nil {
 		return fmt.Errorf("update primary folder ignore rules: %w", err)
 	}
@@ -256,13 +301,7 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		return err
 	}
 
-	syncCfg := syncthingSyncConfig{
-		rescanInterval: cfg.Spec.Sync.Syncthing.RescanIntervalSeconds,
-		watcherDelay:   cfg.Spec.Sync.Syncthing.WatcherDelaySeconds,
-		relays:         cfg.Spec.Sync.Syncthing.RelaysEnabled,
-		compression:    cfg.Spec.Sync.Syncthing.Compression,
-		versioningDays: cfg.Spec.Sync.Syncthing.EffectiveVersioningDays(),
-	}
+	syncCfg := syncthingSyncConfigFor(cfg)
 
 	// Signal detached-parent readiness once the local daemon is up and the
 	// session has enough information for `okdev up` to start its own initial
@@ -294,17 +333,6 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 			return err
 		}
 	}
-	if mode == "two-phase" {
-		// The marker signals that the bootstrap phase concluded — `okdev up`
-		// waits on this handoff whenever it requested a bootstrap. It must
-		// be written even when no folder actually ran the two-phase
-		// protocol (all mappings directional), or the caller hangs until
-		// its handoff timeout.
-		if err := markSyncthingBootstrapCompleteFn(sessionName); err != nil {
-			return fmt.Errorf("mark syncthing bootstrap complete: %w", err)
-		}
-	}
-
 	// Mappings removed from the config leave their syncthing folders behind
 	// on both sides, silently continuing to sync; drop managed folders that
 	// no longer correspond to a configured pair.
@@ -326,6 +354,14 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 
 	if err := saveSyncthingConfigHashFn(sessionName, syncthingSessionConfigHash(cfg, pairs)); err != nil {
 		return fmt.Errorf("persist syncthing config state: %w", err)
+	}
+	// A detached parent can use this marker to wait until every folder is
+	// configured, including worktrees added to an already running session.
+	if err := markSyncthingBootstrapCompleteFn(sessionName); err != nil {
+		return fmt.Errorf("mark syncthing bootstrap complete: %w", err)
+	}
+	if onBootstrapped != nil {
+		onBootstrapped()
 	}
 
 	activeLabel := "per-path"
@@ -2169,6 +2205,16 @@ type syncthingSyncConfig struct {
 	versioningDays int
 }
 
+func syncthingSyncConfigFor(cfg *config.DevEnvironment) syncthingSyncConfig {
+	return syncthingSyncConfig{
+		rescanInterval: cfg.Spec.Sync.Syncthing.RescanIntervalSeconds,
+		watcherDelay:   cfg.Spec.Sync.Syncthing.WatcherDelaySeconds,
+		relays:         cfg.Spec.Sync.Syncthing.RelaysEnabled,
+		compression:    cfg.Spec.Sync.Syncthing.Compression,
+		versioningDays: cfg.Spec.Sync.Syncthing.EffectiveVersioningDays(),
+	}
+}
+
 // runTwoPhaseInitialSync implements the Okteto-style two-phase sync protocol:
 //
 //  1. Configure local as sendonly with ignoreDelete=true, remote as receiveonly.
@@ -2438,6 +2484,20 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 	}
 	cfg["devices"] = filteredDevices
 
+	if err := upsertManagedSyncthingFolder(cfg, selfID, peerID, folderID, folderPath, folderType, rescanIntervalSeconds, watcherDelaySeconds, ignoreDelete, versioningDays); err != nil {
+		return err
+	}
+
+	if err := syncthingSetConfig(ctx, base, key, cfg); err != nil {
+		return err
+	}
+	return nil
+}
+
+// upsertManagedSyncthingFolder adds or updates one okdev-managed folder,
+// shared between selfID and peerID, in a decoded Syncthing config. Devices
+// are left untouched.
+func upsertManagedSyncthingFolder(cfg map[string]any, selfID, peerID, folderID, folderPath, folderType string, rescanIntervalSeconds, watcherDelaySeconds int, ignoreDelete bool, versioningDays int) error {
 	folders, err := syncthingObjectArray(cfg, "folders")
 	if err != nil {
 		return err
@@ -2456,7 +2516,7 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 			fm["path"] = folderPath
 			fm["type"] = folderType
 			fm["markerName"] = "."
-			mergedDevices, err := syncthingMergeFolderDevices(fm["devices"], filteredDevices, selfID, peerID)
+			mergedDevices, err := syncthingMergeFolderDevices(fm["devices"], cfg["devices"], selfID, peerID)
 			if err != nil {
 				return err
 			}
@@ -2485,10 +2545,70 @@ func configureSyncthingPeer(ctx context.Context, base, key, selfID, peerID, peer
 	}
 	cfg["folders"] = filteredFolders
 
-	if err := syncthingSetConfig(ctx, base, key, cfg); err != nil {
+	return nil
+}
+
+// ensureSyncthingFolder adds or updates one managed folder on a running
+// Syncthing instance that already knows the peer, and leaves everything else
+// in its config alone. It writes nothing when the folder is already as wanted.
+func ensureSyncthingFolder(ctx context.Context, base, key, selfID, peerID string, folderID, folderPath, folderType string, syncCfg syncthingSyncConfig) error {
+	cfg, err := syncthingGetConfig(ctx, base, key)
+	if err != nil {
 		return err
 	}
-	return nil
+	devices, err := syncthingObjectArray(cfg, "devices")
+	if err != nil {
+		return err
+	}
+	peerKnown := false
+	for _, d := range devices {
+		if m, ok := d.(map[string]any); ok && asString(m["deviceID"]) == peerID {
+			peerKnown = true
+		}
+	}
+	if !peerKnown {
+		return fmt.Errorf("the sync peer is not configured on this Syncthing instance; run `okdev sync` to re-establish sync")
+	}
+	before, err := json.Marshal(cfg["folders"])
+	if err != nil {
+		return err
+	}
+	if err := upsertManagedSyncthingFolder(cfg, selfID, peerID, folderID, folderPath, folderType, syncCfg.rescanInterval, syncCfg.watcherDelay, false, syncCfg.versioningDays); err != nil {
+		return err
+	}
+	after, err := json.Marshal(cfg["folders"])
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(before, after) {
+		return nil
+	}
+	return syncthingSetConfig(ctx, base, key, cfg)
+}
+
+// removeSyncthingFolder drops one folder from a running Syncthing instance.
+// Files on disk are not touched.
+func removeSyncthingFolder(ctx context.Context, base, key, folderID string) error {
+	cfg, err := syncthingGetConfig(ctx, base, key)
+	if err != nil {
+		return err
+	}
+	folders, err := syncthingObjectArray(cfg, "folders")
+	if err != nil {
+		return err
+	}
+	kept := make([]any, 0, len(folders))
+	for _, f := range folders {
+		if m, ok := f.(map[string]any); ok && asString(m["id"]) == folderID {
+			continue
+		}
+		kept = append(kept, f)
+	}
+	if len(kept) == len(folders) {
+		return nil
+	}
+	cfg["folders"] = kept
+	return syncthingSetConfig(ctx, base, key, cfg)
 }
 
 // pruneManagedSessionFolders removes this session's managed folders that are
@@ -2517,6 +2637,54 @@ func verifyRemoteRootShared(ctx context.Context, k *kube.Client, namespace, pod,
 	}
 	if !strings.Contains(string(out), "shared") {
 		return fmt.Errorf("sync mapping remote root %s is not on a volume shared with the okdev sidecar; mount it via spec.volumes + podTemplate volumeMounts and re-run `okdev up --reconcile` so the sidecar picks it up", folder.remote)
+	}
+	return nil
+}
+
+// worktreeRemoteRootScript creates an attached worktree's remote root from the
+// sidecar and hands it to the dev container's user (uid:gid), which is usually
+// not the sidecar's. Only when ownership cannot be handed over — the user is
+// unknown, or the sidecar may not chown — does it fall back to a
+// world-writable root, the one way left to keep the tree usable.
+func worktreeRemoteRootScript(remote string, uid, gid int, ownerKnown bool) string {
+	esc := syncengine.ShellEscape(remote)
+	if !ownerKnown {
+		return fmt.Sprintf("mkdir -p %s && chmod 0777 %s", esc, esc)
+	}
+	return fmt.Sprintf("mkdir -p %s && { chown %d:%d %s && chmod 0755 %s || chmod 0777 %s; }", esc, uid, gid, esc, esc, esc)
+}
+
+// parseContainerOwner reads the output of `id -u && id -g`.
+func parseContainerOwner(out string) (uid, gid int, ok bool) {
+	fields := strings.Fields(out)
+	if len(fields) != 2 {
+		return 0, 0, false
+	}
+	uid, uidErr := strconv.Atoi(fields[0])
+	gid, gidErr := strconv.Atoi(fields[1])
+	if uidErr != nil || gidErr != nil || uid < 0 || gid < 0 {
+		return 0, 0, false
+	}
+	return uid, gid, true
+}
+
+// prepareWorktreeRemoteRoot creates an attached worktree's remote root, owned
+// by the target container's user, and verifies that container can write to
+// it. It is idempotent: attach and every sync start call it.
+func prepareWorktreeRemoteRoot(ctx context.Context, k *kube.Client, namespace, pod, targetContainer, remote string) error {
+	if k == nil {
+		return nil
+	}
+	uid, gid, ownerKnown := 0, 0, false
+	if out, err := k.ExecShInContainer(ctx, namespace, pod, targetContainer, "id -u && id -g"); err == nil {
+		uid, gid, ownerKnown = parseContainerOwner(string(out))
+	}
+	if _, err := execInSyncthingContainer(ctx, k, namespace, pod, worktreeRemoteRootScript(remote, uid, gid, ownerKnown)); err != nil {
+		return fmt.Errorf("prepare remote worktree root %s: %w", remote, err)
+	}
+	probe := syncengine.ShellEscape(remote + "/.okdev-write-probe")
+	if _, err := k.ExecShInContainer(ctx, namespace, pod, targetContainer, fmt.Sprintf("touch %s && rm -f %s", probe, probe)); err != nil {
+		return fmt.Errorf("remote worktree root %s is not writable in container %s: %w", remote, targetContainer, err)
 	}
 	return nil
 }

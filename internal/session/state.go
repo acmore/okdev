@@ -217,6 +217,32 @@ func ClearActiveSession() error {
 	return nil
 }
 
+// ClearActiveSessionFor clears the active session recorded for the checkout
+// at repoRoot, but only while it still names the given session. It lets a
+// teardown run from one checkout release the others that selected the same
+// session, without touching a checkout that has moved on.
+func ClearActiveSessionFor(repoRoot, name string) error {
+	root, err := stateRootDir()
+	if err != nil {
+		return err
+	}
+	p := filepath.Join(root, workspacesDirName, repoStateKey(repoRoot), sessionFileName)
+	b, err := os.ReadFile(p)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read active session: %w", err)
+	}
+	if strings.TrimSpace(string(b)) != name {
+		return nil
+	}
+	if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("clear active session: %w", err)
+	}
+	return nil
+}
+
 func TargetStatePath(name string) (string, error) {
 	dir, err := SessionDir(name)
 	if err != nil {

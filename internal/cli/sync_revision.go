@@ -130,7 +130,11 @@ func waitSyncthingRevisions(ctx context.Context, localBase, localKey, remoteBase
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			fmt.Fprintln(out, "Sync converged for current indexed revisions on the local and target devices; ignored paths are excluded. All discovered intended mesh receivers were verified.")
+			message := "Sync converged for current indexed revisions on the local and target devices; ignored paths are excluded."
+			if len(receiverChecks) > 0 {
+				message += " All discovered intended mesh receivers were verified."
+			}
+			fmt.Fprintln(out, message)
 			return nil
 		}
 		reason := strings.Join(reasons, "; ")

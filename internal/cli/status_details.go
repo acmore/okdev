@@ -542,7 +542,7 @@ func buildDetailedSync(sessionName string, cfg *config.DevEnvironment, cfgPath s
 	}
 	direction := ""
 	var managedExcludes, retainedExcludes []string
-	if pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.EffectiveWorkspaceMountPath(cfgPath)); err == nil && len(pairs) > 0 {
+	if pairs, err := configSyncPairs(cfg, cfgPath); err == nil && len(pairs) > 0 {
 		direction = pairs[0].Direction
 		if absPrimary, absErr := filepath.Abs(pairs[0].Local); absErr == nil {
 			managedExcludes, retainedExcludes = readManagedSTIgnoreBlock(absPrimary)
@@ -584,7 +584,7 @@ func buildDetailedSync(sessionName string, cfg *config.DevEnvironment, cfgPath s
 	if logPath, err := syncthingBackgroundLogPath(sessionName); err == nil {
 		detail.LogPath = logPath
 	}
-	if pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.EffectiveWorkspaceMountPath(cfgPath)); err == nil {
+	if pairs, err := configSyncPairs(cfg, cfgPath); err == nil {
 		if count, paths := localSyncConflictStatus(pairs); count > 0 {
 			detail.ConflictCount = count
 			detail.ConflictPaths = paths

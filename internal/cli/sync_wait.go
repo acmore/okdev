@@ -44,7 +44,7 @@ are outside this check. Primary-mapping mesh receivers are verified too. It does
 			if err := syncWaitGateError(cc.sessionName, status, reason); err != nil {
 				return err
 			}
-			pairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
+			pairs, err := sessionSyncPairs(cc)
 			if err != nil {
 				return err
 			}
@@ -124,7 +124,7 @@ func execSyncPreflight(cmd *cobra.Command, cc *commandContext, requireSync bool,
 	if err := syncWaitGateError(cc.sessionName, status, reason); err != nil {
 		return fmt.Errorf("--require-sync: %w", err)
 	}
-	pairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
+	pairs, err := sessionSyncPairs(cc)
 	if err != nil {
 		return err
 	}
@@ -200,6 +200,10 @@ func syncWaitGateError(sessionName string, status syncHealthStatus, reason strin
 // instances until local and remote pending bytes reach zero, or the timeout
 // expires.
 func runSyncWaitConvergence(ctx context.Context, cc *commandContext, pod string, pairs []syncengine.Pair, timeout time.Duration, out io.Writer, minimumReceivers ...int) error {
+	binding, err := sessionWorktreeBinding(cc.sessionName)
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	folders, err := resolveSyncFolders(cc.sessionName, "", pairs)
@@ -210,41 +214,37 @@ func runSyncWaitConvergence(ctx context.Context, cc *commandContext, pod string,
 	if len(folders) == 0 {
 		return fmt.Errorf("no sync mappings to verify")
 	}
-	meshCheck, err := newMeshConvergenceCheck(ctx, cc, pod, folders[0].id, minimumReceivers...)
+	var checks []func(context.Context) error
+	if binding != nil {
+		var selected []syncFolder
+		for _, folder := range folders {
+			if folder.remote == binding.RemoteRoot {
+				selected = append(selected, folder)
+			}
+		}
+		if len(selected) != 1 {
+			if states, stateErr := sessionWorktreeStates(cc.sessionName); stateErr == nil {
+				for _, state := range states {
+					if state.ID == binding.ID && state.Stale != "" {
+						return fmt.Errorf("worktree %s is attached but not syncing: %s; run `okdev worktree detach`, then attach it again", binding.LocalRoot, state.Stale)
+					}
+				}
+			}
+			return fmt.Errorf("sync folder for worktree %s is missing; run `okdev sync`", binding.LocalRoot)
+		}
+		folders = selected
+	} else {
+		meshCheck, err := newMeshConvergenceCheck(ctx, cc, pod, folders[0].id, minimumReceivers...)
+		if err != nil {
+			return fmt.Errorf("discover intended sync receivers: %w", err)
+		}
+		checks = append(checks, meshCheck)
+	}
+	live, err := openLiveSync(ctx, cc, pod)
 	if err != nil {
-		return fmt.Errorf("discover intended sync receivers: %w", err)
+		return err
 	}
-	localHome, err := localSyncthingStatusHome(cc.sessionName)
-	if err != nil {
-		return fmt.Errorf("resolve local syncthing home: %w", err)
-	}
-	localBase, localKey, err := readLocalSyncthingEndpoint(localHome)
-	if err != nil {
-		return fmt.Errorf("read local syncthing endpoint: %w", err)
-	}
-	remoteKey, err := readRemoteSyncthingAPIKey(ctx, cc.kube, cc.namespace, pod)
-	if err != nil {
-		return fmt.Errorf("read remote syncthing API key: %w", err)
-	}
-	cancelPF, remoteBase, _, err := startSyncthingPortForward(ctx, cc.opts, cc.namespace, pod)
-	if err != nil {
-		return fmt.Errorf("port-forward to syncthing sidecar: %w", err)
-	}
-	defer cancelPF()
-	if err := waitSyncthingAPI(ctx, remoteBase, remoteKey, syncthingAPIReadyTimeout); err != nil {
-		return fmt.Errorf("remote syncthing not ready: %w", err)
-	}
-	if err := waitSyncthingAPI(ctx, localBase, localKey, syncthingAPIReadyTimeout); err != nil {
-		return fmt.Errorf("local syncthing not ready: %w", err)
-	}
-	localID, err := syncthingDeviceID(ctx, localBase, localKey)
-	if err != nil {
-		return fmt.Errorf("read local syncthing device id: %w", err)
-	}
-	remoteID, err := syncthingDeviceID(ctx, remoteBase, remoteKey)
-	if err != nil {
-		return fmt.Errorf("read remote syncthing device id: %w", err)
-	}
+	defer live.close()
 
-	return waitSyncthingRevisions(ctx, localBase, localKey, remoteBase, remoteKey, localID, remoteID, folders, out, meshCheck)
+	return waitSyncthingRevisions(ctx, live.localBase, live.localKey, live.remoteBase, live.remoteKey, live.localID, live.remoteID, folders, out, checks...)
 }
