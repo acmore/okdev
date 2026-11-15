@@ -33,6 +33,12 @@ func WorktreeRemoteRoot(id string) string {
 	return WorktreeRemoteBase + "/" + id
 }
 
+// IsWorktreeRemoteRoot reports whether a remote sync root belongs to an
+// attached worktree rather than to a mapping from the config.
+func IsWorktreeRemoteRoot(path string) bool {
+	return strings.HasPrefix(path, WorktreeRemoteBase+"/")
+}
+
 func worktreeStatePath(name, id string) (string, error) {
 	if len(id) != 16 {
 		return "", fmt.Errorf("invalid worktree id %q", id)
@@ -128,6 +134,17 @@ func RemoveWorktreeBinding(name, id string) error {
 		return nil
 	}
 	return err
+}
+
+// ClearWorktreeBindings drops every attachment of a session. It removes the
+// state directory itself, so a binding file that no longer decodes cannot
+// survive a teardown.
+func ClearWorktreeBindings(name string) error {
+	dir, err := SessionDir(name)
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(filepath.Join(dir, worktreeStateDir))
 }
 
 func WithWorktreeLock(name string, fn func() error) error {

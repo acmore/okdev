@@ -101,10 +101,13 @@ func newSyncCmd(opts *Options) *cobra.Command {
 			if (resetLocal || resetMesh) && !reset {
 				return fmt.Errorf("--local and --mesh can only be used with --reset")
 			}
-			pairs, err := sessionSyncPairs(cc)
+			pairs, worktrees, err := sessionSyncPairsAndWorktrees(cc)
 			if err != nil {
 				return err
 			}
+			// Without this, a worktree that stopped qualifying would just
+			// lose its folder in the stale-folder cleanup below.
+			warnStaleWorktrees(cmd.ErrOrStderr(), worktrees)
 			mode = resolveSyncMode(cmd.Flags().Changed("mode"), mode)
 			if err := validateSyncMode(mode); err != nil {
 				return err

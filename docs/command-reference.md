@@ -491,7 +491,7 @@ agents can react without launching a diagnostic chain on every blip:
 
 ### `okdev worktree attach|list|detach`
 
-Attach multiple linked Git worktrees to one existing single-pod session. Each worktree gets a separate Syncthing folder under `/var/okdev/worktrees/<id>` on the session's shared runtime volume. This keeps one Pod, SSH service, port-forward setup, and GPU allocation. Source sync is local-to-pod (`up`). The attached folder is re-created from local source if the Pod restarts; keep long-lived results outside it or copy them out.
+Attach multiple linked Git worktrees to one existing single-pod session. Each worktree gets a separate Syncthing folder under `/var/okdev/worktrees/<id>` on the session's shared runtime volume. This keeps one Pod, SSH service, port-forward setup, and GPU allocation. Source sync is local-to-pod (`up`). The attached folder is re-created from local source, writable for the dev container's user, whenever sync starts against a new Pod (`restart`, a replaced Pod); keep long-lived results outside it or copy them out.
 
 ```bash
 # Start the existing session from its primary checkout once.
@@ -504,12 +504,12 @@ okdev sync wait
 okdev exec --require-sync -- pwd
 
 okdev worktree list             # also supports --output json
-okdev worktree detach           # leaves remote files in place
+okdev worktree detach           # leaves remote files in place; the tree no longer selects the session
 ```
 
-`attach` needs `--session` and reconfigures the background sync channel without creating another Pod. It writes a managed `.git` exclusion into the worktree's `.stignore`; the primary sync also excludes nested linked worktrees before they are attached. Review managed `.stignore` changes before committing. `exec` from an attached worktree runs in that worktree's remote directory, and `sync wait` / `--require-sync` check its folder. Running from an unbound linked worktree of the same repository fails with an attach hint. `worktree detach --id <id>` works after the local worktree has been removed.
+`attach` needs `--session` and reconfigures the background sync channel without creating another Pod. It writes a managed `.git` exclusion into the worktree's `.stignore`; the primary sync also excludes nested linked worktrees before they are attached. Review managed `.stignore` changes before committing. `exec` from an attached worktree runs in that worktree's remote directory, and `sync wait` / `--require-sync` check its folder. Running from an unbound linked worktree of the same repository fails with an attach hint. `worktree detach --id <id>` works after the local worktree has been removed. An attachment whose local directory is gone, or is no longer a worktree of the session's repository, stays listed but is not synced: `okdev sync` warns about it and `worktree list` marks it `not syncing` (`stale` in JSON) until it is detached. If Git cannot identify the current checkout (for example a `safe.directory` refusal) while the session has attachments, commands stop instead of assuming the primary checkout.
 
-Worktree execution currently targets one Pod. A session with multiple Pods cannot accept an attachment; `exec` with a pod selector and interactive `ssh` from an attached worktree are refused so they cannot run against another worktree's code. `up`, `down`, and `restart` from an attached worktree are refused; manage the shared Pod from its primary checkout. Processes, GPU memory, installed packages, ports, and `sync pause` / `resume` still belong to the shared session. Use separate sessions when those resources need isolation. `okdev cp` remains useful for one-off data and results.
+Worktree execution currently targets one Pod. A session with multiple Pods cannot accept an attachment; `exec` with a pod selector and interactive `ssh` from an attached worktree are refused so they cannot run against another worktree's code. `up`, `down`, and `restart` from an attached worktree are refused; manage the shared Pod from its primary checkout. `okdev down` detaches every worktree and clears the session selection in each of them, so a later session with the same name starts without attachments. Processes, GPU memory, installed packages, ports, and `sync pause` / `resume` still belong to the shared session. Use separate sessions when those resources need isolation. `okdev cp` remains useful for one-off data and results.
 
 ### `okdev sync pause` / `okdev sync resume`
 

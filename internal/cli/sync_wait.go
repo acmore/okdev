@@ -223,6 +223,13 @@ func runSyncWaitConvergence(ctx context.Context, cc *commandContext, pod string,
 			}
 		}
 		if len(selected) != 1 {
+			if states, stateErr := sessionWorktreeStates(cc.sessionName); stateErr == nil {
+				for _, state := range states {
+					if state.ID == binding.ID && state.Stale != "" {
+						return fmt.Errorf("worktree %s is attached but not syncing: %s; run `okdev worktree detach`, then attach it again", binding.LocalRoot, state.Stale)
+					}
+				}
+			}
 			return fmt.Errorf("sync folder for worktree %s is missing; run `okdev sync`", binding.LocalRoot)
 		}
 		folders = selected

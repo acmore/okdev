@@ -94,6 +94,20 @@ fi
 pod_count="$(kubectl get pods -l "okdev.io/session=$SESSION" --no-headers | wc -l | tr -d ' ')"
 test "$pod_count" = 1
 
+echo "Restarting the shared session from the primary checkout"
+(
+  cd "$MAIN"
+  "$OKDEV_BIN" --config "$CFG" --session "$SESSION" restart --yes --wait-timeout 5m
+)
+(
+  # The runtime volume is new with the Pod: the worktree root must come back
+  # with its content and stay writable for the dev container's user.
+  cd "$WT_A"
+  "$OKDEV_BIN" sync wait --timeout 3m
+  test "$("$OKDEV_BIN" exec --require-sync --no-tty --no-prefix -- cat marker.txt)" = A2
+  test "$("$OKDEV_BIN" exec --no-tty --no-prefix -- stat -c %a .)" = 777
+)
+
 (
   cd "$WT_B"
   "$OKDEV_BIN" worktree detach
@@ -106,4 +120,18 @@ test "$pod_count" = 1
   cd "$WT_A"
   test "$("$OKDEV_BIN" exec --require-sync --no-tty --no-prefix -- cat marker.txt)" = A2
 )
+
+echo "Tearing down releases the remaining attachment"
+(
+  cd "$MAIN"
+  "$OKDEV_BIN" --config "$CFG" --session "$SESSION" down --yes
+)
+if [[ -e "$HOME/.okdev/sessions/$SESSION/worktrees" ]]; then
+  echo "worktree attachments survived down" >&2
+  exit 1
+fi
+if grep -rlx --include=active_session "$SESSION" "$HOME/.okdev/workspaces" 2>/dev/null | grep -q .; then
+  echo "a worktree still selects the torn-down session" >&2
+  exit 1
+fi
 echo "Shared-session worktree e2e completed"

@@ -12,7 +12,6 @@ import (
 	agentcatalog "github.com/acmore/okdev/internal/agent"
 	"github.com/acmore/okdev/internal/config"
 	"github.com/acmore/okdev/internal/session"
-	syncengine "github.com/acmore/okdev/internal/sync"
 	"github.com/spf13/cobra"
 )
 
@@ -53,16 +52,14 @@ func localCapabilities(cfg *config.DevEnvironment, cfgPath string) ([]localCapab
 		return nil, err
 	}
 	var caps []localCapability
-	pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.EffectiveWorkspaceMountPath(cfgPath))
+	pairs, err := configSyncPairs(cfg, cfgPath)
 	if err != nil {
 		return nil, err
 	}
 	for _, pair := range pairs {
-		localPath := pair.Local
-		if !filepath.IsAbs(localPath) {
-			localPath = filepath.Join(root, localPath)
-		}
-		local, err := canonicalPath(localPath)
+		// Resolved by the same helper the sync engine uses, so the approval
+		// covers what is actually synced.
+		local, err := canonicalPath(pair.Local)
 		if err != nil {
 			return nil, err
 		}

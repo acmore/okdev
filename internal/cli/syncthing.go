@@ -80,6 +80,7 @@ var (
 	configureSyncthingPeerFn            = configureSyncthingPeer
 	pruneManagedSessionFoldersFn        = pruneManagedSessionFolders
 	verifyRemoteRootSharedFn            = verifyRemoteRootShared
+	verifyRemoteRootWritableFn          = verifyRemoteRootWritable
 	saveSyncthingConfigHashFn           = saveSyncthingConfigHash
 	stopOwnedLocalSyncthingFn           = stopOwnedLocalSyncthing
 	runSyncHealthLoopFn                 = runSyncHealthLoop
@@ -96,6 +97,28 @@ type syncFolder struct {
 	remote   string
 	mode     string // bi | up | down
 	twoPhase bool   // run the two-phase bootstrap for this folder
+	worktree bool   // attached Git worktree, not a mapping from the config
+}
+
+// configSyncPairs parses the config's sync mappings and anchors relative
+// local roots at the config's project directory. The trust check and the sync
+// engine both resolve through here, so an approval always covers exactly the
+// directory that is synced, whatever directory the command runs from.
+func configSyncPairs(cfg *config.DevEnvironment, cfgPath string) ([]syncengine.Pair, error) {
+	pairs, err := syncengine.ParsePairs(cfg.Spec.Sync.Paths, cfg.EffectiveWorkspaceMountPath(cfgPath))
+	if err != nil {
+		return nil, err
+	}
+	root := config.RootDir(cfgPath)
+	if root == "" {
+		return pairs, nil
+	}
+	for i := range pairs {
+		if !filepath.IsAbs(pairs[i].Local) {
+			pairs[i].Local = filepath.Join(root, pairs[i].Local)
+		}
+	}
+	return pairs, nil
 }
 
 // resolveSyncFolders maps pairs to folders. mode semantics: "" follows each
@@ -116,7 +139,7 @@ func resolveSyncFolders(sessionName, mode string, pairs []syncengine.Pair) ([]sy
 			folderMode = config.SyncDirectionBi
 		}
 		if mode != "" && mode != "two-phase" {
-			if strings.HasPrefix(pair.Remote, session.WorktreeRemoteBase+"/") && mode != config.SyncDirectionUp {
+			if session.IsWorktreeRemoteRoot(pair.Remote) && mode != config.SyncDirectionUp {
 				return nil, fmt.Errorf("attached worktree %s must keep direction up; remove --mode=%s", pair.Local, mode)
 			}
 			folderMode = mode
@@ -127,6 +150,7 @@ func resolveSyncFolders(sessionName, mode string, pairs []syncengine.Pair) ([]sy
 			remote:   pair.Remote,
 			mode:     folderMode,
 			twoPhase: mode == "two-phase" && folderMode == "bi",
+			worktree: session.IsWorktreeRemoteRoot(pair.Remote),
 		})
 	}
 	return folders, nil
@@ -193,7 +217,14 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		if err := writeLocalSTIgnore(folder.absLocal); err != nil {
 			return err
 		}
-		if _, err := execInSyncthingContainerFn(bootstrapCtx, k, namespace, pod, fmt.Sprintf("mkdir -p %s", syncengine.ShellEscape(folder.remote))); err != nil {
+		prepare := fmt.Sprintf("mkdir -p %s", syncengine.ShellEscape(folder.remote))
+		if folder.worktree {
+			// Worktree roots live on the Pod's runtime volume, which is
+			// recreated empty with the Pod, so every sync start must be able
+			// to rebuild them — not only `worktree attach`.
+			prepare = worktreeRemoteRootScript(folder.remote)
+		}
+		if _, err := execInSyncthingContainerFn(bootstrapCtx, k, namespace, pod, prepare); err != nil {
 			return err
 		}
 		// The sidecar's syncthing can only serve paths it can see: an
@@ -204,6 +235,11 @@ func runSyncthingSync(cmd *cobra.Command, opts *Options, cfg *config.DevEnvironm
 		// managed by okdev and needs no probe.
 		if i > 0 {
 			if err := verifyRemoteRootSharedFn(bootstrapCtx, k, namespace, pod, target.Container, folder); err != nil {
+				return err
+			}
+		}
+		if folder.worktree {
+			if err := verifyRemoteRootWritableFn(bootstrapCtx, k, namespace, pod, target.Container, folder.remote); err != nil {
 				return err
 			}
 		}
@@ -2514,6 +2550,27 @@ func verifyRemoteRootShared(ctx context.Context, k *kube.Client, namespace, pod,
 	}
 	if !strings.Contains(string(out), "shared") {
 		return fmt.Errorf("sync mapping remote root %s is not on a volume shared with the okdev sidecar; mount it via spec.volumes + podTemplate volumeMounts and re-run `okdev up --reconcile` so the sidecar picks it up", folder.remote)
+	}
+	return nil
+}
+
+// worktreeRemoteRootScript creates an attached worktree's remote root from the
+// sidecar and opens it to the dev container's user, which is usually not the
+// sidecar's.
+func worktreeRemoteRootScript(remote string) string {
+	esc := syncengine.ShellEscape(remote)
+	return fmt.Sprintf("mkdir -p %s && chmod 0777 %s", esc, esc)
+}
+
+// verifyRemoteRootWritable checks that the target container can write under a
+// remote root the sidecar prepared.
+func verifyRemoteRootWritable(ctx context.Context, k *kube.Client, namespace, pod, targetContainer, remote string) error {
+	if k == nil {
+		return nil
+	}
+	probe := syncengine.ShellEscape(remote + "/.okdev-write-probe")
+	if _, err := k.ExecShInContainer(ctx, namespace, pod, targetContainer, fmt.Sprintf("touch %s && rm -f %s", probe, probe)); err != nil {
+		return fmt.Errorf("remote worktree root %s is not writable in container %s: %w", remote, targetContainer, err)
 	}
 	return nil
 }

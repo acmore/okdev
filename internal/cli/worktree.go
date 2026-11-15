@@ -3,7 +3,9 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,13 +19,51 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// errNotGitWorktree means the directory is simply not inside a Git working
+// tree. Every other Git failure leaves the checkout unidentified, and callers
+// must not read that as "not a worktree".
+var errNotGitWorktree = errors.New("not inside a Git working tree")
+
 func gitPath(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-C", dir, "rev-parse"}, args...)...)
+	// The not-a-repository case is recognized by message, so pin the locale.
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			msg := strings.TrimSpace(string(exitErr.Stderr))
+			if strings.Contains(msg, "not a git repository") || strings.Contains(msg, "must be run in a work tree") {
+				return "", errNotGitWorktree
+			}
+			if msg != "" {
+				return "", fmt.Errorf("git rev-parse: %s", msg)
+			}
+		}
+		return "", fmt.Errorf("git rev-parse: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// gitWorktreeRoot returns the symlink-resolved top level of the working tree
+// containing dir.
+func gitWorktreeRoot(dir string) (string, error) {
+	root, err := gitPath(dir, "--show-toplevel")
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(out)), nil
+	return filepath.EvalSymlinks(root)
+}
+
+// gitCommonDir returns the symlink-resolved Git directory shared by every
+// working tree of dir's repository; two checkouts are worktrees of one
+// repository exactly when it matches.
+func gitCommonDir(dir string) (string, error) {
+	common, err := gitPath(dir, "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(common)
 }
 
 func currentGitWorktree() (root, common string, err error) {
@@ -31,26 +71,38 @@ func currentGitWorktree() (root, common string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	root, err = gitPath(wd, "--show-toplevel")
+	root, err = gitWorktreeRoot(wd)
 	if err != nil {
 		return "", "", err
 	}
-	root, err = filepath.EvalSymlinks(root)
-	if err != nil {
-		return "", "", err
-	}
-	common, err = gitPath(root, "--path-format=absolute", "--git-common-dir")
-	if err != nil {
-		return "", "", err
-	}
-	common, err = filepath.EvalSymlinks(common)
+	common, err = gitCommonDir(root)
 	return root, common, err
 }
 
+// sessionWorktreeBinding returns the attachment of the current checkout to
+// the session, or nil when the command runs from the session's primary
+// checkout, outside Git, or in an unrelated repository.
 func sessionWorktreeBinding(sessionName string) (*session.WorktreeBinding, error) {
+	if strings.TrimSpace(sessionName) == "" {
+		return nil, nil
+	}
 	root, common, err := currentGitWorktree()
-	if err != nil {
+	if errors.Is(err, errNotGitWorktree) {
 		return nil, nil // explicit session calls outside Git remain supported
+	}
+	if err != nil {
+		// The checkout could not be identified. With worktrees attached,
+		// guessing "primary" would run this command against another tree's
+		// code and let it through the lifecycle guards, so refuse. A session
+		// without attachments has nothing to confuse it with.
+		bindings, loadErr := session.LoadWorktreeBindings(sessionName)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		if len(bindings) == 0 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("session %s has attached worktrees, but the current Git checkout could not be identified: %w", sessionName, err)
 	}
 	info, err := session.LoadInfo(sessionName)
 	if err != nil {
@@ -66,11 +118,7 @@ func sessionWorktreeBinding(sessionName string) (*session.WorktreeBinding, error
 	if root == ownerRoot {
 		return nil, nil
 	}
-	ownerCommon, err := gitPath(ownerRoot, "--path-format=absolute", "--git-common-dir")
-	if err != nil {
-		return nil, err
-	}
-	ownerCommon, err = filepath.EvalSymlinks(ownerCommon)
+	ownerCommon, err := gitCommonDir(ownerRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -100,62 +148,99 @@ func rejectSharedSessionLifecycle(sessionName, action string) error {
 	return nil
 }
 
-func sessionSyncPairs(cc *commandContext) ([]syncengine.Pair, error) {
-	pairs, err := syncengine.ParsePairs(cc.cfg.Spec.Sync.Paths, cc.cfg.EffectiveWorkspaceMountPath(cc.cfgPath))
-	if err != nil {
+// worktreeState is an attachment plus the reason it cannot be synced right
+// now, if any. A stale attachment stays recorded until it is detached, but
+// contributes no sync folder.
+type worktreeState struct {
+	session.WorktreeBinding
+	Stale string `json:"stale,omitempty"`
+}
+
+func sessionWorktreeStates(sessionName string) ([]worktreeState, error) {
+	bindings, err := session.LoadWorktreeBindings(sessionName)
+	if err != nil || len(bindings) == 0 {
 		return nil, err
 	}
-	info, err := session.LoadInfo(cc.sessionName)
-	if err != nil {
-		return nil, err
-	}
-	base := info.RepoRoot
-	if base == "" {
-		base = config.RootDir(cc.cfgPath)
-	}
-	for i := range pairs {
-		if !filepath.IsAbs(pairs[i].Local) {
-			pairs[i].Local = filepath.Join(base, pairs[i].Local)
-		}
-	}
-	bindings, err := session.LoadWorktreeBindings(cc.sessionName)
+	info, err := session.LoadInfo(sessionName)
 	if err != nil {
 		return nil, err
 	}
 	ownerCommon := ""
-	if len(bindings) > 0 && info.RepoRoot != "" {
-		ownerCommon, err = gitPath(info.RepoRoot, "--path-format=absolute", "--git-common-dir")
+	if info.RepoRoot != "" {
+		ownerCommon, err = gitCommonDir(info.RepoRoot)
 		if err != nil {
 			return nil, fmt.Errorf("resolve session repository for worktree sync: %w", err)
 		}
-		ownerCommon, err = filepath.EvalSymlinks(ownerCommon)
-		if err != nil {
-			return nil, err
-		}
 	}
+	states := make([]worktreeState, 0, len(bindings))
 	for _, binding := range bindings {
-		if st, err := os.Stat(binding.LocalRoot); err != nil || !st.IsDir() {
-			continue // removed worktrees stay listed but cannot recreate their paths
+		state := worktreeState{WorktreeBinding: binding}
+		if ownerCommon == "" {
+			state.Stale = "the session has no saved source root"
+		} else {
+			state.Stale = worktreeStaleReason(binding, ownerCommon)
 		}
-		root, err := gitPath(binding.LocalRoot, "--show-toplevel")
-		if err != nil {
-			continue
-		}
-		root, err = filepath.EvalSymlinks(root)
-		if err != nil || root != binding.LocalRoot {
-			continue
-		}
-		common, err := gitPath(root, "--path-format=absolute", "--git-common-dir")
-		if err != nil {
-			continue
-		}
-		common, err = filepath.EvalSymlinks(common)
-		if err != nil || common != ownerCommon {
-			continue
-		}
-		pairs = append(pairs, syncengine.Pair{Local: binding.LocalRoot, Remote: binding.RemoteRoot, Direction: config.SyncDirectionUp})
+		states = append(states, state)
 	}
-	return pairs, nil
+	return states, nil
+}
+
+// worktreeStaleReason re-checks what `worktree attach` verified: the recorded
+// path must still be the root of a working tree of the session's repository.
+// Syncing anything else would upload a directory the user never attached.
+func worktreeStaleReason(binding session.WorktreeBinding, ownerCommon string) string {
+	if st, err := os.Stat(binding.LocalRoot); err != nil || !st.IsDir() {
+		return "its local directory no longer exists"
+	}
+	root, err := gitWorktreeRoot(binding.LocalRoot)
+	if err != nil {
+		return fmt.Sprintf("it could not be verified as a Git worktree (%v)", err)
+	}
+	if root != binding.LocalRoot {
+		return "it is no longer the root of a Git worktree"
+	}
+	common, err := gitCommonDir(root)
+	if err != nil {
+		return fmt.Sprintf("it could not be verified as a Git worktree (%v)", err)
+	}
+	if common != ownerCommon {
+		return "it no longer belongs to the session's Git repository"
+	}
+	return ""
+}
+
+// sessionSyncPairs returns the config's sync mappings followed by one upload
+// mapping per attached worktree that can be synced.
+func sessionSyncPairs(cc *commandContext) ([]syncengine.Pair, error) {
+	pairs, _, err := sessionSyncPairsAndWorktrees(cc)
+	return pairs, err
+}
+
+func sessionSyncPairsAndWorktrees(cc *commandContext) ([]syncengine.Pair, []worktreeState, error) {
+	pairs, err := configSyncPairs(cc.cfg, cc.cfgPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	states, err := sessionWorktreeStates(cc.sessionName)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, state := range states {
+		if state.Stale != "" {
+			continue
+		}
+		pairs = append(pairs, syncengine.Pair{Local: state.LocalRoot, Remote: state.RemoteRoot, Direction: config.SyncDirectionUp})
+	}
+	return pairs, states, nil
+}
+
+// warnStaleWorktrees reports attachments that are recorded but not syncing.
+func warnStaleWorktrees(w io.Writer, states []worktreeState) {
+	for _, state := range states {
+		if state.Stale != "" {
+			fmt.Fprintf(w, "warning: attached worktree %s is not syncing: %s. Run `okdev worktree detach --id %s` to remove it.\n", state.LocalRoot, state.Stale, state.ID)
+		}
+	}
 }
 
 func nestedSyncIgnorePatterns(pairs []syncengine.Pair) []string {
@@ -290,11 +375,7 @@ func newWorktreeAttachCmd(opts *Options) *cobra.Command {
 			if ownerRoot == root {
 				return fmt.Errorf("%s already owns the primary sync mapping", root)
 			}
-			ownerCommon, err := gitPath(ownerRoot, "--path-format=absolute", "--git-common-dir")
-			if err != nil {
-				return err
-			}
-			ownerCommon, err = filepath.EvalSymlinks(ownerCommon)
+			ownerCommon, err := gitCommonDir(ownerRoot)
 			if err != nil {
 				return err
 			}
@@ -341,13 +422,13 @@ func newWorktreeAttachCmd(opts *Options) *cobra.Command {
 				}
 				ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 				defer cancel()
-				if _, err := execInSyncthingContainer(ctx, cc.kube, cc.namespace, pods[0].Name, fmt.Sprintf("mkdir -p %s && chmod 0777 %s", syncengine.ShellEscape(binding.RemoteRoot), syncengine.ShellEscape(binding.RemoteRoot))); err != nil {
+				// The sync start below prepares the root again; doing it here
+				// first rejects an unusable Pod before anything is recorded.
+				if _, err := execInSyncthingContainer(ctx, cc.kube, cc.namespace, pods[0].Name, worktreeRemoteRootScript(binding.RemoteRoot)); err != nil {
 					return fmt.Errorf("prepare remote worktree root: %w", err)
 				}
-				targetContainer := resolveTargetContainer(cc.cfg)
-				probe := filepath.ToSlash(filepath.Join(binding.RemoteRoot, ".okdev-write-probe"))
-				if _, err := cc.kube.ExecShInContainer(ctx, cc.namespace, pods[0].Name, targetContainer, fmt.Sprintf("touch %s && rm -f %s", syncengine.ShellEscape(probe), syncengine.ShellEscape(probe))); err != nil {
-					return fmt.Errorf("remote worktree root %s is not writable in container %s: %w", binding.RemoteRoot, targetContainer, err)
+				if err := verifyRemoteRootWritable(ctx, cc.kube, cc.namespace, pods[0].Name, resolveTargetContainer(cc.cfg), binding.RemoteRoot); err != nil {
+					return err
 				}
 				if err := writeLocalSTIgnore(root); err != nil {
 					return err
@@ -418,28 +499,29 @@ func newWorktreeDetachCmd(opts *Options) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				found := false
+				var detached *session.WorktreeBinding
 				for _, binding := range bindings {
 					if binding.ID == id {
-						found = true
+						detached = &binding
 						break
 					}
 				}
-				if !found {
+				if detached == nil {
 					return fmt.Errorf("worktree %s is not attached to session %s", id, cc.sessionName)
 				}
 				if err := session.RemoveWorktreeBinding(cc.sessionName, id); err != nil {
 					return err
 				}
 				if err := restartWorktreeSync(cmd.Context(), cc); err != nil {
-					for _, binding := range bindings {
-						if binding.ID == id {
-							_ = session.SaveWorktreeBinding(cc.sessionName, binding)
-							break
-						}
-					}
+					_ = session.SaveWorktreeBinding(cc.sessionName, *detached)
 					_ = restartWorktreeSync(cmd.Context(), cc)
 					return err
+				}
+				// The tree selected this session when it attached. Kept, the
+				// selection would outlive the session and could only produce
+				// "not attached" errors.
+				if err := session.ClearActiveSessionFor(detached.LocalRoot, cc.sessionName); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to clear the session selection of %s: %v\n", detached.LocalRoot, err)
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Detached %s; remote files were kept\n", id)
 				return nil
@@ -458,15 +540,22 @@ func newWorktreeListCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			bindings, err := session.LoadWorktreeBindings(cc.sessionName)
+			states, err := sessionWorktreeStates(cc.sessionName)
 			if err != nil {
 				return err
 			}
 			if opts.Output == "json" {
-				return json.NewEncoder(cmd.OutOrStdout()).Encode(bindings)
+				if states == nil {
+					states = []worktreeState{}
+				}
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(states)
 			}
-			for _, binding := range bindings {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s  %s -> %s\n", binding.ID, binding.LocalRoot, binding.RemoteRoot)
+			for _, state := range states {
+				line := fmt.Sprintf("%s  %s -> %s", state.ID, state.LocalRoot, state.RemoteRoot)
+				if state.Stale != "" {
+					line += "  (not syncing: " + state.Stale + ")"
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), line)
 			}
 			return nil
 		},
